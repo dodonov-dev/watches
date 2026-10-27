@@ -524,3 +524,4 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
 - The dry stain under an advancing liquid is not dissolved (only the wet part merges). It is hidden by the body and overwritten when that column is uncovered again.
 - The user's repro preset (contactDyn 8°) is watery by its own dynamics: its residue is now wall lines at most, mostly invisible.
 - `docs/residue-physics/tiltshot.mjs` is wall-clock timed, so before/after shots of a sliding slug never line up. A fixed-step replay would make A/B frames comparable.
+- `docs/hardware-handoff.md` slot geometry is stale (4 mm bridge, slots at 5.0/14.9 mm): `spec/layout.h` / preset 1 now have hours y 0–72, minutes y 168–240 → 8 mm bridge, and tubeHeight/hoursY/minutesY are per-preset runtime params.
