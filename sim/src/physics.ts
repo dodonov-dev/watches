@@ -32,6 +32,7 @@ export const TRACE_FULL = 0xff00;      // a film at FILM_ETA_MAX (8.8 fixed poin
 export const TRACE_MIN = 2 << 8;       // dry residue below this is gone (buffer empties); also the thinnest deposit
 export const TRACE_DRAIN_MAX_PX_S = 48; // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (3·c·dt/steps < 1)
 export const TRACE_DRAIN_STEPS = 3;
+export const RETRACT_S = 2;            // a full tube empties over this long when its scale wraps (followClock), s
 
 // The film a receding line leaves on the bore wall, h = η·R: Bretherton's tube law with the finite-Ca
 // correction, η = 1.34 Ca^⅔ / (1 + 3.35 Ca^⅔), capped at FILM_ETA_MAX (thin-film limit). Ca is the one
@@ -56,7 +57,10 @@ export function legacyTraceDrain(p: Params): number {
 }
 
 export interface TubeState {
-  fillTarget: number;  // 0..1 from time
+  fillTarget: number;  // 0..1 from time, as shown (followClock)
+  clockPrev: number;   // the clock's fill at the previous followClock (wrap detection)
+  retract: number;     // 0..1 through a wrap's retract, 1 = none running
+  retractFrom: number; // fillTarget when the wrap began
   fillPos: number;     // px offset of the edge relative to target (slosh), spring toward 0
   fillVel: number;
   angle: number;       // deg, in-plane skew of the time edge (+ = bottom contact line leads); follows across-tilt. The home edge of a free slug leans the other way (render.ts edgeSkews)
@@ -110,7 +114,7 @@ export interface TubeState {
 }
 
 export function newTube(): TubeState {
-  return { fillTarget: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, light: 0, lightVel: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
+  return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, light: 0, lightVel: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
     cap: 0, capVel: 0, pinFree: 0, pinHome: 0, lineVFree: 0, lineVHome: 0, filmFree: 0, filmHome: 0,
     trace: new Uint16Array(TUBE_LENGTH_PX), traceWet: new Uint16Array(TUBE_LENGTH_PX), traceLo: TUBE_LENGTH_PX, traceHi: 0, xtPrev: 0, xhPrev: 0, traceInit: false,
     slugPos: 0, slugVel: 0, reading: 1, playTimer: 0, playWindow: 0,
@@ -417,6 +421,19 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt = PHYS_DT):
   };
   [s.pinFree, s.lineVFree] = seat(s.pinFree, s.lineVFree, tiltFree, -recede * (s.fillPos - fill0 + slugStep));
   [s.pinHome, s.lineVHome] = seat(s.pinHome, s.lineVHome, -tiltFree, recede * slugStep);
+}
+
+/** Sets the shown fill from the clock's (0..1). A wrap — the clock falling back by over half the scale, full →
+ *  empty at the hour / at 12 — retracts the column over RETRACT_S, eased in and out, onto the clock as it runs
+ *  on, instead of emptying the tube in one tick. `snap` (the clock was set) goes straight to it. */
+export function followClock(s: TubeState, clock: number, dt = PHYS_DT, snap = false): void {
+  if (snap) s.retract = 1;
+  else if (clock < s.clockPrev - 0.5) { s.retract = 0; s.retractFrom = s.fillTarget; }
+  s.clockPrev = clock;
+  if (s.retract >= 1) { s.fillTarget = clock; return; }
+  s.retract = Math.min(1, s.retract + dt / RETRACT_S);
+  const u = s.retract;
+  s.fillTarget = s.retractFrom + (clock - s.retractFrom) * u * u * (3 - 2 * u);
 }
 
 /** Continuous fill levels per the layout spec. */

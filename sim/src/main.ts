@@ -1,7 +1,7 @@
 import './style.css';
 import { PANEL_W, PANEL_H } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, newTube, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, tubeLayout } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -32,6 +32,7 @@ const input: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0 };
 const imuFilter = new ImuFilter();
 let inputSource: 'manual' | 'device' | 'serial' = 'manual'; // not persisted: device/serial need a gesture
 let demoClock = Date.now();
+let clockSet = false;   // the user set the clock: the fill jumps there instead of retracting (followClock)
 
 // ---------- DOM ----------
 const app = document.getElementById('app')!;
@@ -148,6 +149,7 @@ $('pause').oninput = (e) => { paused = (e.target as HTMLInputElement).checked; }
 function selectTimeMode(mode: typeof timeMode): void {
   // Demo continues from the displayed time, including a manually selected starting time.
   if (mode === 'demo' && timeMode !== 'demo') demoClock = currentDate().getTime();
+  else if (mode !== 'demo') clockSet = true;
   timeMode = mode;
   $<HTMLInputElement>(`tm-${mode}`).checked = true;
 }
@@ -171,7 +173,7 @@ $('setm').oninput = (e) => { setClock.m = +(e.target as HTMLInputElement).value;
 $('resetview').onclick = () => {
   Object.assign(overlay, DEFAULT_OVERLAY); Object.assign(manual, DEFAULT_VIEW.manual); Object.assign(setClock, DEFAULT_VIEW.setClock);
   ({ scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = DEFAULT_VIEW);
-  syncView(); save();
+  clockSet = true; syncView(); save();
 };
 const alongS = $<HTMLInputElement>('along'), acrossS = $<HTMLInputElement>('across');
 const syncSliders = () => { alongS.value = String(manual.along); acrossS.value = String(manual.across); $('alongv').textContent = manual.along.toFixed(2); $('acrossv').textContent = manual.across.toFixed(2); };
@@ -494,7 +496,9 @@ function physics(dt: number) {
   if (timeMode === 'demo') demoClock += dt * 1000 * demoSpeed;
   const f = fillLevels(currentDate());
   if (sweep) sweepPhase = (sweepPhase + dt / sweepPeriod) % 1;
-  hours.fillTarget = f.hours; minutes.fillTarget = sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes;
+  followClock(hours, f.hours, dt, clockSet);
+  followClock(minutes, sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes, dt, clockSet);
+  clockSet = false;
   stepTube(hours, input, params, dt);
   stepTube(minutes, input, params, dt);
   stepFizz(params, dt, input.along, input.across, hours.agitation);

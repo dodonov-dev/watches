@@ -19,6 +19,7 @@
 #define TRACE_MIN (2 << 8)        // dry residue below this is gone (buffer empties); also the thinnest deposit
 #define TRACE_DRAIN_MAX_PX_S 48.0f // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable
 #define TRACE_DRAIN_STEPS 3
+#define RETRACT_S 2.0f            // a full tube empties over this long when its scale wraps (followClock), s
 #define FILM_LAMBDA 9.2f          // Cox-Voinov log factor contactDyn is calibrated with (sim filmEta)
 #define FILM_ETA_MAX 0.1f         // thin-film limit of the film thickness eta = h / R
 #define GYRO_LP_HZ 12.0f          // smooths both gyro outputs (sensor noise twitches fizz/agitation)
@@ -26,6 +27,9 @@
 struct TiltInput { float along, across, gyroAlong, gyroAcross; };
 
 struct TubeState {
+  // fillTarget: 0..1 from time, as shown (followClock): clockPrev = the clock's fill at the previous call (wrap
+  // detection), retract = 0..1 through a wrap's retract (1 = none running), retractFrom = fillTarget at the wrap
+  float clockPrev = 0, retract = 1, retractFrom = 0;
   float fillTarget = 0, fillPos = 0, fillVel = 0, angle = 0, angleVel = 0, light = 0, lightVel = 0, agitation = 0, edgeLight = 0, acrossTilt = 0;
   // meniscus dynamics: surface centre leading the pinned contact lines (px, panel +x); trailing wet films 0..1
   float cap = 0, capVel = 0, filmFree = 0, filmHome = 0;
@@ -69,6 +73,9 @@ float boreR(const Params &p);
 struct ContactLeads { float R, rest, adv, rec; };
 ContactLeads contactLeads(const Params &p, float len, float tilt);
 void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt = PHYS_DT);
+// Shown fill from the clock's (0..1): a wrap (the clock falling back by over half the scale) retracts the column
+// over RETRACT_S instead of emptying it in one tick; snap (the clock was set) goes straight to it. See sim followClock.
+void followClock(TubeState &s, float clock, float dt = PHYS_DT, bool snap = false);
 
 // Slow EMA of |a| used as the gravity divisor (sensor reads ~0.94 g; never divide by instantaneous |a|).
 struct GravityNorm {

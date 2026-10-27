@@ -1,6 +1,17 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-10-01 (vertical watch mode)_
+_Last update: 2026-10-27 (wrap retract)_
+
+## Wrap retract (2026-10-27)
+
+- A full tube no longer empties in one tick at the wrap (minutes at the hour, hours at 12): `followClock` (sim
+  `physics.ts`, firmware `physics.cpp`) eases the column back over `RETRACT_S` = 2 s (smoothstep) onto the clock as
+  it runs on. Wrap = the clock's fill falling back by over half the scale; `remaining` mode refills the same way.
+- A clock set snaps: firmware `t` / `T` / NVS restore (`setClockLocal`), sim time controls (set / real / reset view).
+  Sweep toggles and demo speed changes do not snap.
+- Residue follows the retracting edge (blood: a faint film along the tube, dries in seconds).
+- Verified: `check:imu`, `check:meniscus` (339 scenes, max 9/255, UBSan clean), `pio run` (RAM +12 B), sim
+  screenshots through a 10:59 → 11:00 wrap (default, blood). Not flashed.
 
 ## Vertical watch mode (2026-10-01)
 

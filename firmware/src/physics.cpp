@@ -83,6 +83,16 @@ float lightRest(float along, float across, const Params &p) {
   return p.lightAngle + (phys - p.lightAngle) * p.lightPhys * w;
 }
 
+void followClock(TubeState &s, float clock, float dt, bool snap) {
+  if (snap) s.retract = 1;
+  else if (clock < s.clockPrev - 0.5f) { s.retract = 0; s.retractFrom = s.fillTarget; }
+  s.clockPrev = clock;
+  if (s.retract >= 1) { s.fillTarget = clock; return; }
+  s.retract = fminf(1, s.retract + dt / RETRACT_S);
+  const float u = s.retract;
+  s.fillTarget = s.retractFrom + (clock - s.retractFrom) * u * u * (3 - 2 * u);
+}
+
 float columnLen(float fillTarget, const Params &p) { return (p.remaining ? 1 - fillTarget : fillTarget) * TUBE_LENGTH_PX; }
 
 float boreR(const Params &p) {

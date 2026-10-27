@@ -121,9 +121,10 @@ RTC_NOINIT_ATTR static uint32_t clockFromSim;     // CLOCK_SIM_MAGIC while syste
 static const uint32_t CLOCK_SIM_MAGIC = 0x73696d74;
 static const uint32_t CLOCK_SAVE_MS = 60000;
 static uint32_t clockSavedAt = 0;
+static bool clockJumped = false;     // the clock was set: the fills jump there instead of retracting (followClock)
 static void setClockLocal(time_t localSec, bool fromSim) {
   timeval tv = { localSec, 0 }; settimeofday(&tv, nullptr); demoOffset = 0;
-  clockFromSim = fromSim ? CLOCK_SIM_MAGIC : 0;
+  clockFromSim = fromSim ? CLOCK_SIM_MAGIC : 0; clockJumped = true;
 }
 static void clockSave() { if (clockFromSim == CLOCK_SIM_MAGIC) prefs.putLong64("clk", time(nullptr)); clockSavedAt = millis(); }
 static void clockSaveTick() { if (millis() - clockSavedAt >= CLOCK_SAVE_MS) clockSave(); }
@@ -139,12 +140,13 @@ static double clockNow() {
   double s = fmod((double)(tv.tv_sec % 86400) + tv.tv_usec * 1e-6 + demoOffset, 86400.0);
   return s < 0 ? s + 86400 : s;
 }
-static void updateTimeTargets() {
+static void updateTimeTargets(float dt) {
   clockSec = clockNow();
   double minutes = fmod(clockSec / 60.0, 60.0);
   double hours = fmod(clockSec / 3600.0, 12.0);
-  tubeH.fillTarget = (float)(hours / 12.0);
-  tubeM.fillTarget = sweepPeriod > 0 ? (float)(1.0 - fabs(2.0 * sweepPhase - 1.0)) : (float)(minutes / 60.0);
+  followClock(tubeH, (float)(hours / 12.0), dt, clockJumped);
+  followClock(tubeM, sweepPeriod > 0 ? (float)(1.0 - fabs(2.0 * sweepPhase - 1.0)) : (float)(minutes / 60.0), dt, clockJumped);
+  clockJumped = false;
 }
 static uint32_t lastPhysUs = 0, frames = 0, fpsT0 = 0;
 static float fps = 0;
@@ -278,7 +280,7 @@ static void liquid_start() {
   fb.fillScreen(0);
   display_push_frame(fb.buf);
   display_set_brightness(255);   // params.brightness is applied in the render LUTs
-  updateTimeTargets();
+  updateTimeTargets(0);
   memset(frameIntervalHist, 0, sizeof(frameIntervalHist));
   lastFrameStartUs = 0; frameIntervalSamples = 0; frameP95Ms = 0;
   lastPhysUs = micros(); frames = 0; fpsT0 = millis();
@@ -303,7 +305,7 @@ static void liquid_tick() {
     lastPhysUs += 1000000 / PHYS_HZ; steps++;
     demoOffset += PHYS_DT * (demoSpeed - 1);
     if (sweepPeriod > 0) sweepPhase = fmod(sweepPhase + PHYS_DT / sweepPeriod, 1.0);
-    updateTimeTargets();
+    updateTimeTargets(PHYS_DT);
     TiltInput in = have_imu ? imuFilter.step(rawTilt, params) : TiltInput{0, 0, 0, 0};
     const uint32_t p0 = micros();
     stepTube(tubeH, in, params);
