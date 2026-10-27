@@ -37,7 +37,12 @@ def open_serial(port):
     import serial
     s = serial.Serial(None, 115200, timeout=0.1)
     s.port = port; s.dtr = True; s.rts = True       # both high = no reset on open (DTR0/RTS1 is the ESP32-S3 reset combo)
-    s.open(); time.sleep(0.1); s.reset_input_buffer()
+    for attempt in range(40):                       # Windows: a previous bridge may still hold the port for a few s
+        try: s.open(); break
+        except serial.SerialException as e:
+            if 'denied' not in str(e).lower() or attempt == 39: raise
+            time.sleep(0.25)
+    time.sleep(0.1); s.reset_input_buffer()
     return s
 
 def close_serial(s):
@@ -97,7 +102,11 @@ class Device:
     def close(self):
         if self._wrote: time.sleep(2.5); self._wrote = False
         if self._s: close_serial(self._s)
-        if self._b: self._b.stdin.close(); self._b.wait(5)
+        if self._b:                                   # the Windows bridge can take > 5 s to release the port and exit
+            self._b.stdin.close()
+            try: self._b.wait(20)
+            except subprocess.TimeoutExpired:
+                print('device.py: bridge did not exit, killed', file=sys.stderr); self._b.kill(); self._b.wait()
     def __enter__(self): return self
     def __exit__(self, *a): self.close()
 

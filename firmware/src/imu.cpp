@@ -2,10 +2,9 @@
 #include "imu.h"
 #include <Arduino.h>
 #include <Wire.h>
+#include "board.h"   // IMU_REF
 
-#define PIN_SDA 40
-#define PIN_SCL 39
-static uint8_t addr = 0x6B;   // SA0 high on this board per Waveshare; probe both
+static uint8_t addr = 0x6B;   // SA0 high on the AMOLED-1.91 and the LCD-3.16 per Waveshare; probe both
 
 enum {
   REG_WHO_AM_I = 0x00, REG_REVISION = 0x01,
@@ -26,7 +25,6 @@ static bool rd(uint8_t r, uint8_t *buf, size_t n) {
 }
 
 bool imu_init(void) {
-  Wire.begin(PIN_SDA, PIN_SCL, 400000);
   uint8_t who = 0;
   for (uint8_t a : {0x6B, 0x6A}) {
     addr = a;
@@ -53,7 +51,8 @@ bool imu_read(ImuSample &s) {
   int16_t ax = (int16_t)(b[2] | b[3] << 8), ay = (int16_t)(b[4] | b[5] << 8), az = (int16_t)(b[6] | b[7] << 8);
   int16_t gx = (int16_t)(b[8] | b[9] << 8), gy = (int16_t)(b[10] | b[11] << 8), gz = (int16_t)(b[12] | b[13] << 8);
   s.temp = t / 256.0f;
-  s.ax = ax * ACC_LSB; s.ay = ay * ACC_LSB; s.az = az * ACC_LSB;
-  s.gx = gx * GYR_LSB; s.gy = gy * GYR_LSB; s.gz = gz * GYR_LSB;
+  const int16_t a[3] = {ax, ay, az}, g[3] = {gx, gy, gz};   // board frame -> reference frame (board.h)
+  s.ax = IMU_REF(a, 0) * ACC_LSB; s.ay = IMU_REF(a, 1) * ACC_LSB; s.az = IMU_REF(a, 2) * ACC_LSB;
+  s.gx = IMU_REF(g, 0) * GYR_LSB; s.gy = IMU_REF(g, 1) * GYR_LSB; s.gz = IMU_REF(g, 2) * GYR_LSB;
   return true;
 }

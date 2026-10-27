@@ -2,8 +2,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// RM67162 AMOLED 536x240 over QSPI, via Waveshare's esp_lcd_sh8601 driver
-// (same command set; init sequence taken verbatim from Waveshare demo).
+// Panel backend, one per board (platformio.ini picks the file); both speak the PANEL_W x PANEL_H canvas of layout.h:
+//   display.cpp         RM67162 AMOLED 536x240 over QSPI, via Waveshare's esp_lcd_sh8601 driver
+//                       (same command set; init sequence taken verbatim from Waveshare demo).
+//   display_lcd316.cpp  ST7701 RGB LCD 320x820 (PSRAM framebuffer, canvas shown 1:1 centred, turned a quarter):
+//                       pushes are synchronous copies, so the async / wait calls below complete at once there.
 bool display_init(void);
 // Push a full 536x240 RGB565 frame (buffer may live in PSRAM). Blocking.
 // NOTE: the panel takes big-endian RGB565; the framebuffer must already hold byte-swapped
@@ -11,12 +14,12 @@ bool display_init(void);
 void display_push_frame(const uint16_t *fb);
 // Push a horizontal band [y0, y1) of a full-width framebuffer (staged through the strips, blocking).
 void display_push_rows(const uint16_t *fb, int y0, int y1);
-// The two TUBE_HEIGHT_MAX-row strip buffers (internal DMA RAM) owned by the display module.
+// The two TUBE_HEIGHT_MAX-row strip buffers (internal RAM, DMA-capable on the AMOLED) owned by the display module.
 uint16_t *display_strip(int i);
-void display_set_brightness(uint8_t v);   // 0..255 (cmd 0x51)
+void display_set_brightness(uint8_t v);   // 0..255 (AMOLED: cmd 0x51; LCD: backlight PWM)
 // RM67162 High Brightness Mode (SetHBMMode B0h, bit1 HBM_EN). On this module it is not a usable
 // brightness step: the image goes bright cyan and a lit face trips the brownout detector. Kept for
-// experiments only (serial 'H'); never enable it on the boot path.
+// experiments only (serial 'H'); never enable it on the boot path. No-op on the LCD.
 void display_set_hbm(bool on);
 // Queue a push of `rows` full-width rows starting at panel row y0, read by DMA straight from
 // `buf` (must be internal DMA-capable RAM, byte-swapped pixels). Returns immediately; call

@@ -1,6 +1,35 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-10-27 (wrap retract)_
+_Last update: 2026-10-27 (ESP32-S3-LCD-3.16 bring-up)_
+
+## Second board: Waveshare ESP32-S3-LCD-3.16 (2026-10-27)
+
+- Env `lcd316` (`pio run -e lcd316`; plain `pio run` and the tools still mean `amoled191`): ST7701 RGB LCD 320×820,
+  `display_lcd316.cpp` = bit-banged 3-wire SPI init (Waveshare demo sequence) + esp_lcd RGB panel, framebuffer in PSRAM.
+  The 536×240 canvas is shown **1:1, centred**, each strip turned a quarter into the portrait framebuffer on push.
+  Sim, presets, parity tools unchanged. `board.h`: IMU pins (SDA 15 / SCL 7) and the IMU turned into the AMOLED's
+  frame (180° about y), so the `i` stream and the sim read both boards alike.
+- Pixel clock 16 MHz (46 Hz refresh): Waveshare's 18 MHz made the picture jump sideways and back now and then (the
+  DMA falls behind reading PSRAM); 16 and 14 MHz steady by eye.
+- Push = CPU quarter-turn, ~7.1 ms/frame, PSRAM-bound (32-bit stores and pushing from both cores gained nothing).
+  Internal heap 3.6 KB free with BLE (ADC driver for the battery ~0.5 KB, allocated at boot).
+- PCF85063 RTC (`rtc.cpp`, `board.h` `HAS_RTC`): `T` writes it, power-on restores the clock from it (before the NVS
+  copy) when its oscillator ran and this firmware set it; without a backup cell in the RTC header it only bridges
+  resets, not power-off. `s` ends with `bat X.XX V` (GPIO 4, 200k/200k). I2C `Wire.begin` moved from `imu_init` to `setup`.
+- LCD black is backlit grey: margins and bridge glow; presets were tuned on AMOLED black.
+- Single framebuffer written while scanned: no tear visible on a sloshing board; a VSYNC-locked push would cap fps at 46 / 23.
+- Tools: `flash-win.sh --env lcd316 [--full] COMx` (`--full` once on a board with other firmware), `flash.sh --env`,
+  `e2e.sh --env lcd316`. `device.py`: retries the port while Windows still holds it ("Access is denied"), waits up to
+  20 s for the bridge to exit (it raised after 5 s and stopped e2e.sh before parity).
+- Verified on the board: orientation and colours (`h`), IMU directions (liquid runs downhill both ways), no jump at
+  16 MHz. `e2e.sh --env lcd316 --no-flash`: **47.5 fps**, render 11.89 ms (pinned 10:09:30, board NVS preset);
+  parity 666 / 77184 px mismatched, 0 > 12/255. Pinned A/B of the clock: 50.0 fps at 16 MHz vs 50.8 at 14 MHz.
+  RTC: `T`, then a simulated power-on (system time zeroed + `clockRestore`) 3.5 min later restored the exact time.
+  AMOLED: `pio run -e amoled191` builds (RAM 88.3 KB, unchanged); not flashed (board not attached).
+- Astra review (codex, serious bugs only, 2 rounds): flash scripts ignored `$LW_PORT` (wrong board with two attached;
+  `e2e.sh --ref` now routes the old tree's flash itself), the RTC's I2C handle was allocated on the first `T` after a
+  soft reset (now `rtc_init` at boot, calls refused if it failed). All fixed and re-flashed.
+- Next: native 820×320, `docs/lcd316-native-plan.md` (firmware spike first, ≥ 30 fps gate; PSRAM bandwidth is the limit).
 
 ## Wrap retract (2026-10-27)
 

@@ -16,7 +16,9 @@ tools/e2e.sh --no-ble                                # -DNO_BLE build (baseline:
 tools/e2e.sh --preset ../presets/cola.json --runs 3  # pinned preset, median of 3 runs (+ spread)
 tools/e2e.sh --ref HEAD~1 --preset ../presets/cola.json --runs 3 --stage fizz=0
                                                      # A/B: flash+bench HEAD~1 (temp worktree, no parity), then this tree
+LW_PORT=COM11 tools/e2e.sh --env lcd316              # ESP32-S3-LCD-3.16 board (default env: amoled191); LW_PORT picks the board when both are attached
 ```
+First flash of a board that came with other firmware: `tools/flash-win.sh --full --env lcd316 COMx` (bootloader + partitions).
 e2e.sh passes `--preset FILE`, `--live-imu`, `--runs N`, `--stage name=v` through to bench.py; the log header
 names the preset. `--ref COMMIT` builds and flashes a temporary `git worktree` of COMMIT under /tmp with the same
 flags, benches it with the same preset/runs/stages (label `<label> ref <sha>`, parity skipped: the sim is not that

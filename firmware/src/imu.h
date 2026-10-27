@@ -8,5 +8,5 @@ struct ImuSample {
   float temp;         // °C
 };
 
-bool imu_init(void);                // QMI8658 on I2C SDA=40 SCL=39
-bool imu_read(ImuSample &s);        // returns false if no new data ready
+bool imu_init(void);                // QMI8658 on the board I2C bus (Wire begun by setup, pins: board.h)
+bool imu_read(ImuSample &s);        // returns false if no new data ready; axes in the reference frame (board.h)

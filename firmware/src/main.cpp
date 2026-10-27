@@ -5,7 +5,8 @@
 //   g <along> <across> [gyroAlong gyroAcross]  tilt override in g / dps instead of the IMU (bench poses without
 //      touching the board; not persisted)   g  back to the IMU
 //   t HH:MM[:SS]  set clock           d<N>  demo time speed ×N (d1 = real time, d0 = freeze; persists in NVS)
-//   T <epoch_s> <tz_min>  set clock from the sim (persists in NVS, re-saved each minute; power-on resumes from it)
+//   T <epoch_s> <tz_min>  set clock from the sim (persists in NVS, re-saved each minute; power-on resumes from it,
+//      or from the RTC on boards with one: board.h HAS_RTC)
 //   w<N>  minutes sweep: the minutes tube runs empty→full→empty every N s, hours keep the clock (w0 = off; persists in NVS)
 //   p<name>=<value>  set a param (e.g. p liquid=#39ff14, p fizz=0, p contactAngle=140)
 //   p?  dump params as JSON           p!  reset params to the built-in preset (and erase NVS copy)
@@ -15,12 +16,15 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <Adafruit_GFX.h>
+#include <Wire.h>
 #include <sys/time.h>
 #include "esp_heap_caps.h"
 #include "layout.h"
+#include "board.h"
 #include "display.h"
 #include "imu.h"
 #include "ble.h"
+#include "rtc.h"
 #include "physics.h"
 #include "render.h"
 #include "gen/params_gen.h"
@@ -131,6 +135,10 @@ static void clockSaveTick() { if (millis() - clockSavedAt >= CLOCK_SAVE_MS) cloc
 static void clockRestore() {
   clockSavedAt = millis();
   if (time(nullptr) >= CLOCK_EPOCH_MIN) return;   // system time (and clockFromSim) survived the reset
+#if HAS_RTC
+  time_t r;   // set by the last `T` and kept running while powered: the actual time, not the stale NVS copy
+  if (rtc_read(r) && r >= CLOCK_EPOCH_MIN) { setClockLocal(r, true); out.println("clock: restored from rtc"); return; }
+#endif
   int64_t v = prefs.getLong64("clk", 0);
   if (v >= CLOCK_EPOCH_MIN) { setClockLocal((time_t)v, true); out.println("clock: last sim time restored from nvs"); }
   else setClockLocal(CLOCK_EPOCH_MIN + 10 * 3600 + 9 * 60 + 30, false);
@@ -421,7 +429,9 @@ static void handleLine(char *line) {
     case 't': { int hh = 0, mm = 0, ss = 0; if (sscanf(arg, "%d:%d:%d", &hh, &mm, &ss) >= 2) { setClockLocal(CLOCK_EPOCH_MIN + hh * 3600 + mm * 60 + ss, false); out.printf("time %02d:%02d:%02d\n", hh, mm, ss); } else out.println("usage: t HH:MM[:SS]"); break; }
     case 'T': {  // T <epoch_s> <tz_offset_min>: local time = epoch + tz
       long long ep = 0; int tz = 0;
-      if (sscanf(arg, "%lld %d", &ep, &tz) >= 1) { setClockLocal((time_t)(ep + tz * 60L), true); clockSave(); clockSec = clockNow(); out.printf("time %02d:%02d:%02d\n", (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60); }
+      if (sscanf(arg, "%lld %d", &ep, &tz) >= 1) { setClockLocal((time_t)(ep + tz * 60L), true); clockSave(); clockSec = clockNow();
+        if (HAS_RTC && !rtc_write((time_t)(ep + tz * 60L))) out.println("error rtc write");
+        out.printf("time %02d:%02d:%02d\n", (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60); }
       else out.println("usage: T <epoch_s> <tz_min>");
       break; }
     case 'd': demoSpeed = atof(arg); demoSave(); out.printf("demo speed x%g\n", demoSpeed); break;
@@ -463,10 +473,14 @@ static void handleLine(char *line) {
       }
       out.println("END");
       break; }
-    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u\n",
+    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u",
                  mode, fps, (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60,
                  rawTilt.along, rawTilt.across, rawTilt.gyroAcross, tubeH.fillTarget, tubeM.fillTarget,
-                 ESP.getFreeHeap(), (unsigned)workerStackFree); break;
+                 ESP.getFreeHeap(), (unsigned)workerStackFree);
+#ifdef PIN_BAT_ADC
+      out.printf(" bat %.2f V", analogReadMilliVolts(PIN_BAT_ADC) * 2 / 1000.0f);   // 200k / 200k divider
+#endif
+      out.println(); break;
     case 'r': ESP.restart(); break;
     case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p? p! x r"); break;
     default: out.println("error unknown command"); break;
@@ -481,7 +495,7 @@ void setup() {
   static const char *const RST[] = {"unknown", "poweron", "ext", "sw", "panic", "int-wdt", "task-wdt", "wdt",
                                     "deepsleep", "brownout", "sdio", "usb", "jtag", "efuse", "pwr-glitch", "cpu-lockup"};
   int rr = esp_reset_reason();
-  out.printf("\nliquid-watch | cpu %lu MHz | psram %u KB | heap %u KB | reset %s\n",
+  out.printf("\nliquid-watch | %s | cpu %lu MHz | psram %u KB | heap %u KB | reset %s\n", BOARD_NAME,
                 getCpuFrequencyMhz(), ESP.getPsramSize() / 1024, ESP.getFreeHeap() / 1024,
                 rr >= 0 && rr < 16 ? RST[rr] : "?");
   if (!fb.buf) { out.println("FATAL: framebuffer alloc failed"); }
@@ -492,6 +506,10 @@ void setup() {
   tubeH.traceWet = traceWetBuf(0); tubeM.traceWet = traceWetBuf(1);   // their wet parts (PSRAM, physics_init)
   strip[0] = display_strip(0); strip[1] = display_strip(1);
   workerStart();
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);   // IMU and RTC share the board bus
+#ifdef PIN_BAT_ADC
+  analogReadMilliVolts(PIN_BAT_ADC);   // the ADC driver allocates on its first read: at boot, not on the first `s`
+#endif
 #ifdef NO_IMU   // perf-baseline build (tools/e2e.sh --bare): no I2C polling, tilt stays 0
   have_imu = false;
 #else
@@ -502,6 +520,9 @@ void setup() {
   demoLoad();
   sweepLoad();
   out.printf("imu: %s\n", have_imu ? "ok" : "NOT FOUND");
+#if HAS_RTC
+  out.printf("rtc: %s\n", rtc_init() ? "ok" : "NOT FOUND");   // before clockRestore, which may skip the RTC
+#endif
   show(BOOT_MODE);
   clockRestore();
   clockSec = clockNow();
