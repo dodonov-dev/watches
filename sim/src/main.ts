@@ -1,6 +1,6 @@
 import './style.css';
-import { PANEL_W, PANEL_H } from '@spec/layout';
-import { GAS_MODELS, PRESETS, gasParams, presetParams, type Params } from './params';
+import { BOARD_TAG, LCD_RES, PANEL_W, PANEL_H, switchBoard, type Board } from '@spec/layout';
+import { GAS_MODELS, PRESETS, boardParams, gasParams, presetParams, type Params } from './params';
 import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, tubeLayout } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
@@ -34,12 +34,16 @@ let inputSource: 'manual' | 'device' | 'serial' = 'manual'; // not persisted: de
 let demoClock = Date.now();
 let clockSet = false;   // the user set the clock: the fill jumps there instead of retracting (followClock)
 
+/** Canvas layout of the current params (design px scaled to the board, see boardParams). */
+const layoutNow = () => tubeLayout(boardParams(params));
+
 // ---------- DOM ----------
 const app = document.getElementById('app')!;
 app.innerHTML = `
 <header>
   <h1>Liquid Watch — sim</h1>
   <div class="top">
+    <label title="Board the sim renders for (canvas size; params stay in design px and are scaled to it). Reloads the page.">board <select id="board">${['amoled191', ...LCD_RES.map((r) => `lcd316@${r}`)].map((b) => `<option${b === BOARD_TAG ? ' selected' : ''}>${b}</option>`).join('')}</select></label>
     <label>scale <select id="scale"><option value="0.33">0.33 (≈ real size @96 dpi)</option><option value="0.5" selected>0.5</option><option value="0.75">0.75</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label><input type="checkbox" id="ovl" checked> leather cuff</label>
     <label>leather <select id="leather"><option>brown</option><option>black</option><option>none</option></select></label>
@@ -102,7 +106,7 @@ const fullc = document.createElement('canvas'); fullc.width = PANEL_W; fullc.hei
 const fullctx = fullc.getContext('2d')!;
 const img = fullctx.createImageData(PANEL_W, PANEL_H);
 const ovlDom = buildOverlayDom(wrap);
-applyOverlay(ovlDom, overlay, tubeLayout(params));
+applyOverlay(ovlDom, overlay, layoutNow());
 
 // ---------- persistence ----------
 // One delegated listener covers every control on the page (top bar, time, tilt, params panel);
@@ -135,15 +139,16 @@ const setScale = () => {
   drawGrid();
 };
 setScale();
+$('board').oninput = (e) => { const [b, r] = (e.target as HTMLSelectElement).value.split('@'); save(); switchBoard(b as Board, r ? +r : undefined); };
 $('scale').oninput = (e) => { scale = +(e.target as HTMLSelectElement).value; setScale(); };
-$('ovl').oninput = (e) => { overlay.enabled = (e.target as HTMLInputElement).checked; applyOverlay(ovlDom, overlay, tubeLayout(params)); setScale(); };
-$('leather').oninput = (e) => { overlay.leather = (e.target as HTMLSelectElement).value as any; applyOverlay(ovlDom, overlay, tubeLayout(params)); };
+$('ovl').oninput = (e) => { overlay.enabled = (e.target as HTMLInputElement).checked; applyOverlay(ovlDom, overlay, layoutNow()); setScale(); };
+$('leather').oninput = (e) => { overlay.leather = (e.target as HTMLSelectElement).value as any; applyOverlay(ovlDom, overlay, layoutNow()); };
 $('lens').oninput = (e) => { params.lens = +(e.target as HTMLInputElement).value; paramEdited('lens'); };
 $('lenscurve').oninput = (e) => { params.lensCurve = +(e.target as HTMLInputElement).value; paramEdited('lensCurve'); };
 $('toplens').oninput = (e) => { params.topLens = +(e.target as HTMLInputElement).value; paramEdited('topLens'); };
 $('lenssmooth').oninput = (e) => { overlay.lensSmooth = (e.target as HTMLInputElement).checked; };
-$('gloss').oninput = (e) => { overlay.gloss = +(e.target as HTMLInputElement).value; applyOverlay(ovlDom, overlay, tubeLayout(params)); };
-$('inset').oninput = (e) => { overlay.slotInset = +(e.target as HTMLInputElement).value; applyOverlay(ovlDom, overlay, tubeLayout(params)); };
+$('gloss').oninput = (e) => { overlay.gloss = +(e.target as HTMLInputElement).value; applyOverlay(ovlDom, overlay, layoutNow()); };
+$('inset').oninput = (e) => { overlay.slotInset = +(e.target as HTMLInputElement).value; applyOverlay(ovlDom, overlay, layoutNow()); };
 $('grid').oninput = (e) => { showGrid = (e.target as HTMLInputElement).checked; drawGrid(); };
 $('pause').oninput = (e) => { paused = (e.target as HTMLInputElement).checked; };
 function selectTimeMode(mode: typeof timeMode): void {
@@ -203,7 +208,7 @@ function syncView(): void {
   $<HTMLInputElement>('setm').value = String(setClock.m);
   $<HTMLInputElement>(`tm-${timeMode}`).checked = true;
   syncSliders();
-  applyOverlay(ovlDom, overlay, tubeLayout(params)); setScale(); drawGrid();
+  applyOverlay(ovlDom, overlay, layoutNow()); setScale(); drawGrid();
 }
 let kick = 0;
 $('flick').onclick = () => { kick = 400; };
@@ -264,6 +269,8 @@ $('serialbtn').onclick = async () => {
   try { await transport.connect(); } catch { return; }
   await transport.waitReady();  // port open may have reset the board: wait out its boot
   await pushTime();
+  const board = await transport.getBoard();   // the canvas the board renders must be the sim's for parity / pushes to look alike
+  if (board && board !== BOARD_TAG) $('serialst').textContent = `connected — the board runs ${board}, the sim ${BOARD_TAG}: pick ${board} under "board"`;
   await serial.setStream(true);
   srcRadio('serial').checked = true; inputSource = 'serial';
 };
@@ -343,7 +350,7 @@ function paramEdited(key?: keyof Params): void {
   }
   save(); pushParam(key);
   if (!key) syncView();
-  if (!key || LAYOUT_KEYS.includes(key)) { applyOverlay(ovlDom, overlay, tubeLayout(params)); drawGrid(); }
+  if (!key || LAYOUT_KEYS.includes(key)) { applyOverlay(ovlDom, overlay, layoutNow()); drawGrid(); }
 }
 /** The legacy preset picked in legacy mode ('' after a reset / import / pull): ticking physical material
  *  enters with its physical twin. Consumed by entering material mode. */
@@ -368,6 +375,7 @@ const materialUi = buildMaterialPanel($('panel'), matState, {
 panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
 
 // URL params, applied on top of the restored session — for reproducible states / screenshots:
+//   ?board=lcd316&res=320 (canvas of another board, read by spec/layout.ts at load; remembered)
 //   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09 &demo=120 &settle=1
 //   &along=0.3 &across=0 &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1
 //   &p.<paramKey>=<value>   e.g. &p.liquid=%2339ff14&p.bubble=0
@@ -426,7 +434,7 @@ function drawGrid() {
   g.clearRect(0, 0, PANEL_W, PANEL_H);
   if (!showGrid) return;
   g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 1 / Math.min(1, scale); g.setLineDash([4, 4]);
-  const { H, yH, yM } = tubeLayout(params);
+  const { H, yH, yM } = layoutNow();
   for (const y of [yH, yH + H, yM, yM + H]) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(PANEL_W, y + 0.5); g.stroke(); }
   const b0 = Math.min(yH, yM) + H, b1 = Math.max(yH, yM);
   g.fillStyle = 'rgba(255,0,0,0.25)'; g.fillRect(0, b0, PANEL_W, b1 - b0);
@@ -491,7 +499,8 @@ function physics(dt: number) {
   }
   if (kick !== 0) { raw.gyroAcross += kick; kick *= Math.exp(-dt / 0.06); if (Math.abs(kick) < 5) kick = 0; }
   if (wristT > 0) { wristT -= dt; raw.gyroAlong += 250 * Math.sin((wristT / 0.5) * Math.PI); }
-  Object.assign(input, imuFilter.step(raw, params, dt));
+  const pb = boardParams(params);   // the physics runs in canvas px
+  Object.assign(input, imuFilter.step(raw, pb, dt));
   scopePush(raw, input);
   if (timeMode === 'demo') demoClock += dt * 1000 * demoSpeed;
   const f = fillLevels(currentDate());
@@ -499,16 +508,16 @@ function physics(dt: number) {
   followClock(hours, f.hours, dt, clockSet);
   followClock(minutes, sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes, dt, clockSet);
   clockSet = false;
-  stepTube(hours, input, params, dt);
-  stepTube(minutes, input, params, dt);
-  stepFizz(params, dt, input.along, input.across, hours.agitation);
+  stepTube(hours, input, pb, dt);
+  stepTube(minutes, input, pb, dt);
+  stepFizz(pb, dt, input.along, input.across, hours.agitation);
 }
 function frame(now: number) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
   if (!paused) { acc += dt; while (acc >= PHYS_DT) { physics(PHYS_DT); acc -= PHYS_DT; } }
   if (params.vertical !== shownVertical) setScale();
-  renderFrame(hours, minutes, params, true, overlay.lensSmooth);
+  renderFrame(hours, minutes, boardParams(params), true, overlay.lensSmooth);
   blit(img); fullctx.putImageData(img, 0, 0);
   fbctx.imageSmoothingEnabled = scale < 1; fbctx.drawImage(fullc, 0, 0);
   drawScope();

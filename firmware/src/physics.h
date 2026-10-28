@@ -1,23 +1,24 @@
 // Port of sim/src/physics.ts — fixed-step 50 Hz liquid dynamics + IMU conditioning.
 #pragma once
 #include "gen/params_gen.h"
-#include "layout.h"   // TUBE_LENGTH_PX (trace bounds default below)
+#include <math.h>
+#include "layout.h"   // TUBE_LENGTH_PX (trace bounds default below), PX_SCALE
 
 #define PHYS_HZ 50
 #define PHYS_DT (1.0f / PHYS_HZ)
 #define PLAY_STROKE_G 0.35f      // substantial filtered gravity excursion (~20° near horizontal)
 #define PLAY_REVERSAL_S 2.0f     // opposite strokes inside this window count as play
-#define FILL_SLOSH_MAX_PX 30.0f   // structural caps — params only tighten, never widen
+#define FILL_SLOSH_MAX_PX (30.0f * PX_SCALE)   // structural caps — params only tighten, never widen (px: design px, scaled)
 #define ANGLE_HARD_MAX_DEG 20.0f
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
-#define CAP_DYN_MAX_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
+#define CAP_DYN_MAX_PX (12.0f * PX_SCALE)      // |cap| cap: dynamic meniscus bulge / hollow
 #define PIN_RELAX_S 3.0f          // a held contact line creeps back to the static shape (wrist micro-motion), s
-#define FILM_FULL_PX_S 25.0f      // edge speed at which the trailing wet film is fully drawn
-#define TRACE_DEPOSIT_MAX_PX 32.0f // max px of newly exposed glass per tick that gets a fresh deposit
+#define FILM_FULL_PX_S (25.0f * PX_SCALE)      // edge speed at which the trailing wet film is fully drawn
+#define TRACE_DEPOSIT_MAX_PX (32.0f * PX_SCALE) // max px of newly exposed glass per tick that gets a fresh deposit
 #define TRACE_FULL 0xff00         // a film at FILM_ETA_MAX (8.8 fixed point)
 #define TRACE_MIN (2 << 8)        // dry residue below this is gone (buffer empties); also the thinnest deposit
-#define TRACE_DRAIN_MAX_PX_S 48.0f // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable
+#define TRACE_DRAIN_MAX_PX_S 48.0f // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (canvas px, a stability bound: not scaled)
 #define TRACE_DRAIN_STEPS 3
 #define RETRACT_S 2.0f            // a full tube empties over this long when its scale wraps (followClock), s
 #define FILM_LAMBDA 9.2f          // Cox-Voinov log factor contactDyn is calibrated with (sim filmEta)
@@ -53,6 +54,18 @@ struct TubeState {
   float playAnchorAlong = 0, playAnchorAcross = 0, playDirAlong = 0, playDirAcross = 0;
   bool playInit = false;
 };
+
+// Params as physics and render take them: p (design px, as presets, `p` writes and NVS hold them) with the
+// PARAM_FIELDS px fields scaled to this board's canvas, the whole-pixel ones rounded (sim params.ts boardParams).
+inline void boardParams(const Params &p, Params &out) {
+  out = p;
+  if (PX_SCALE == 1.0f) return;
+  for (const ParamField &f : PARAM_FIELDS) if (f.px) {
+    float &v = *(float *)((uint8_t *)&out + f.off);
+    v *= PX_SCALE;
+    if (f.px == 2) v = floorf(v + 0.5f);   // whole pixels stay on the grid (JS Math.round)
+  }
+}
 
 float columnLen(float fillTarget, const Params &p);   // liquid column length, px
 // Column drawn from the right end (mirrored frame). A vertical watch keeps the liquid at the bottom (left end):

@@ -8,13 +8,13 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check:meniscus": "python3 ../firmware/tools/check_meniscus.py",
-    "check:imu": "tsc tools/replay-check.ts --rootDir .. --outDir node_modules/.cache/replay-check --module commonjs --target es2021 --moduleResolution node --esModuleInterop && node -e \"require('fs').writeFileSync('node_modules/.cache/replay-check/package.json','{}')\" && node node_modules/.cache/replay-check/sim/tools/replay-check.js",
-    "check:presets": "tsc tools/check-presets.ts --outDir node_modules/.cache/check-presets --module commonjs --target es2021 --moduleResolution node --esModuleInterop && node -e \"require('fs').writeFileSync('node_modules/.cache/check-presets/package.json','{}')\" && node node_modules/.cache/check-presets/tools/check-presets.js",
-    "check:materials": "tsc -p tools/check-materials.tsconfig.json && node -e \"const fs=require('fs'),c='node_modules/.cache/check-materials';fs.writeFileSync(c+'/package.json','{}');fs.mkdirSync(c+'/node_modules/@spec',{recursive:true});fs.copyFileSync(c+'/spec/layout.js',c+'/node_modules/@spec/layout.js')\" && node node_modules/.cache/check-materials/sim/tools/check-materials.js",
+    "check:imu": "tsc tools/replay-check.ts --rootDir .. --outDir node_modules/.cache/replay-check --module commonjs --target es2021 --moduleResolution node --esModuleInterop && node -e \"require('fs').writeFileSync('node_modules/.cache/replay-check/package.json','{}')\" && LW_BOARD=amoled191 node node_modules/.cache/replay-check/sim/tools/replay-check.js",
+    "check:presets": "tsc tools/check-presets.ts --outDir node_modules/.cache/check-presets --module commonjs --target es2021 --moduleResolution node --esModuleInterop && node -e \"require('fs').writeFileSync('node_modules/.cache/check-presets/package.json','{}')\" && LW_BOARD=amoled191 node node_modules/.cache/check-presets/tools/check-presets.js",
+    "check:materials": "tsc -p tools/check-materials.tsconfig.json && node -e \"const fs=require('fs'),c='node_modules/.cache/check-materials';fs.writeFileSync(c+'/package.json','{}');fs.mkdirSync(c+'/node_modules/@spec',{recursive:true});fs.copyFileSync(c+'/spec/layout.js',c+'/node_modules/@spec/layout.js')\" && LW_BOARD=amoled191 node node_modules/.cache/check-materials/sim/tools/check-materials.js",
     "check:material-ui": "node tools/check-material-ui.cjs",
     "gen:material": "python3 tools/gen_material.py",
     "check:material-gen": "python3 tools/gen_material.py --check",
-    "dump:presets": "tsc -p tools/dump-presets.tsconfig.json && node -e \"const fs=require('fs'),c='node_modules/.cache/dump-presets';fs.writeFileSync(c+'/package.json','{}');fs.mkdirSync(c+'/node_modules/@spec',{recursive:true});fs.copyFileSync(c+'/spec/layout.js',c+'/node_modules/@spec/layout.js')\" && node node_modules/.cache/dump-presets/sim/tools/dump-presets.js"
+    "dump:presets": "tsc -p tools/dump-presets.tsconfig.json && node -e \"const fs=require('fs'),c='node_modules/.cache/dump-presets';fs.writeFileSync(c+'/package.json','{}');fs.mkdirSync(c+'/node_modules/@spec',{recursive:true});fs.copyFileSync(c+'/spec/layout.js',c+'/node_modules/@spec/layout.js')\" && LW_BOARD=amoled191 node node_modules/.cache/dump-presets/sim/tools/dump-presets.js"
   },
   "devDependencies": {
     "playwright": "^1.61.1",

@@ -16,7 +16,8 @@ Leave it running.
 
 ## 2. State via URL params (`sim/src/main.ts`, "URL params" block)
 
-`fresh=1` ignore saved session · `preset=<id>` (ids in `PRESETS`, `sim/src/params.ts`; `<id>-big` = wide-rod twin) · `t=HH:MM` · `demo=N` · `settle=1` springs at rest ·
+`board=lcd316&res=320` canvas of another board (amoled191 default; lcd316 res 240/256/288/320; remembered in
+localStorage, so pass `board=amoled191` to go back) · `fresh=1` ignore saved session · `preset=<id>` (ids in `PRESETS`, `sim/src/params.ts`; `<id>-big` = wide-rod twin) · `t=HH:MM` · `demo=N` · `settle=1` springs at rest ·
 `along=` `across=` tilt · `scale=` · `cuff=0` no leather · `lens=` `leather=black` · `grid=1` ·
 `p.<paramKey>=<value>` any param from `sim/src/params.ts` (colours URL-encoded: `%23ff0000`; bools `1`/`0`).
 
@@ -28,6 +29,6 @@ Leave it running.
 cd sim && node ../.claude/skills/run-sim/shot.mjs <scratchpad>/a.png "p.ticksOnTop=1&p.tickColorH=%23ff0000"
 ```
 Screenshots `#viewport` (panel + cuff). Then Read the PNG and look at it. For pixel checks use
-`page.evaluate(() => window.sim.fb[y*536+x])` (RGB565) instead of eyeballing.
+`page.evaluate(() => window.sim.fb[y*PANEL_W+x])` (RGB565; PANEL_W 536 on the AMOLED, 820 on lcd316@320) instead of eyeballing.
 
 Headless render without a browser (exact framebuffer, used by compare-device.py): `sim/tools/render-ref.ts`.

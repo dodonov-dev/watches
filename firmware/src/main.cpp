@@ -10,8 +10,10 @@
 //   w<N>  minutes sweep: the minutes tube runs empty→full→empty every N s, hours keep the clock (w0 = off; persists in NVS)
 //   p<name>=<value>  set a param (e.g. p liquid=#39ff14, p fizz=0, p contactAngle=140)
 //   p?  dump params as JSON           p!  reset params to the built-in preset (and erase NVS copy)
+//   params are in design px (spec/layout.h DESIGN_H); physics and render run on them scaled to this board's canvas
 //   params persist in NVS (autosave 2 s after last p write)
 //   b<n> brightness 0..255            H<0|1>  panel HBM experiment (RM67162 B0h; unusable, see KAIZEN)
+//   v  board and canvas: `board <name>[@<RENDER_H>] canvas <W>x<H> panel <W>x<H>` (tools pick the sim's layout by it)
 //   r  reboot
 #include <Arduino.h>
 #include <Preferences.h>
@@ -27,6 +29,9 @@
 #include "rtc.h"
 #include "physics.h"
 #include "render.h"
+#ifdef AB_COMPARE
+#include "render_ab.h"
+#endif
 #include "gen/params_gen.h"
 
 #ifndef BOOT_MODE
@@ -70,15 +75,27 @@ static bool imu_stream = false;
 static bool have_imu = false, imu_ok = false;   // have_imu: tilt is fed to the physics (IMU alive, or a `g` override)
 
 // ---- liquid face state ----
-static Params params = PRESET_DEFAULT;
+static Params params = PRESET_DEFAULT;   // design px: what `p` writes, `p?` dumps and NVS keeps
+#if PANEL_H != DESIGN_H
+static Params eff = PRESET_DEFAULT;      // params scaled to the canvas (PARAM_FIELDS px): what physics and render run on
+#else
+static Params &eff = params;             // scale 1 (AMOLED): the same struct, no internal RAM spent on a copy
+#endif
 static uint32_t paramsGen = 1;   // bumped on every param change; renderer caches key on it
+// Every param change goes through here (the render worker is idle outside renderBoth, see below).
+static void paramsChanged() {
+#if PANEL_H != DESIGN_H
+  boardParams(params, eff);
+#endif
+  paramsGen++;
+}
 // NVS autosave: namespace lw, blob cur. Written 2 s after the last change; ignored if the schema CRC differs.
 static Preferences prefs;
 static uint32_t paramsDirtyAt = 0;
 static void paramsLoad() {
   prefs.begin("lw", false);
   if (prefs.getUInt("crc") == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
-    prefs.getBytes("cur", &params, sizeof(Params)); paramsGen++; out.println("params: restored from nvs");
+    prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
   }
 }
 static void paramsTouch() { paramsDirtyAt = millis() | 1; }
@@ -165,11 +182,12 @@ static uint32_t lastTickEndUs = 0, fizzStepMaxUs = 0;
 static float tubeStepMs = 0, fizzStepMs = 0, fizzStepMaxMs = 0, stepsPerFrame = 0, pushMs = 0, restMs = 0;   // tube/fizz: per physics step; the rest per frame
 static bool tiltOverride = false;                  // `g`: rawTilt comes from the serial line, not the IMU
 static float renderMs = 0, waitMs = 0, hoursMs = 0, minutesMs = 0;   // per-frame averages of the last window
+static uint32_t busyCycles0 = 0; static float scanPct = 0;           // display ISR (LCD scan fill): share of one core
 static uint16_t frameIntervalHist[256];             // 1 ms bins; bin 255 includes all slower frames
 static uint32_t lastFrameStartUs = 0, frameIntervalSamples = 0;
 static uint16_t frameP95Ms = 0;
-// Tube strips (owned by display.cpp, internal DMA RAM): the panel DMA reads them directly while the
-// next frame renders.
+// Tube strips of the frame being rendered (owned by the display backend, display_next_strips each frame): AMOLED
+// the same two internal DMA buffers (its panel DMA reads them while the next frame renders), LCD a free set.
 static uint16_t *strip[2] = {nullptr, nullptr};
 static char dumpHex[PANEL_W * 4 + 2];
 
@@ -178,11 +196,17 @@ struct DisplayLayout {
   bool operator!=(const DisplayLayout &o) const { return H != o.H || yH != o.yH || yM != o.yM; }
 };
 static DisplayLayout currentLayout() {
-  TubeLayout l = tubeLayout(params);
+  TubeLayout l = tubeLayout(eff);
   return {l.H, l.yH, l.yM};
 }
+static const int16_t *lensRows[2] = {nullptr, nullptr};   // per tube: the lens row map the push applies (display_row_map)
 static void renderOneTube(int idx, uint16_t *dst) {
-  renderTube(idx, idx == 0 ? tubeH : tubeM, params, paramsGen, dst);
+#ifdef AB_COMPARE   // A/B face: the native minutes tube on core 0 (top slot), the AB_COMPARE-row one here (bottom)
+  if (idx == 0) renderTube(1, tubeM, eff, paramsGen, dst, &lensRows[0]);
+  else abcmp::render(dst, params, paramsGen, &lensRows[1]);
+  return;
+#endif
+  renderTube(idx, idx == 0 ? tubeH : tubeM, eff, paramsGen, dst, display_row_map ? &lensRows[idx] : nullptr);
 }
 
 static DisplayLayout shownLayout = {0, 0, 0};
@@ -193,19 +217,39 @@ static DisplayLayout shownLayout = {0, 0, 0};
 // gives the worker one notification per frame and blocks on its own until the worker is done, so at
 // any point outside renderBoth() the worker is idle and blocked (serial commands, param writes, the
 // physics step and `x` all run in that window — nothing they touch is being read on core 0).
+// Push, backends with display_push_any_core (LCD): staggered so that a push always runs next to the other core's
+// render, never next to the other push (two pushes at once are slower than one after the other: PSRAM-bound) —
+// core 0 renders hours, then pushes it; core 1 first pushes the previous frame's minutes strip (the strips are
+// reused, so it still holds that frame), then renders minutes. The minutes tube shows one frame later than the
+// hours tube. 2026-10-28, user preset: 16.0 → 17.7 fps over the serial push after both renders (core 1, 18.8 ms).
+// Otherwise (AMOLED, one SPI DMA queue): the loop pushes both strips after both renders.
 // Priority 1 = same as loop(); far below the BT controller (23) and NimBLE host on the same core, and
 // the worker blocks every frame so core 0's idle task (task-WDT) keeps running.
 #define WORKER_PRIO 1
 #define WORKER_STACK 4096   // measured use ~1.5 KB
+#ifdef AB_COMPARE
+#define STAGGER_PUSH false  // the A/B face pushes its second strip from another canvas, after both renders
+#else
+#define STAGGER_PUSH display_push_any_core
+#endif
 static TaskHandle_t workerTask = nullptr, loopTask = nullptr;
-static uint32_t workerUs = 0;              // last hours render time, written by the worker
+static uint32_t workerUs = 0, workerPushUs = 0;   // last hours render / push time, written by the worker
 static uint32_t workerStackFree = 0;       // high-water mark (bytes on ESP-IDF), for `s`
+static int hoursY0 = 0, tubeRows = 0;      // where this frame's hours strip goes (set by loop() before the worker starts)
+// Staggered push: strip[1] holds a rendered minutes frame not pushed yet, for rows [minutesY0, +tubeRows) through
+// lensRows[1]. Dropped whenever something else drew the face or the strip (layout change, other faces, `x`).
+static bool minutesPending = false; static int minutesY0 = 0;
 static void renderWorker(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     uint32_t t0 = micros();
     renderOneTube(0, strip[0]);
-    workerUs = micros() - t0;
+    uint32_t t1 = micros();
+    workerUs = t1 - t0;
+    if (STAGGER_PUSH) {
+      display_push_strip_async(strip[0], hoursY0, tubeRows, lensRows[0]);
+      workerPushUs = micros() - t1;
+    }
     workerStackFree = uxTaskGetStackHighWaterMark(nullptr);
     xTaskNotifyGive(loopTask);
   }
@@ -220,39 +264,62 @@ static void renderBoth() {
   if (lay != shownLayout) {                 // tubes moved: wipe the rows they used to cover
     display_wait_all();
     fb.fillScreen(0); display_push_frame(fb.buf);
-    shownLayout = lay;
+    shownLayout = lay; minutesPending = false;
   }
   uint32_t t0 = micros();
   display_wait_pending(display_bands(lay.H));   // previous frame: hours strip pushed first → free once only minutes' bands remain
   uint32_t t1 = micros();
+  display_next_strips(strip);
+  hoursY0 = lay.yH; tubeRows = lay.H;
   xTaskNotifyGive(workerTask);                  // hours → core 0
   display_wait_all();                           // minutes strip free (overlaps the hours render)
   uint32_t t2 = micros();
+  if (STAGGER_PUSH) {
+    if (minutesPending) {                       // last frame's minutes, next to the hours render
+      display_push_strip_async(strip[1], minutesY0, tubeRows, lensRows[1]);
+      const uint32_t t = micros(); pushUs += t - t2; t2 = t;
+    }
+  }
   renderOneTube(1, strip[1]);
   uint32_t t3 = micros();
-  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);      // hours done
+  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);      // hours done (STAGGER_PUSH: and pushed)
   uint32_t t4 = micros();
-  display_push_strip_async(strip[0], lay.yH, lay.H);
-  display_push_strip_async(strip[1], lay.yM, lay.H);
-  pushUs += micros() - t4;                      // each band's window command waits for the band before it
-  renderUs += t4 - t1; waitUs += t1 - t0;       // render = wall time of the concurrent section
+  if (STAGGER_PUSH) {
+    pushUs += workerPushUs;
+    minutesPending = true; minutesY0 = lay.yM;
+  } else {
+#ifdef AB_COMPARE
+    { int aH, aY; abcmp::layout(params, paramsGen, aH, aY);
+      display_push_strip_async(strip[0], lay.yH, lay.H, lensRows[0]);
+      display_push_strip_ab(strip[1], aY, aH, lensRows[1]); }
+#else
+    display_push_strip_async(strip[0], lay.yH, lay.H, lensRows[0]);
+    display_push_strip_async(strip[1], lay.yM, lay.H, lensRows[1]);
+#endif
+    pushUs += micros() - t4;                    // each band's window command waits for the band before it
+  }
+  renderUs += t4 - t1; waitUs += t1 - t0;       // render = wall time of the concurrent section (staggered: with the pushes)
   hoursUs += workerUs; minutesUs += t3 - t2;
 }
 
+// Laid out on the AMOLED's 536x240, stretched to this canvas (SX / SY: identity there).
+#define SX(v) ((v) * PANEL_W / 536)
+#define SY(v) ((v) * PANEL_H / 240)
 static void face_hello() {
   fb.fillScreen(0);
   fb.drawRect(0, 0, PANEL_W, PANEL_H, 0xFFFF);
-  fb.setTextColor(0xFFFF); fb.setTextSize(4);
-  fb.setCursor(120, 90); fb.print("hello liquid");
-  fb.setTextSize(2);
+  fb.setTextColor(0xFFFF); fb.setTextSize(SY(4));
+  fb.setCursor(SX(120), SY(90)); fb.print("hello liquid");
+  fb.setTextSize(SY(2));
   fb.setCursor(8, 8);   fb.print("<- LEFT (USB-C here?)");
-  fb.setCursor(8, 216); fb.print("bottom-left");
-  fb.setCursor(400, 216); fb.print("bottom-right");
-  fb.fillRect(20, 150, 60, 40, 0xF800);
-  fb.fillRect(90, 150, 60, 40, 0x07E0);
-  fb.fillRect(160, 150, 60, 40, 0x001F);
-  fb.fillRect(230, 150, 60, 40, LIQUID_RGB565);
-  fb.fillRect(300, 150, 60, 40, LIQUID_HI_RGB565);
+  fb.setCursor(8, PANEL_H - 24); fb.print("bottom-left");
+  fb.setCursor(PANEL_W - 136, PANEL_H - 24); fb.print("bottom-right");
+  fb.fillRect(SX(20), SY(150), SX(60), SY(40), 0xF800);
+  fb.fillRect(SX(90), SY(150), SX(60), SY(40), 0x07E0);
+  fb.fillRect(SX(160), SY(150), SX(60), SY(40), 0x001F);
+  fb.fillRect(SX(230), SY(150), SX(60), SY(40), LIQUID_RGB565);
+  fb.fillRect(SX(300), SY(150), SX(60), SY(40), LIQUID_HI_RGB565);
+  fb.setTextSize(1); fb.setCursor(SX(380), SY(160)); fb.print(BOARD_TAG);
   display_push_frame(fb.buf);
 }
 
@@ -271,14 +338,17 @@ static void face_calibration() {
 static void report_fps() {
   int foamH = 0, foamM = 0, slotsH = 0, slotsM = 0; const int fizzH = fizzCounts(0, foamH, slotsH), fizzM = fizzCounts(1, foamM, slotsM);
   out.printf("fps %.1f  render %.2f ms  push-wait %.2f ms  cores h %.2f / m %.2f ms  (mode %c, transp %.2f)  frame-p95 %u ms"
-             "  phys %.2f steps x (tube %.2f + fizz %.2f ms, max %.2f)  push %.2f ms  rest %.2f ms  fizz h %d (foam %d, slots %d) m %d (foam %d, slots %d)\n",
+             "  phys %.2f steps x (tube %.2f + fizz %.2f ms, max %.2f)  push %.2f ms  rest %.2f ms  fizz h %d (foam %d, slots %d) m %d (foam %d, slots %d)  scan-isr %.1f%%\n",
              fps, renderMs, waitMs, hoursMs, minutesMs, mode, params.liquidTransparency,
-             (unsigned)frameP95Ms, stepsPerFrame, tubeStepMs, fizzStepMs, fizzStepMaxMs, pushMs, restMs, fizzH, foamH, slotsH, fizzM, foamM, slotsM);
+             (unsigned)frameP95Ms, stepsPerFrame, tubeStepMs, fizzStepMs, fizzStepMaxMs, pushMs, restMs, fizzH, foamH, slotsH, fizzM, foamM, slotsM, scanPct);
 #ifdef DIGIT_PROF
   for (int i = 0; i < 2; i++) {
     const uint32_t *c = render_profile(i);
-    out.printf("digit-prof %c glyphs %u rows %u int-plain %u int-liq %u frac-plain %u frac-liq %u slow %u runs %u\n",
-               i ? 'm' : 'h', (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3], (unsigned)c[4], (unsigned)c[5], (unsigned)c[6], (unsigned)c[7]);
+    out.printf("digit-prof %c glyphs %u rows %u int-plain %u int-liq %u frac-plain %u frac-liq %u slow %u runs %u  us layout %u rear-ticks %u rear-digits %u\n",
+               i ? 'm' : 'h', (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3], (unsigned)c[4], (unsigned)c[5], (unsigned)c[6], (unsigned)c[7],
+               (unsigned)c[8], (unsigned)c[9], (unsigned)c[10]);
+    const uint32_t *k = render_profile_cycles(i);
+    out.printf("digit-cycles %c plain %u us  band %u us  ramp %u us\n", i ? 'm' : 'h', (unsigned)(k[0] / 240), (unsigned)(k[1] / 240), (unsigned)(k[2] / 240));
   }
 #endif
 }
@@ -287,6 +357,7 @@ static void report_fps() {
 static void liquid_start() {
   fb.fillScreen(0);
   display_push_frame(fb.buf);
+  minutesPending = false;   // another face drew the strips / the face
   display_set_brightness(255);   // params.brightness is applied in the render LUTs
   updateTimeTargets(0);
   memset(frameIntervalHist, 0, sizeof(frameIntervalHist));
@@ -314,12 +385,15 @@ static void liquid_tick() {
     demoOffset += PHYS_DT * (demoSpeed - 1);
     if (sweepPeriod > 0) sweepPhase = fmod(sweepPhase + PHYS_DT / sweepPeriod, 1.0);
     updateTimeTargets(PHYS_DT);
-    TiltInput in = have_imu ? imuFilter.step(rawTilt, params) : TiltInput{0, 0, 0, 0};
+    TiltInput in = have_imu ? imuFilter.step(rawTilt, eff) : TiltInput{0, 0, 0, 0};
     const uint32_t p0 = micros();
-    stepTube(tubeH, in, params);
-    stepTube(tubeM, in, params);
+    stepTube(tubeH, in, eff);
+    stepTube(tubeM, in, eff);
     const uint32_t p1 = micros();
-    stepFizz(params, PHYS_DT, in.along, in.across, tubeH.agitation);
+    stepFizz(eff, PHYS_DT, in.along, in.across, tubeH.agitation);
+#ifdef AB_COMPARE
+    abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
+#endif
     const uint32_t fz = micros() - p1;
     tubeStepUs += p1 - p0; fizzStepUs += fz; physSteps++;
     if (fz > fizzStepMaxUs) fizzStepMaxUs = fz;
@@ -332,6 +406,7 @@ static void liquid_tick() {
   }
   if (millis() - fpsT0 >= 2000) {
     fps = frames * 1000.0f / (millis() - fpsT0);
+    { const uint32_t c = display_busy_cycles(); scanPct = (c - busyCycles0) * 100.0f / (getCpuFrequencyMhz() * 1e6f * (millis() - fpsT0) / 1000.0f); busyCycles0 = c; }
     renderMs = renderUs / 1000.0f / frames; waitMs = waitUs / 1000.0f / frames;
     hoursMs = hoursUs / 1000.0f / frames; minutesMs = minutesUs / 1000.0f / frames;
     stepsPerFrame = (float)physSteps / frames; pushMs = pushUs / 1000.0f / frames; restMs = restUs / 1000.0f / frames;
@@ -443,14 +518,15 @@ static void handleLine(char *line) {
       break; }
     case 'p': {
       if (arg[0] == '?') dumpParams();
-      else if (arg[0] == '!') { params = PRESET_DEFAULT; paramsGen++; paramsErase(); out.println("params reset"); }
+      else if (arg[0] == '!') { params = PRESET_DEFAULT; paramsChanged(); paramsErase(); out.println("params reset"); }
       else { char *eq = strchr(arg, '='); if (!eq) { out.println("usage: p<name>=<value> | p? | p!"); break; }
-        *eq = 0; bool ok = setParam(arg, eq + 1); if (ok) { paramsGen++; paramsTouch(); }
+        *eq = 0; bool ok = setParam(arg, eq + 1); if (ok) { paramsChanged(); paramsTouch(); }
         out.printf(ok ? "ok %s\n" : "unknown param %s\n", arg); }
       break; }
     case 'x': {  // dump state + both strips (hex) for offline comparison with the sim
-      display_wait_all();
-      renderTube(0, tubeH, params, paramsGen, strip[0]); renderTube(1, tubeM, params, paramsGen, strip[1]);
+      display_wait_all(); display_next_strips(strip); minutesPending = false;   // strips re-rendered without the lens map
+      renderTube(0, tubeH, eff, paramsGen, strip[0]); renderTube(1, tubeM, eff, paramsGen, strip[1]);
+      { const TubeLayout l = tubeLayout(eff); out.printf("LAYOUT %d %d %d %d %d\n", PANEL_W, PANEL_H, l.H, l.yH, l.yM); }   // canvas W H, tube rows, tops
       auto dumpState = [&](const TubeState &t) {
         out.printf(" %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f",
                    t.fillTarget, t.fillPos, t.angle, t.light, t.edgeLight, t.agitation,
@@ -466,7 +542,7 @@ static void handleLine(char *line) {
       };
       out.print("TRACE "); dumpTrace(tubeH.trace); dumpTrace(tubeM.trace); out.println();
       out.print("WET "); dumpTrace(tubeH.traceWet); dumpTrace(tubeM.traceWet); out.println();
-      for (int t = 0; t < 2; t++) for (int y = 0; y < tubeLayout(params).H; y++) {
+      for (int t = 0; t < 2; t++) for (int y = 0; y < tubeLayout(eff).H; y++) {
         const uint16_t *row = strip[t] + y * PANEL_W; char *o = dumpHex;
         for (int x = 0; x < PANEL_W; x++) { uint16_t c = __builtin_bswap16(row[x]); o += sprintf(o, "%04x", c); }
         *o++ = '\n'; *o = 0; out.write(dumpHex);
@@ -481,8 +557,9 @@ static void handleLine(char *line) {
       out.printf(" bat %.2f V", analogReadMilliVolts(PIN_BAT_ADC) * 2 / 1000.0f);   // 200k / 200k divider
 #endif
       out.println(); break;
+    case 'v': out.printf("board %s canvas %dx%d panel %dx%d\n", BOARD_TAG, PANEL_W, PANEL_H, BOARD_PANEL_W, BOARD_PANEL_H); break;
     case 'r': ESP.restart(); break;
-    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p? p! x r"); break;
+    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p? p! x v r"); break;
     default: out.println("error unknown command"); break;
   }
 }
@@ -495,16 +572,19 @@ void setup() {
   static const char *const RST[] = {"unknown", "poweron", "ext", "sw", "panic", "int-wdt", "task-wdt", "wdt",
                                     "deepsleep", "brownout", "sdio", "usb", "jtag", "efuse", "pwr-glitch", "cpu-lockup"};
   int rr = esp_reset_reason();
-  out.printf("\nliquid-watch | %s | cpu %lu MHz | psram %u KB | heap %u KB | reset %s\n", BOARD_NAME,
+  out.printf("\nliquid-watch | %s %dx%d | cpu %lu MHz | psram %u KB | heap %u KB | reset %s\n", BOARD_TAG, PANEL_W, PANEL_H,
                 getCpuFrequencyMhz(), ESP.getPsramSize() / 1024, ESP.getFreeHeap() / 1024,
                 rr >= 0 && rr < 16 ? RST[rr] : "?");
   if (!fb.buf) { out.println("FATAL: framebuffer alloc failed"); }
   if (!display_init()) out.println("display init FAILED");
   if (!render_init()) out.println("render init FAILED (glyph pools / mark tables / film tables, PSRAM)");
   if (!physics_init()) out.println("physics init FAILED (wet-film buffers, PSRAM): no residue");
+#ifdef AB_COMPARE
+  out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");
+#endif
   tubeH.trace = traceBuf(0); tubeM.trace = traceBuf(1);   // static dried-trace buffers (see physics.h)
   tubeH.traceWet = traceWetBuf(0); tubeM.traceWet = traceWetBuf(1);   // their wet parts (PSRAM, physics_init)
-  strip[0] = display_strip(0); strip[1] = display_strip(1);
+  display_next_strips(strip);
   workerStart();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);   // IMU and RTC share the board bus
 #ifdef PIN_BAT_ADC
@@ -516,6 +596,7 @@ void setup() {
   have_imu = imu_init();
 #endif
   imu_ok = have_imu;
+  paramsChanged();   // eff from the built-in preset; paramsLoad replaces it with the NVS copy
   paramsLoad();
   demoLoad();
   sweepLoad();

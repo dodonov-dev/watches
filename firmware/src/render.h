@@ -20,9 +20,13 @@ TubeLayout tubeLayout(const Params &p);
 bool render_init();
 // gen: params generation counter (bumped by main on every param write / preset load / NVS restore);
 // all param-only tables inside the renderer are keyed on it.
-void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip);
+// lensRows (optional): when nothing is drawn after the whole-tube lens (no front-printed digits), the lens is not
+// applied to the strip; *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
+// the next render of this tube; nullptr = no lens), for a push that remaps rows anyway (display_lcd316.cpp).
+void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr);
 #ifdef DIGIT_PROF
 // Last frame's digit-path counters of one tube (build with -DDIGIT_PROF): glyphs, rows, int px plain,
 // int px liquid, frac px plain, frac px liquid, slow (band) px, runs.
 const uint32_t *render_profile(int idx);
+const uint32_t *render_profile_cycles(int idx);   // CPU cycles of the last frame: plain runs, band runs, ramp columns
 #endif

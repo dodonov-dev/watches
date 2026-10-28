@@ -1,7 +1,7 @@
 // Fixed-timestep (50 Hz) liquid dynamics — two spring-dampers per tube.
 // Mirrors what the firmware will run. No rendering here.
 import type { Params } from './params';
-import { MM_PER_PX, TUBE_HEIGHT_MAX, TUBE_LENGTH_PX } from '../../spec/layout';
+import { DESIGN_MM_PER_PX, DESIGN_TUBE_HEIGHT_MAX, MM_PER_PX, PX_SCALE, TUBE_HEIGHT_MAX, TUBE_LENGTH_PX } from '../../spec/layout';
 
 export const PHYS_HZ = 50;
 export const PHYS_DT = 1 / PHYS_HZ;
@@ -20,17 +20,18 @@ export interface TiltInput {
 // shaking may only nudge the fill edge and shift the light, never relocate the column.
 // These are hard caps applied on top of whatever the params say, so no gain/filter tuning
 // can ever make the liquid run off the end of the tube. Ported to firmware as-is.
-export const FILL_SLOSH_MAX_PX = 30;  // |fillPos| cap
+export const FILL_SLOSH_MAX_PX = 30 * PX_SCALE;  // |fillPos| cap (px caps and speeds: 30 design px, scaled to the canvas)
 export const ANGLE_HARD_MAX_DEG = 20; // |angle| cap (params.angleMax tightens it, never widens)
 export const ANGLE_VERTICAL_MAX_DEG = 45; // |angle| cap of a vertical watch, whose upper surface stays level against the tilted tube
 export const LIGHT_MAX_DEG = 85;      // |light| cap
-export const CAP_DYN_MAX_PX = 12;     // |cap| cap: dynamic meniscus bulge / hollow
+export const CAP_DYN_MAX_PX = 12 * PX_SCALE;     // |cap| cap: dynamic meniscus bulge / hollow
 export const PIN_RELAX_S = 3;         // a held contact line creeps back to the static shape (wrist micro-motion), s
-export const FILM_FULL_PX_S = 25;     // edge speed (px/s) at which the trailing wet film is fully drawn
-export const TRACE_DEPOSIT_MAX_PX = 32; // max px of newly exposed glass per tick that gets a fresh deposit
+export const FILM_FULL_DESIGN_PX_S = 25;   // edge speed (design px/s) at which the trailing wet film is fully drawn
+export const FILM_FULL_PX_S = FILM_FULL_DESIGN_PX_S * PX_SCALE;   // the same in canvas px/s
+export const TRACE_DEPOSIT_MAX_PX = 32 * PX_SCALE; // max px of newly exposed glass per tick that gets a fresh deposit
 export const TRACE_FULL = 0xff00;      // a film at FILM_ETA_MAX (8.8 fixed point)
 export const TRACE_MIN = 2 << 8;       // dry residue below this is gone (buffer empties); also the thinnest deposit
-export const TRACE_DRAIN_MAX_PX_S = 48; // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (3·c·dt/steps < 1)
+export const TRACE_DRAIN_MAX_PX_S = 48; // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (3·c·dt/steps < 1); canvas px, not scaled (a stability bound)
 export const TRACE_DRAIN_STEPS = 3;
 export const RETRACT_S = 2;            // a full tube empties over this long when its scale wraps (followClock), s
 
@@ -48,12 +49,15 @@ export function filmEta(p: Params, speed = FILM_FULL_PX_S): number {
 /** traceDrain from the render params alone (presets without a material; migration to Params v27): ρg/μ from
  *  the capillary length (γ/ρg = lc²) and the Ca contactDyn is calibrated with (μ = Ca·γ/U at FILM_FULL_PX_S),
  *  v = ρg·h²/3μ = U·h²/(3·Ca·lc²) for h = FILM_ETA_MAX·R, in px/s. contactDyn tops out at 90°, so a syrup comes
- *  out faster than its material would make it (the material layer derives it from ρ and μ instead). */
+ *  out faster than its material would make it (the material layer derives it from ρ and μ instead).
+ *  `p` and the result are in design px (a preset's own units, whatever the board). */
 export function legacyTraceDrain(p: Params): number {
   const dyn = Math.max(0, p.contactDyn) * Math.PI / 180, ca = dyn * dyn * dyn / (9 * FILM_LAMBDA);
   if (!(ca > 0)) return 0;
-  const r = boreR(p) * MM_PER_PX / Math.max(0.1, p.capLength);   // R / lc (render px-mm on both sides)
-  return FILM_FULL_PX_S * FILM_ETA_MAX * FILM_ETA_MAX * r * r / (3 * ca);
+  const H = Math.max(4, Math.min(DESIGN_TUBE_HEIGHT_MAX, Math.round(p.tubeHeight)));
+  const R = Math.max(1, (H - 1) / 2 - Math.max(0, p.glassWall));   // boreR in design px
+  const r = R * DESIGN_MM_PER_PX / Math.max(0.1, p.capLength);   // R / lc (render px-mm on both sides)
+  return FILM_FULL_DESIGN_PX_S * FILM_ETA_MAX * FILM_ETA_MAX * r * r / (3 * ca);
 }
 
 export interface TubeState {

@@ -1,11 +1,13 @@
 // Headless reference render: reads a JSON {params, hours, minutes, sprite:{i,w,h,cellW,cellH,widths,rgbaFile}}
 // from argv[2], renders one frame exactly as the browser sim would (fizz must be off), writes the
-// 536x240 RGB565 framebuffer (little-endian u16) to argv[3]. Used by firmware/tools/compare-device.py.
+// PANEL_W x PANEL_H RGB565 framebuffer (little-endian u16) to argv[3]. Used by firmware/tools/compare-device.py.
+// Board: LW_BOARD / LW_RES (spec/layout.ts), as the device reports it (`v`); params are the device's (design px).
 // Run: see compare-device.py (compiles with tsc like check:imu).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
 import { renderFrame, fb, setSprite } from '../src/render';
 import { newTube, type TubeState } from '../src/physics';
+import { boardParams } from '../src/params';
 import { TUBE_LENGTH_PX } from '@spec/layout';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -33,6 +35,6 @@ const trace = (hex: unknown, wet: unknown, st: TubeState): void => {
 };
 const h: TubeState = { ...newTube(), ...job.hours }, m: TubeState = { ...newTube(), ...job.minutes };  // device STATE carries only the drawn fields
 trace(job.hours.trace, job.hours.traceWet, h); trace(job.minutes.trace, job.minutes.traceWet, m);
-renderFrame(h, m, job.params);
+renderFrame(h, m, boardParams(job.params));
 fs.writeFileSync(process.argv[3], Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength));
 console.log('ok');

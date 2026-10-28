@@ -1,15 +1,24 @@
 // Per-board pins and IMU frame (the display backends keep their own pins: display.cpp, display_lcd316.cpp).
 // Default: Waveshare ESP32-S3-AMOLED-1.91; -DBOARD_LCD316: Waveshare ESP32-S3-LCD-3.16 (see platformio.ini).
 #pragma once
+#include "layout.h"
 
+#define BOARD_STR_(x) #x
+#define BOARD_STR(x)  BOARD_STR_(x)
 #ifdef BOARD_LCD316
 #define BOARD_NAME   "lcd316"
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H)   // board + canvas rows, as the sim names it (spec/layout.ts BOARD_TAG)
+#define BOARD_PANEL_W LCD_PANEL_W
+#define BOARD_PANEL_H LCD_PANEL_H
 #define PIN_I2C_SDA  15      // QMI8658 + PCF85063 RTC (0x51)
 #define PIN_I2C_SCL  7
 #define HAS_RTC      1       // PCF85063: keeps time while powered (SH1.0 header for a backup cell), rtc.cpp
 #define PIN_BAT_ADC  4       // LiPo through 200k / 200k
 #else
 #define BOARD_NAME   "amoled191"
+#define BOARD_TAG    BOARD_NAME
+#define BOARD_PANEL_W PANEL_W
+#define BOARD_PANEL_H PANEL_H
 #define PIN_I2C_SDA  40      // QMI8658
 #define PIN_I2C_SCL  39
 #define HAS_RTC      0

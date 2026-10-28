@@ -3,6 +3,24 @@
 _Follows the 1:1 bring-up (env `lcd316`, `firmware/src/display_lcd316.cpp`): the 536×240 canvas is shown centred, pixel
 for pixel, with black margins. This plan fills the whole panel at its own resolution._
 
+## Status (2026-10-27)
+Phases A (sizes), B and C are in, in this shape (STATUS.md has the numbers): the canvas is RENDER_H rows of the
+panel's aspect (`-DRENDER_H` / `LW_RES`, 240–320), upscaled nearest-neighbour in the CPU push; params stay in design
+px and `boardParams` scales them (PX_KEYS, whole-pixel ones rounded) in sim and firmware; MM_PER_PX is
+design-consistent. Native runs at 13.2 fps, 240 at 28.0 — below the 30 fps gate. GDMA push (A.2) not done.
+
+### Display path (next)
+The push costs 16–29 ms at every RENDER_H (it always writes 820×192 px into the scanned PSRAM framebuffer); PSRAM
+strips cost the render ~1.4×. Candidate: bounce-buffer scan-out, no framebuffer (`flags.no_fb`,
+`bounce_buffer_size_px`, `on_bounce_empty`, all in the IDF 5.5 headers): front copies of the two strips in PSRAM in
+canvas layout; the "push" becomes a row-major memcpy back→front (each core its own tube, right after rendering it);
+the ISR gathers each scan line (one canvas column, upscaled through colOf / rowOf, black outside the tube rows) into
+the internal bounce buffer. Removes the transposing push and the DMA's 24 MB/s framebuffer scan; costs an ISR of
+~7 Mpx/s gather (est. 10–15 % of one core) and 2 × front strips of PSRAM. Faces other than the liquid one gather
+from the PsramCanvas. Risks: ISR deadline under PSRAM contention (glitch, not a drift), NVS flash writes stall it.
+Estimate: native ~45 ms → ~21 fps, 240 (one strip internal) ~18 ms → ~40+ fps. Alternative: GDMA scatter push (A.2),
+keeps the framebuffer, halves its write traffic.
+
 ## Hand-off notes (for an agent without this conversation)
 - Rules: repo `CLAUDE.md` (no lazy allocation: every buffer static or allocated once at boot, fail visibly; side ideas
   → `KAIZEN.md`). Params mirror the firmware: a sim `Params` change ⇒ `firmware/tools/gen_params.py` + `render.cpp` +

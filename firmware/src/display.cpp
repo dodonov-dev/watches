@@ -89,15 +89,18 @@ bool display_init(void) {
   return true;
 }
 
-uint16_t *display_strip(int i) { return strips[i & 1]; }
+void display_next_strips(uint16_t *s[2]) { s[0] = strips[0]; s[1] = strips[1]; }
+uint32_t display_busy_cycles(void) { return 0; }
 
-void display_push_strip_async(const uint16_t *buf, int y0, int rows) {
+const bool display_row_map = false;   // the panel DMA reads strip rows as they are
+void display_push_strip_async(const uint16_t *buf, int y0, int rows, const int16_t *) {
   for (int y = 0; y < rows; y += BAND_ROWS) {
     int n = min(BAND_ROWS, rows - y);
     esp_lcd_panel_draw_bitmap(panel, 0, y0 + y, PANEL_W, y0 + y + n, buf + (size_t)y * PANEL_W);
     pending++;
   }
 }
+const bool display_push_any_core = false;   // one SPI queue, the strips reused once their bands are out
 int display_bands(int rows) { return (rows + BAND_ROWS - 1) / BAND_ROWS; }
 void display_wait_pending(int n) {
   while (pending > n) { xSemaphoreTake(done_sem, portMAX_DELAY); pending--; }

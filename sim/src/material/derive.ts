@@ -3,7 +3,7 @@
 // material (the laws; colour in optical.ts, dynamics / film / gas here) or from a fixed policy. Invalid
 // or incompatible inputs are rejected with a visible error, never silently fixed. Pure: no DOM, no Node.
 import { DEFAULT_PARAMS, PARAM_META, PARAMS_VERSION, type Material as MaterialClass, type Params } from '../params';
-import { PANEL_H, TUBE_HEIGHT_MAX, MM_PER_PX } from '../../../spec/layout';
+import { DESIGN_H as PANEL_H, DESIGN_TUBE_HEIGHT_MAX as TUBE_HEIGHT_MAX, DESIGN_MM_PER_PX as MM_PER_PX } from '../../../spec/layout';   // derived params are in design px, whatever the board
 import { VISC, coherenceIssues, luma as lumaHex } from './coherence';
 import {
   DEFAULT_MATERIAL, DESIGN_KEYS, MATERIAL_KEYS, MATERIAL_META, validateDesign, validateMaterial,

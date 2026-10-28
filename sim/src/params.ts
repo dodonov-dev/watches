@@ -1,5 +1,6 @@
 // All tunables live here. Colours are RGB888 hex strings but are quantised to RGB565 at render time.
 import { legacyTraceDrain } from './physics';
+import { PX_SCALE } from '../../spec/layout';
 // Export/import as JSON from the control panel; the exported file is the contract for Phase 3 (spec/params.h).
 
 export interface Params {
@@ -1516,6 +1517,36 @@ export function presetParams(e: PresetEntry, gas: GasId = e.gas[0]): Params {
 }
 
 export type ParamKey = keyof Params;
+
+/** Params with a px dimension (sizes, px/s speeds, px/g and px/s² gains, glyph scales): presets, the panel, the
+ *  device's NVS and `p` writes hold them in design px (spec/layout DESIGN_H); boardParams scales them to the
+ *  board's canvas. firmware/tools/gen_params.py reads this list for the firmware's copy (PARAM_PX). */
+export const PX_KEYS = [
+  'tubeHeight', 'hoursY', 'minutesY', 'glassWall', 'highlightH', 'highlightInset', 'wetFilm', 'traceDrain',
+  'edgeSoft', 'frontBright', 'surfaceWidth', 'edgeGlow', 'cornerR',
+  'bubbleW', 'bubbleH', 'bubbleGap', 'bubbleTiltGain', 'fizzSize', 'fizzSpeed', 'fizzSourceSpread',
+  'tickMinorHeightH', 'tickMajorHeightH', 'tickMinorWidthH', 'tickMajorWidthH',
+  'tickMinorHeightM', 'tickMajorHeightM', 'tickMinorWidthM', 'tickMajorWidthM', 'tickParallax',
+  'digitShadowOffset', 'digitScaleX', 'digitScaleY', 'digitScaleXMin', 'digitScaleYMin', 'digitBottomMin', 'digitBottom',
+  'topParallax', 'digitParallax', 'freeGain', 'fillSloshGain', 'angleGyroGain',
+] as const satisfies readonly ParamKey[];
+/** The PX_KEYS that are whole pixels by design (positions and sizes on a 1 px slider step): rounded after scaling,
+ *  so a preset's rows, ticks, baselines and offsets stay on the pixel grid (the renderer takes them as integers). */
+export const PX_WHOLE_KEYS: readonly (typeof PX_KEYS)[number][] = [
+  'tubeHeight', 'hoursY', 'minutesY', 'highlightH', 'highlightInset', 'frontBright', 'edgeGlow', 'cornerR',
+  'bubbleW', 'bubbleH', 'bubbleGap', 'tickMinorHeightH', 'tickMajorHeightH', 'tickMinorWidthH', 'tickMajorWidthH',
+  'tickMinorHeightM', 'tickMajorHeightM', 'tickMinorWidthM', 'tickMajorWidthM', 'digitShadowOffset', 'digitBottomMin', 'digitBottom',
+];
+
+/** The params the renderer and physics run on: `p` (design px) with every PX_KEYS field scaled by the board's
+ *  PX_SCALE, PX_WHOLE_KEYS rounded. The AMOLED (scale 1) gets `p` itself. Mirrored by firmware main.cpp. */
+export function boardParams(p: Params): Params {
+  if (PX_SCALE === 1) return p;
+  const o = { ...p };
+  for (const k of PX_KEYS) o[k] = Math.fround(Math.fround(p[k]) * Math.fround(PX_SCALE));   // float32 product, as the firmware scales
+  for (const k of PX_WHOLE_KEYS) o[k] = Math.round(o[k]);
+  return o;
+}
 
 /** Map keys from older exports (shared tick settings, digitScale, digitFontBig) onto the current schema. */
 export function migrateParams(o: Record<string, unknown>): Partial<Params> {

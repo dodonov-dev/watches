@@ -28,7 +28,8 @@ def run_check(tmp):
     (tmp / 'sprites').mkdir(exist_ok=True)
     for png in sorted((ROOT / 'sim/public/assets').glob('digits-*.png')):
         (tmp / 'sprites' / (png.stem + '.rgba')).write_bytes(Image.open(png).convert('RGBA').tobytes())
-    subprocess.run(['node', str(ROOT / 'sim/tools/check-meniscus.cjs'), str(cache), str(tmp), str(ROOT)], check=True)
+    subprocess.run(['node', str(ROOT / 'sim/tools/check-meniscus.cjs'), str(cache), str(tmp), str(ROOT)], check=True,
+                   env=dict(os.environ, LW_BOARD='amoled191', LW_RES=''))   # the native side below is the AMOLED build
     jobs = json.loads((tmp / 'jobs.json').read_text())
     cpp = ['#include <cstdio>\n#include "render.h"\nstatic uint16_t strip[536*80], trace[536];',
            'int main() { if (!render_init()) return 1;']

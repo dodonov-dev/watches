@@ -17,7 +17,19 @@ tools/e2e.sh --preset ../presets/cola.json --runs 3  # pinned preset, median of 
 tools/e2e.sh --ref HEAD~1 --preset ../presets/cola.json --runs 3 --stage fizz=0
                                                      # A/B: flash+bench HEAD~1 (temp worktree, no parity), then this tree
 LW_PORT=COM11 tools/e2e.sh --env lcd316              # ESP32-S3-LCD-3.16 board (default env: amoled191); LW_PORT picks the board when both are attached
+LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 240    # LCD canvas 615x240 upscaled to 820x320 (RENDER_H 240/256/288/320; default 320 = native)
+tools/e2e.sh --env lcd316 --define STRIPS_INTERNAL=1 # any -D for the build, also put in the label
 ```
+Board selection everywhere (flash.sh, flash-win.sh, e2e.sh): `--env` / `--res`, else `$LW_BOARD` / `$LW_RES`, else
+amoled191. `export LW_BOARD=lcd316 LW_PORT=COM11` once per shell makes every tool target the LCD. The board says what it
+runs: `tools/device.py v` → `board lcd316@320 canvas 820x320 panel 820x320` (old firmware: `error unknown command`);
+compare-device.py renders the sim at that canvas by itself (`LAYOUT` line of the `x` dump).
+Host parity without the board, every preset, any canvas: `python3 tools/check_board_render.py --res 320` (lcd316;
+`--board amoled191` too). 22 presets are beyond 12/255 on a few px on the AMOLED as well (pre-existing, KAIZEN).
+Env lcd316 builds with recompiled Arduino libs (64 KB data cache, platformio.ini `custom_sdkconfig`) from its own
+packages dir `~/.platformio/packages-lcd316`: flash.sh / flash-win.sh set `PLATFORMIO_PACKAGES_DIR` (tools/pkgdir.sh;
+first use copies ~/.platformio/packages and recompiles the libs, ~7 min); a bare `pio run -e lcd316` is refused
+(tools/pio_pkgdir.py) — in the shared dir it would replace the AMOLED's stock libs.
 First flash of a board that came with other firmware: `tools/flash-win.sh --full --env lcd316 COMx` (bootloader + partitions).
 e2e.sh passes `--preset FILE`, `--live-imu`, `--runs N`, `--stage name=v` through to bench.py; the log header
 names the preset. `--ref COMMIT` builds and flashes a temporary `git worktree` of COMMIT under /tmp with the same

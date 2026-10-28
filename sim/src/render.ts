@@ -3,7 +3,7 @@
 // a few filled ellipses/dots. Mirrored 1:1 by firmware/src/render.cpp.
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
-  rgb565, rgb565to888, MM_PER_PX,
+  rgb565, rgb565to888, MM_PER_PX, PX_SCALE,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, mirrored, FILM_ETA_MAX, FILM_FULL_PX_S, TRACE_FULL, type TubeState } from './physics';
@@ -314,13 +314,33 @@ function bakeShadow(c: Uint16Array, a: Uint8Array, w: number, h: number, bw: num
     a[i] = Math.round(A * 255);
   }
 }
+/** The contrast floor (markContrast) baked into the behind-liquid plane against one liquid colour R (the body,
+ *  floorR): per texel the colour that, blended over R by its coverage as is, gives what markFn's floor would have
+ *  made of it over R — the floored composite at a = max(T, cov), c' = R + (floor(mix(R, c, a)) − R) / a. Drawn
+ *  without a floor, so the liquid behind still shows through by the same coverage; only the floor's colour push is
+ *  fixed per texel instead of per pixel behind (cheaper on the board). Mirrored by the firmware (bakeFloor). */
+function bakeFloor(c: Uint16Array, a: Uint8Array, transK: number, contrast: number, floorR: number): void {
+  const R = rgb565to888(floorR), lb = luma(R);
+  for (let i = 0; i < a.length; i++) {
+    if (!a[i]) continue;
+    const ak = Math.max(transK, a[i] / 255);
+    if (ak <= 0) continue;
+    let m = mix(R, rgb565to888(c[i]), ak);
+    const lc = luma(m), d = lc - lb;
+    if (Math.abs(d) >= contrast) continue;   // already apart: the texel as is
+    const dir = d !== 0 ? Math.sign(d) : lb > 110 ? -1 : 1;
+    const target = Math.max(0, Math.min(255, lb + dir * contrast));
+    m = dir < 0 ? scale(m, target / Math.max(1, lc)) : mix(m, [255, 255, 255], Math.min(1, (target - lc) / Math.max(1, 255 - lc)));
+    c[i] = q([R[0] + (m[0] - R[0]) / ak, R[1] + (m[1] - R[1]) / ak, R[2] + (m[2] - R[2]) / ak]);
+  }
+}
 /** Box-filter the sheet glyph d into bw x bh device pixels (once per size; firmware ships the result).
  *  shadow: 565 colour of the baked digit shadow (-1 = none), shadowA its opacity, shadowOff its px offset,
  *  transK the liquid transparency the behind-liquid plane is baked for. */
 function scaledGlyphs(sheet: number, bw: number, bh: number, brightness: number, tint: [number, number, number], tintAmt: number, tone: number,
-                      shadow: number, shadowA: number, shadowOff: number, transK: number, rot = false): ScaledGlyph[] | null {
+                      shadow: number, shadowA: number, shadowOff: number, transK: number, rot = false, floorC = 0, floorR = 0): ScaledGlyph[] | null {
   const sprite = sprites[sheet]; if (!sprite) return null;
-  const key = `${sheet}:${bw}x${bh}@${brightness}/${tint}/${tintAmt}/${tone}/${shadow}/${shadowA}/${shadowOff}/${transK}/${rot}`; const hit = scaledCache.get(key); if (hit) return hit;
+  const key = `${sheet}:${bw}x${bh}@${brightness}/${tint}/${tintAmt}/${tone}/${shadow}/${shadowA}/${shadowOff}/${transK}/${rot}/${floorC}/${floorR}`; const hit = scaledCache.get(key); if (hit) return hit;
   const off = shadow >= 0 ? shadowOff : 0;   // baked shadow margin (right and bottom)
   const out: ScaledGlyph[] = [];
   // tint = multiply by colour (greyscale sheets become bronze/gold/etc.), blended by tintAmt
@@ -350,6 +370,7 @@ function scaledGlyphs(sheet: number, bw: number, bh: number, brightness: number,
       cw = c.slice(); aw = a.slice();
       bakeShadow(c, a, tw, th, gw, bh, off, shadow, shadowA, 1, rot);
       bakeShadow(cw, aw, tw, th, gw, bh, off, shadow, shadowA, transK, rot);
+      if (floorC > 0) bakeFloor(cw, aw, transK, floorC, floorR);
     }
     out.push({ w: rot ? th : tw, h: rot ? tw : th, adv: gw, c, a, cw, aw });
   }
@@ -387,7 +408,14 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
  *  Emboss pixels derive from the body's through-liquid colour so the relief survives the contrast floor. */
 /** `bakedT`: the mark's coverage already includes the liquid's transparency (sprite digits with a baked shadow,
  *  see bakeShadow); behind liquid the contrast floor is applied at full glyph coverage (see below). */
-function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false): MarkFn {
+/** Contrast floor of the rear sprite digits, baked into their behind-liquid plane (bakeFloor): [contrast, body 565]
+ *  or [0, 0] when there is none (no floor, digits on top, no baked shadow plane). */
+function floorBake(p: Params): [number, number] {
+  const contrast = p.markContrast * p.digitBright;
+  if (!(contrast > 0) || p.digitsOnTop || !(p.digitShadow && p.digitShadowStrength > 0)) return [0, 0];
+  return [contrast, q(scale(hexToRgb(p.liquid), p.brightness * p.liquidBright))];
+}
+function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
   return (x, y, c, cov = 1, rel = 0) => {
@@ -419,7 +447,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
       }
       if (inside) {
         if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK);
-        else if (contrast > 0) {
+        else if (contrast > 0 && !floorBaked) {
           // The coverage already carries the transparency (glyph alpha x T, more where a baked shadow overlaps
           // the body), so the texel as is would never meet the floor. Floor what the glyph shows at full glyph
           // coverage — the texel over the liquid at a = max(T, cov) — and blend that by the rest, cov / a:
@@ -559,7 +587,8 @@ function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number,
   // The behind-liquid plane is baked for the transparency markFn applies.
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
   const sprite = useSprite
-    ? scaledGlyphs(idx - SPRITE_FONT, bw, bh, p.brightness * p.digitBright, hexToRgb(p.digitTint), p.digitTintAmount, p.digitTone, shadow, shadowA, shadowOff, transK, V)
+    ? scaledGlyphs(idx - SPRITE_FONT, bw, bh, p.brightness * p.digitBright, hexToRgb(p.digitTint), p.digitTintAmount, p.digitTone, shadow, shadowA, shadowOff, transK, V,
+        ...floorBake(p))
     : null;
   const gap = sprite ? Math.max(1, Math.round(bw / 5)) : Math.max(1, Math.round(kw));
   const yBase = y0 + tubeLayout(p).H - 1 - bottom, yTop = yBase - bh + 1;
@@ -809,22 +838,38 @@ function drawTicks(y0: number, p: Params, ticksN: number, wetRows: Int16Array, d
     const inner = Math.max(0, Math.min(H - 1, top ? range[1] : range[0]));
     const dir = inner >= outer ? 1 : -1;
     const radius = Math.max(1, (H - 1) / 2), centre = (H - 1) / 2;
+    // x stays fractional (the refraction shift scaled by the depth), rows are whole: a row of the tick is drawn at
+    // its subpixel position, its edge columns antialiased (1/256 steps), so a slanted tick is a smooth line, not a
+    // staircase of whole-pixel jumps (most visible on an upscaled canvas). Mirrored by the firmware drawTicks.
     const point = (baseY: number): [number, number] => {
       const qy = (baseY - centre) / radius;
       const depth = Math.sqrt(Math.max(0, 1 - qy * qy));
-      return [x0 + Math.round(dx * depth), baseY + Math.round(dy * depth)];
+      return [x0 + Math.fround(dx * depth), baseY + Math.round(dy * depth)];
     };
-    const plot = (x: number, ry: number): void => {
+    const plot = (xf: number, ry: number): void => {
       if (ry < 0 || ry >= H) return;
-      if (emboss > 0) { mark(x - 1, y0 + ry, c, emboss, 1); mark(x + w, y0 + ry, c, emboss, -1); }
-      for (let k = 0; k < w; k++) mark(x + k, y0 + ry, c);
+      const x = Math.floor(xf), fT = Math.round((xf - x) * 256);
+      if (fT === 0 || fT === 256) {
+        const xi = x + (fT >> 8);
+        if (emboss > 0) { mark(xi - 1, y0 + ry, c, emboss, 1); mark(xi + w, y0 + ry, c, emboss, -1); }
+        for (let k = 0; k < w; k++) mark(xi + k, y0 + ry, c);
+        return;
+      }
+      const a = (256 - fT) / 256, b = fT / 256;   // left / right share of the edge columns
+      if (emboss > 0) {
+        mark(x - 1, y0 + ry, c, emboss * a, 1); mark(x, y0 + ry, c, emboss * b, 1);
+        mark(x + w, y0 + ry, c, emboss * a, -1); mark(x + w + 1, y0 + ry, c, emboss * b, -1);
+      }
+      mark(x, y0 + ry, c, a);
+      for (let k = 1; k < w; k++) mark(x + k, y0 + ry, c);
+      mark(x + w, y0 + ry, c, b);
     };
     let [px0, py0] = point(outer); plot(px0, py0);
     if (outer === inner) return;
     for (let baseY = outer + dir; ; baseY += dir) {
       const [px1, py1] = point(baseY);
-      const n = Math.max(1, Math.abs(px1 - px0), Math.abs(py1 - py0));
-      for (let j = 1; j <= n; j++) plot(Math.round(px0 + (px1 - px0) * j / n), Math.round(py0 + (py1 - py0) * j / n));
+      const n = Math.max(1, Math.abs(py1 - py0));
+      for (let j = 1; j <= n; j++) plot(n === 1 ? px1 : Math.fround(px0 + Math.fround((px1 - px0) * j / n)), n === 1 ? py1 : Math.round(py0 + (py1 - py0) * j / n));
       px0 = px1; py0 = py1;
       if (baseY === inner) break;
     }
@@ -876,7 +921,7 @@ const fizzExposed = [0, 0];
 // caught (or recycled, at a surface foam can't form on), and how much of a concave surface band veils the
 // foam behind it at the profile (the liquid wedge climbing the front glass, thinning to nothing at the ring).
 // FOAM_RELAX: packing sweeps per step.
-const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2, FOAM_VEIL = 0.7, FOAM_RELAX = 3;
+const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_SCALE, FOAM_VEIL = 0.7, FOAM_RELAX = 3;
 // A spring is fixed in the tube (mirrored in firmware): `fizzSourceX` of the column as it sits at home. While the
 // liquid covers it, it takes every birth, whatever the tilt; a free slug sliding off it leaves it dry, and every
 // birth goes scattered. Covered again, it takes its births back over SPRING_BACK s (a share ramping to 0), so a
@@ -1845,8 +1890,9 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     }
   };
   const drawDigitLayer = (onTop: boolean): void => {
-    if (labels && p.digitsOnTop === onTop)
-      drawLabels(labels, p, onTop ? null : bounds, markFn(y0, bounds, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, !!labels.sprite && labels.shadow >= 0));
+    if (!labels || p.digitsOnTop !== onTop) return;
+    const baked = !!labels.sprite && labels.shadow >= 0;
+    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, bounds, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0));
   };
   drawTickLayer(false);
   drawDigitLayer(false);

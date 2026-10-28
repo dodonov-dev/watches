@@ -6,7 +6,8 @@
 Sends `x` to the firmware (dumps TubeState + both strips), renders the same state through
 sim/src/render.ts in node (tools/render-ref.ts) with the params currently in the firmware (`p?`),
 and writes device.png / ref.png / diff.png plus a mismatch summary. Fizz is switched off on the
-device for the dump (random positions) and restored afterwards.
+device for the dump (random positions) and restored afterwards. Either board: the canvas and the tubes' rows come
+from the dump's LAYOUT line, the sim renders the same canvas (LW_BOARD / LW_RES from the board's `v`).
 """
 import argparse, json, os, subprocess, sys, time
 from PIL import Image
@@ -15,7 +16,7 @@ from device import Device
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SIM = os.path.join(ROOT, 'sim')
-W, H = 536, 240
+W, H = 536, 240   # canvas, replaced by the dump's LAYOUT line
 SHEETS = [
     'digits-steel', 'digits-brass-steampunk', 'digits-copper-gauge',
     'digits-forged-iron', 'digits-ivory-enamel', 'digits-carved-slate',
@@ -33,17 +34,22 @@ def to_img(px):  # list of (W*H) 565 ints -> RGB image, exact 565 expansion
     im.putdata(d); return im
 
 def main():
+    global W, H
     ap = argparse.ArgumentParser(); ap.add_argument('--port', default=None); ap.add_argument('--out', default=os.path.join(ROOT, 'firmware', '.compare'))
     a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
     s = Device(a.port)
     params = json.loads(talk(s, 'p?').strip().splitlines()[-1])
-    TH = max(4, min(120, round(params['tubeHeight'])))
-    Y0 = tuple(max(0, min(H - TH, round(params[k]))) for k in ('hoursY', 'minutesY'))
+    env = s.board_env()
     fizz_was = params['fizz']
     if fizz_was: talk(s, 'pfizz=0'); params['fizz'] = False
     dump = talk(s, 'x', b'END', timeout=60)
     if fizz_was: talk(s, 'pfizz=1')
     lines = [l.strip() for l in dump.splitlines() if l.strip()]
+    lay = [l for l in lines if l.startswith('LAYOUT')]
+    if lay: W, H, TH, yh, ym = map(int, lay[0].split()[1:6]); Y0 = (yh, ym)
+    else:   # firmware before LAYOUT: the AMOLED canvas, rows from the params
+        TH = max(4, min(120, round(params['tubeHeight'])))
+        Y0 = tuple(max(0, min(H - TH, round(params[k]))) for k in ('hoursY', 'minutesY'))
     st = [l for l in lines if l.startswith('STATE')][0].split()[1:]
     rows = [l for l in lines if len(l) == W * 4]
     assert len(rows) == 2 * TH, f'got {len(rows)} rows'
@@ -82,8 +88,9 @@ def main():
     spec_dir = os.path.join(outdir, 'node_modules', '@spec'); os.makedirs(spec_dir, exist_ok=True)
     import shutil; shutil.copy(os.path.join(outdir, 'spec', 'layout.js'), os.path.join(spec_dir, 'layout.js'))
     ref_bin = os.path.join(a.out, 'ref.bin')
-    subprocess.check_call(['node', os.path.join(outdir, 'sim', 'tools', 'render-ref.js'), jobf, ref_bin])
+    subprocess.check_call(['node', os.path.join(outdir, 'sim', 'tools', 'render-ref.js'), jobf, ref_bin], env=env)
     raw = open(ref_bin, 'rb').read(); ref = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
+    assert len(ref) == W * H, f'sim rendered {len(ref)} px, the board {W}x{H} ({env["LW_BOARD"]} {env["LW_RES"]})'
     to_img(dev).save(os.path.join(a.out, 'device.png')); to_img(ref).save(os.path.join(a.out, 'ref.png'))
     diff = Image.new('RGB', (W, H)); dd = []; n = 0; big = 0
     for i in range(W * H):
@@ -94,6 +101,7 @@ def main():
         dd.append((255, 255, 0) if e > 12 else (90, 0, 0))
     diff.putdata(dd); diff.save(os.path.join(a.out, 'diff.png'))
     print(f'state hours={hours} minutes={minutes}')
+    print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}), tubes {TH} px at y {Y0[0]} / {Y0[1]}')
     print(f'mismatched pixels: {n} of {2 * W * TH} ({100 * n / (2 * W * TH):.2f}%), >12/255 off: {big}')
     print('wrote', a.out)
 

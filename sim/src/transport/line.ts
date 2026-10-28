@@ -62,6 +62,13 @@ export abstract class LineTransport implements WatchTransport {
     return Number(match[1]);
   }
 
+  /** The board / canvas the firmware runs (`v`: `board lcd316@320 canvas 820x320 panel 820x320`), as a
+   *  spec/layout BOARD_TAG; '' when the firmware predates `v`. */
+  async getBoard(): Promise<string> {
+    const reply = await this.request('v', (l) => l.startsWith('board ') || l.startsWith('error unknown command'));
+    return /^board (\S+)/.exec(reply)?.[1] ?? '';
+  }
+
   async getParams(): Promise<Partial<Params>> {
     for (let i = 0; i < 2; i++) {
       const r = await this.request('p?', (l) => l.startsWith('{'));

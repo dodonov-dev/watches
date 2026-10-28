@@ -87,6 +87,12 @@
 - Clock is lost on every esptool flash (no RTC battery) — `flash.sh` could re-send `T <epoch>` afterwards.
 - run-sim shots are not repeatable: two `material=honey&settle=1&fresh=1` shots differ in ~170 px (fizz/bubble positions are
   unseeded), so before/after pixel diffs carry that noise; a `seed=` URL param would make shot comparisons exact.
+- LCD push: `esp_cache_msync` after each push may be redundant now that the driver's bounce refill copies fbuf through
+  the CPU cache (it was for the DMA reading PSRAM directly, FB_BOUNCE_LINES 0). Measure before dropping.
+- LCD staggered push (2026-10-28): minutes shows one frame after hours. If the offset shows on a fast tilt, double-buffer
+  the hours strip too (both one frame late, in step). Core 0 still idles during physics + rest on core 1 (~4 ms/frame).
+- `f` on the LCD: `render` now includes both pushes (staggered), `push` = both cores' push time, overlapped; earlier
+  log lines (serial push) are not directly comparable on those two fields, only fps.
 
 ## Rendering: incrementality / optimisation — primarily for POWER (memory wins too)
 _Added 2026-08-20 after Phase 3 (liquid face live, 38–40 fps)._
@@ -525,3 +531,36 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
 - The user's repro preset (contactDyn 8°) is watery by its own dynamics: its residue is now wall lines at most, mostly invisible.
 - `docs/residue-physics/tiltshot.mjs` is wall-clock timed, so before/after shots of a sliding slug never line up. A fixed-step replay would make A/B frames comparable.
 - `docs/hardware-handoff.md` slot geometry is stale (4 mm bridge, slots at 5.0/14.9 mm): `spec/layout.h` / preset 1 now have hours y 0–72, minutes y 168–240 → 8 mm bridge, and tubeHeight/hoursY/minutesY are per-preset runtime params.
+
+## Boards / native LCD canvas (2026-10-27)
+- Pre-existing sim/firmware render gaps: `check_board_render.py --board amoled191` (pinned scene, fizz off) puts 22 of 77
+  presets beyond 12/255 on a few px (glycerol-dark 178 px, physical/honey 10, free 10; worst 99/255), identical at HEAD.
+  The same class shows on the LCD canvas. Find the term (likely a float threshold at the meniscus / band).
+- Only the named px constants scale with PX_SCALE (FILL_SLOSH / CAP_DYN / FILM_FULL / TRACE_DEPOSIT / FOAM_CATCH, glyph
+  pool); inline px literals in render (1-px rims, `xs + 2`, blick rows …) stay canvas px.
+- `TRACE_DRAIN_MAX_PX_S` (48) is a stability bound in canvas px, so on the 4/3 canvas the fastest drain is 3/4 as fast
+  in design terms. Raise `TRACE_DRAIN_STEPS` with PX_SCALE to keep it.
+- `fizzCount` is per tube: the LCD tube is 615 design px long (536 on the AMOLED), so bubbles are ~13 % sparser.
+- `MM_PER_PX` is design-consistent (0.083 mm per design px): the LCD's real pitch (~0.091 mm, a 4.3 mm bore at
+  native) would flatten the meniscus; the material layer could take the real one.
+- Upscaled canvases (RENDER_H < 320) are nearest-neighbour: every 3rd / 4th / 9th line doubled. Bilinear in the push
+  would be smoother, at a per-pixel cost in a PSRAM-bound loop.
+- `check_meniscus.py` and `check_render_frames.py` are AMOLED-only (536 hard-coded); `check_board_render.py` covers the
+  LCD canvases preset by preset but no motion / residue scenes.
+- Leather overlay (`overlay.ts`) pads are AMOLED px; on the LCD canvas the cuff is relatively thinner.
+- The Arduino libs build the S3 with a 32 KB / 32 B-line data cache; 64 KB / 64 B (`custom_sdkconfig`, a libs rebuild)
+  would serve the PSRAM strips of the large canvases better.
+- `device.py` bridge: 3 of 7 e2e runs (2026-10-27 sweep) had the Windows bridge not exit within 20 s after bench.py
+  ("bridge did not exit, killed"), and compare-device.py then hit "Access is denied" on COM11; a retry loop on open
+  (40 × 0.25 s) is too short for that case.
+- Display path on the LCD (the fps ceiling at every RENDER_H): the push turns both strips into the 525 KB PSRAM
+  framebuffer while the LCD DMA scans it (16–29 ms/frame, the same 820×192 px at every resolution). Bounce-buffer
+  scan-out (`no_fb` + `on_bounce_empty`, gathering from canvas-layout front strips) or a GDMA scatter push would
+  replace it — see docs/lcd316-native-plan.md.
+- Native LCD digits (user preset, ~12k px per tube, 10–15 ms): measured on the board (2026-10-27, `-DDIGIT_PROF` cycle
+  counters) — no gain from removing 3 of 4 divisions, IRAM hot loops, the glyph pool or the strip in internal RAM alone,
+  nor from an exact per-texel through-liquid memo (11 → 10 ms; reverted: 1.2 MB PSRAM for ~1 ms). Each ~14-px glyph
+  run touches ~8 PSRAM cache lines at 1–2 µs a miss with both cores rendering: memory latency, not arithmetic. Levers
+  left: a 64 KB / 64-B-line data cache (`custom_sdkconfig`, LCD only), tiles in internal RAM, a smaller canvas.
+- `bench.py` pins `inputGain 0`, but the tilt springs settle only asymptotically: some runs draw rear digits on the
+  fractional-shift path (4 taps), others on the integer one; the digit cost swings with it. Pin the shift too.

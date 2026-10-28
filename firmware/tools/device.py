@@ -99,6 +99,18 @@ class Device:
         if lines and lines[0].strip() == cmd.strip(): lines = lines[1:]
         return '\n'.join(lines).strip()
 
+    def board(self):
+        """(tag, canvas_w, canvas_h) the firmware renders, from `v` (`board lcd316@320 canvas 820x320 panel ...`);
+        firmware older than `v` is the AMOLED build."""
+        import re
+        m = re.search(r'board (\S+) canvas (\d+)x(\d+)', self.talk('v'))
+        return (m.group(1), int(m.group(2)), int(m.group(3))) if m else ('amoled191', 536, 240)
+
+    def board_env(self):
+        """os.environ plus LW_BOARD / LW_RES of the attached board, for the sim's node tools (spec/layout.ts)."""
+        tag = self.board()[0]; b, _, res = tag.partition('@')
+        return dict(os.environ, LW_BOARD=b, LW_RES=res)
+
     def close(self):
         if self._wrote: time.sleep(2.5); self._wrote = False
         if self._s: close_serial(self._s)

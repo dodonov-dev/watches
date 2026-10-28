@@ -41,7 +41,10 @@ def fmt(v):
 
 def same(a, b): return fmt(a).lower() == fmt(b).lower()
 
+LAST_F = ''   # the last raw `f` line of the base measurement: push, cores, frame-p95 for the log
+
 def sample(d, n, settle):
+    global LAST_F
     time.sleep(settle)
     rows = []
     for _ in range(n):
@@ -49,6 +52,7 @@ def sample(d, n, settle):
         r = d.talk('f')      # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"
         t = r.split()
         rows.append((float(t[1]), float(t[3]), float(t[6])))
+        LAST_F = r.strip()
     med = lambda i: statistics.median(r[i] for r in rows)
     return med(0), med(1), med(2), rows
 
@@ -174,6 +178,7 @@ def main():
         for run in range(a.runs):
             if a.runs > 1: print(f'bench.py: run {run + 1}/{a.runs}', file=sys.stderr)
             fps, ren, wait, rows = sample(dev[0], a.samples, a.settle)
+            base_f = LAST_F
             rr = {'fps': fps, 'render_ms': ren, 'wait_ms': wait, 'samples': rows, 'stages': {}}
             for k, v in stages:
                 if k not in cur or same(cur[k], v): continue
@@ -194,6 +199,7 @@ def main():
         else:
             print(f'{a.label + ": " if a.label else ""}fps {fps:.1f}  render {ren:.2f} ms  push-wait {wait:.2f} ms  '
                   f'(scene {a.scene}, median of {a.runs} runs x {a.samples}; render across runs {spread(rens)} ms)')
+        print(f'{a.label + ": " if a.label else ""}last f: {base_f}')
         if stages:
             multi = a.runs > 1
             print(f'{"stage off":22} {"fps":>6} {"render":>8} {"cost ms":>8}' + (f' {"cost min–max":>13}' if multi else ''))

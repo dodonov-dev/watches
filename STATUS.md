@@ -1,6 +1,53 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-10-27 (ESP32-S3-LCD-3.16 bring-up)_
+_Last update: 2026-10-27 (LCD-3.16 full-screen canvas, board switch)_
+
+## Board switch + full-screen LCD canvas (2026-10-27)
+
+- One switch for board and canvas: `LW_BOARD` (amoled191 | lcd316) / `LW_RES` (lcd316 canvas rows RENDER_H 240 / 256 /
+  288 / 320, default 320 = native) or `--env` / `--res` on flash.sh, flash-win.sh, e2e.sh (`--define NAME=V` for any -D).
+  Sim: `?board=lcd316&res=320` or the "board" select in the top bar (reloads; remembered in localStorage); node tools
+  read LW_BOARD / LW_RES. Firmware `v` → `board lcd316@320 canvas 820x320 panel 820x320`; the sim warns on connect
+  when its canvas differs, compare-device.py takes the board's canvas from `v` and the `x` dump's `LAYOUT` line.
+- `spec/layout.h|ts`: PANEL_W × PANEL_H is the canvas the face renders. LCD: the panel's 41:16 aspect, RENDER_H rows,
+  tubes full length (820 px native) along both long edges, upscaled nearest-neighbour to 820×320 in the push.
+- Params stay in design px (the AMOLED's 240-row canvas): presets, the panel, `p` writes, `p?`, NVS. `boardParams`
+  (sim params.ts, firmware physics.h) scales the 41 PX_KEYS by PX_SCALE = RENDER_H / 240 and rounds the 22 whole-pixel
+  ones (positions, tick / bubble sizes, baselines, shadow offset); gen_params.py reads both lists from params.ts
+  (`ParamField::px`). Named px caps (slosh, cap, film speed, deposit, foam catch, glyph pool) scale too; MM_PER_PX is
+  0.083 / PX_SCALE (same bore in mm). Material layer, migration and legacyTraceDrain use the design constants.
+- AMOLED unchanged: check_render_frames vs HEAD byte-identical (9136 strips), check:meniscus identical to HEAD (339
+  scenes), presets re-dump identical, RAM 88296 B as before (`eff` aliases `params` at scale 1).
+- New `tools/check_board_render.py [--board B] [--res N]`: host sim-vs-firmware render of every preset on any canvas.
+  lcd316@320: 54 of 77 within 12/255; the AMOLED has the same class of gaps in 22 presets at HEAD (KAIZEN).
+- Board parity (preset 1): native 884 px off, 0 > 12/255; 256: 0; 240 / 288: 2–5 px > 12/255.
+- LCD bench, pinned scene, preset 1 (`e2e.sh --env lcd316 --res N`; SI = strips in internal RAM):
+
+  | RENDER_H | canvas | SI | fps | render ms | push ms | frame-p95 | heap free |
+  |---|---|---|---|---|---|---|---|
+  | 240 | 615×240 | 0 | 21.1 | 26.9 | 18.6 | 48 ms | 169.6 KB |
+  | 240 | 615×240 | 1 | **28.0** | 17.7 | 16.2 | 37 ms | 67.1 KB |
+  | 256 | 656×256 | 0 | 18.9 | 30.3 | 20.6 | 54 ms | 166.3 KB |
+  | 256 | 656×256 | 1 | 25.3 | 19.9 | 17.8 | 40 ms | 51.3 KB |
+  | 288 | 738×288 | 0 | 17.0 | 36.6 | 20.2 | 60 ms | 161.4 KB |
+  | 288 | 738×288 | 1 | 23.3 | 24.0 | 17.0 | 44 ms | 13.9 KB |
+  | 320 | 820×320 | 0 | 13.2 | 44.9 | 28.6 | 77 ms | 159.2 KB |
+
+  Default SI per build since: 1 up to RENDER_H 288 (a strip ≤ 141.7 KB), 0 at native (175.5 KB does not fit).
+  Two limits, both PSRAM bandwidth: PSRAM strips render ~1.4× slower (and two of them slow each other), and the
+  push (the strips turned into the 525 KB framebuffer the LCD DMA scans) costs 16–29 ms at every resolution — it
+  always writes 820×192 px. Next: replace the push (plan doc, "Display path").
+- Native, user preset (scratch copy; tubeHeight 54, 120 fizz, residue, sprite digits behind liquid, markContrast 26):
+  13.7 fps → 15.2 (lens row map applied in the push, not as a PSRAM row shuffle) → **18.0** (64 KB / 64-B-line data
+  cache, env lcd316's own recompiled libs, see platformio.ini). Parity 0 px > 12/255 throughout.
+  Tried and dropped: bounce-buffer scan-out (`LCD_SCAN=1`, kept for experiments: 39–50 % of a core in the fill ISR,
+  no fps gain, tears), divisions out of throughLiquid, IRAM hot loops, glyph pool / strip alone in internal RAM, a
+  per-texel through-liquid memo (KAIZEN). Digits are still 15 ms of 36; markContrast 5.8 ms of them.
+- Contrast floor of rear sprite digits (with a baked shadow plane) baked into the behind-liquid plane against the liquid
+  body colour (sim / firmware `bakeFloor`), drawn without a per-pixel floor: transparency and refraction as before, the
+  floor no longer follows shading / bubbles / glow behind a digit. All boards. Native user preset **19.1 fps**,
+  markContrast now ~0 ms; host parity better than before (AMOLED: 9 of 77 presets with a few px > 12/255, was 22).
+  Awaiting the user's visual check.
 
 ## Second board: Waveshare ESP32-S3-LCD-3.16 (2026-10-27)
 

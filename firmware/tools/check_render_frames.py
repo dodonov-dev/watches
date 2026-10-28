@@ -20,7 +20,8 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-TUBE_HEIGHT_MAX = int(re.search(r'#define\s+TUBE_HEIGHT_MAX\s+(\d+)', (ROOT / 'spec/layout.h').read_text()).group(1))
+# AMOLED build (no BOARD_LCD316): canvas 536x240 = design px, so the strip rows are the design maximum
+TUBE_HEIGHT_MAX = int(re.search(r'#define\s+DESIGN_TUBE_HEIGHT_MAX\s+(\d+)', (ROOT / 'spec/layout.h').read_text()).group(1))
 FRAME_BYTES = 536 * TUBE_HEIGHT_MAX * 2   # every strip is padded to the largest tube height
 
 HARNESS = r'''

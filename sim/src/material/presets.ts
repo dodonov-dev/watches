@@ -5,7 +5,7 @@
 // Params key. Every entry must derive without
 // rejection and be coherent for its inferred class (tools/check-materials.ts, section 14); the envelopes
 // and derived Params are written to presets/materials/ and presets/physical/ (npm run dump:presets).
-import { PANEL_H, TUBE_HEIGHT_MAX } from '../../../spec/layout';
+import { DESIGN_H as PANEL_H, DESIGN_TUBE_HEIGHT_MAX as TUBE_HEIGHT_MAX } from '../../../spec/layout';   // preset params are in design px
 import { DEFAULT_PARAMS, MODERN_BASE, PRESETS, type Params } from '../params';
 import { derive } from './derive';
 import {
