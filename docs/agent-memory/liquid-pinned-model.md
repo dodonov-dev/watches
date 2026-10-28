@@ -1,0 +1,12 @@
+---
+name: liquid-pinned-model
+description: "Liquid Watch liquid is capillary-pinned by default — motion nudges the fill edge, the meniscus cap and the light, never relocates the column; opt-in freeLiquid mode (2026-08-26) lets it slide until a wrist turn into the reading pose parks it home; hard caps in sim/src/physics.ts; check with `npm run check:imu`"
+metadata:
+  type: project
+---
+
+The user's mental model (stated 2026-08-20): the watch "liquid" is not free liquid — it is mostly fixed in the tube; accelerometer input must only change the *light* (edge glow / front brightening / highlight) and the drop end, never make the column appear/disappear.
+
+Implemented as structural hard caps in `sim/src/physics.ts` + `firmware/src/physics.h`: `FILL_SLOSH_MAX_PX`, `ANGLE_HARD_MAX_DEG`, `LIGHT_MAX_DEG`, `CAP_DYN_MAX_PX` — params can tighten but never widen them. On 2026-08-21 caps were raised to 30 px / 20° / 85°, across became a spring kicked by roll rate (`gyroAlong`), plus an `agitation` state. On 2026-08-26 the meniscus got its own dynamics (`cap` spring driven by flick kick + slug acceleration, contact-line lag, trailing `wetFilm`, `meniscusLens` pre-warp against the physical rod) and an opt-in `freeLiquid` mode: the column is a slug (`slugPos`) sliding under along-tilt; a wrist turn (`readTurn` dps) into the reading pose (`readFaceUp`, `readAlongMax`) parks it home for `readHold` s (`reading` state). Rendering draws two edges (`edgeX` / `edgeXL`), marks use panel-frame `Edges {lo, hi}`. On 2026-09-26 the contact angle stopped reading the instantaneous edge velocity (tremor flipped θA/θR every half-cycle): per-end pinned-line state `pin*` / `lineV*` in physics, `contactLeads` shared by physics and capShape; pressure shape stays memoryless, held lines relax over `PIN_RELAX_S`. Real-IMU stability depends on `GravityNorm` and the two-pole accel low-pass. Regression: `cd sim && npm run check:imu` (pinned budget + free-slug bounds + wrist-turn read/release). Params v3 migration deliberately drops stored physics/IMU tunings.
+
+**How to apply:** when adding motion coupling, drive light/shape/bubble/fizz from the state, keep the column inside the caps (free mode: inside `[0, travel]`), and port sim+firmware together (`gen_params.py`, `physics.cpp`, `render.cpp`, `x` STATE dump — 16 values/tube since 2026-09-26 (+ pinFree, pinHome, lineVFree, lineVHome) — + `compare-device.py` key list, hand-written `presets/1.json`, then `npm run dump:presets`). See [[params-mirror-firmware]].

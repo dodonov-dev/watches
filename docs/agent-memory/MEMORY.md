@@ -1,0 +1,31 @@
+- [Pinned-liquid model](liquid-pinned-model.md) — motion only nudges edge/light; hard caps in physics.ts; check with `npm run check:imu`
+- [Sim UI fieldset twitch](sim-ui-fieldset-twitch.md) — fieldset min-inline-size:min-content grows with variable-length readouts; keep min-inline-size:0 + fixed-length text
+- [Image-gen lanes](image-gen-lanes.md) — codex / cursor agent (Grok) / agy=cliproxyapi:8317; skills in pigeon_drop
+- [Params mirror firmware](params-mirror-firmware.md) — sim Params change ⇒ gen_params.py + render.cpp + presets/1.json + regen; grep whole repo
+- [Firmware e2e tooling](firmware-e2e-tooling.md) — tools/e2e.sh: flash→bench→parity from WSL; DTR=RTS=1 on open, RTS-then-DTR down on close or the S3 resets; p writes autosave after 2 s; --preset across schema changes, --ref A/B, --runs, exit 3 = dead IMU; residue stress = w6 + tilt.py -0.7,0.7
+- [Firmware static memory](firmware-static-memory.md) — no lazy allocation; static/boot-time buffers; internal RAM ~2.7 KB free after BLE — new tables to PSRAM in render_init
+- [E2E via Opus agent](e2e-delegate-opus.md) — delegate e2e.sh/bench/parity runs to an Opus subagent
+- [Perf plan after hand-off 2](perf-plan-after-handoff-2.md) — layer cache shelved; hand-off 4 = wearer-state rate control; behaviour first, power after
+- [Legacy host harness](legacy-host-harness.md) — render.cpp+physics.cpp build on host with 2 stub headers; replay pushes / job.json without the board
+- [drawTube hot loops → noinline](drawtube-hot-loops-noinline.md) — inline per-pixel loops spill; extract + 2-lane 565 blend took trace 17.8→5.7 ms
+- [Digit shadow bake](digit-shadow-bake.md) — two planes (behind air / behind liquid with T inside) + Mark::bakedT; plane chosen per pixel by the compositor's edge test
+- [Bash cwd race](bash-cwd-parallel-race.md) — parallel Bash calls share cwd; absolute paths + `(cd … && …)` subshells
+- [Exposed surface = home edge](exposed-surface-home-edge.md) — remaining+free presets: visible meniscus is edgesL; check the exposed mask, not the time edge
+- [Xtensa float costs](xtensa-float-costs.md) — fminf/floorf/`/`/sqrtf are calls on the S3; use fmn/fmx/ffloor/fceil + reciprocals in render loops
+- [Presets: own design](presets-own-design.md) — new preset = original look; user configs are references, not a base
+- [Parity: stacked blends](parity-stacked-blends.md) — two same-direction writes on one pixel = 17/255; compose into one write, instrument both sides first
+- [Presets are disposable](presets-disposable.md) — migrate mechanically on model changes; don't re-tune looks
+- [Astra via cli-proxy](astra-via-cliproxy.md) — claude-proxy wrapper + astra agent + astra-loop skill; proxy Claude OAuth must be valid; connectors off when proxied
+- [Board baseline in worktree](board-baseline-in-worktree.md) — bench HEAD from a worktree while editing; link sim/node_modules for parity; re-flash if sources changed after the build
+- [Codex launch failures](codex-standalone-symlink.md) — root cause: qmx63 devcontainer shares ~/.codex; "no such file": ln -sfn `current` to real release; "app server did not become ready": kill stale daemon + rm dangling socket symlink (or `--no-daemon`)
+- [Physical material layer](physical-material-layer.md) — physical sim = derive(material, design)→legacy Params; coherence-gated, linear-light laws, no per-preset overrides
+- [Two-core render](firmware-two-core-render.md) — hours core 0, minutes core 1 concurrently: per-frame scratch per Tube (PSRAM at boot if big), never file-static; host tools cannot see races
+- [Plans handed to agents](plans-handed-to-agents.md) — hardware plans may go to a fresh agent: self-contained + step-0 board check; export to docs/
+- [READMEs terse](readme-terse.md) — short plain bullets; no taglines or "what it does" prose
+- [pkill -f self-match](pkill-self-match.md) — pkill -f kills the Bash tool's own shell (exit 144); kill by PID, never chain after it
+- [Judge visuals: correctness first](judge-visuals-correctness-first.md) — containment, continuity, recognisable subject, real fps before richness; simple-correct beats rich-flawed
+- [Fizz fps collapse](fizz-fps-collapse.md) — spring-fizz pool filled when pitching with across ~0 (stepFizz × 5 catch-up steps); fixed: births capped at fizzCount share; repro `tools/tilt.py`
+- [Imminent residue](imminent-residue.md) — step-3d edge shear + wet tint + annular film; zoom user screenshots ×5 first
+- [Residue physics](residue-physics.md) — Bretherton deposit, stain = annular path × traceAmount, ρgh²/3μ drain (traceDrain v27); never delete a still-wet thin column
+- [Board checks: user ready](board-checks-need-user-ready.md) — visual/physical board tests: stop and ask, one change per round; no unattended timed sweeps
+- [Board switch, design px](board-switch-design-px.md) — LW_BOARD/LW_RES or ?board=&res=; params design px, boardParams scales PX_KEYS (round PX_WHOLE_KEYS); check_board_render.py

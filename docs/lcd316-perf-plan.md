@@ -3,6 +3,27 @@
 Goal: `firmware/bench/user-fav.json` (the user's favourite look) at the native 820×320 canvas, pinned bench, **≥ 30 fps**.
 Native stays: lower canvases were compared side by side on the board and look worse.
 
+## Resume here (state 2026-10-28, branch `backup/local-worktree-20261028`)
+- **Done:** step 1 (Log below): user preset at native 16.0 → 18.1 fps, flashed on the board, pixels unchanged.
+- **Pending before step 2:** the user's visual check of step 1 on the board — tearing / sideways twitch (pushes now run
+  next to the renders), and whether the minutes tube lagging the hours tube by one frame shows on a fast tilt. If the
+  lag shows: delay the hours strip by a frame too (KAIZEN). Then hand out step 2.
+- **Way of working the user asked for:** each step = one subagent (Opus), strictly one after another (one board);
+  the main session reviews, relays look changes to the user and asks for a by-eye check (one change per round, wait
+  for the answer — no unattended timed tests). Goal native ≥ 30 fps; lower canvases were rejected after an A/B look.
+- **Agent memory:** `docs/agent-memory/` is a copy of the main session's notes (board tooling, parity, firmware
+  memory rules, pitfalls). On a new machine copy them into the Claude Code project memory dir
+  (`~/.claude/projects/<project path with / as ->/memory/`) or point the session at them.
+- **New machine setup:** PlatformIO (pioarduino platform, see `firmware/platformio.ini`); build `amoled191` once so
+  `~/.platformio/packages` exists — the first `lcd316` flash then copies it to `~/.platformio/packages-lcd316` and
+  recompiles the Arduino libs with the 64 KB data cache (~7 min, `tools/pkgdir.sh`). `cd sim && npm install` for the
+  parity tools. The board's port differs per machine: `LW_PORT=COMx` (Windows side via WSL, `tools/device.py` bridges
+  through `python.exe` + pyserial) or `/dev/ttyACMx`; `python3 firmware/tools/device.py --port <port> v` must answer
+  `board lcd316@320 canvas 820x320 panel 820x320`. On native Windows (no WSL) the bash tools need Git Bash or
+  adapting; `device.py` itself works on Linux and through WSL only.
+- **Board state:** flashed with step 1 (normal native build). NVS holds the user's preset; benches pin
+  `firmware/bench/user-fav.json` and restore params afterwards (clock stays pinned until "send sim time").
+
 ## Rules (every step)
 - Repo rules: `CLAUDE.md` (no lazy allocation; side ideas → `KAIZEN.md`, laconic). Do not commit.
 - Firmware memory: every buffer static or allocated once at boot; per-frame scratch belongs to its `Tube` (two cores
