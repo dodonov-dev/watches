@@ -595,7 +595,8 @@ ticksH 3.0, fizz 2.7, traces 2.3, ticksM 0.5, edgeGlow 0.3; lens / glass / trans
     the line buffer; no tiles there).
   - Not done (KAIZEN): marks / fizz / bubble / top per tile (they still read and write the PSRAM strip through the
     cache), the fbuf stores by DMA (store phase 2.6 ms a strip swinging), 64-B tile copies (padded strip stride),
-    hashing at render time. Also found: `r` ends in `reset wdt` ~2 in 5, also with `-DTILE_OFF` (pre-existing).
+    hashing at render time. Also found: `r` ends in `reset wdt` ~2 in 5, also with `-DTILE_OFF` (pre-existing; fixed
+    the same day: the refill's D-cache preload in flight, KAIZEN "LCD restart WDT").
   - Scratch was git-ignored `firmware/.pio/step7/` (A/B and profile scripts, logs: removed). Kept for the review: the
     step-6 sources `firmware/.pio/step7/ref/` (render.cpp / .h, main.cpp, display_lcd316.cpp, display.h / .cpp,
     physics.h, board.h, platformio.ini, check_render_frames.py; the `--reference`).

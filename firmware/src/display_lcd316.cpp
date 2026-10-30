@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_rom_sys.h"
+#include "esp_system.h"
 #include "esp32s3/rom/cache.h"
 #include "layout.h"
 #include "tiles.h"
@@ -386,6 +387,20 @@ static int refillsInFrame = -1;                  // EOF refills since the last V
 static volatile uint32_t refillLate = 0, refillRestarts = 0;   // totals since boot (written by the ISR only)
 static uint32_t refillWorst = 0;                 // cycles, since the last display_refill_health, under worstMux
 static portMUX_TYPE worstMux = portMUX_INITIALIZER_UNLOCKED;
+// esp_restart (IDF 5.5.5) disables the caches and resets the MSPI with the refill's D-cache preload of PSRAM still
+// running: the chip then hung until the RTC WDT's second stage reset it (`r`: reset wdt, rst 0x10, ~1 in 3; both
+// with and without the tiles, also on the hello face; never with the preload off or the panel deleted first,
+// 2026-10-30). The IDF RGB driver's own refill preloads the same way. A shutdown handler stops new preloads and
+// waits for the running one.
+static portMUX_TYPE preloadMux = portMUX_INITIALIZER_UNLOCKED;
+static bool preloadOff = false;
+static void preload_shutdown(void) {
+  portENTER_CRITICAL(&preloadMux);   // a refill past the test has started its preload once this is taken
+  preloadOff = true;
+  portEXIT_CRITICAL(&preloadMux);
+  const uint32_t c0 = esp_cpu_get_cycle_count();   // a preload is ~26 KB (< 1 ms); give up after 20 ms
+  while (!Cache_DCache_Preload_Done() && esp_cpu_get_cycle_count() - c0 < 20u * 1000 * getCpuFrequencyMhz()) {}
+}
 
 static bool IRAM_ATTR onVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t *, void *) {
   vsyncAt = esp_cpu_get_cycle_count();
@@ -413,7 +428,9 @@ static bool IRAM_ATTR refill(esp_lcd_panel_handle_t, void *bb, int pos_px, int l
     if (t > took) took = t;
   }
   const int next = pos_px + len_bytes / 2;
-  Cache_Start_DCache_Preload((uint32_t)(fbuf + (next < LCD_H_RES * LCD_V_RES ? next : 0)), len_bytes, 0);
+  portENTER_CRITICAL_ISR(&preloadMux);
+  if (!preloadOff) Cache_Start_DCache_Preload((uint32_t)(fbuf + (next < LCD_H_RES * LCD_V_RES ? next : 0)), len_bytes, 0);
+  portEXIT_CRITICAL_ISR(&preloadMux);
   if (!timed) return false;
   if ((uint32_t)took > refillT) refillLate = refillLate + 1;
   portENTER_CRITICAL_ISR(&worstMux);
@@ -480,6 +497,7 @@ bool display_init(void) {
   cbs.on_vsync = onVsync;
   cbs.on_bounce_empty = refill;
   if (!create_panel(cfg, &cbs)) { log_e("rgb panel alloc failed"); return false; }
+  if (esp_register_shutdown_handler(preload_shutdown) != ESP_OK) { log_e("shutdown handler slots full: restart may hang"); return false; }
 #else
   cfg.num_fbs = 1;
   cfg.flags.fb_in_psram = 1;

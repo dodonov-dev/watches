@@ -668,8 +668,6 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
 - PIO wipes `.pio/build/lcd316` when an `amoled191` build runs in between (project checksum): expect a full rebuild.
 
 ## LCD tiled render, step 7 (2026-10-30)
-- `r` (esp_restart) ends in a watchdog reset (`reset wdt`) about 2 times in 5 on the LCD, also with `-DTILE_OFF` (no
-  GDMA): pre-existing, not investigated (a hung restart caught by the RTC WDT; the board still comes back).
 - Tile copies to PSRAM run at ~26 MB/s (32-B bursts: RX into PSRAM must be burst-aligned and a 4-row tile of 1,640-B
   rows is only whole in 32 B); 64-B bursts read at ~43 MB/s. A strip stride padded to 1,664 B (or 8-row tiles) would
   allow them: hours put-wait ~1 ms swinging, ~2 ms pinned (the minutes gather competes on PSRAM).
@@ -686,3 +684,11 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
   geometry on the host.
 - Free heap with BLE ~4.4 KB on the wide LCD build. Known room: `-DTUBE_BAND_INLINE` +13 KB (costs ~2 fps), PushSlots
   16.4 KB to PSRAM (cost untested), settleFoam IRAM 2.3 KB.
+
+## LCD restart WDT (2026-10-30)
+- Fixed (display_lcd316.cpp preload_shutdown). IDF 5.5.5 esp_restart_noos does not wait for a running D-cache preload;
+  the stock RGB driver's bounce refill preloads the same way: worth an upstream issue.
+- The banner's `reset wdt` lumps RTC / super / MWDT resets; esp_rom_get_reset_reason(0/1) (rst 0x10 here) said which.
+  A hung restart drops the USB port (system reset): the ROM line is lost, only the next boot's reason survives.
+- `r` loop counter (port session per `r`, ROM rst line + banner reason, drop = hung): firmware/.pio/wdt/rloop.py, not
+  committed; worth a tools/ script next to bench.py.
