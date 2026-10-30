@@ -23,8 +23,15 @@ SHEETS = [
     'digits-amber-resin',
 ]
 
-def talk(s, cmd, end=b'\n', timeout=10):
-    return s.talk(cmd, end.decode(), timeout)
+def talk(s, cmd, end=b'\n', timeout=10, ok=None):
+    return s.talk(cmd, end.decode(), timeout, ok)
+
+def whole(dump):
+    """All strip rows of the `x` dump arrived (the Windows bridge now and then drops part of a reply)."""
+    lay = [l.split() for l in dump.splitlines() if l.startswith('LAYOUT')]
+    if not lay: return 'END' in dump   # firmware before LAYOUT: checked by the assert below
+    w, th = int(lay[0][1]), int(lay[0][3])
+    return sum(1 for l in dump.splitlines() if len(l.strip()) == w * 4) == 2 * th
 
 def to_img(px):  # list of (W*H) 565 ints -> RGB image, exact 565 expansion
     im = Image.new('RGB', (W, H)); d = []
@@ -41,9 +48,9 @@ def main():
     params = json.loads(talk(s, 'p?').strip().splitlines()[-1])
     env = s.board_env()
     fizz_was = params['fizz']
-    if fizz_was: talk(s, 'pfizz=0'); params['fizz'] = False
-    dump = talk(s, 'x', b'END', timeout=60)
-    if fizz_was: talk(s, 'pfizz=1')
+    if fizz_was: s.set('fizz', 0); params['fizz'] = False   # volatile (`p~`): never reaches NVS
+    dump = talk(s, 'x', b'END', timeout=60, ok=whole)
+    if fizz_was: s.set('fizz', 1)
     lines = [l.strip() for l in dump.splitlines() if l.strip()]
     lay = [l for l in lines if l.startswith('LAYOUT')]
     if lay: W, H, TH, yh, ym = map(int, lay[0].split()[1:6]); Y0 = (yh, ym)

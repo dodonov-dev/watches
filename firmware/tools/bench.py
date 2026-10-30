@@ -2,11 +2,10 @@
 """fps benchmark on the board, in a pinned scene so runs are comparable.
 
   tools/bench.py [--scene 10:09:30] [--samples 5] [--settle 4] [--stages [LIST]] [--stage name=value ...] [--quick]
-                 [--preset FILE.json] [--live-imu] [--allow-dead-imu] [--runs N] [--label TEXT] [--json]
+                 [--preset FILE.json] [--fix-pose] [--live-imu] [--allow-dead-imu] [--runs N] [--label TEXT] [--json]
 
-Pins: optional preset (--preset: every key of the JSON the board knows, written with `p<name>=<v>`; `v` and
-unknown keys are skipped and listed once), clock fixed (`t`), demo frozen (`d0`), IMU influence off
-(`pinputGain=0`, unless --live-imu), waits for the physics to settle, then reads `f` once per 2 s window and
+Pins: optional preset (--preset: every key of the JSON the board knows; `v` and unknown keys are skipped and listed
+once), clock fixed (`t`), demo frozen (`d0`), IMU influence off (`inputGain=0`, unless --live-imu), waits for the physics to settle, then reads `f` once per 2 s window and
 reports the median fps / render ms / push-wait ms. LCD board: also the panel refill health over the base samples
 (`f` refill totals, display.h display_refill_health): late refills = twitches, restarts = bad frames; any -> TWITCH.
 --preset: a flash that changes PARAMS_SCHEMA_CRC resets NVS to presets/1.json, so benches across a Params
@@ -15,6 +14,11 @@ IMU check: after pinning, `s` is read; along/across/gyro all exactly 0 = the "IM
 The board is then rebooted (`r`), the pins are re-applied and `s` re-checked once; still dead -> exit code 3.
 --allow-dead-imu accepts a dead IMU without the reboot (e.g. -DNO_IMU / --bare builds). The tilt goes in the
 header line either way, because even the pinned scene depends on it.
+Param pins are volatile writes (`p~`, never autosaved: a dropped session leaves NVS as it was); firmware without
+`p~` gets `p` writes (autosaved, restored at the end).
+--fix-pose: the scene no longer depends on how the board lies: tilt override `g -0.5 0` for 4 s (a free slug slides
+home), then `g 0 0` for 4 s (tilt state 0), then the pins; the override is released (`g`) at the end. No dead-IMU
+check then (the override reads as all 0).
 --live-imu: inputGain is not pinned (the board's / preset's value stays), for moving-light cases
 (e.g. `--live-imu --stage fizz=0`).
 --stages additionally turns rendering stages off one at a time (digits, ticks, fizz, glow, ...) and prints what
@@ -51,11 +55,10 @@ def sample(d, n, settle):
     rows = []; REFILLS = []
     for _ in range(n):
         time.sleep(2.1)
-        for _ in range(3):   # the serial bridge now and then returns an empty reply: ask again
-            r = d.talk('f')  # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"
-            t = r.split()
-            if len(t) > 6 and t[0] == 'fps': break
-        else: raise SystemExit(f'bench.py: no parsable `f` reply after 3 tries: {r!r}')
+        parsable = lambda r: len(r.split()) > 6 and r.split()[0] == 'fps'
+        r = d.talk('f', ok=parsable)  # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"; device.py asks again
+        if not parsable(r): raise SystemExit(f'bench.py: no parsable `f` reply: {r!r}')
+        t = r.split()
         rows.append((float(t[1]), float(t[3]), float(t[6])))
         LAST_F = r.strip()
         m = re.search(r'refill late (\d+) restarts (\d+) worst (\d+)%', r)
@@ -81,6 +84,7 @@ def main():
     ap.add_argument('--stage', action='append', default=[])
     ap.add_argument('--quick', action='store_true', help='3 base samples, 2 per stage, settle 2 s / 1 s (about half the time; +-0.1 ms noisier)')
     ap.add_argument('--preset', help='preset JSON (e.g. ../presets/cola.json) loaded before the pins')
+    ap.add_argument('--fix-pose', action='store_true', help='tilt override: slug home (g -0.5 0, 4 s), then g 0 0 (4 s) before the pins')
     ap.add_argument('--live-imu', action='store_true', help='do not pin inputGain=0')
     ap.add_argument('--allow-dead-imu', action='store_true', help='accept along/across/gyro all 0 (no reboot, no exit 3)')
     ap.add_argument('--runs', type=int, default=1, help='repeat base + stages N times; median and spread across runs')
@@ -112,7 +116,7 @@ def main():
     touched = set()
     def setp(k, v):
         touched.add(k)
-        r = talk(f'p{k}={fmt(v)}')
+        r = dev[0].set(k, fmt(v))
         if r.strip() != f'ok {k}': print(f'bench.py: p{k}={fmt(v)} -> {r!r}', file=sys.stderr)
         cur[k] = v
     preset_keys = []
@@ -124,7 +128,10 @@ def main():
         n = 0
         for k in preset_keys:
             if not same(cur[k], preset[k]): setp(k, preset[k]); n += 1
-        talk('l'); talk(f't {a.scene}'); talk('d0')
+        talk('l', timeout=1); talk(f't {a.scene}'); talk('d0')   # `l` prints nothing: do not wait 10 s for it
+        if a.fix_pose:
+            if same(cur['inputGain'], 0): setp('inputGain', 1)   # the prep tilt has to reach the liquid
+            talk('g -0.5 0'); time.sleep(4); talk('g 0 0'); time.sleep(4)
         if not a.live_imu and not same(cur['inputGain'], 0): setp('inputGain', 0)
         return n
     def read_tilt(tries=3):
@@ -137,9 +144,9 @@ def main():
     def reboot():
         try: talk('r', timeout=3)
         except Exception: pass
-        deadline = time.time() + REBOOT_TIMEOUT_S
+        deadline = time.monotonic() + REBOOT_TIMEOUT_S
         time.sleep(2)
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 if parse_tilt(talk('s', timeout=2)) is not None: return
             except Exception:              # the port dropped with the reset: reopen it
@@ -156,7 +163,9 @@ def main():
         if preset is not None: print(f'bench.py: preset {a.preset}: {n} of {len(preset_keys)} params written', file=sys.stderr)
         tilt = read_tilt()
         dead = lambda t: t is not None and not any(t)
-        if dead(tilt) and a.allow_dead_imu:
+        if a.fix_pose:
+            pass                           # the override reads as all 0: nothing to check
+        elif dead(tilt) and a.allow_dead_imu:
             print('bench.py: IMU reads exactly 0 (dead) - allowed by --allow-dead-imu', file=sys.stderr)
         elif dead(tilt):
             print('bench.py: WARNING: IMU reads exactly 0 (along/across/gyro) - dead after flash? rebooting with `r`',
@@ -176,7 +185,8 @@ def main():
         if a.live_imu:
             imu_txt += f' (inputGain {fmt(cur["inputGain"])})'
             if same(cur['inputGain'], 0): print('bench.py: WARNING: --live-imu but inputGain is 0', file=sys.stderr)
-        if dead(tilt): imu_txt += ', IMU dead'
+        if a.fix_pose: imu_txt += ', pose fixed (g 0 0)'
+        elif dead(tilt): imu_txt += ', IMU dead'
         result.update(tilt=None if tilt is None else dict(zip(('along', 'across', 'gyro'), tilt)), imu=imu_txt)
         print(f'{a.label + ": " if a.label else ""}scene {a.scene}  preset {a.preset or "(board NVS)"}  {tilt_txt}  '
               f'{imu_txt}  runs {a.runs}')
@@ -230,11 +240,12 @@ def main():
                 result['stages'][k] = {'fps': f2, 'render_ms': r2, 'cost_ms': c, 'cost_min': min(costs), 'cost_max': max(costs)}
                 print(f'{k + "=" + fmt(v):22} {f2:6.1f} {r2:8.2f} {c:+8.2f}' + (f' {spread(costs):>13}' if multi else ''))
     finally:
-        for k in touched: talk(f'p{k}={fmt(snap[k])}')
+        for k in touched: dev[0].set(k, fmt(snap[k]))
         talk('d1')
-        # The board autosaves params to NVS 2 s after the last write, so the pinned values (inputGain 0)
-        # were saved mid-bench; hold the session past the autosave so the restored ones replace them.
-        time.sleep(2.5); talk('s'); dev[0].close()
+        if a.fix_pose: talk('g')
+        # Without `p~` the pins were autosaved mid-bench: device.py holds the session past the autosave on close,
+        # so the restored values replace them.
+        talk('s'); dev[0].close()
     if a.json: print(json.dumps(result))
 
 if __name__ == '__main__': main()

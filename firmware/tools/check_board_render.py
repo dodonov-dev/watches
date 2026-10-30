@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Sim vs firmware render parity on any board / canvas, on the host (no device): every preset, one pinned scene.
 
-  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tolerance 12] [presets/x.json ...]
+  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tiles] [--tolerance 12] [presets/x.json ...]
 
 Board: --board / --res (320f: LCD_FILL), else $LW_BOARD / $LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
 params scaled by physics.h boardParams; the sim side is tools/render-ref.ts with LW_BOARD / LW_RES (params.ts
 boardParams). Presets default to presets/*.json and presets/physical/*.json (design px). Fizz off (random). Prints
 per preset the pixels off and those beyond the tolerance (RGB888 steps); exits 1 if any preset has one.
+--tiles: the firmware side renders through the tiled band loop (-DTILE_RENDER=1, host sink = memcpy) as the LCD board
+does; without it the host takes the strip path.
 """
 import argparse, glob, json, os, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
@@ -72,6 +74,7 @@ def main():
     ap.add_argument('--board', default=os.environ.get('LW_BOARD') or 'lcd316')
     ap.add_argument('--res', default=os.environ.get('LW_RES') or '320')
     ap.add_argument('--tolerance', type=int, default=12)
+    ap.add_argument('--tiles', action='store_true', help='firmware side through the tiled band loop (-DTILE_RENDER=1)')
     ap.add_argument('--out', type=Path, help='write device / ref / diff PNGs of failing presets here')
     ap.add_argument('presets', nargs='*')
     a = ap.parse_args()
@@ -86,7 +89,7 @@ def main():
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *([f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []),
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *([f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)

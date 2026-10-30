@@ -96,14 +96,16 @@ Native stays: lower canvases were compared side by side on the board and look wo
 ## Measuring (board: Waveshare ESP32-S3-LCD-3.16 on Windows COM11)
 ```
 cd firmware
-LW_PORT=COM11 tools/e2e.sh --env lcd316 --define LCD_FILL=1 --preset bench/user-fav.json --runs 2 --label "<step>"   # flash + bench + parity
-LW_PORT=COM11 tools/e2e.sh --env lcd316 --define LCD_FILL=1 --no-flash --stages --preset bench/user-fav.json --label "<step>"
+LW_PORT=COM11 tools/e2e.sh --env lcd316 --define LCD_FILL=1 --preset bench/user-fav.json --fix-pose --runs 2 --label "<step>"   # flash + bench + parity
+LW_PORT=COM11 tools/e2e.sh --env lcd316 --define LCD_FILL=1 --no-flash --stages --preset bench/user-fav.json --fix-pose --label "<step>"
 python3 tools/swing.py COM11 40 '-1,0>0.6,0@3'   # swinging tilt, 16 `f` windows (after a bench: clock pinned)
 ```
-- The pinned free hours slug stays where the boot pose slid it (±2 ms render between poses). When the board may have
-  moved, fix the scene after the flash, then bench (step 4; the `g 0 0` override reads as a dead IMU):
-  `python3 tools/device.py --port COM11 pinputGain=1 'g -0.5 0'` (4 s: slug home), `… 'g 0 0'` (4 s: tilt state 0),
-  `python3 tools/bench.py --port COM11 --allow-dead-imu --runs 2 --preset bench/user-fav.json [--stages …]`, swing.py.
+- The pinned free hours slug stays where the boot pose slid it (±2 ms render between poses): `--fix-pose` (bench.py /
+  e2e.sh, 2026-10-30) fixes the scene first (`g -0.5 0` 4 s: slug home, `g 0 0` 4 s: tilt state 0, then the pins;
+  the override is released at the end). Pins are volatile writes (`p~`), so a dropped session leaves NVS alone.
+- Exact rewrites of stepped state (fizz, residue, memos): host `tools/check_fizz_steps.py --reference <render.cpp before>
+  [--fma] [--board lcd316 --res 320f --tiles]`; on the board `tools/check_board_steps.py --save A.txt` on the old build,
+  `--compare A.txt` on the new (the `X` sequence; the old build must have `X`).
 - lcd316 builds from `~/.platformio/packages-lcd316` (recompiled libs); `tools/flash.sh` / `e2e.sh` handle it. A bare
   `pio run -e lcd316` is refused; for a compile check: `ENV=lcd316 . tools/pkgdir.sh; ~/.platformio/penv/bin/pio run -e lcd316`.
 - `-DDIGIT_PROF` (`--define DIGIT_PROF`) prints per-tube digit counters and cycle splits in `f` (`tools/device.py --port COM11 f`).
@@ -156,6 +158,18 @@ ticksH 3.0, fizz 2.7, traces 2.3, ticksM 0.5, edgeGlow 0.3; lens / glass / trans
    per-glyph-row bookkeeping ~1.5, meniscus ramp columns ~0.9, band px ~0.65. Candidates: whole-px parallax (no
    fractional taps), glyph composited against the row's liquid colour (no read of the pixel behind), digit planes per
    row band, each column the dry or the wet copy under the meniscus (no ramp), no band compositor on digits.
+
+## Dead ends (measured, not worth retrying without a new angle)
+- Step 8 variant B (glyph against the row's liquid colour instead of the pixel behind): it only removes a load the SIMD
+  blend does 8 px at a time; as a scalar write-only kernel it is slower (+1.3 ms hours). Only with a broadcast-background
+  SIMD kernel (which still reads the lanes around a run).
+- Step 8 variant C (row facts per 4-row band): saves nothing when rear ticks share their facts with the digits (user
+  preset); facts are computed once per row for both layers already.
+- settleFoam: precomputing fizzR per bubble changes the fused rf + size/2 * (...) on the board (not exact); an exact
+  early-out is unsafe (pushes move bubbles after the sort).
+- The D-cache manual preload is the bounce refill ISR's (one engine): not available to the render.
+- 2026-10-27 (32 KB cache era): removing 3 of 4 digit divisions, IRAM hot loops, the glyph pool or the strip in
+  internal RAM alone, an exact per-texel through-liquid memo (11 -> 10 ms for 1.2 MB PSRAM): ~0.
 
 ## Log
 (each step appends: what changed, bench line before / after, stage table if taken, parity, look change yes / no)

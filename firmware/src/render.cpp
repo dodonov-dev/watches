@@ -2585,9 +2585,11 @@ bool Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
 static uint32_t fizzRng[2] = {0x9e3779b9u, 0x7f4a7c15u};
 static inline uint32_t fizzDraw() { uint32_t &x = fizzRng[esp_cpu_get_core_id() & 1]; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x; }
 static void fizzSeed() { for (int i = 0; i < 2; i++) { uint32_t v; do v = esp_random(); while (!v); fizzRng[i] = v; } }
+static bool fizzReseed(uint32_t seed) { fizzRng[0] = seed | 1; fizzRng[1] = (seed * 2654435761u) | 1; return true; }
 #else
 static inline uint32_t fizzDraw() { return esp_random(); }
 static void fizzSeed() {}
+static bool fizzReseed(uint32_t) { return false; }
 #endif
 #ifdef FIZZ_PROF
 static uint32_t fizzStepProf[FS_N];   // stepFizz counters (core 1 only: the spring preset never draws frand in the render)
@@ -4032,6 +4034,10 @@ void render_tube_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].t
 const uint32_t *render_tick_profile(int idx) { return tubes[idx].tickProf; }
 void render_tick_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].tickProf, 0, sizeof(tubes[i].tickProf)); }
 #endif
+bool render_seq_reset(uint32_t seed) {
+  for (Tube &t : tubes) { t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; }
+  return fizzReseed(seed);
+}
 void render_digit_shift(int idx, int &dx, int &dy) { const Labels &lb = tubes[idx & 1].labels; dx = lb.wholeDx; dy = lb.wholeDy; }
 #ifdef DIGIT_PROF
 const uint32_t *render_profile(int idx) { return tubes[idx].prof; }

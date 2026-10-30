@@ -40,7 +40,9 @@ Pass = fps not lower than the previous log entry AND `mismatched pixels` not hig
 Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~200 px ≤1 LSB.
 
 ## Pieces
-- `tools/device.py CMD…` — one-off serial (`f` fps, `s` status, `p?` params, `pname=v`, `t HH:MM`, `d0` freeze, `r` reboot).
+- `tools/device.py CMD…` — one-off serial (`f` fps, `s` status, `p?` params, `pname=v`, `p~name=v` volatile (never autosaved),
+  `t HH:MM`, `d0` freeze, `X` deterministic sequence, `r` reboot). In scripts: `Device.set(name, v)` (`p~`, falls back to `p`
+  on older firmware); `talk()` asks again on a short / empty reply (`ok=` predicate for long dumps).
   `f` also reports `phys N steps x (tube + fizz ms per step, max)`, `push`, `rest` and per tube `fizz live (foam, slots)`:
   fps = 1000 / (render + push + rest + steps x step cost), steps = frame / 20 ms capped at 5.
 - `tools/tilt.py [--hold S] POSE…` — poses without touching the board, via the firmware's `g <along> <across>` tilt override
@@ -48,7 +50,10 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
   period T. One compact `f` line per 2 s. `tools/tilt.py --hold 60 '-1,0>0.6,0@3'` = worst case for spring fizz (pool at its `fizzCount` share).
   Auto-detects `/dev/ttyACM*` (usbipd-attached) or Windows COMx. Prints `BOARD REBOOTED (<reason>)` if a
   boot banner shows up — reasons: poweron/sw/panic/task-wdt/brownout/usb.
-- `tools/bench.py [--stages [LIST]] [--stage name=v] [--quick] [--samples N] [--preset FILE] [--runs N] [--live-imu] [--allow-dead-imu] [--json]`
+- `tools/bench.py [--stages [LIST]] [--stage name=v] [--quick] [--samples N] [--preset FILE] [--fix-pose] [--runs N] [--live-imu] [--allow-dead-imu] [--json]`
+  - Pins are volatile (`p~`): a dropped session leaves NVS as it was.
+  - `--fix-pose`: tilt override `g -0.5 0` 4 s (free slug home), `g 0 0` 4 s, then the pins; `g` released at the end. The
+    scene no longer depends on how the board lies or on the IMU (no dead-IMU check). Use it for every LCD perf A/B.
   - Time budget: every sample is one 2 s fps window (firmware `f`), 5 base + 3 per stage by default, so the full
     table is ~130 s. `--stages fizz,digits` measures only those; `--quick` = 3 base / 2 per stage, shorter settles
     (~half, ±0.1 ms noisier). Use `--quick` for direction, full samples + `--runs 3` for a number you will quote.
@@ -66,6 +71,14 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
 - `tools/check_render_frames.py --reference OLD_render.cpp [--no-fizz] [--list-diffs]` — host-only (no board):
   every scene of the current render.cpp vs a saved copy. `--list-diffs` lists the differing scenes per group and
   whether all had fizz on (a fizz-only change: all on, and `--no-fizz` byte-identical).
+- `tools/check_fizz_steps.py --reference OLD_render.cpp [--fma] [--board lcd316 --res 320f] [--tiles] [-v]` — host:
+  every preset + built-in spring scenes through the stepped sequence (`firmware/src/seq.h`: tilt script, fizz and
+  tubes stepped, a frame every 2 steps), strip + fizz-state hashes per frame vs the reference. check_render_frames
+  never steps the fizz; `--fma` fuses a * b + c like the board (catches contraction changes). ~5 s.
+- `tools/check_board_steps.py --save A.txt` (build A flashed), `--compare A.txt` (build B) `[--preset FILE] [--runs 2]` —
+  the same sequence on the board (`X`, LCD: fizz draws reseeded): exact rewrites proven with the board's own maths.
+  The runs must agree first (determinism). Builds before `X` exist cannot be the A side.
+- `tools/rloop.py [-n 10] [PRE_CMD…]` — `r` N times, tally kept / dropped port, ROM `rst:` reason, banner reason.
 - `tools/compare-device.py` — device strips vs `sim/tools/render-ref.ts`; writes `.compare/{device,ref,diff}.png`.
   Read `diff.png` when mismatches grow (yellow = >12/255).
 - `tools/flash.sh` / `flash-win.sh` — app-only flash, NVS-tuned params survive; the clock resets to the last saved sim time (NVS, saved on `T` + each minute), else 10:09:30.
@@ -76,6 +89,15 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
   `PARAMS_SCHEMA_CRC` resets NVS to presets/1.json, so the two sides would otherwise bench different looks.
   `--ref` across a schema change resets NVS twice (the tuned params are lost either way).
 - A run whose header shows `IMU dead` (or all-zero tilt) is not comparable with one that has a live IMU.
-- Scripts restore params from a `p?` snapshot; never send `p!` (it overwrites NVS 2 s later).
+- Scripts pin with `p~` (Device.set) and restore from a `p?` snapshot; never send `p!` (it overwrites NVS 2 s later).
 - Open serial with DTR=RTS=1 (device.py does) — clearing them can reset the ESP32-S3.
 - One serial client at a time; the port is exclusive.
+- A/B only within one day (`--ref`, or alternating builds in one session): the same build benched 18.1 fps on
+  2026-10-28 and 16.6 on 2026-10-29.
+- Two builds carry a code-layout offset: the 16 KB I-cache is shared by both render cores and the render code is
+  several times that (2 KB moved into IRAM shifted the whole pinned render ~2.5 ms). Compare stage costs within one
+  build, or in-function cycle counters.
+- An `amoled191` build wipes `.pio/build/lcd316` (project checksum): the next LCD build is a full rebuild.
+- Reset reasons: the banner's `reset wdt` lumps RTC / super / MWDT resets; `esp_rom_get_reset_reason(0/1)` tells which
+  (rst 0x10 = RTC WDT). A hung restart drops the USB port (system reset): the ROM line is lost, only the next boot's
+  banner reason survives.

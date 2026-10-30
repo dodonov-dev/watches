@@ -4,7 +4,8 @@
     from device import Device
     d = Device()                 # auto: /dev/ttyACM* if attached to Linux, else Windows COMx via python.exe
     d.talk('f')                  # -> 'fps 19.8  render 46.48 ms ...'
-    d.talk('x', end='END', timeout=60)
+    d.talk('x', end='END', timeout=60, ok=lambda r: ...)   # ok: is this reply whole? (default: non-empty, `end` in it)
+    d.set('inputGain', 0)        # volatile `p~` write (never autosaved); `p` on firmware without `p~`
 
 CLI:  tools/device.py [--port P] CMD [CMD ...]     e.g. tools/device.py f s 'p?'
 
@@ -55,12 +56,13 @@ def close_serial(s):
 def serial_talk(s, cmd, end, timeout):
     s.reset_input_buffer()
     s.write((cmd + '\n').encode()); s.flush()
-    t0 = time.time(); out = b''; endb = end.encode()
+    t0 = time.monotonic(); out = b''; endb = end.encode()
     echo = cmd.strip().encode() + b'\r\n'             # firmware echoes the command line first
-    while time.time() - t0 < timeout:
+    while time.monotonic() - t0 < timeout:
         c = s.read(65536); out += c
         body = out[len(echo):] if out.startswith(echo) else out
-        if endb and endb in body: break
+        k = body.find(endb) if endb else -1
+        if k >= 0 and (endb.endswith(b'\n') or b'\n' in body[k:]): break   # the end marker's whole line
         if not endb and out and c == b'': break        # no terminator: stop at the first quiet gap
     return out.decode(errors='replace')
 
@@ -70,6 +72,7 @@ class Device:
         self.windows = self.port.upper().startswith('COM')
         self._s = self._b = None
         self._wrote = False   # a `p` write happened: hold the session past the 2 s NVS autosave on close
+        self._volatile = None # firmware takes `p~` writes (None = not asked yet)
         if self.windows:
             me = subprocess.run(['wslpath', '-w', os.path.abspath(__file__)], capture_output=True, text=True).stdout.strip()
             self._b = subprocess.Popen(['python.exe', me, '--bridge', self.port], stdin=subprocess.PIPE,
@@ -88,9 +91,31 @@ class Device:
             buf.append(line)
         return ''.join(buf)
 
-    def talk(self, cmd, end='\n', timeout=10):
-        """Send one command, return the reply with the firmware's echo line stripped."""
-        if cmd.startswith('p') and '=' in cmd: self._wrote = True
+    RETRY = 3   # the Windows bridge now and then returns a short or empty reply
+
+    def talk(self, cmd, end='\n', timeout=10, ok=None):
+        """Send one command, return the reply with the firmware's echo line stripped. A reply that is empty, misses
+        `end` or fails ok(reply) is asked again (RETRY times in all; then returned as it is) - except for commands that
+        are not idempotent (`r`, `i`) or silent by design (`l`, `h`, `c`: no reply, they always wait out `timeout`)."""
+        if cmd.startswith('p') and not cmd.startswith('p~') and '=' in cmd: self._wrote = True
+        if ok is None: ok = lambda r: r != '' and (end == '\n' or end in r)
+        tries = 1 if cmd.strip()[:1] in ('r', 'i', 'l', 'h', 'c') else self.RETRY
+        for i in range(tries):
+            r = self._talk1(cmd, end, timeout)
+            if ok(r): break
+            if i + 1 < tries: print(f'device.py: {cmd[:20]!r}: short reply ({len(r)} chars), asking again', file=sys.stderr)
+        return r
+
+    def set(self, name, value):
+        """Volatile param write (`p~name=value`: never reaches NVS); `p` on firmware without it. Returns the reply."""
+        if self._volatile is not False:
+            r = self.talk(f'p~{name}={value}')
+            if self._volatile is None: self._volatile = not r.startswith('unknown param ~')
+            if self._volatile: return r
+            print('device.py: firmware without `p~`: pins go through `p` (autosaved)', file=sys.stderr)
+        return self.talk(f'p{name}={value}')
+
+    def _talk1(self, cmd, end, timeout):
         out = self.raw(cmd, end, timeout).replace('\r\n', '\n')
         lines = out.split('\n')
         for l in lines:                                   # boot banner in a reply = the board rebooted

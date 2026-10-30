@@ -71,9 +71,6 @@
 - Fixed clock (`d0` + `t`/`T`) can sit milliseconds before the requested second because demo offset
   advances on fixed physics ticks; at a minute boundary `s` can consequently show the preceding minute.
 - COM6 bridge reopen reverted the (now retired) volatile physical mode to legacy during testing. Audit the Windows driver's close/open reset behavior separately.
-- Firmware autosaves every `p` write after 2 s, so tooling pins (`bench.py` `inputGain 0`, the `x` dump's
-  `fizz 0`) reach NVS mid-run and survive if the session closes before the restore is flushed. A volatile
-  write (`p~name=value`, no autosave) would make pins safe by construction.
 - `device.py` now dwells 2.5 s on close after any `p` write (NVS autosave) and drops RTS before DTR on
   close (no reset). Other serial clients (the browser's Web Serial) still reset the board on close, so
   a preset pushed from the sim and closed within 2 s is lost the same way.
@@ -87,8 +84,6 @@
 - Clock is lost on every esptool flash (no RTC battery) — `flash.sh` could re-send `T <epoch>` afterwards.
 - run-sim shots are not repeatable: two `material=honey&settle=1&fresh=1` shots differ in ~170 px (fizz/bubble positions are
   unseeded), so before/after pixel diffs carry that noise; a `seed=` URL param would make shot comparisons exact.
-- LCD staggered push (2026-10-28): minutes shows one frame after hours. Not visible on a fast tilt (user, 2026-10-29).
-  Core 0 still idles during physics + rest on core 1 (~4 ms/frame).
 - `f` on the LCD: `render` now includes both pushes (staggered), `push` = both cores' push time, overlapped; earlier
   log lines (serial push) are not directly comparable on those two fields, only fps.
 
@@ -538,176 +533,91 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
   pool); inline px literals in render (1-px rims, `xs + 2`, blick rows …) stay canvas px.
 - `TRACE_DRAIN_MAX_PX_S` (48) is a stability bound in canvas px, so on the 4/3 canvas the fastest drain is 3/4 as fast
   in design terms. Raise `TRACE_DRAIN_STEPS` with PX_SCALE to keep it.
-- `fizzCount` is per tube: the LCD tube is 901 design px long at physical size (615 with LCD_FILL; 536 on the
-  AMOLED), so bubbles are ~40 % sparser along it. Scale the count with the tube length if that shows.
-- `MM_PER_PX` with LCD_FILL is design-consistent (0.083 mm per design px), not the LCD's pitch; at physical size
-  (default since 2026-10-29) it is the real pitch, 0.0912 mm.
 - Upscaled canvases (RENDER_H < 320) are nearest-neighbour: every 3rd / 4th / 9th line doubled. Bilinear in the push
   would be smoother, at a per-pixel cost in a PSRAM-bound loop.
 - `check_meniscus.py` and `check_render_frames.py` are AMOLED-only (536 hard-coded); `check_board_render.py` covers the
   LCD canvases preset by preset but no motion / residue scenes.
 - Leather overlay (`overlay.ts`) pads are AMOLED px; on the LCD canvas the cuff is relatively thinner.
-- The Arduino libs build the S3 with a 32 KB / 32 B-line data cache; 64 KB / 64 B (`custom_sdkconfig`, a libs rebuild)
-  would serve the PSRAM strips of the large canvases better.
 - `device.py` bridge: 3 of 7 e2e runs (2026-10-27 sweep) had the Windows bridge not exit within 20 s after bench.py
   ("bridge did not exit, killed"), and compare-device.py then hit "Access is denied" on COM11; a retry loop on open
   (40 × 0.25 s) is too short for that case.
-- Display path on the LCD (the fps ceiling at every RENDER_H): the push turns both strips into the 525 KB PSRAM
-  framebuffer while the LCD DMA scans it (16–29 ms/frame, the same 820×192 px at every resolution). Bounce-buffer
-  scan-out (`no_fb` + `on_bounce_empty`, gathering from canvas-layout front strips) or a GDMA scatter push would
-  replace it — see docs/lcd316-native-plan.md.
-- Native LCD digits (user preset, ~12k px per tube, 10–15 ms): measured on the board (2026-10-27, `-DDIGIT_PROF` cycle
-  counters) — no gain from removing 3 of 4 divisions, IRAM hot loops, the glyph pool or the strip in internal RAM alone,
-  nor from an exact per-texel through-liquid memo (11 → 10 ms; reverted: 1.2 MB PSRAM for ~1 ms). Each ~14-px glyph
-  run touches ~8 PSRAM cache lines at 1–2 µs a miss with both cores rendering: memory latency, not arithmetic. Levers
-  left: a 64 KB / 64-B-line data cache (`custom_sdkconfig`, LCD only), tiles in internal RAM, a smaller canvas.
-- `bench.py` pins `inputGain 0`, but the tilt springs settle only asymptotically: some runs draw rear digits on the
-  fractional-shift path (4 taps), others on the integer one; the digit cost swings with it. Pin the shift too.
-- `FB_BOUNCE_LINES 0` (DMA from PSRAM) lost its VSYNC restart with `LCD_RGB_RESTART_IN_VSYNC=n`: a DMA underrun there
-  now drifts until reboot. Call `esp_lcd_rgb_panel_restart()` per frame in that mode if it is ever used again.
-- The pinned user-preset bench is not stable across days: step 1 benched 18.1 fps on 2026-10-28 and 16.6 on 2026-10-29
-  (same build, cores h 39 vs 42 ms). Always A/B on the same day (`--ref`).
-- The Windows serial bridge now and then returns a short or empty reply: `compare-device.py` once read 138 rows of the
-  `x` dump (`assert len(rows) == 2*TH`), `bench.py` an empty `f` (now retried). Retry in device.py itself.
+
+## LCD perf follow-ups (steps 1-8, triaged 2026-10-30)
+Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-plan.md ("Dead ends").
+
+### Bench / tooling / host checks
+- Host emulation of the ~10 PIE ops used (digits, ramps): the host tools prove the scalar path only, the SIMD one is
+  proven on the board (-DDIGIT_VERIFY).
+- The USB serial path loses whole lines of long replies now and then (`X`: 8 of 350, in pairs; the `x` dump's rows)
+  with room in the CDC ring; likely sFlush skipping while `Serial.isConnected()` reads false over a Windows host read
+  gap (unverified). check_board_steps tolerates it; the `x` dump is only re-asked.
+- `compare-device.py` never closes its Device (no bridge cleanup, no dwell after a `p` write).
+- `X` / check_board_steps.py can only A/B builds that have `X` (2026-10-30 on): no board reference for older commits.
+- No preset's spring is slid dry by the seq.h script (springScatter stays 0): only check_fizz_steps' built-in spring
+  scenes reach that path.
+
+### Structural perf (next: 1-4 in order)
+1. Marks (ticks, digits), fizz, bubble, top into the tiles: they still run on the PSRAM strip through the cache after
+   the tiles, on lines the tiles left cold (wet int digit px ~0.55 us on the hours core vs ~0.32 dry on core 1). Per
+   tile: a facts pass first (band layer weights / strokes, wet share for every row), a row clip in drawLabels /
+   drawTicks / drawBubble; then the strip is DMA-only (no writeback before the gather).
+2. Hash each tile at render time (internal RAM) per line pair: the push skips gathering unchanged segments (pinned
+   ~85 %); a hash table per strip, the lens row map folded into the segment test. Replaces the push hash pass (~10
+   instructions a strip word; else two interleaved chains or PIE, ~1 ms a frame).
+3. Push store phase ~2.6 ms a strip swinging (~500 changed segments: fbuf line fill + writeback through the cache):
+   GDMA-scatter of whole interior segments into fbuf; needs per-line invalidates against the refill ISR's cached reads
+   and no CPU-dirty fbuf lines in those segments. Untried alternative: ROM `Cache_Occupy_Addr` (allocate without
+   fill? "do not call", semantics unverified).
+4. Tile copies to PSRAM at ~26 MB/s (32-B bursts: RX into PSRAM must be burst-aligned, a 4-row tile of 1,640-B rows is
+   only whole in 32 B); 64-B bursts read at ~43 MB/s. Strip stride 1,664 B (or 8-row tiles): hours put-wait ~1 ms
+   swinging, ~2 ms pinned (the minutes gather competes on PSRAM).
+5. Physics on core 0 next to core 1 (the worker idles during the steps): stepFizz is per tube independent apart from
+   foamOrder and the draws; ~0.3 ms a frame pinned, ~1.5 swinging.
+6. `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB` on the LCD: the 16 KB I-cache is shared by both render cores and the render
+   code is several times that (2 KB of ticks into IRAM moved the pinned render ~2.5 ms). Costs 16 KB internal RAM; may
+   replace part of the IRAM code.
+
+### Exact kernel levers (backlog, ~0.2-1 ms each)
+- Exact inline divide (div0.s / divn.s, like sqrtExact): buildPalette (~1.0 ms a tube per light change: cosf,
+  ~6 __divsf3, 4 q() a row), drawBubble's 4-5 __divsf3 a bubble, the 3e setup.
+- Ramps (soft edge + glow) are bound by their per-pixel float alpha chain (~100 cycles): rows with bitwise-equal edges
+  (symmetric halves of a level tube) could share one T run (memo keyed on ex and the frame's terms); pinned, ~0.6 ms a core.
+- Residue zone (~2 ms a tube swinging, ~300 cycles a px) recomputes tint.at(T) per px: per-row T -> colour memo
+  (stamped, PSRAM), ~10 %.
+- Disc kernel ~7 us a row on the hours core for ~4-5 px (AA root ~90 cycles, blend ~130, tests ~100): two px a step to
+  overlap the root chains, 1-iteration bounds for chord / core / reach (conservative margins).
+- 3e band kernel (bandRow) ~280 cycles a px: first layer's premultiplied sum lazily (exact: first P = C a, A = a),
+  inner / outer lanes hoisted; ~0.2 ms a core.
+- pieBlend (byte-swapped 565 run toward per-px colours by T 0..256; ramps / glow / traces since step 6): ticks could
+  feed it the same lanes.
+- settleFoam's pack (3 sweeps, pairwise, place() with discFit) is the largest physics part in motion (~130-290 us a
+  step with 40-60 parked); see the dead ends before touching it.
+- Sprite digits no longer read DigitRow::nb / b0 / b1: the shared tick facts still compute them.
+
+### Memory / BLE
+- Free heap with BLE ~4.4 KB on the wide LCD build; a BLE connection at this heap is untested (Windows python has no
+  `bleak`). Known room: `-DTUBE_BAND_INLINE` +13 KB (~2 fps), PushSlots 16.4 KB to PSRAM (cost untested), settleFoam
+  IRAM 2.3 KB (~50-90 us a step), the 32 KB I-cache option (structural 6).
+
+### Look options (each needs a board round)
+- `fizzCount` is per tube: the LCD tube is 901 design px long at physical size (615 with LCD_FILL; 536 on the
+  AMOLED), so bubbles are ~40 % sparser along it. User wants it scaled (separate chat).
+- Per-radius / subpixel-phase coverage sprites for the fizz: per-px work ~2-3x less; ~0.8 ms of ~1.2 pinned to gain,
+  swinging ~4.6 ms at ~70 bubbles.
+
+### Robustness / parity
 - LCD: an NVS save holds the bounce refill ISR off ~14 ms (cache off during the flash write): one bad frame per param
   change since `RESTART_IN_VSYNC=n`. Save only while the face is still / off, or PSRAM XIP so flash writes keep the
   cache on.
+- check:meniscus `marks-floor-120` fails on one px (17/255): the body's soft-edge ramp is one 565 step off there before
+  any mark (sim a5b7 / fw a5b8, also at HEAD: 9/255), a whole-px digit blend stacks on it. Lever: the edge ramp's
+  rounding parity.
+- IDF 5.5.5 esp_restart_noos does not wait for a running D-cache preload (fixed here in preload_shutdown); the stock
+  RGB driver's bounce refill preloads the same way: worth an upstream issue.
 
-- LCD push, write-allocate (step 2, 2026-10-29): the S3 data cache has no documented allocate-without-fill. The ROM
-  has `Cache_Occupy_Addr` (EXTMEM_DCACHE_OCCUPY_*, "do not call", semantics unverified): not tried. A GDMA M2M scatter
-  write (internal staging → fbuf runs, 16-B aligned, invalidate after) would drop the fill reads; it pays only in
-  motion (~65 % of segments change while tilting, push ~20 ms a frame), the still scene already skips them.
-- LCD push hash pass: ~10 instructions a strip word (load, store to pairBuf, xor-mul-xorshift); two interleaved
-  chains or PIE could trim ~1 ms a frame. The strip read (PSRAM) is now the bulk of a still-scene push (~6 ms a strip).
-- LCD staggered push: minutes is pushed a frame after its render, its strip lines are cold by then. With the push at
-  ~6 ms a strip in a still scene, pushing it right after its render may pay now (step 1 measured it with 15 ms pushes).
-- `tools/tilt.py` (and bench.py's reboot wait) time with `time.time()`: WSL's clock jumps (seen -0.5 s, and a 30 s
-  hold ending after ~14 s). Use `time.monotonic()`. tilt.py also prints no push / refill fields.
+### Notes
+- `FB_BOUNCE_LINES 0` (DMA from PSRAM) lost its VSYNC restart with `LCD_RGB_RESTART_IN_VSYNC=n`: a DMA underrun there
+  drifts until reboot. Call `esp_lcd_rgb_panel_restart()` per frame in that mode if it is ever used again.
 - The skipping push is native-only (1:1, USB_LEFT 1): scaled canvases (RENDER_H < 320), USB_LEFT 0 and the A/B face keep
   the per-pixel loop.
-
-## LCD digits, step 3 (2026-10-29)
-- The 2026-10-27 "digits are PSRAM-latency bound" note is from the 32 KB / 32-B cache: with 64 KB / 64-B lines a run,
-  glyph or pass redrawn at once (all cached) costs 85-92 % of its first draw. The S3 runs ~1.5-2 cycles an instruction
-  even on cached ALU code (probe: add chain 1.8, mull 2.2-2.4, load-use 2.2-2.5 incl. loop): count instructions.
-- Hours digits after step 3 (~9.7 ms of the core): fractional taps ~30 instr/px (largest piece; SIMD taps need the
-  24-bit weighted sum in QACC MACs and an exact 24-bit heaviest-tap compare), per-glyph-row bookkeeping ~1.5 ms (run
-  splitting, seg setup), ramp columns ~1 ms (drawRampColumn walks all H rows a column, per-pixel Mark + bandMark),
-  band-footprint pixels ~0.6 ms (bandMark float divisions; an exact rewrite must keep the same float ops).
-- pieBlend (render.cpp) blends any byte-swapped 565 run toward per-pixel colours by T 0..256: ticks (step 4), traces
-  and glow could feed it the same lanes.
-- check_render_frames / check_board_render build for x86, so they prove the scalar digit path only; the LCD's SIMD
-  path is proven on the board (-DDIGIT_VERIFY). A host emulation of the ~10 PIE ops used would let the host tools
-  cover it.
-- Row-band order / fewer arrays per run (coordinator's levers 2-3): data misses are ~10 % of the digit pass now;
-  not tried. Might matter more in motion (swinging: 16.x fps, push ~20 ms dominates there).
-- Hours render task stack (WORKER_STACK 4 KB): ~1.3 KB headroom after step 3 (the SIMD lanes, 704-B kernel frame).
-- The pinned bench's hours digit state differs between boots (559 or 572 glyph rows, 994 / 421 int px): A/B within
-  one boot (a runtime switch) or compare per pixel.
-- A bridge drop mid-bench (board unplugged) leaves bench.py's pins (inputGain 0, preset keys) in NVS: restore them on
-  reconnect, or the volatile-write idea above.
-- AMOLED RAM 88,384 B (+16 B this step, three pointers): ~16 B left under the 88.4 KB bar.
-
-## LCD ticks, step 4 (2026-10-29)
-- The 16 KB instruction cache is shared by both render cores and the render code is several times that: moving ~2 KB of
-  tick code into IRAM moved the whole pinned render by ~2.5 ms in one build. Benches of two builds carry a code-layout
-  offset (compare stage costs within one build, or in-function cycles). Try `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB`
-  on the LCD (16 KB more internal RAM), or IRAM for the other per-pixel kernels (digits, fizz, push).
-- A tick row now costs about one PSRAM line fill of its strip row (~1.2-1.5 us, ~0.4-0.5 ms a tube): drawing a row's
-  ticks while the body pass has that strip row in the cache (tiled render, plan step 7) would remove it. The D-cache
-  manual preload is the refill ISR's (one engine): not used.
-- check_render_frames: PRESET_DEFAULT has equal minor / major tick colours, so nothing proves a cache keyed on the tick
-  colour (TickMemo is); vary tickMajorColorH/M (and widths) in its random group.
-- bench.py takes a `g 0 0` tilt override for a dead IMU (all exactly 0) and reboots, losing the scene: use
-  `--allow-dead-imu` after an override. The pinned free hours slug sits wherever the boot pose slid it (slugPos 0 vs
-  ~126 px between poses this session): a fixed prep (`g -0.5 0` 4 s, `g 0 0`, then pin) makes benches comparable
-  across poses; worth folding into bench.py.
-
-## LCD fizz, step 5 (2026-10-29)
-- check_render_frames stubs esp_random to a constant and never steps fizz: every bubble of a scene sits on one spot,
-  spring presets draw nothing (ensureFizz returns), parked / popping foam never appears. A host stepper (render.cpp
-  included in the driver, an LCG esp_random, tilt script, fizz state + strips dumped per step; built ad hoc this step
-  in the scratchpad, lost) caught every mutation tried: worth committing as a tool.
-- The host tools build with -ffp-contract=off; the board contracts a * b + c into fused madd.s. A rewrite that changes
-  which products feed which adds is invisible to them: the ad hoc harness with `-mfma -ffp-contract=fast` and a
-  board-side old-vs-new verify (scratch patch: old step-5 code + stepFizz with recorded / replayed draws, strips and
-  fizz state compared) covered it this step. A committed FIZZ_VERIFY would let later steps rerun it.
-- Fizz IRAM (LCD): ~16 KB (kernels 4.8, drawBubble 2.2, stepFizz 4.4, settleFoam 2.3, discFit / foamFront / veil 0.7);
-  free heap with BLE 47.4 -> ~32 KB. settleFoam (2.3 KB for ~50-90 us a step) is the first to give back if RAM is
-  needed; the 32 KB I-cache option (step 4 note) might replace part of it.
-- AMOLED keeps esp_random for the fizz draws (8 B of static RAM for the per-core xorshift; 16 B left there).
-- settleFoam's pack (3 sweeps, pairwise, place() with discFit against glass) is the largest physics part in motion
-  (~130-290 us a step with 40-60 parked). Not changed: precomputing fizzR per bubble changes the fused
-  rf + size/2 * (...) on the board; an exact early-out is unsafe (pushes move bubbles after the sort).
-- Disc kernel left: ~7 us a row on the hours core for ~4-5 px (AA root ~90 cycles, blend ~130, tests ~100). Not
-  built: two pixels a step to overlap the root chains, 1-iteration bounds for the chord / core / reach (conservative
-  margins), an inline correctly rounded division for drawBubble's 4-5 __divsf3 a bubble.
-- Look-change option not built: per-radius / subpixel-phase coverage sprites would cut the per-pixel work ~2-3x, but
-  pinned the whole fizz render is ~1.2 ms of the hours core (~0.8 ms to gain); swinging ~4.6 ms at ~70 bubbles.
-- Physics on core 0 next to core 1 (the worker idles during the steps): stepFizz is per tube independent apart from
-  foamOrder and the draws; ~0.3 ms a frame pinned, ~1.5 swinging.
-
-## LCD tube body, step 6 (2026-10-30)
-- The tube back fill is now the second-largest cost of each render core (~5.3 ms hours / ~4.3 minutes pinned): the first
-  touch of every strip line (fill + dirty-victim writeback, ~2.4 us a line; the same fill on cached lines 0.5 ms). Only
-  a strip outside PSRAM fixes it: internal-RAM tiles copied out by GDMA (no write-allocate fill), plan step 7.
-- check_render_frames' random group changes traceFilm and gen on every scene of a tube, so nothing proves state carried
-  across frames (a memo with change detection off passed). `--tube-seq` (step 6) does; worth making it the default.
-- The ramps (soft edge + glow) are bound by their per-pixel float alpha chain (~100 cycles), not the blend: the SIMD
-  blend gained ~8 %. Rows with bitwise-equal edges (the symmetric halves of a level tube) could share one T run (memo
-  keyed on ex and the frame's terms); pinned only, ~0.6 ms a core.
-- buildPalette still costs ~1.0 ms a tube on every light change (swinging): cosf, ~6 __divsf3 and 4 q() a row. An exact
-  inline divide (div0.s / divn.s sequence, like sqrtExact) would serve it, drawBubble and the 3e setup.
-- 3e band kernel (bandRow) ~280 cycles a pixel: the first layer's premultiplied sum could be taken lazily (exact: the
-  first P = C a, A = a), inner / outer lanes hoisted; ~0.2 ms a core.
-- The residue zone (~2 ms a tube swinging, ~300 cycles a pixel) recomputes tint.at(T) per pixel; a per-row T -> colour
-  memo (stamped, PSRAM) would save ~10 %.
-- IRAM is nearly spent on the LCD (free heap with BLE 8.8 KB after step 6; `-DTUBE_BAND_INLINE` gives back 12.6 KB for
-  ~1 fps). BLE was only seen to initialise: a connection at this heap was not tested (Windows python has no `bleak`).
-  The 32 KB I-cache option (step 4 note) may replace part of the IRAM code.
-- PIO wipes `.pio/build/lcd316` when an `amoled191` build runs in between (project checksum): expect a full rebuild.
-
-## LCD tiled render, step 7 (2026-10-30)
-- Tile copies to PSRAM run at ~26 MB/s (32-B bursts: RX into PSRAM must be burst-aligned and a 4-row tile of 1,640-B
-  rows is only whole in 32 B); 64-B bursts read at ~43 MB/s. A strip stride padded to 1,664 B (or 8-row tiles) would
-  allow them: hours put-wait ~1 ms swinging, ~2 ms pinned (the minutes gather competes on PSRAM).
-- Push store phase ~2.6 ms a strip swinging (~500 changed segments: fbuf line fill + writeback through the cache).
-  GDMA-scatter of whole interior segments into fbuf would drop the fills; needs per-line invalidates against the
-  refill ISR's cached reads and no CPU-dirty fbuf lines in those segments.
-- Marks (ticks, digits), fizz, bubble, top still run on the PSRAM strip through the cache after the tiles. Per tile they
-  need a facts pass first (band layer weights / strokes, wet share for every row) and a row clip in drawLabels /
-  drawTicks / drawBubble; then the strip is DMA-only (no writeback before the gather).
-- Hashing each tile at render time (internal RAM) per line pair would let the push skip gathering unchanged segments
-  (pinned ~85 %): a hash table per strip, and the lens row map folded into the segment test.
-- check_board_render.py's host builds take the strip path (TILE_RENDER 0 off the board); the tile path is proven by
-  check_render_frames `--tiles` (AMOLED geometry) and TILE_VERIFY on the board. A `--tiles` there would cover the LCD
-  geometry on the host.
-- Free heap with BLE ~4.4 KB on the wide LCD build. Known room: `-DTUBE_BAND_INLINE` +13 KB (costs ~2 fps), PushSlots
-  16.4 KB to PSRAM (cost untested), settleFoam IRAM 2.3 KB.
-
-## LCD restart WDT (2026-10-30)
-- Fixed (display_lcd316.cpp preload_shutdown). IDF 5.5.5 esp_restart_noos does not wait for a running D-cache preload;
-  the stock RGB driver's bounce refill preloads the same way: worth an upstream issue.
-- The banner's `reset wdt` lumps RTC / super / MWDT resets; esp_rom_get_reset_reason(0/1) (rst 0x10 here) said which.
-  A hung restart drops the USB port (system reset): the ROM line is lost, only the next boot's reason survives.
-- `r` loop counter (port session per `r`, ROM rst line + banner reason, drop = hung): firmware/.pio/wdt/rloop.py, not
-  committed; worth a tools/ script next to bench.py.
-
-## LCD simpler digits, step 8 (2026-10-30)
-- Done (step 8 final): a shift within 1/512 px below a whole px (wx1 / wy1 == 256) takes the whole-px path at the
-  next shift (`wholeTap`): bitmap glyphs and their ramp columns; ticks had it (fT 256); sprite digits are whole now.
-  The sim does the same maths either way: not mirrored.
-- check:meniscus `marks-floor-120` fails on one pixel (17/255): the body's soft-edge ramp is one 565 step off there
-  before any mark (sim a5b7 / fw a5b8, also at HEAD: 9/255), a whole-px digit blend stacks on it. Lever: the edge
-  ramp's rounding parity; not pursued.
-- Sprite digits no longer read DigitRow::nb / b0 / b1 (no band): the shared tick facts still compute them.
-- Since step 7 the digits (and ticks, fizz) touch strip lines the tiles left cold in PSRAM: a wet int px costs ~0.55 us
-  on the hours core vs ~0.32 for a dry one on core 1. Drawing digits into the tiles (step-7 KAIZEN: facts pass first)
-  is the exact lever left for them.
-- Variant B (row colour instead of the pixel behind) only removes a load the SIMD blend does 8 px at a time; as a
-  scalar write-only kernel it is slower (+1.3 ms hours). Not worth a look round unless the SIMD kernel gets a
-  broadcast-background form (still reads the lanes around a run).
-- Variant C (row facts per 4-row band) saves nothing when rear ticks share their facts with the digits (user preset):
-  the facts are computed once per row for both layers already.
-- Refill `late` counts rise at `p` writes during a bench script (NVS autosave 2 s later stalls the cache): count them
-  only inside the windows, or pin with volatile writes (idea above).
+- AMOLED keeps esp_random for the fizz draws (8 B static RAM for the per-core xorshift); ~16 B left under its 88.4 KB bar.

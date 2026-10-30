@@ -27,6 +27,9 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
 // The whole-px shift the sprite digits of tube idx were last drawn at (render.cpp Labels::holdWhole: held across
 // frames), for the `x` dump: the sim renders a dumped state at the same shift (sim setDigitHold).
 void render_digit_shift(int idx, int &dx, int &dy);
+// Start of a deterministic sequence (seq.h, the `X` command): no bubbles, spring clocks at 0, digit shifts not held,
+// the fizz draws reseeded. false: this build draws from esp_random (AMOLED), the fizz is not reproducible.
+bool render_seq_reset(uint32_t seed);
 #ifdef DIGIT_PROF
 // Last frame's digit-path counters of one tube (build with -DDIGIT_PROF): glyphs, rows, int px plain,
 // int px liquid, frac px plain, frac px liquid, slow (band) px, runs.

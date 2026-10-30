@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end firmware check: build -> flash -> pinned fps bench -> pixel parity vs the sim.
 #   tools/e2e.sh [--label TEXT] [--stages] [--stage name=v ...] [--no-ble] [--bare] [--no-flash] [--samples N]
-#                [--preset FILE.json] [--live-imu] [--runs N] [--ref COMMIT] [--stages fizz,digits] [--quick] [--no-parity]
+#                [--preset FILE.json] [--fix-pose] [--live-imu] [--runs N] [--ref COMMIT] [--stages fizz,digits] [--quick] [--no-parity]
 #                [--env NAME] [--res N]
 # --env NAME = platformio.ini env to build and flash (else $LW_BOARD, else amoled191; lcd316 for the ESP32-S3-LCD-3.16);
 #   --res N = the lcd316's canvas rows (RENDER_H 240 / 256 / 288 / 320, else $LW_RES, else 320 = native). Parity
@@ -12,7 +12,7 @@
 #   .pio/libdeps in the worktree.
 # --bare = no BLE and no IMU polling: USB serial + physics + render only (the ceiling); the bench then accepts
 #   the all-zero IMU (--allow-dead-imu).
-# --preset / --live-imu / --runs / --stage go to bench.py (see its docstring). Pin a preset whenever the two sides
+# --preset / --fix-pose / --live-imu / --runs / --stage go to bench.py (see its docstring). Pin a preset whenever the two sides
 #   of a comparison straddle a Params change: a PARAMS_SCHEMA_CRC change resets NVS to presets/1.json on flash.
 # --ref COMMIT = A/B in one go: first a temporary git worktree of COMMIT (under /tmp) is built and flashed with the
 #   same flags and benched with the same preset/runs/stages (label "<label> ref <sha>", no parity step: the sim
@@ -20,7 +20,7 @@
 # Appends the bench lines + parity line to firmware/.compare/e2e.log. Board must be reachable (device.py).
 # Exit 3 = bench.py found the IMU dead even after a reboot (the run is not comparable).
 set -euo pipefail
-USAGE="usage: $0 [--label TEXT] [--stages] [--stage name=v] [--no-ble] [--bare] [--no-flash] [--samples N] [--preset FILE] [--live-imu] [--runs N] [--ref COMMIT] [--stages LIST] [--quick] [--no-parity] [--env NAME] [--res N] [--define NAME=V]"
+USAGE="usage: $0 [--label TEXT] [--stages] [--stage name=v] [--no-ble] [--bare] [--no-flash] [--samples N] [--preset FILE] [--fix-pose] [--live-imu] [--runs N] [--ref COMMIT] [--stages LIST] [--quick] [--no-parity] [--env NAME] [--res N] [--define NAME=V]"
 LABEL=""; BENCH=(); FLASH=1; PARITY=1; SAMPLES=5; FLAGS=""; SUFFIX=""; PRESET=""; REF=""; ENV="${LW_BOARD:-amoled191}"; RES="${LW_RES:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -35,6 +35,7 @@ while [ $# -gt 0 ]; do
         --samples) SAMPLES="$2"; shift ;;
         --preset) PRESET="$(realpath -e "$2")"; shift ;;   # resolved before the cd below
         --live-imu) BENCH+=(--live-imu) ;;
+        --fix-pose) BENCH+=(--fix-pose) ;;
         --runs) BENCH+=(--runs "$2"); shift ;;
         --ref) REF="$2"; shift ;;
         --env) ENV="$2"; shift ;;

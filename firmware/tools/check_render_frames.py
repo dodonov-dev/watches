@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Compare complete firmware strips against a saved reference render.cpp (native C++).
 
-Usage: python3 firmware/tools/check_render_frames.py --reference /tmp/render-before.cpp [--no-fizz | --big-fizz] [--tube-seq] [--tiles]
+Usage: python3 firmware/tools/check_render_frames.py --reference /tmp/render-before.cpp [--no-fizz | --big-fizz] [--no-tube-seq] [--tiles]
                                                     [--tolerance N] [--list-diffs]
 --no-fizz forces fizz off in every scene of both builds, so a fizz-only change must stay byte-identical.
 --big-fizz gives the random group large bubbles (sizes 3/5/14, spread 0.65, blick and depth fade cycling) so the
 disc interior, core, pinpoint and depth paths are exercised; both builds see the same scenes.
---tube-seq adds 400 ten-frame sequences at one params generation per tube (light holding then moving, small edge moves,
+The tube sequences (default; --no-tube-seq leaves them out) are 400 ten-frame sequences at one params generation per tube (light holding then moving, small edge moves,
 pulls, films, residue arrays edited in a few columns a frame; band / glow / front / inset / glass params varied), for
 state carried across frames (the residue blur memo, the palette and band-row caches).
 --tiles builds the current side with the tiled band loop (-DTILE_RENDER=1, tiles.h; host sink = memcpy), so the LCD's
@@ -135,6 +135,9 @@ int main() {
     p.tickMajorEveryH=3; p.tickMajorEveryM=5;
     p.tickStepH=1; p.tickStepM=5;
     p.tickMinorWidthH=p.tickMinorWidthM=1+i%4;
+    p.tickMajorWidthH=p.tickMajorWidthM=1+(i/3)%4;
+    { static const uint32_t TC[]={0xffffff,0x202020,0xd04010,0x30a0ff,0xffffff};   // minor / major colours: equal in some scenes, not in others
+      p.tickColorH=p.tickColorM=TC[i%5]; p.tickMajorColorH=TC[(i+i/5)%5]; p.tickMajorColorM=TC[(i/7)%5]; }
     p.tickEmboss=(i%5)*0.25f; p.markContrast=(i%3)*25;
     p.liquidTransparency=(i%17)/16.0f;
     p.tickPosH=p.tickPosM=i%3;
@@ -256,8 +259,9 @@ def main():
                         help='force fizz off (fizz=false, fizzCount=0) in every scene of both builds')
     parser.add_argument('--big-fizz', action='store_true',
                         help='large fizz with blick/depth variety in the random group (exercises the disc interior paths)')
-    parser.add_argument('--tube-seq', action='store_true',
-                        help='add tube-body sequences: frames at one generation per tube (light, edges, residue edits) for per-frame state')
+    parser.add_argument('--no-tube-seq', action='store_true',
+                        help='leave out the tube-body sequences (frames at one generation per tube: light, edges, residue edits)')
+    parser.add_argument('--tube-seq', action='store_true', help=argparse.SUPPRESS)   # the default now; kept for old command lines
     parser.add_argument('--tiles', action='store_true',
                         help='current side: tiled band loop (-DTILE_RENDER=1, host memcpy sink) against the reference')
     parser.add_argument('--list-diffs', action='store_true',
@@ -275,7 +279,7 @@ def main():
         cpp = tmp / 'frames.cpp'
         cpp.write_text(HARNESS)
         sides = [('reference', reference), ('current', ROOT / 'firmware/src/render.cpp')]
-        defines = (['-DNO_FIZZ'] if args.no_fizz else []) + (['-DBIG_FIZZ'] if args.big_fizz else []) + (['-DTUBE_SEQ'] if args.tube_seq else [])
+        defines = (['-DNO_FIZZ'] if args.no_fizz else []) + (['-DBIG_FIZZ'] if args.big_fizz else []) + ([] if args.no_tube_seq else ['-DTUBE_SEQ'])
         builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', *defines,
                                     *(['-DTILE_RENDER=1'] if args.tiles and name == 'current' else []),
                                     '-ffp-contract=off', '-fsanitize=undefined,float-cast-overflow', '-fno-sanitize-recover=all',

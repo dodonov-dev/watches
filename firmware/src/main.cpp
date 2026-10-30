@@ -9,10 +9,13 @@
 //      or from the RTC on boards with one: board.h HAS_RTC)
 //   w<N>  minutes sweep: the minutes tube runs empty→full→empty every N s, hours keep the clock (w0 = off; persists in NVS)
 //   p<name>=<value>  set a param (e.g. p liquid=#39ff14, p fizz=0, p contactAngle=140)
+//   p~<name>=<value>  volatile: set it for now, never autosaved (tooling pins; a reboot or `p!` drops it)
 //   p?  dump params as JSON           p!  reset params to the built-in preset (and erase NVS copy)
 //   params are in design px (spec/layout.h DESIGN_H); physics and render run on them scaled to this board's canvas
 //   params persist in NVS (autosave 2 s after last p write)
 //   b<n> brightness 0..255            H<0|1>  panel HBM experiment (RM67162 B0h; unusable, see KAIZEN)
+//   X  deterministic sequence on the current params (seq.h): `SEQ <frame> <hash hours> <hash minutes> fizz ...` per
+//      frame, then `SEQ END`; compare two builds with tools/check_board_steps.py (the tubes restart from 10:09:30)
 //   v  board and canvas: `board <name>[@<RENDER_H>] canvas <W>x<H> panel <W>x<H>` (tools pick the sim's layout by it)
 //   r  reboot
 #include <Arduino.h>
@@ -29,6 +32,7 @@
 #include "rtc.h"
 #include "physics.h"
 #include "render.h"
+#include "seq.h"
 #include "tiles.h"
 #ifdef AB_COMPARE
 #include "render_ab.h"
@@ -91,19 +95,25 @@ static void paramsChanged() {
   paramsGen++;
 }
 // NVS autosave: namespace lw, blob cur. Written 2 s after the last change; ignored if the schema CRC differs.
+// What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only, and the autosave writes this
+// copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
 static Preferences prefs;
 static uint32_t paramsDirtyAt = 0;
+static Params *paramsSaved = nullptr;
 static void paramsLoad() {
+  paramsSaved = (Params *)heap_caps_malloc(sizeof(Params), MALLOC_CAP_SPIRAM);
+  if (!paramsSaved) out.println("error params: no PSRAM for the saved copy (p~ refused)");
   prefs.begin("lw", false);
   if (prefs.getUInt("crc") == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
     prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
   }
+  if (paramsSaved) *paramsSaved = params;
 }
 static void paramsTouch() { paramsDirtyAt = millis() | 1; }
 static void paramsFlush() {
   if (!paramsDirtyAt || millis() - paramsDirtyAt < 2000) return;
   paramsDirtyAt = 0;
-  prefs.putBytes("cur", &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
+  prefs.putBytes("cur", paramsSaved ? paramsSaved : &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
 }
 static void paramsErase() { paramsDirtyAt = 0; prefs.remove("cur"); prefs.remove("crc"); }
 static TubeState tubeH, tubeM;
@@ -530,9 +540,9 @@ static const ParamField *findField(const char *name) {
   for (int i = 0; i < PARAMS_NUM_FIELDS; i++) if (!strcmp(PARAM_FIELDS[i].name, name)) return &PARAM_FIELDS[i];
   return nullptr;
 }
-static bool setParam(const char *name, const char *val) {
+static bool setParam(Params &dst, const char *name, const char *val) {
   const ParamField *f = findField(name); if (!f) return false;
-  uint8_t *p = (uint8_t *)&params + f->off;
+  uint8_t *p = (uint8_t *)&dst + f->off;
   switch (f->type) {
     case 'f': *(float *)p = atof(val); break;
     case 'i': *(int *)p = atoi(val); break;
@@ -600,9 +610,12 @@ static void handleLine(char *line) {
       break; }
     case 'p': {
       if (arg[0] == '?') dumpParams();
-      else if (arg[0] == '!') { params = PRESET_DEFAULT; paramsChanged(); paramsErase(); out.println("params reset"); }
-      else { char *eq = strchr(arg, '='); if (!eq) { out.println("usage: p<name>=<value> | p? | p!"); break; }
-        *eq = 0; bool ok = setParam(arg, eq + 1); if (ok) { paramsChanged(); paramsTouch(); }
+      else if (arg[0] == '!') { params = PRESET_DEFAULT; if (paramsSaved) *paramsSaved = params; paramsChanged(); paramsErase(); out.println("params reset"); }
+      else { const bool vol = arg[0] == '~'; if (vol) arg++;
+        char *eq = strchr(arg, '='); if (!eq) { out.println("usage: p<name>=<value> | p~<name>=<value> | p? | p!"); break; }
+        if (vol && !paramsSaved) { out.println("error p~: no saved copy"); break; }
+        *eq = 0; bool ok = setParam(params, arg, eq + 1);
+        if (ok) { if (!vol) { if (paramsSaved) setParam(*paramsSaved, arg, eq + 1); paramsTouch(); } paramsChanged(); }
         out.printf(ok ? "ok %s\n" : "unknown param %s\n", arg); }
       break; }
     case 'x': {  // dump state + both strips (hex) for offline comparison with the sim
@@ -633,6 +646,19 @@ static void handleLine(char *line) {
       }
       out.println("END");
       break; }
+    case 'X': {  // deterministic sequence (seq.h) on the current params, frame hashes (tools/check_board_steps.py)
+      display_wait_all(); display_next_strips(strip); minutesPending = false;   // strips rendered without the lens map, as `x`
+      const bool seeded = render_seq_reset(0x5eedu);
+      const uint32_t t0 = millis(); const int words = tubeLayout(eff).H * PANEL_W;
+      seqRun(tubeH, tubeM, eff, paramsGen, strip, [&](int frame, uint16_t *const *s) {
+        int fh, sh, fm, sm; const int lh = fizzCounts(0, fh, sh), lm = fizzCounts(1, fm, sm);
+        out.printf("SEQ %d %08lx %08lx fizz %d/%d %d/%d\n", frame, (unsigned long)seqHash(s[0], words),
+                   (unsigned long)seqHash(s[1], words), lh, fh, lm, fm);
+        delay(1);   // the idle task (task watchdog)
+      });
+      out.printf("SEQ END %d frames %lu ms%s\n", SEQ_FRAMES, (unsigned long)(millis() - t0), seeded ? "" : " (fizz unseeded: esp_random)");
+      clockJumped = true;   // the fills jump back to the clock
+      break; }
     case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u",
                  mode, fps, (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60,
                  rawTilt.along, rawTilt.across, rawTilt.gyroAcross, tubeH.fillTarget, tubeM.fillTarget,
@@ -643,7 +669,7 @@ static void handleLine(char *line) {
       out.println(); break;
     case 'v': out.printf("board %s canvas %dx%d panel %dx%d\n", BOARD_TAG, PANEL_W, PANEL_H, BOARD_PANEL_W, BOARD_PANEL_H); break;
     case 'r': ESP.restart(); break;
-    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p? p! x v r"); break;
+    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v r"); break;
     default: out.println("error unknown command"); break;
   }
 }
