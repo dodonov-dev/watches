@@ -68,6 +68,8 @@ def main():
         if len(parts) == 2:
             hours[key] = parts[0]; minutes[key] = parts[1]
     job = {'params': params, 'hours': hours, 'minutes': minutes}
+    dg = [l for l in lines if l.startswith('DIGITS ')]   # the sprite digits' held whole-px shift per tube (render-ref.ts)
+    if dg: v = list(map(int, dg[0].split()[1:5])); job['digitShift'] = [v[0:2], v[2:4]]
     font = int(round(params['digitFont']))
     if font >= 5:
         name = SHEETS[font - 5]; base = os.path.join(SIM, 'public', 'assets', name + '.png')
@@ -100,7 +102,7 @@ def main():
         e = max(abs(A[k] - B[k]) for k in range(3)); big += e > 12
         dd.append((255, 255, 0) if e > 12 else (90, 0, 0))
     diff.putdata(dd); diff.save(os.path.join(a.out, 'diff.png'))
-    print(f'state hours={hours} minutes={minutes}')
+    print(f'state hours={hours} minutes={minutes}' + (f' digitShift={job["digitShift"]}' if 'digitShift' in job else ''))
     print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}), tubes {TH} px at y {Y0[0]} / {Y0[1]}')
     print(f'mismatched pixels: {n} of {2 * W * TH} ({100 * n / (2 * W * TH):.2f}%), >12/255 off: {big}')
     print('wrote', a.out)

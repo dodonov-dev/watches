@@ -24,6 +24,9 @@ bool render_init();
 // applied to the strip; *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
 // the next render of this tube; nullptr = no lens), for a push that remaps rows anyway (display_lcd316.cpp).
 void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr);
+// The whole-px shift the sprite digits of tube idx were last drawn at (render.cpp Labels::holdWhole: held across
+// frames), for the `x` dump: the sim renders a dumped state at the same shift (sim setDigitHold).
+void render_digit_shift(int idx, int &dx, int &dy);
 #ifdef DIGIT_PROF
 // Last frame's digit-path counters of one tube (build with -DDIGIT_PROF): glyphs, rows, int px plain,
 // int px liquid, frac px plain, frac px liquid, slow (band) px, runs.

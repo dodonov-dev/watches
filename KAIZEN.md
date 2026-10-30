@@ -692,3 +692,22 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
   A hung restart drops the USB port (system reset): the ROM line is lost, only the next boot's reason survives.
 - `r` loop counter (port session per `r`, ROM rst line + banner reason, drop = hung): firmware/.pio/wdt/rloop.py, not
   committed; worth a tools/ script next to bench.py.
+
+## LCD simpler digits, step 8 (2026-10-30)
+- Done (step 8 final): a shift within 1/512 px below a whole px (wx1 / wy1 == 256) takes the whole-px path at the
+  next shift (`wholeTap`): bitmap glyphs and their ramp columns; ticks had it (fT 256); sprite digits are whole now.
+  The sim does the same maths either way: not mirrored.
+- check:meniscus `marks-floor-120` fails on one pixel (17/255): the body's soft-edge ramp is one 565 step off there
+  before any mark (sim a5b7 / fw a5b8, also at HEAD: 9/255), a whole-px digit blend stacks on it. Lever: the edge
+  ramp's rounding parity; not pursued.
+- Sprite digits no longer read DigitRow::nb / b0 / b1 (no band): the shared tick facts still compute them.
+- Since step 7 the digits (and ticks, fizz) touch strip lines the tiles left cold in PSRAM: a wet int px costs ~0.55 us
+  on the hours core vs ~0.32 for a dry one on core 1. Drawing digits into the tiles (step-7 KAIZEN: facts pass first)
+  is the exact lever left for them.
+- Variant B (row colour instead of the pixel behind) only removes a load the SIMD blend does 8 px at a time; as a
+  scalar write-only kernel it is slower (+1.3 ms hours). Not worth a look round unless the SIMD kernel gets a
+  broadcast-background form (still reads the lanes around a run).
+- Variant C (row facts per 4-row band) saves nothing when rear ticks share their facts with the digits (user preset):
+  the facts are computed once per row for both layers already.
+- Refill `late` counts rise at `p` writes during a bench script (NVS autosave 2 s later stalls the cache): count them
+  only inside the windows, or pin with volatile writes (idea above).

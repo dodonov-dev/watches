@@ -31,8 +31,14 @@ Native stays: lower canvases were compared side by side on the board and look wo
   internal RAM, copied to the PSRAM strip by GDMA; the push reads the strip by GDMA too (gathered units in the tube's
   tile slots). Same-session A/B on the fixed scene: 33.6 → 40.5 fps pinned, **25.2 → 31.5 swinging the tilt** (goal
   ≥ 30 met); push both strips 20.8 → 12.7 ms swinging. Free heap with BLE 8.8 → 4.4 KB. Reviewed (2026-10-30). **Next:** a BLE connection test at this heap (`ble-session.py`
-  needs `bleak` on the Windows Python); the look-
-  change step 8 (simpler digits) is parked; further perf levers in KAIZEN (step 7).
+  needs `bleak` on the Windows Python); further perf levers in KAIZEN (steps 7, 8).
+- **Done:** step 8 (simpler digits, Log), 2026-10-30, **not committed**: by-eye rounds done; the user took A (whole-px
+  digit parallax, 0.7 px hysteresis) and E (no surface band over sprite digits), rejected D (the meniscus ramp stays),
+  B / C not taken. A + E are the default sprite-digit look on both boards, mirrored in the sim (bitmap digits keep the
+  fractional shift and the band); the `-DDIGIT_AB` scaffolding is gone; the zero-shift fix for bitmap digits. Same
+  session, HEAD vs new alternating twice (wide, new `user-fav.json`): 40.6 → 45.8 fps pinned, 31.2 → 34.8 swinging the
+  tilt; hours digits 9.8 → 6.8 ms pinned, 8.9 → 5.7 swinging. **Next:** a BLE connection test at this heap (still open
+  from step 7); further levers in KAIZEN (steps 7, 8).
 - **Frame budget now** (step 7, wide, TUBE_PROF + PUSH_PROF): pinned ~24 ms a frame = hours core ~19.2 (digits 9.4,
   ticks 1.9, body + ramps 1.6, fizz 1.2, tile copies 2.4 of which ~2.1 waiting for the DMA, 3e band 0.9, back 0.7,
   residue 0.75, bounds 0.2) then its push ~4.8 (both 9.6), physics 1.2 × 0.48, rest 0.06. Swinging ~31 ms: hours
@@ -61,8 +67,8 @@ Native stays: lower canvases were compared side by side on the board and look wo
   through `python.exe` + pyserial) or `/dev/ttyACMx`; `python3 firmware/tools/device.py --port <port> v` must answer
   `board lcd316@320 canvas 820x320 panel 820x320`. On native Windows (no WSL) the bash tools need Git Bash or
   adapting; `device.py` itself works on Linux and through WSL only.
-- **Board state:** flashed with the step 7 final wide build (`--define LCD_FILL=1`); NVS `inputGain` 1, tilt from the
-  IMU (`g`), checked after the step 7 runs (clock pinned at 10:09:30, demo `d0`). NVS holds the user's preset; benches pin
+- **Board state:** flashed with the default wide build (`LCD_FILL=1`, step 8 final: A + E); NVS = `bench/user-fav.json`
+  (angleTiltGain 12, angleMax 12), `inputGain` 1, tilt from the IMU (`g`), checked after the step 8 runs (clock pinned). NVS holds the user's preset; benches pin
   `firmware/bench/user-fav.json` and restore params afterwards (clock stays pinned until "send sim time").
 
 ## Rules (every step)
@@ -607,3 +613,112 @@ ticksH 3.0, fizz 2.7, traces 2.3, ticksM 0.5, edgeGlow 0.3; lens / glass / trans
   32-B blocks, `tiles.h`); a refused `gdma_start` or a copy that never lands now aborts with a message after 1 s instead
   of spinning (`tile_dma.cpp`). All six builds pass (240, 288, AB 256, wide, narrow, AMOLED 86,080 B); host frames
   byte-identical (plain, `--tiles --tube-seq`). Left as is: `FB_BOUNCE_LINES 0` has no VSYNC restart (KAIZEN).
+- **Step 8, simpler digits (2026-10-30): variants prepared, decided by eye, A + E final (not committed).**
+  - **Decisions (user, by-eye board rounds):** A accepted (whole-px parallax, 0.7 px hysteresis), E accepted (no
+    surface band over sprite digits), D rejected ("it worsens the satisfying look when liquid is in the process of
+    covering the digit": the meniscus ramp stays), B (slower) and C (no gain) not taken; the zero-shift fix (KAIZEN)
+    accepted.
+  - **Final** (`render.cpp`, `render.h`, `main.cpp`, `sim/src/render.ts`, `sim/tools/render-ref.ts`,
+    `firmware/tools/compare-device.py`): A + E are the sprite-digit default on both boards (shared render.cpp), the
+    `-DDIGIT_AB` scaffolding (DV_*, B / C / D, `render_digit_variant`, the `D` command and compare face) removed.
+    With A the sprite wet copy is always whole, so the fractional sprite kernels (FracRun / fracTap /
+    spriteRunFrac*, FracMemo in PSRAM) went; with E no sprite run takes the band compositor (spriteRunSlow, the
+    footprint cut in SpriteRow::run went). Bitmap digits are unchanged (fractional shift, band).
+    - Hysteresis: `Labels::holdWhole` (per Tube, so per core; static, no allocation): wetDx / wetDy rounded, kept
+      until more than 0.7 px off; updated once a frame where the digit layer is drawn (both fonts, as the sim). The
+      ramp columns take `jround(whole * k / 256)`. Sim: `DigitHold` per tube index, the same rule in drawDigitLayer.
+    - Parity across the cross-frame state: the `x` dump prints `DIGITS hx hy mx my` (render_digit_shift, after the
+      dump's re-render); compare-device.py passes it as `job.digitShift`, render-ref.ts seeds the sim with it
+      (`setDigitHold`). Host tools render sequences on both sides with the same rule (check_board_render: tilt 0;
+      check_meniscus: the same job order), so they need no seeding.
+    - Zero-shift fix (`wholeTap`): wx1 / wy1 == 256 → the next whole shift; applies to bitmap glyphs and their ramp
+      columns (the only fractional digit paths left). Ticks already had it (plotF: fT 256 → x + 1). Sprite digits:
+      not reachable. Not mirrored (the sim does the same maths either way).
+  - **Proof (host):** a reference = the `-DDIGIT_AB` sources with the mask forced to 17 and E limited to sprite labels
+    (`firmware/.pio/step8/proto/refAEs.cpp`): `check_render_frames.py` byte-identical, plain 9,136 strips, `--tube-seq`
+    13,136, `--tiles --tube-seq` 13,136, `--no-fizz --tube-seq` 13,136, `--big-fizz` 9,136; a near-whole shift grid
+    (DX / DY at -1e-7, 0.9999, 2.9995, ...: exercises `wholeTap` on bitmap fonts) 9,136 identical. Against the raw
+    mask-17 build (`ref17.cpp`) 720 of 13,136 differ, all bitmap-font scenes: the prototype's E also took the band
+    from bitmap digits, against its own "sprite digits only". Vs HEAD: digits off in every scene → byte-identical
+    (plain 9,136; `--no-fizz --tube-seq`, `--tiles --tube-seq` 13,136 each); bitmap fonts only → byte-identical (same
+    three runs): every pixel change is a sprite digit's.
+  - **Proof (sim):** `check_board_render.py` presets within 12/255: AMOLED 68 → 74 of 77, `--res 320f` 72 → 73,
+    `--res 320` 73 → 77 (the old band-over-digit composite was the approximation that missed); check:imu, presets,
+    materials, material-gen pass; tsc clean. check:meniscus: one pixel of `marks-floor-120` at 17/255 (HEAD 9): the
+    body's soft-edge ramp is one 565 step off there before any mark (traced on both sides: sim a5b7, fw a5b8; same
+    digit colour and coverage), a whole-px digit blend now stacks on it (KAIZEN). Board (`compare-device.py`, wide,
+    user preset): `>12/255 off: 0` at tilt 0 and three overrides (shifts [4,1], [-3,-2]), 48–193 px off; a held case
+    (`g -0.6 0` then `g -0.6 0.08`: held [4, 0] where rounding gives [4, 1]) 175 px off, 0 > 12 — the same dump
+    without `digitShift` 12,503 off, 6,483 > 12.
+  - **Board** (wide, same session, `user-fav.json` with angleTiltGain / angleMax 12; HEAD from a worktree, alternating
+    HEAD / new twice; pinned: `g -0.5 0` 4 s, `g 0 0` 4 s, `bench.py --runs 2`; swinging: `swing.py 40 '-1,0>0.6,0@3'`;
+    digit ms from `-DDIGIT_PROF -DTUBE_PROF` builds, prof.py, one round each):
+    | | fps pinned | fps swinging | cores h / m pinned | hours digits ms pinned / swinging |
+    |---|---|---|---|---|
+    | HEAD (step 7) | 40.7 / 40.5 | 31.2 / 31.1 | 19.2 / 14.6 | 9.8 / 8.9 |
+    | step 8 final | 45.7 / 45.8 | 34.9 / 34.6 | 16.0 / 13.9 | 6.8 / 5.7 |
+    Refill monitor OK in every bench (late 0, restarts 0 in the windows, worst 10–11 %; swinging worst ≤ 15 %, no late
+    window). Free heap with BLE (`s`) 4.1–4.3 KB both builds. Static RAM: wide 131,620 B (+64), narrow 121,636 (=),
+    AMOLED 86,104 (+24, ≤ 88,400), `AB_COMPARE=256` 158,212, `RENDER_H=240` 75,928; `DIGIT_PROF`, `DIGIT_VERIFY` build.
+  - History, the prepared variants (below): `render.cpp` (DV_* variants, `render_digit_variant`), `render.h`,
+    `main.cpp` (`D` command, compare face), all under `-DDIGIT_AB`. Sprite digits only (bitmap fonts stay exact).
+  - Profile first (`-DDIGIT_PROF -DTUBE_PROF`, step-7 sources, fixed scene): hours rear digits 9.2 ms pinned = run
+    kernels 6.4 (994 dry int px + 8,744 wet frac px), band px 0.58 (232), ramp columns 0.64, the rest ~1.6 (559 glyph
+    rows; since step 7 the digits also pay cold strip lines: a wet int px ~0.55 us on the hours core); swinging 7.4–9.9
+    ms, ramp up to 1.9 when the meniscus crosses a digit. Nothing on the list missed a big cost: no own variant.
+  - Variants (bits of `D`): **A 1** whole-px parallax: the wet copy at the rounded shift, 0.7 px hysteresis per tube
+    (no flicker at x.5), ramp columns at their rounded share, no fractional taps. **B 2** glyph composited against the
+    row's colour (`pal.rows` behind liquid, `tubeBackRows` behind air; scalar write-only kernels; band px and ramp
+    columns stay exact). **C 4** liquid interval, band footprints and dryT of each 4-row band's first row. **D 8** no
+    meniscus ramp: a column shows the dry copy where its wet share < 1/2, the wet copy where >= 1/2 (the Mark still
+    picks the plane per pixel). **E 16** no band compositor on digits (runs skip the footprints, ramp columns' Mark
+    has no band).
+  - Same boot (`-DDIGIT_AB`, wide, fixed scene, 5 pinned windows + 30 s swinging, two rounds in opposite order,
+    averaged); digit ms from the profiling build (another boot, same procedure, one round):
+    | variant | fps pinned | fps swinging | cores h pinned / swinging | hours digits ms pinned / swinging |
+    |---|---|---|---|---|
+    | exact (0) | 39.8 | 31.4 | 19.9 / 22.7 | 9.8 / 8.9 |
+    | A | 43.2 | 34.2 | 18.0 / 20.8 | 7.8 / 6.6 |
+    | B | 38.6 | 29.9 | 20.6 / 24.7 | 11.1 / 9.9 |
+    | C | 40.4 | 31.5 | 19.3 / 23.1 | 9.4 / 8.8 |
+    | D | 40.6 | 31.7 | 19.3 / 22.9 | 9.5 / 8.5 |
+    | E | 41.8 | 32.2 | 18.6 / 22.2 | 8.7 / 8.3 |
+    | A+D (9) | 44.3 | 34.4 | 17.3 / 20.6 | 7.4 / 6.0 |
+    | A+D+E (25) | 46.0 | 35.4 | 16.1 / 20.3 | 6.3 / 5.9 |
+    Minutes digit ms are not comparable between variants (its slug state differed per prep). Pinned, A's gain is
+    partly a bench artefact: the fixed scene's acrossTilt settles to -0.000000x, so the exact path runs the fractional
+    kernel for a zero shift (KAIZEN: exact fix); A's look there is identical. Swinging numbers are the honest ones.
+  - Host look deltas (`firmware/.pio/step8/look/look.py`, user preset through the physics: slug home, pinned scene,
+    across +-0.5, a 6 s swing at 10 Hz, both tubes; changed px vs the exact render, share of the digit px, per-channel
+    RGB888 delta max / mean over the changed px), wide: A 31 % (max 141, mean 12.5: sub-px edges while the shift is
+    fractional, 0 px at rest), B 0.1 % (181 / 50: AA and shadow px over ticks / glass highlights), C 0.2 % (9 / 6),
+    D 1.3 % (199 / 45: a seam where the meniscus crosses a digit), E 0.7 % (69 / 20: the rim no longer over the
+    digit), A+D 31.9 %, A+D+E 31.9 %. Narrow: A 35.7 %, B 0.2, C 0, D 1.0, E 0.5. Crops (exact / variant / diff x4)
+    and swing GIFs per variant: `firmware/.pio/step8/look/res320f/`, `res320/` (git-ignored).
+  - Exactness: default build `check_render_frames.py --reference <step-7 render.cpp> --tolerance 0` byte-identical
+    (plain 9,136 strips; `--tiles --tube-seq` 13,136); a `-DDIGIT_AB` build at variant 0 too (`--tube-seq`, `--tiles
+    --tube-seq`). Default static RAM = step 7's (wide 131,556 B, narrow 121,636); `-DDIGIT_AB` +64 B; AMOLED 86,080 B
+    (unchanged); builds pass: wide, narrow, `AB_COMPARE=256`, `RENDER_H=240`, AMOLED, `DIGIT_AB` wide / narrow.
+    Default vs step 7, same session, alternating twice: 41.3 / 41.1 (step 7) vs 41.1 / 41.0 fps pinned, 31.4 / 31.0
+    vs 31.4 / 31.4 swinging; standard bench on the final flash 40.4 pinned (refills OK, worst 11 %), swing.py 31.4.
+    Free heap with BLE 3.6–4.1 KB in `s` across these boots (static RAM unchanged: runtime spread).
+  - Refills: OK in every window; the `late` totals rose only right after the scripts' `p` writes (NVS autosave),
+    never inside a measured window (KAIZEN).
+  - (Removed with the final; kept for the record.) **How to run the side-by-side** (one flash covers every variant):
+    `cd firmware && PLATFORMIO_BUILD_FLAGS="-DLCD_FILL=1 -DDIGIT_AB" tools/flash-win.sh --env lcd316 COM11` (8 mm lens,
+    wide tubes) or `PLATFORMIO_BUILD_FLAGS="-DDIGIT_AB" …` (6 mm, narrow). Then
+    `python3 tools/device.py --port COM11 'Dh A'`: the top slot shows the hours tube with the exact digits, the bottom
+    slot (where minutes normally are) the same hours tube with variant A — same state and frame, rendered one core
+    after the other (~22 fps wide, ~34 narrow), both pushed together. `Dm <v>` does it with the minutes tube. `<v>` is
+    letters or the bit number: `Dh A`, `Dh D`, `Dh E`, `Dh AD`, `Dh ADE`. `D <v>` puts a variant on both tubes in the
+    normal face (benches: `prof`-style fixed scene, bench.py, swing.py work unchanged); `D0` = exact normal face; `D`
+    alone prints the state. The pinned clock 10:09:30 puts the hours meniscus over "10" (D / E show there); `t HH:MM`
+    moves it. Back to the default: `PLATFORMIO_BUILD_FLAGS="-DLCD_FILL=1" tools/flash-win.sh --env lcd316 COM11`.
+  - Sim mirror (only for the variant chosen; `sim/src/render.ts` drawGlyph / markFn): A: `shifted()` at the rounded
+    shift (and the ramp's `round(wetDx * k / 256)`), with the same 0.7 px hysteresis kept per tube; B: markFn blends a
+    digit run pixel over the row colour instead of the pixel (not in band px / ramp columns); C: inLiquid / dryT / band
+    footprint of row `ry & ~3` in the runs; D: dry copy where warp < 128, the k = 256 path where >= 128, no blended
+    rows; E: the digit markFn without BandInfo. Then gen_params / presets untouched (no Params change).
+  - Scratch (git-ignored `firmware/.pio/step8/`): `ref/` (step-7 sources, the `--reference`), `proto/` (the
+    `-DDIGIT_AB` sources; `refAEs.cpp` / `ref17.cpp`, the final's references), `prof.py` (per-variant fixed scene +
+    swing in one boot, `--state` dumps the pinned tilt), `look/` (host harness + PNG / GIF), logs.

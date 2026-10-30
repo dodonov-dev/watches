@@ -616,6 +616,8 @@ static void handleLine(char *line) {
                    t.lineVFree, t.lineVHome);
       };
       out.print("STATE"); dumpState(tubeH); dumpState(tubeM); out.println();
+      { int hx, hy, mx, my; render_digit_shift(0, hx, hy); render_digit_shift(1, mx, my);   // the digits' held whole-px shift per tube
+        out.printf("DIGITS %d %d %d %d\n", hx, hy, mx, my); }
       char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
       auto dumpTrace = [&](const uint16_t *v) {
         if (v) for (int x = 0; x < TUBE_LENGTH_PX; x++) sprintf(thex + x * 4, "%04x", v[x]);

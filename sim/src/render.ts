@@ -679,6 +679,16 @@ export function tickFollowRange(f: TickFollow, H: number, edge: number, share: n
 }
 /** Wet share of a column (see wetShare); 256 everywhere for digits on top. */
 type WarpFn = (x: number) => number;
+/** Sprite digits behind liquid move by whole px: the refraction shift (`wetDx`, `wetDy`) rounded, kept until the shift
+ *  is more than 0.7 px away, so a shift resting near x.5 does not flicker between two px. Render state across frames,
+ *  one per tube (firmware Labels::holdWhole); `setDigitHold` puts the one a board dump held (render-ref.ts). */
+interface DigitHold { dx: number; dy: number; held: boolean; }
+const digitHold: [DigitHold, DigitHold] = [{ dx: 0, dy: 0, held: false }, { dx: 0, dy: 0, held: false }];
+export function setDigitHold(idx: number, dx: number, dy: number): void { digitHold[idx & 1] = { dx, dy, held: true }; }
+function holdWhole(h: DigitHold, lb: Labels): void {
+  const hold = (v: number, w: number): number => !h.held || Math.abs(v - w) > 0.7 ? Math.round(v) : w;
+  h.dx = hold(lb.wetDx, h.dx); h.dy = hold(lb.wetDy, h.dy); h.held = true;
+}
 /** Coverage (0..255) and colour of glyph pixel (cx, cy); both only defined inside w x h. */
 interface GlyphSampler {
   w: number; h: number; a: (cx: number, cy: number) => number; c: (cx: number, cy: number) => number;
@@ -694,7 +704,10 @@ interface GlyphSampler {
 /** `inLiquid(x, ry)`: whether the mark at that pixel is composited through the liquid (the markFn test);
  *  null = never (digits on top). */
 type InLiquidFn = ((x: number, ry: number) => boolean) | null;
-function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, withShadow: boolean, inLiquid: InLiquidFn): void {
+/** `whole` (sprite digits, see DigitHold): the wet copy at that whole-px shift instead of the fractional one, the
+ *  meniscus columns at their share of it rounded to whole px; null = the fractional shift (bitmap digits). */
+function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, withShadow: boolean, inLiquid: InLiquidFn,
+  whole: DigitHold | null = null): void {
   // Plane per PIXEL: the behind-liquid plane (aw/cw) exactly where markFn composites through the liquid,
   // the behind-air plane elsewhere. The column's share decides which image (warp and shift) it shows; the
   // meniscus makes rows of one column differ, and there the compositor's per-row test picks the plane.
@@ -742,23 +755,25 @@ function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: W
     }
     // behind liquid, and across the meniscus: every destination column the shifted glyph can reach
     const wetRows = (ry: number): number => lb.sourceRows[ry];
-    const x0 = xg + Math.min(0, Math.floor(lb.wetDx)), x1 = xg + s.w + Math.max(0, Math.ceil(lb.wetDx));
+    const dx = whole ? whole.dx : lb.wetDx, dy = whole ? whole.dy : lb.wetDy;
+    const part = (v: number, k: number): number => whole ? Math.round(v * (k / 256)) : v * (k / 256);
+    const x0 = xg + Math.min(0, Math.floor(dx)), x1 = xg + s.w + Math.max(0, Math.ceil(dx));
     for (let xd = x0; xd <= x1; xd++) {
       const k = warp(xd); if (k === 0) continue;
-      if (k === 256) shifted(xd, lb.wetDx, lb.wetDy, lb.ry0, lb.ry1, wetRows);
-      else shifted(xd, lb.wetDx * (k / 256), lb.wetDy * (k / 256), 0, H - 1, (ry) => blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k));
+      if (k === 256) shifted(xd, dx, dy, lb.ry0, lb.ry1, wetRows);
+      else shifted(xd, part(dx, k), part(dy, k), 0, H - 1, (ry) => blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k));
     }
   }
 }
-/** Image glyph: per-pixel coverage from the pre-scaled sheet. */
-function drawSpriteGlyph(g: ScaledGlyph | undefined, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn): void {
+/** Image glyph: per-pixel coverage from the pre-scaled sheet, at the tube's held whole-px shift. */
+function drawSpriteGlyph(g: ScaledGlyph | undefined, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn, whole: DigitHold): void {
   if (!g) return;
   if (lb.vertical) x -= g.w - lb.bh;   // the baked shadow margin lies below the body as read: left of it on the panel
   // the shadow is baked into the sprite (scaledGlyphs), so a single pass draws both
   drawGlyph({
     w: g.w, h: g.h, a: (cx, cy) => g.a[cy * g.w + cx], c: (cx, cy) => g.c[cy * g.w + cx],
     aw: (cx, cy) => g.aw[cy * g.w + cx], cw: (cx, cy) => g.cw[cy * g.w + cx],
-  }, x, yTop, lb, warp, mark, false, inLiquid);
+  }, x, yTop, lb, warp, mark, false, inLiquid, whole);
 }
 /** Bitmap glyph, nearest-neighbour scaled into bw x bh. */
 function drawBitmapGlyph(f: Font, d: number, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn): void {
@@ -785,15 +800,15 @@ function digitRowColors(p: Params, bh: number): Uint16Array {
   return out;
 }
 /** `edges` null = digits on top: everything uses the wet (whole-tube) tables. Otherwise wetShare holds
- *  these edges' shares (drawTube). */
-function drawLabels(lb: Labels, _p: Params, edges: Edges | null, mark: MarkFn): void {
+ *  these edges' shares (drawTube). `whole`: the tube's held shift (sprite digits). */
+function drawLabels(lb: Labels, _p: Params, edges: Edges | null, mark: MarkFn, whole: DigitHold): void {
   const warp: WarpFn = edges ? shareAt : () => 256;
   const inLiquid: InLiquidFn = edges ? (x, ry) => x >= edges.lo[ry] && x < edges.hi[ry] : null;
   for (const l of lb.list) {
     let x = l.x0, y = l.y;
     for (let i = 0; i < l.text.length; i++) {
       const d = l.text.charCodeAt(i) - 48;
-      if (lb.sprite) drawSpriteGlyph(lb.sprite[d], x, y, lb, warp, mark, inLiquid);
+      if (lb.sprite) drawSpriteGlyph(lb.sprite[d], x, y, lb, warp, mark, inLiquid, whole);
       else drawBitmapGlyph(lb.font, d, x, y, lb, warp, mark, inLiquid);
       if (lb.vertical) y += l.adv[i] + lb.gap; else x += l.adv[i] + lb.gap;
     }
@@ -1892,7 +1907,12 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const drawDigitLayer = (onTop: boolean): void => {
     if (!labels || p.digitsOnTop !== onTop) return;
     const baked = !!labels.sprite && labels.shadow >= 0;
-    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, bounds, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0));
+    // Sprite digits take no surface band: its rim, blick and dish are not layered over them (a look decision, firmware
+    // perf: their runs need no per-pixel band test). Bitmap digits keep it.
+    const digitEdges: Edges = labels.sprite ? { lo: bounds.lo, hi: bounds.hi } : bounds;
+    holdWhole(digitHold[idx], labels);
+    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0),
+      digitHold[idx]);
   };
   drawTickLayer(false);
   drawDigitLayer(false);
