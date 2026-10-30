@@ -2,15 +2,60 @@
 #include "render.h"
 #include "gen/sprites_gen.h"
 #include "layout.h"
+#include "tiles.h"
 #ifdef DIGIT_PROF
 #include "esp_timer.h"
 #include "esp_cpu.h"
+#endif
+#ifdef DIGIT_VERIFY
+#include "esp_cpu.h"
+#endif
+#ifdef TICK_PROF
+#include "esp_cpu.h"
+#endif
+#ifdef FIZZ_PROF
+#include "esp_cpu.h"
+#define FZ_T0(v) const uint32_t v = esp_cpu_get_cycle_count()
+#define FZ_ADD(a, i, v) ((a)[i] += esp_cpu_get_cycle_count() - (v))
+#else
+#define FZ_T0(v)
+#define FZ_ADD(a, i, v) ((void)0)
+#endif
+#if defined(TUBE_PROF) || defined(TUBE_VERIFY) || defined(TILE_VERIFY)
+#include "esp_cpu.h"
+#endif
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+#define FZC(i) (d.prof[i]++)
+#else
+#define FZC(i) ((void)0)
 #endif
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
+// The tick kernels in IRAM on the LCD (drawTicks): the 16 KB instruction cache is shared by both render cores. AMOLED
+// and host builds: flash (the AMOLED has no internal RAM to spare).
+#if defined(BOARD_LCD316) && defined(__XTENSA__)
+#include "esp_attr.h"
+#define TICK_IRAM IRAM_ATTR
+#define FIZZ_IRAM IRAM_ATTR   // the fizz kernels likewise (step 5)
+#ifndef TUBE_IRAM_OFF
+#define TUBE_IRAM IRAM_ATTR   // drawTube's per-row kernels likewise (step 6)
+#else
+#define TUBE_IRAM
+#endif
+#else
+#define TICK_IRAM
+#define FIZZ_IRAM
+#define TUBE_IRAM
+#endif
+// Sprite digit blends on the S3's SIMD (PIE) on the LCD build (see pieBlend); AMOLED and host builds: scalar.
+#if defined(BOARD_LCD316) && defined(__XTENSA__)
+#define DIGIT_PIE 1
+#else
+#define DIGIT_PIE 0
+#endif
 
 // ---------------------------------------------------------------------------------------------
 // helpers — same maths as the sim (colours are float RGB triplets, quantised to 565 at the end)
@@ -94,27 +139,84 @@ struct ResidueTint {
     return fmn(256, (i >= 255.5f ? 256 : phi[(int)(i + 0.5f)]) * G * (1.0f / 256));
   }
 };
-// Dried-trace fill of one strip row over [x0, x1) over the tube back (the only layer under it), written in the
-// strip's byte-swapped layout. aLo / aHi = the smallest non-zero / largest traceA of the span, so every depth
-// lies in [depthT(aLo), depthT(aHi)] (monotone in A): when that is a narrow band (a uniform traceFilm: the
-// streak spans 18 %) and the span is long, the row's colours come from a LUT built once, otherwise per pixel.
+// Dried-trace fill of one strip row over [x0, x1) and [x2, x3) over the tube back (the only layer under it),
+// written in the strip's byte-swapped layout. aLo / aHi = the smallest non-zero / largest traceA of the span, so
+// every depth lies in [depthT(aLo), depthT(aHi)] (monotone in A): when the spans are long against that band, the
+// row's colours come from a LUT built once for both spans (any width: TRACE_LUT covers every T), otherwise per
+// pixel. (Step 6: the LUT used to stop at 48 depths, so the grazing rows, whose path weight spreads the depths
+// over ~100 steps, took the per-pixel colour: 4 ms of the minutes core.)
 // noinline: inside drawTube the loop shared a register file with hundreds of locals and spilled every
 // iteration; on its own it stays in registers.
-#define TRACE_LUT 48
-static void __attribute__((noinline)) traceFillRow(uint16_t *row, const uint16_t *traceA, int x0, int x1, const ResidueTint &tint,
-                                                    int aLo, int aHi, uint16_t *lut) {   // lut: TRACE_LUT entries, the tube's own
+#define TRACE_LUT 257   // T 0..256; PSRAM, one per tube (render_init)
+#ifndef TUBE_BAND
+#if TILE_RENDER
+#define TUBE_BAND TILE_ROWS   // a band is a tile (tiles.h): internal RAM, copied out when done
+#else
+#define TUBE_BAND 8   // drawTube's row band: strip rows the base stages run over together (cache-resident)
+#endif
+#endif
+#if TILE_RENDER && TUBE_BAND != TILE_ROWS
+#error "tiled render: the band is the tile"
+#endif
+#if TILE_RENDER && !(defined(BOARD_LCD316) && defined(__XTENSA__))
+// Host sink (check_render_frames.py --tiles): memcpy, so the tiled band loop is proven pixel for pixel off the board.
+static uint16_t hostTile[2][2][TILE_ROWS * PANEL_W];
+bool tiles_init() { return true; }
+uint16_t *tile_slot(int idx, int slot) { return hostTile[idx & 1][slot & 1]; }
+void tile_begin(int, uint16_t *, int) {}
+void tile_put(int idx, int slot, uint16_t *dst, int rows) { memcpy(dst, hostTile[idx & 1][slot & 1], (size_t)rows * PANEL_W * 2); }
+void tile_end(int) {}
+const uint32_t *tile_prof(int) { static const uint32_t z[5] = {}; return z; }
+#endif
+TUBE_IRAM static void __attribute__((noinline)) traceFillLut(uint16_t *row, const uint16_t *traceA, int x0, int x1, const ResidueTint &t,
+                                                    int Tlo, const uint16_t *lut) {
+  for (int x = x0; x < x1; x++) {
+    if (!traceA[x]) continue;
+    const int T = t.depthT(traceA[x]);
+    if (T) row[x] = lut[T - Tlo];
+  }
+}
+// The same fill with the colour indexed by i = (A K + 2^15) >> 16 (depthT's phi index, clamped at 256) instead of T:
+// lutI[i - iZ] = the colour of T(i) for i in [iZ, i1]; T(i) is non-decreasing in i (FILM_PHI is), so T > 0 exactly
+// from iZ on. Saves depthT's phi load and gain multiply per pixel (step 6).
+TUBE_IRAM static void __attribute__((noinline)) traceFillLutI(uint16_t *row, const uint16_t *traceA, int x0, int x1, uint32_t K, int iZ,
+                                                     const uint16_t *lutI) {
+  for (int x = x0; x < x1; x++) {
+    const uint32_t A = traceA[x];
+    if (!A) continue;
+    uint32_t i = (A * K + 32768u) >> 16; if (i > 256) i = 256;
+    if ((int)i >= iZ) row[x] = lutI[i - iZ];
+  }
+}
+TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, const uint16_t *traceA, int x0, int x1, int x2, int x3,
+                                                    const ResidueTint &tint, int aLo, int aHi, uint16_t *lut) {   // lut: 2 x TRACE_LUT entries, the tube's own
   const ResidueTint t = tint;
   const int Tlo = t.depthT((uint32_t)aLo), Thi = t.depthT((uint32_t)aHi);
-  if (Thi - Tlo < TRACE_LUT && x1 - x0 > 2 * (Thi - Tlo + 1)) {
-    for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(t.at(T)) : 0;
-    for (int x = x0; x < x1; x++) {
-      if (!traceA[x]) continue;
-      const int T = t.depthT(traceA[x]);
-      if (T) row[x] = lut[T - Tlo];
+  const int n = (x1 > x0 ? x1 - x0 : 0) + (x3 > x2 ? x3 - x2 : 0);
+  // i of the span's extremes; no 32-bit wrap of A K there (then i is monotone in A over the span)
+  const uint64_t qLo = (uint64_t)(uint32_t)aLo * t.K + 32768u, qHi = (uint64_t)(uint32_t)aHi * t.K + 32768u;
+  if (aHi >= aLo && qHi < (1ull << 32) && n > 0) {
+    const int iLo = (int)(qLo >> 16) > 256 ? 256 : (int)(qLo >> 16), i1 = (int)(qHi >> 16) > 256 ? 256 : (int)(qHi >> 16);
+    int iZ = iLo;
+    auto Ti = [&](int i) { const int T = ((i >= 256 ? 256 : t.phi[i]) * t.G + 128) >> 8; return T < 256 ? T : 256; };   // depthT from i
+    while (iZ <= i1 && Ti(iZ) == 0) iZ++;
+    if (n > (i1 - iZ + 1) + (Thi - Tlo + 1)) {
+      if (iZ > i1) return;   // every pixel of the spans takes T 0: nothing to write
+      uint16_t *const lutI = lut + TRACE_LUT;
+      for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(t.at(T)) : 0;
+      for (int i = iZ; i <= i1; i++) lutI[i - iZ] = lut[Ti(i) - Tlo];
+      traceFillLutI(row, traceA, x0, x1, t.K, iZ, lutI);
+      traceFillLutI(row, traceA, x2, x3, t.K, iZ, lutI);
+      return;
     }
+  }
+  if (n > Thi - Tlo + 1) {
+    for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(t.at(T)) : 0;
+    traceFillLut(row, traceA, x0, x1, t, Tlo, lut);
+    traceFillLut(row, traceA, x2, x3, t, Tlo, lut);
     return;
   }
-  for (int x = x0; x < x1; x++) {
+  for (int k = 0; k < 2; k++) for (int x = k ? x2 : x0, xe = k ? x3 : x1; x < xe; x++) {
     if (!traceA[x]) continue;
     const int T = t.depthT(traceA[x]);
     if (T) row[x] = __builtin_bswap16(t.at(T));
@@ -125,7 +227,7 @@ static inline int alphaT(float t) { return (int)(t * 256 + 0.5f); }
 // wet reach, sampled sh * w back (w = 1 - smoothstep(out * invZ), out = px outward of the edge at e),
 // linear between columns, tinted as the general zone loop does these pixels, where the midpoint share is
 // 0 / 1 and the film weight is 0. noinline for the same reason as traceFillRow.
-static void __attribute__((noinline)) traceShearRow(uint16_t *row, const uint16_t *traceA, int a0, int a1, int x0, int x1,
+TUBE_IRAM static void __attribute__((noinline)) traceShearRow(uint16_t *row, const uint16_t *traceA, int a0, int a1, int x0, int x1,
                                                      const ResidueTint &tint, float e, bool home, float sh, float invZ) {
   for (int x = x0; x < x1; x++) {
     const float o = home ? e - x - 0.5f : x + 0.5f - e;
@@ -142,8 +244,10 @@ static void __attribute__((noinline)) traceShearRow(uint16_t *row, const uint16_
 static inline void rowPxa(uint16_t *row, int x, uint16_t c, float t) {   // Tube::pxa on a strip row
   row[x] = __builtin_bswap16(t >= 1 ? c : blend565(__builtin_bswap16(row[x]), c, t));
 }
+#ifdef TUBE_VERIFY
+// The step-5 ramps, verbatim (TUBE_VERIFY: the SIMD path is compared against them).
 // Step 3 soft-edge AA ramp plus folded glow, time edge: rightwards from a0 until the alpha reaches 0.
-static void __attribute__((noinline)) rampRowR(uint16_t *row, int a0, int aEnd, float ex, float hw, float invW, float invGlow,
+static void __attribute__((noinline)) rampRowRScalar(uint16_t *row, int a0, int aEnd, float ex, float hw, float invW, float invGlow,
                                                bool glow, float glowStrength, float lightK, int x0, int solidLo, int solidHi,
                                                bool trace, uint16_t back, uint16_t fg) {
   for (int x = a0; x <= aEnd; x++) {
@@ -158,7 +262,7 @@ static void __attribute__((noinline)) rampRowR(uint16_t *row, int a0, int aEnd, 
   }
 }
 // Same, home edge: leftwards from xStart; only [x0, xi) is drawn.
-static void __attribute__((noinline)) rampRowL(uint16_t *row, int xStart, int bEnd, float exL, float hw, float invW, float invGlow,
+static void __attribute__((noinline)) rampRowLScalar(uint16_t *row, int xStart, int bEnd, float exL, float hw, float invW, float invGlow,
                                                bool glow, float glowStrength, float lightKL, int x0, int xi, int solidLo, int solidHi,
                                                bool trace, uint16_t back, uint16_t fg) {
   if (bEnd < x0) bEnd = x0;   // walking left: every x < x0 is skipped anyway
@@ -172,22 +276,95 @@ static void __attribute__((noinline)) rampRowL(uint16_t *row, int xStart, int bE
     else row[x] = __builtin_bswap16(blend565(back, fg, a));
   }
 }
-// newlib's sqrtf is a bit-by-bit software loop here. Reciprocal-sqrt seed + 3 Newton steps: relative error <= 2.1e-7
+#endif
+#if DIGIT_PIE
+static bool rampPieR(uint16_t *row, int a0, int aEnd, float ex, float hw, float invW, float invGlow, bool glow, float glowStrength,
+                     float lightK, int x0, int solidLo, int solidHi, uint16_t fg, const uint16_t *lo, const uint16_t *hi);
+static bool rampPieL(uint16_t *row, int xStart, int bEnd, float exL, float hw, float invW, float invGlow, bool glow, float glowStrength,
+                     float lightKL, int x0, int xi, int solidLo, int solidHi, uint16_t fg, const uint16_t *lo, const uint16_t *hi);
+#endif
+// Step 3 soft-edge AA ramp plus folded glow, time edge: rightwards from a0 until the alpha reaches 0. lo / hi: the strip
+// (the LCD's SIMD path, rampPieR, blends whole blocks inside it).
+TUBE_IRAM static void __attribute__((noinline)) rampRowR(uint16_t *row, int a0, int aEnd, float ex, float hw, float invW, float invGlow,
+                                               bool glow, float glowStrength, float lightK, int x0, int solidLo, int solidHi,
+                                               bool trace, uint16_t back, uint16_t fg, const uint16_t *lo, const uint16_t *hi) {
+#if DIGIT_PIE
+  if (trace && rampPieR(row, a0, aEnd, ex, hw, invW, invGlow, glow, glowStrength, lightK, x0, solidLo, solidHi, fg, lo, hi)) return;
+#else
+  (void)lo; (void)hi;
+#endif
+  for (int x = a0; x <= aEnd; x++) {
+    float t = glow ? fmx(0, 1 - (x + 0.5f - ex) * invGlow) : 0;
+    float a = fmn(1, clampf((ex + hw - x - 0.5f) * invW, 0, 1) + t * t * glowStrength * lightK);
+    if (a <= 0) break;
+    // trace: blended over the pixel, T 0 leaves it as it is, and the alpha never rises along the walk (cov and the
+    // glow fall monotonically with x, also as rounded): stop at the first T 0 (step 6). Not without trace: the
+    // pixel is set from `back` there.
+    if (trace && a < 1 && (int)(a * 256 + 0.5f) <= 0) break;
+    if (a >= 1 && x >= solidLo && x < solidHi) continue;   // the span already drew it full
+    if (x >= x0 && x < PANEL_W) {
+      if (trace) rowPxa(row, x, fg, a);
+      else row[x] = __builtin_bswap16(blend565(back, fg, a));
+    }
+  }
+}
+// Same, home edge: leftwards from xStart; only [x0, xi) is drawn.
+TUBE_IRAM static void __attribute__((noinline)) rampRowL(uint16_t *row, int xStart, int bEnd, float exL, float hw, float invW, float invGlow,
+                                               bool glow, float glowStrength, float lightKL, int x0, int xi, int solidLo, int solidHi,
+                                               bool trace, uint16_t back, uint16_t fg, const uint16_t *lo, const uint16_t *hi) {
+#if DIGIT_PIE
+  if (trace && rampPieL(row, xStart, bEnd, exL, hw, invW, invGlow, glow, glowStrength, lightKL, x0, xi, solidLo, solidHi, fg, lo, hi)) return;
+#else
+  (void)lo; (void)hi;
+#endif
+  if (bEnd < x0) bEnd = x0;   // walking left: every x < x0 is skipped anyway
+  for (int x = xStart; x >= bEnd; x--) {
+    float t = glow ? fmx(0, 1 - (exL - (x + 0.5f)) * invGlow) : 0;
+    float a = fmn(1, clampf((x + 0.5f - exL + hw) * invW, 0, 1) + t * t * glowStrength * lightKL);
+    if (a <= 0) break;
+    if (trace && a < 1 && (int)(a * 256 + 0.5f) <= 0) break;   // as in rampRowR (alpha falls leftwards)
+    if (x < x0 || x >= xi || x >= PANEL_W) continue;
+    if (a >= 1 && x >= solidLo && x < solidHi) continue;
+    if (trace) rowPxa(row, x, fg, a);
+    else row[x] = __builtin_bswap16(blend565(back, fg, a));
+  }
+}
+// sqrtf is two out-of-line calls here (see sqrtExact). Reciprocal-sqrt seed + 3 Newton steps: relative error <= 2.1e-7
 // against sqrtf for 1e-30 <= x < 1200 (below that it returns < 1e-10); as an 8-bit coverage it moved 1 step in
 // 2.5e-7 of the samples. Not for values that must match the sim bit for bit.
+// The bits move with __builtin_bit_cast: the build has -fno-builtin-memcpy, so a memcpy here was two out-of-line calls
+// (and window spills) per root — most of the fizz kernel's time (step 5, 2026-10-29).
 static inline float rsqrtApprox(float x) {   // 1/sqrt(x), same seed and Newton steps as sqrtApprox
-  uint32_t i; memcpy(&i, &x, 4); i = 0x5f3759dfu - (i >> 1);
-  float y; memcpy(&y, &i, 4);
+  float y = __builtin_bit_cast(float, 0x5f3759dfu - (__builtin_bit_cast(uint32_t, x) >> 1));
   const float hx = 0.5f * x;
   y = y * (1.5f - hx * y * y); y = y * (1.5f - hx * y * y); y = y * (1.5f - hx * y * y);
   return y;
 }
 static inline float sqrtApprox(float x) {
-  uint32_t i; memcpy(&i, &x, 4); i = 0x5f3759dfu - (i >> 1);
-  float y; memcpy(&y, &i, 4);
+  float y = __builtin_bit_cast(float, 0x5f3759dfu - (__builtin_bit_cast(uint32_t, x) >> 1));
   const float hx = 0.5f * x;
   y = y * (1.5f - hx * y * y); y = y * (1.5f - hx * y * y); y = y * (1.5f - hx * y * y);
   return x * y;
+}
+// sqrtf for x >= 0, bit for bit: on the S3 newlib's sqrtf is a wrapper (NaN / negative checks, errno) around
+// __ieee754_sqrtf, the FPU's correctly rounded sqrt0.s / maddn.s / divn.s sequence; that sequence inline, no calls (two
+// windowed calls a root: the fizz physics takes one per disc row in discFit). Host builds: sqrtf.
+static inline float sqrtExact(float x) {
+#ifdef __XTENSA__
+  float f0, f1 = x, f2, f3, f4, f5, f6, f7;
+  __asm__("sqrt0.s %[f2], %[f1]\n\tconst.s %[f3], 0\n\tmaddn.s %[f3], %[f2], %[f2]\n\tnexp01.s %[f4], %[f1]\n\t"
+          "const.s %[f0], 3\n\taddexp.s %[f4], %[f0]\n\tmaddn.s %[f0], %[f3], %[f4]\n\tnexp01.s %[f3], %[f1]\n\t"
+          "neg.s %[f5], %[f3]\n\tmaddn.s %[f2], %[f0], %[f2]\n\tconst.s %[f0], 0\n\tconst.s %[f6], 0\n\t"
+          "const.s %[f7], 0\n\tmaddn.s %[f0], %[f5], %[f2]\n\tmaddn.s %[f6], %[f2], %[f4]\n\tconst.s %[f4], 3\n\t"
+          "maddn.s %[f7], %[f4], %[f2]\n\tmaddn.s %[f3], %[f0], %[f0]\n\tmaddn.s %[f4], %[f6], %[f2]\n\tneg.s %[f2], %[f7]\n\t"
+          "maddn.s %[f0], %[f3], %[f2]\n\tmaddn.s %[f7], %[f4], %[f7]\n\tmksadj.s %[f2], %[f1]\n\tnexp01.s %[f1], %[f1]\n\t"
+          "maddn.s %[f1], %[f0], %[f0]\n\tneg.s %[f3], %[f7]\n\taddexpm.s %[f0], %[f2]\n\taddexp.s %[f3], %[f2]\n\t"
+          "divn.s %[f0], %[f1], %[f3]"
+          : [f0] "=&f"(f0), [f1] "+f"(f1), [f2] "=&f"(f2), [f3] "=&f"(f3), [f4] "=&f"(f4), [f5] "=&f"(f5), [f6] "=&f"(f6), [f7] "=&f"(f7));
+  return f0;
+#else
+  return sqrtf(x);
+#endif
 }
 // Step 5 fizz: one row of an AA bubble disc (see drawTube). Coverage and core are decided from squared distances
 // with a 1e-4 relative margin that float rounding cannot cross; a root is taken only in the anti-aliased ring
@@ -199,55 +376,123 @@ struct DiscRow {
   float blickK, bX, bY, rbOut, bIn2, bOut2;    // pinpoint: fizzBlick, centre offset, rb + 0.5, (rb - 0.5)^2 and (rb + 0.5)^2 with margins
   float tintA;                                  // bubbleDark x depthK: opacity of the dark tint over the see-through interior
   bool core, mirror, blick; int xsI, L; uint16_t cRim, cBlick;
+#ifdef FIZZ_PROF
+  uint32_t *prof;                               // the tube's fizzProf (FZC: FIZZ_PROF=2 pixel classes)
+#endif
 };
 // Veil of one disc pixel by the pixel's footprint over each surface band [profile, profile +- width]: continuous
 // as the edge moves. Out of the pixel loop (noinline) so its nine floats are not live there; a division per
 // veiled pixel only (bubbles touching a band). Multiplies cov in the sim's order, so the result is bit-identical.
-static float __attribute__((noinline)) discVeil(int ix, const DiscRow &d, float cov) {   // returns the veiled cov, sim order
+FIZZ_IRAM static float __attribute__((noinline)) discVeil(int ix, const DiscRow &d, float cov) {   // returns the veiled cov, sim order
   if (ix + 1 > d.sR && d.bR > 0) { const float a1 = fmn(ix + 1, d.sR + d.bR), a0 = fmx(ix, d.sR);
     if (a1 > a0) { const float q = ((a0 + a1) / 2 - d.sR) / d.bR; cov *= 1 - d.veilA * (a1 - a0) * (1 - q) * (1 - d.pullR * q); } }
   if (ix < d.sL && d.bL > 0) { const float a1 = fmn(ix + 1, d.sL), a0 = fmx(ix, d.sL - d.bL);
     if (a1 > a0) { const float q = (d.sL - (a0 + a1) / 2) / d.bL; cov *= 1 - d.veilA * (a1 - a0) * (1 - q) * (1 - d.pullL * q); } }
   return cov;
 }
-// Two instantiations: BLICK false is the plain disc (small bubbles, fizzBlick 0) and carries none of the pinpoint
-// state in its pixel loop; BLICK true also skips the pinpoint test on rows its disc cannot reach.
+// blend565T(a, b, T) with b's lanes expanded once (a disc row blends every ring pixel toward the same rim colour).
+struct RimLanes { uint32_t rb, g; uint16_t c; };
+static inline RimLanes rimLanes(uint16_t b) {
+  const uint32_t b5 = ((b >> 8) & 0xf8u) | ((uint32_t)(b & 31) << 19), bg6 = (b >> 5) & 63;
+  return { b5 | ((b5 >> 5) & 0x00070007u), (bg6 << 2) | (bg6 >> 4), b };
+}
+static inline uint16_t blend565L(uint16_t a, const RimLanes &B, int T) {   // == blend565T(a, B.c, T), same integers
+  if (T <= 0) return a;
+  if (T >= 256) return B.c;
+  const uint32_t a5 = ((a >> 8) & 0xf8u) | ((uint32_t)(a & 31) << 19);
+  const uint32_t arb = a5 | ((a5 >> 5) & 0x00070007u);
+  const uint32_t ag6 = (a >> 5) & 63, ag = (ag6 << 2) | (ag6 >> 4);
+  const uint32_t rb = (arb << 8) + (B.rb - arb) * (uint32_t)T + 0x00800080u;
+  const uint32_t g = (ag << 8) + (B.g - ag) * (uint32_t)T + 128;
+  return (uint16_t)((rb & 0xf800u) | ((g >> 5) & 0x07e0u) | (rb >> 27));
+}
+// Two instantiations: BLICK false is the plain disc (small bubbles, fizzBlick 0, and every row the pinpoint cannot
+// reach) and carries none of the pinpoint state in its pixel loop.
+// Profile (2026-10-29, LCD wide, user preset, -DFIZZ_PROF): ~10 px visited a row, half of them outside the disc;
+// ~100 cycles a pixel of tests and spills, ~90 a ring root, ~130 a blend. So a row visits only what it can draw:
+// the chord (|dx| beyond its half-width plus a margin far above float rounding has d2 >= out2), clipped to the panel,
+// minus the certainly-core pixels that write nothing (no tint, out of the pinpoint's reach), each pixel then taking
+// the exact tests it took before. Output-neutral: every pixel left out reached `continue` without a write.
 template <bool BLICK>
-static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
+FIZZ_IRAM static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
   const float fx = d.fx, dy = d.dy, dy2 = dy * dy, r = d.r, in2 = d.in2, out2 = d.out2, offX = d.offX, offY = d.offY, wallT = d.wallT;
+  if (dy2 >= out2) return;   // every d2 = dx² + dy2 >= dy2 >= out2: nothing on this row
   const float bdy = BLICK ? dy - d.bY : 0, bRem = BLICK ? d.bOut2 - bdy * bdy : 0;   // pinpoint reach left for dx² on this row
-  const bool blickRow = BLICK && bRem > 0;
-  const int veilLo = d.veilLo, veilHi = d.veilHi;
-  // See-through interior with no tint and no pinpoint on this row: pixels certainly inside the core (dc2 < core2Lo
-  // with a pixel of slack) would reach `continue` without a write, so the loop jumps over them. Output-neutral.
-  int skipLo = INT_MAX, skipHi = INT_MIN;
-  if (d.core && d.tintA <= 0 && !blickRow) {
+  if (BLICK && !(bRem > 0)) { discRowT<false>(row, ixa, ixb, d); return; }   // out of the pinpoint's reach: the plain disc
+  { const float w = sqrtApprox(out2 - dy2) + 0.01f;   // the chord's half-width, plus margin
+    const int lo = (int)fceil(fx - 0.5f - w), hi = (int)ffloor(fx - 0.5f + w);
+    if (lo > ixa) ixa = lo; if (hi < ixb) ixb = hi; }
+  const int x0 = d.mirror ? d.L - 1 - d.xsI : d.xsI, step = d.mirror ? -1 : 1;   // panel x = x0 + step * ix
+  { const int lo = d.mirror ? x0 - (PANEL_W - 1) : -x0, hi = d.mirror ? x0 : PANEL_W - 1 - x0;
+    if (lo > ixa) ixa = lo; if (hi < ixb) ixb = hi; }
+  if (ixa > ixb) return;
+  // Certainly inside the core (dc2 < core2Lo with margin) and writing nothing (no tint; minus the pinpoint's reach on
+  // its rows): up to two spans jumped over.
+  int cut[4], nc = 0;
+  if (d.core && d.tintA <= 0) {
     const float cy = dy - offY, rem = d.core2Lo * (1 - 1e-4f) - cy * cy;
-    if (rem > 0) { const float hw = sqrtApprox(rem) - 1; if (hw > 0) { skipLo = (int)fceil(fx + offX - hw - 0.5f); skipHi = (int)ffloor(fx + offX + hw - 0.5f); } }
+    if (rem > 0) { const float hw = sqrtApprox(rem) - 0.01f; if (hw > 0) {
+      const int a = (int)fceil(fx + offX - hw - 0.5f), b = (int)ffloor(fx + offX + hw - 0.5f);
+      if (BLICK) {
+        const float bw = sqrtApprox(bRem) + 0.01f;
+        const int pa = (int)ffloor(fx + d.bX - bw - 0.5f), pb = (int)fceil(fx + d.bX + bw - 0.5f);
+        const int b0 = b < pa - 1 ? b : pa - 1, a1 = a > pb + 1 ? a : pb + 1;
+        if (a <= b0) { cut[nc++] = a; cut[nc++] = b0; }
+        if (a1 <= b) { cut[nc++] = a1; cut[nc++] = b; }
+      } else if (a <= b) { cut[nc++] = a; cut[nc++] = b; }
+    } }
   }
-  for (int ix = ixa; ix <= ixb; ix++) {
-    if (ix == skipLo && skipHi >= skipLo) { ix = skipHi; continue; }
+  int spanA[3], spanB[3], ns = 0;
+  { int a = ixa;
+    for (int i = 0; i < nc; i += 2) {
+      const int e = cut[i] - 1 < ixb ? cut[i] - 1 : ixb;
+      if (a <= e) { spanA[ns] = a; spanB[ns++] = e; }
+      if (cut[i + 1] + 1 > a) a = cut[i + 1] + 1;
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+      { const int sa = cut[i] > ixa ? cut[i] : ixa, sb = cut[i + 1] < ixb ? cut[i + 1] : ixb; if (sb >= sa) d.prof[FZ_PX_SKIP] += sb - sa + 1; }
+#endif
+    }
+    if (a <= ixb) { spanA[ns] = a; spanB[ns++] = ixb; } }
+  const int veilLo = d.veilLo, veilHi = d.veilHi;
+  const RimLanes rim = rimLanes(d.cRim);
+  for (int k = 0; k < ns; k++)
+  for (int ix = spanA[k]; ix <= spanB[k]; ix++) {
+    FZC(FZ_PX_VISIT);
     const float dx = ix + 0.5f - fx;
     const float d2 = dx * dx + dy2;
-    if (d2 >= out2) continue;   // d > r + 0.5: no coverage
+    if (d2 >= out2) { FZC(FZ_PX_OUT); continue; }   // d > r + 0.5: no coverage
     float cov = (d2 <= in2 ? 1.0f : fmn(1, r + 0.5f - sqrtApprox(d2))) * wallT;
-    if (cov <= 0) continue;
-    if (ix >= veilLo || ix < veilHi) cov = discVeil(ix, d, cov);   // only bubbles at a surface band pay for the veil
+    if (cov <= 0) { FZC(FZ_PX_COV0); continue; }
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+    if (d2 > in2) FZC(FZ_PX_AA);
+#endif
+    if (ix >= veilLo || ix < veilHi) { FZC(FZ_PX_VEIL); cov = discVeil(ix, d, cov); }   // only bubbles at a surface band pay for the veil
     const float cx = dx - offX, cy = dy - offY, dc2 = cx * cx + cy * cy;
-    const bool inCore = d.core && (dc2 < d.core2Lo || (dc2 <= d.core2Hi && sqrtf(dc2) < d.kc));
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+    if (d.core && dc2 >= d.core2Lo && dc2 <= d.core2Hi) FZC(FZ_PX_SQRT);
+#endif
+    const bool inCore = d.core && (dc2 < d.core2Lo || (dc2 <= d.core2Hi && sqrtExact(dc2) < d.kc));
     float g = 0;
-    if (blickRow) {   // pinpoint weight
+    if (BLICK) {   // pinpoint weight
       const float bdx = dx - d.bX, bdx2 = bdx * bdx;
       if (bdx2 < bRem) { const float db2 = bdx2 + bdy * bdy; g = d.blickK * (db2 <= d.bIn2 ? 1.0f : clampf(d.rbOut - sqrtApprox(db2), 0, 1)); }
     }
-    const int x = d.mirror ? d.L - 1 - (ix + d.xsI) : ix + d.xsI;
-    if (x < 0 || x >= PANEL_W) continue;
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+    if (g > 0) FZC(FZ_PX_BLICK);
+#endif
+    uint16_t *px = row + (x0 + step * ix);
     if (inCore) {   // see-through interior (sim): the pinpoint or the dark tint over the liquid as-is, one write, nothing at tint 0
-      if (g > 0) { const float w = g + d.tintA * (1 - g); rowPxa(row, x, d.tintA > 0 ? blend565(0, d.cBlick, g / w) : d.cBlick, cov * w); }   // fused with the tint (sim)
-      else if (d.tintA > 0) rowPxa(row, x, 0, cov * d.tintA);
+      FZC(FZ_PX_CORE);
+      if (g > 0) { FZC(FZ_PX_COREW); const float w = g + d.tintA * (1 - g); rowPxa(px, 0, d.tintA > 0 ? blend565(0, d.cBlick, g / w) : d.cBlick, cov * w); }   // fused with the tint (sim)
+      else if (d.tintA > 0) { FZC(FZ_PX_COREW); rowPxa(px, 0, 0, cov * d.tintA); }
       continue;
     }
-    rowPxa(row, x, g > 0 ? blend565(d.cRim, d.cBlick, g) : d.cRim, cov);   // ring, pinpoint mixed in 888 before the one blend
+    FZC(FZ_PX_RING);
+#if defined(FIZZ_PROF) && FIZZ_PROF >= 2
+    if (cov >= 1 && g <= 0) FZC(FZ_PX_SOLID);
+#endif
+    if (g > 0) rowPxa(px, 0, blend565(d.cRim, d.cBlick, g), cov);   // ring, pinpoint mixed in 888 before the one blend
+    else *px = __builtin_bswap16(cov >= 1 ? rim.c : blend565L(__builtin_bswap16(*px), rim, (int)(cov * 256 + 0.5f)));   // rowPxa toward the rim
   }
 }
 static inline void discRow(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
@@ -256,7 +501,7 @@ static inline void discRow(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
 // Step 3e concave surface band over [xa, xb): pixel-footprint stroke from the inner shoulder to the outer
 // colour at interior opacity `fill` (surfaceFill), thinned by the receding pull, the blick (`blickK`: this
 // row's specular weight, peaking mid-dish) and the lit rim. See sim.
-static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, int xb, float xm, int dir, float hw, float wEff, float invWidth,
+TUBE_IRAM static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, int xb, float xm, int dir, float hw, float wEff, float invWidth,
                                               float a, float fill, float blickK, float pull, float rimK, uint16_t inner, uint16_t outer, uint16_t liquid, uint16_t hiC, uint16_t rimC) {
   if (xa < 0) xa = 0; if (xb > PANEL_W) xb = PANEL_W;
   const float rimLo = fmx(0, wEff - 1);
@@ -340,17 +585,77 @@ static inline int filmRowT(float eta, float kRow) {
 }
 // 1 - smoothstep(t), t clamped to 0..1 (sim ease): the imminent zone's eases, 1 at the line, 0 at its reach.
 static inline float ease(float t) { const float s = clampf(t, 0, 1); return 1 - s * s * (3 - 2 * s); }
+// The residue zones of one strip row (drawTube step 3d, [z0, z1)): the soft ramp over plain residue, or near a
+// sheared / filmed edge the imminent residue and the wet film (see the comments at the call). Step 6: out of drawTube
+// (noinline): inline, its ~40 live values spilled every pixel. The same expressions, in the same order.
+// The residue blur's cross-frame memo (drawTube, step 6): the key of the last traceA (filmV; the columns computed
+// [a0, a1) and read [c0, c1) of traceRaw) and the per-frame dirty flags. PSRAM, one per tube (render_init).
+struct TraceMemo { bool valid; float filmV; int a0, a1, c0, c1, aLo, aHi; uint8_t dirty[TUBE_LENGTH_PX]; };
+struct ZoneRow {
+  const uint16_t *traceA; const ResidueTint *tint;
+  float ex, exL, hw, invSoftW, xm, invBW, invN, shL, shR, invZL, invZR, etaL, etaR, kRow, visL, visR;
+  int softW, xrL, xr, a0, a1; bool rowPlain;
+};
+TUBE_IRAM static void __attribute__((noinline)) traceZoneRow(uint16_t *row, int z0, int z1, const ZoneRow &z) {
+  const ResidueTint &tint = *z.tint; const uint16_t *traceA = z.traceA;
+  const float ex = z.ex, exL = z.exL, hw = z.hw, invSoftW = z.invSoftW, xm = z.xm, invBW = z.invBW, invN = z.invN;
+  const float shL = z.shL, shR = z.shR, invZL = z.invZL, invZR = z.invZR, etaL = z.etaL, etaR = z.etaR, kRow = z.kRow;
+  const float visL = z.visL, visR = z.visR;
+  const int softW = z.softW, xrL = z.xrL, xr = z.xr, a0 = z.a0, a1 = z.a1; const bool rowPlain = z.rowPlain;
+  for (int x = z0; x < z1; x++) {
+    const float cr = ex + hw - x - 0.5f, cl = x + 0.5f - exL + hw;
+    const float cov = softW > 0
+      ? clampf((cr < cl ? cr : cl) * invSoftW, 0, 1)
+      : (x >= xrL && x < xr ? 1.0f : 0.0f);
+    if (cov >= 1) continue;
+    if (rowPlain) {
+      const int T = traceA[x] ? tint.depthT(traceA[x]) : 0;
+      if (T > 0) row[x] = __builtin_bswap16(tint.at(T));
+      continue;
+    }
+    const float oL = exL - x - 0.5f, oR = x + 0.5f - ex, bt = clampf((x + 0.5f - xm) * invBW + 0.5f, 0, 1);
+    float sh = 0, fw = 0;
+    if (bt < 1) { const float k = 1 - bt, wN = ease(oL * invN); if (shL != 0) sh += k * shL * ease(oL * invZL); if (etaL > 0) fw += k * filmRowT(etaL * wN, kRow) * wN * visL; }
+    if (bt > 0) { const float wN = ease(oR * invN); if (shR != 0) sh += bt * shR * ease(oR * invZR); if (etaR > 0) fw += bt * filmRowT(etaR * wN, kRow) * wN * visR; }
+    const float xf = x - sh;
+    const int i0 = (int)ffloor(xf);
+    const float ft = xf - i0;
+    const float r0 = i0 >= a0 && i0 < a1 ? (float)traceA[i0] : 0.0f, r1 = i0 + 1 >= a0 && i0 + 1 < a1 ? (float)traceA[i0 + 1] : 0.0f;
+    const int T = (int)(fmx(r0 + r1 > 0 ? tint.depthF(r0 + (r1 - r0) * ft) : 0.0f, fw) + 0.5f);
+    if (T > 0) row[x] = __builtin_bswap16(tint.at(T));
+  }
+}
 
 // Per-channel LUTs built once with the exact float formulas they replace (bit-exact with the sim):
 // sprite alpha 0..255 -> blend fraction; tick emboss highlight / shadow of an expanded 565 channel.
 static uint16_t LUT_alphaT16[256];
 static uint8_t LUT_embHi[256], LUT_embLo[256];
+// A 565 colour as expand565's three 8-bit channels in one word, r | g << 8 | b << 16: EXP565[2 hi] | EXP565[2 lo + 1]
+// for its high / low byte (each byte's bits land in disjoint places, g's from both; interleaved: one base register).
+// The sprite digit runs blend with it (blendLanesSw): no per-pixel unpacking, and a strip pixel is read in its
+// byte-swapped layout as it is. 2 KB, PSRAM, built once by render_init (always cache-hot in the digit pass).
+static uint32_t *EXP565 = nullptr;
 static void buildLuts() {
   for (int v = 0; v < 256; v++) {
     LUT_alphaT16[v] = (uint16_t)alphaT(v / 255.0f);
     LUT_embHi[v] = (uint8_t)jround(clampf((float)v + (255.0f - (float)v) * 0.7f, 0, 255));
     LUT_embLo[v] = (uint8_t)jround(clampf((float)v * 0.25f, 0, 255));
   }
+  if (EXP565) for (int v = 0; v < 256; v++) {
+    const uint32_t r5 = v >> 3, gh = v & 7, gl = v >> 5, b5 = v & 31;   // high byte: r5 g[5:3]; low byte: g[2:0] b5
+    EXP565[2 * v] = ((r5 << 3) | (r5 >> 2)) | (((gh << 5) | (gh >> 1)) << 8);
+    EXP565[2 * v + 1] = ((gl << 2) << 8) | (((b5 << 3) | (b5 >> 2)) << 16);
+  }
+}
+static inline uint32_t lanes565(uint16_t c) { return EXP565[(c >> 8) * 2] | EXP565[(c & 0xff) * 2 + 1]; }
+static inline uint32_t lanesSw(uint16_t s) { return EXP565[(s & 0xff) * 2] | EXP565[(s >> 8) * 2 + 1]; }   // a strip pixel (byte-swapped)
+// blend565T(a, b, T) for 0 < T < 256 on lanes (a = lanes of the pixel behind, b = of the mark), in the strip's
+// byte-swapped layout: the same lane arithmetic, the result packed straight into the swapped bit positions.
+static inline uint16_t blendLanesSw(uint32_t a, uint32_t b, uint32_t T) {
+  const uint32_t arb = a & 0x00ff00ffu, ag = (a >> 8) & 0xff;
+  const uint32_t rb = (arb << 8) + ((b & 0x00ff00ffu) - arb) * T + 0x00800080u;   // lanes as blend565T
+  const uint32_t g = (ag << 8) + (((b >> 8) & 0xff) - ag) * T + 128;
+  return (uint16_t)(((rb >> 8) & 0xf8) | ((rb >> 19) & 0x1f00) | ((g >> 13) & 7) | ((g << 3) & 0xe000));
 }
 static inline uint16_t embossHi(uint16_t c) { int r, g, b; expand565(c, r, g, b); return rgb565(LUT_embHi[r], LUT_embHi[g], LUT_embHi[b]); }
 static inline uint16_t embossLo(uint16_t c) { int r, g, b; expand565(c, r, g, b); return rgb565(LUT_embLo[r], LUT_embLo[g], LUT_embLo[b]); }
@@ -378,6 +683,22 @@ struct Palette {
   float rowK[TUBE_HEIGHT_MAX];   // luma weight per row for front brightening (sim step 3a)
   uint16_t dryT[TUBE_HEIGHT_MAX]; // 1/256: what an empty tube transmits of the back per row (0 inside the wall band); fades rear marks behind air
   uint32_t gen = 0; int H = 0; float light = 0; bool valid = false;   // cache key (light is exact: hit while the tube is at rest)
+};
+
+// buildPalette's light-independent library results per row, kept per (gen, H) (step 6: a moving light rebuilds the
+// palette every frame, ~1-2 ms a tube, mostly these calls). Only the raw call results are kept: every expression
+// that consumes them is evaluated as before, so the board's fused multiply-adds see the same operands.
+// PSRAM, one per tube (render_init).
+struct PalCache {
+  uint32_t gen = 0; int H = 0; bool valid = false;
+  float rimPow[TUBE_HEIGHT_MAX], dryExp[TUBE_HEIGHT_MAX], asinY[TUBE_HEIGHT_MAX], chord[TUBE_HEIGHT_MAX];
+  float ambCos[TUBE_HEIGHT_MAX], reflExp[TUBE_HEIGHT_MAX];   // glassW
+  // light-independent row terms of buildPalette, the same expressions: wall glow + rim, over the contents, dryT, the
+  // back gradient and the body shading before the light mix
+  float wall[TUBE_HEIGHT_MAX], wetRim[TUBE_HEIGHT_MAX], dryT[TUBE_HEIGHT_MAX]; RGB back[TUBE_HEIGHT_MAX], c0[TUBE_HEIGHT_MAX];
+  // 3e concave band colours per row, a function of the palette and the row cache only (buildBandRows, rebuilt with the
+  // palette): inner shoulder, the lens / body mix under the outer colour, the rim colour, the back's luma weight
+  uint16_t bandInner[TUBE_HEIGHT_MAX], bandLensMix[TUBE_HEIGHT_MAX], bandRimC[TUBE_HEIGHT_MAX]; float bandBackK[TUBE_HEIGHT_MAX];
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -472,6 +793,10 @@ struct Mark {
   }
   // covT: coverage in 1/256 (256 = opaque)
   inline void operator()(int x, int y, uint16_t c, int covT = 256, int rel = 0) const;
+#ifdef TICK_PROF
+  uint32_t *prof = nullptr;   // -DTICK_PROF: the tick layer's counters (Tube::tickProf); null for every other mark
+  void profPixel(int x, int y, uint16_t c, int covT, int rel) const;
+#endif
   // A rear mark within the concave surface band's footprint (see sim markFn); false when the pixel is outside
   // it, or inside the body where the band lets everything through — the plain paths then apply.
   bool bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside) const;
@@ -640,6 +965,75 @@ struct CapShape { float cosT, h, asym, cap, k; };
 #define EFFECT_MAX 16
 struct EffectTable { uint32_t gen = 0; int H = 0; float lightK = -1; bool valid = false; uint16_t c[TUBE_HEIGHT_MAX * EFFECT_MAX]; };
 
+// Per-row facts of the rear-mark compositors, the same for every glyph / tick of the layer (markRowFacts): the row's
+// liquid interval [Li, Hi) (empty when Hi <= Li) and where the surface band may touch it, nb footprints [b0, b1),
+// sorted (a conservative superset of Mark::bandMark's own test: the per-pixel compositor runs there). depth and tm:
+// the ticks' lens depth of the row and TickMemo (drawTicks), unused by the digits.
+// TickMemo, per row and kind (0 behind air or on top, 1 behind liquid): what one tick row (drawTicks) writes over a
+// pixel behind `raw` (strip layout) for tick colour c and edge share fT (0: a plot row, see tickRow), per column:
+// o[0] x - 1, o[1] x, o[2] x + 1 .. x + w - 1, o[3] x + w, o[4] x + w + 1 (strip layout). fT -1: empty.
+struct TickMemo { uint16_t raw, c; int16_t fT; uint16_t o[5]; };
+struct DigitRow { int Li, Hi, nb, b0[2], b1[2]; float depth; TickMemo tm[2]; };
+static_assert(sizeof(DigitRow) == 64, "a DigitRow fills one 64-B cache line (render_init aligns the table)");
+
+#if DIGIT_PIE
+// The last fractional run's taps (spriteRunFrac, SIMD path): under a magnifying lens neighbouring strip rows sample the
+// same source row, so a glyph row repeats the one before it with the same run and only the blend is new. Reset by
+// drawLabels every frame (a memo within the digit pass, never across frames). Not keyed on the tap weights: they are
+// the layer's (lb.wetDx / wetDy), the same for every run between two resets.
+#define FRAC_MEMO_MAX 130   // FRAC_RUN_MAX
+struct FracMemo {
+  const uint8_t *a0, *a1; const uint16_t *cq; int m, nIn, p0, p1, scaleT, mode; bool valid;
+  int16_t T[FRAC_MEMO_MAX]; uint16_t C[FRAC_MEMO_MAX];
+};
+#endif
+#ifdef TICK_PROF
+// -DTICK_PROF tick counters per tube (render_tick_profile; main prints them in `f`, per frame): frames; cycles of the
+// layer, its row facts (+ depth table), tick row ranges, tickRow calls (with their strip line fills), pixels through
+// the per-pixel compositor; tick rows (all, wholly behind air / behind liquid / pixel by pixel), memo fills, per-pixel
+// compositor pixels, segments, ticks; cycles of the memo fills (part of the tickRow calls).
+enum { TP_FRAMES, TP_CYC, TP_CYC_FACTS, TP_CYC_RANGE, TP_CYC_ROWS, TP_CYC_GEN, TP_ROWS, TP_ROW_DRY, TP_ROW_WET, TP_ROW_MIX,
+       TP_FILLS, TP_PX_GEN, TP_SEGS, TP_TICKS, TP_CYC_FILLS, TP_N };
+#endif
+#ifdef TUBE_PROF
+// -DTUBE_PROF drawTube stage cycles per tube (render_tube_profile; main prints them in `f`, per frame): frames; the
+// whole render call; palette + row cache (renderTube); edges + tube back; residue prep (blur), residue rows; nose
+// backing; body + soft ramps; 3a; 3b; 3c; 4; 3e band; bounds / mirror / wet share; label layout; rear ticks; rear
+// digits; fizz; bubble + top marks + lens. TU_TR*: residue rows split (fill, shear, zone); TU_RAMP the soft ramps
+// (part of the body), TU_BANDK the 3e kernel (part of the band), TU_PALB / TU_PALP band rows / buildPalette (part of pal).
+enum { TU_FRAMES, TU_ALL, TU_PAL, TU_BACK, TU_TRPREP, TU_TRROWS, TU_BACKING, TU_BODY, TU_FRONT, TU_GLOW, TU_FILM, TU_INSET,
+       TU_BAND, TU_BOUNDS, TU_LABELS, TU_TICKS, TU_DIGITS, TU_FIZZ, TU_TOP, TU_TRFILL, TU_TRSHEAR, TU_TRZONE, TU_RAMP, TU_BANDK, TU_PALB, TU_PALP, TU_TILE, TU_N };
+#define TU_T0() uint32_t tuT = esp_cpu_get_cycle_count()
+#define TU_MARK(i) do { const uint32_t tuN = esp_cpu_get_cycle_count(); tubeProf[i] += tuN - tuT; tuT = tuN; } while (0)
+#define TU_SUB0(v) const uint32_t v = esp_cpu_get_cycle_count()
+#define TU_SUB(i, v) (tubeProf[i] += esp_cpu_get_cycle_count() - (v))
+#else
+#define TU_T0()
+#define TU_MARK(i) ((void)0)
+#define TU_SUB0(v)
+#define TU_SUB(i, v) ((void)0)
+#endif
+#ifdef TUBE_VERIFY
+// -DTUBE_VERIFY (LCD board, off by default): the step-5 code of the step-6 float-path changes runs next to the new
+// code and the results are compared bitwise (render_tube_verify; main prints them in `f`): TV_ZONE residue zone
+// pixels (the old inline loop on a row copy), TV_PAL palette entries (the old buildPalette).
+enum { TV_ZONE, TV_PAL, TV_BAND, TV_TRACE, TV_RAMP, TV_N };
+static volatile uint32_t tubeVerifyN[2][TV_N], tubeVerifyBad[2][TV_N];   // per core
+static inline void tubeVerify(int k, int n, int bad) { const int c = esp_cpu_get_core_id() & 1; tubeVerifyN[c][k] += n; tubeVerifyBad[c][k] += bad; }
+void render_tube_verify(int k, uint32_t &n, uint32_t &bad) { n = tubeVerifyN[0][k] + tubeVerifyN[1][k]; bad = tubeVerifyBad[0][k] + tubeVerifyBad[1][k]; }
+#endif
+#if TILE_RENDER && defined(TILE_VERIFY)
+static volatile uint32_t tileVerifyN[2], tileVerifyBad[2];   // per core
+static inline void tileVerify(uint32_t n, uint32_t bad) { const int c = esp_cpu_get_core_id() & 1; tileVerifyN[c] += n; tileVerifyBad[c] += bad; }
+void render_tile_verify(uint32_t &n, uint32_t &bad) { n = tileVerifyN[0] + tileVerifyN[1]; bad = tileVerifyBad[0] + tileVerifyBad[1]; }
+#endif
+// Step 5: what every bubble of one tube shares in a frame (drawTube -> drawBubble).
+struct FizzFrame {
+  const float *mag;                    // lensMagRows (fizz squash)
+  float yHi, invHalfH, lxSign;         // highlight row, 2 / H, light x sign (mirrored liquid frame)
+  float veilA, pullR, pullL;           // surface band veil opacity, receding pulls
+  int xsI, L; uint16_t blickC; bool mir;
+};
 // All mutable state of one tube's renderer (hours = tubes[0], minutes = tubes[1]). Two of these are
 // static (fixed footprint, ~9 KB each); the strip pointer / geometry are set per call by renderTube.
 // Nothing here is shared between the two, so the tubes can render concurrently on both cores.
@@ -647,11 +1041,37 @@ struct Tube {
   uint16_t *FB = nullptr; int baseY = 0, H = TUBE_HEIGHT_PX; int idx = 0;
   const int16_t **lensRowsOut = nullptr;   // set by renderTube: hand the lens row map to the caller instead of applying it
   Palette pal; RowCache rc; Labels labels; ScaledSet set;
+  PalCache *palCache = nullptr;   // PSRAM, render_init
+  TraceMemo *traceMemo = nullptr; // PSRAM, render_init
+  float *traceStreakTab = nullptr; // traceStreak(x + idx 6151) per column, TUBE_LENGTH_PX, PSRAM, render_init
+#ifdef TUBE_VERIFY
+  uint16_t *verifyRow = nullptr;  // PANEL_W, PSRAM, render_init
+  Palette *verifyPal = nullptr;   // PSRAM, render_init
+  float glassWRef(const Params &p, int y, int hiTop, float lam) const;
+  void buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const;
+#endif
+#ifdef TICK_PROF
+  mutable uint32_t tickProf[TP_N] = {};   // -DTICK_PROF: accumulated until render_tick_profile_reset
+#endif
+#ifdef FIZZ_PROF
+  uint32_t fizzProf[FZ_N] = {};           // -DFIZZ_PROF: accumulated until render_fizz_profile_reset
+#endif
+#ifdef TUBE_PROF
+  uint32_t tubeProf[TU_N] = {};           // -DTUBE_PROF: accumulated until render_tube_profile_reset
+#endif
 #ifdef DIGIT_PROF
   mutable uint32_t prof[11] = {};     // per frame: glyphs, rows, int px plain, int px liquid, frac px plain, frac px liquid, slow px, runs; us: layoutLabels, rear ticks, rear digits
   mutable uint32_t profCyc[3] = {};   // CPU cycles: plain runs, band (slow) runs, ramp columns
 #endif
+#ifdef BOARD_LCD316
+  EffectTable *glowT = nullptr;   // [2], PSRAM, render_init: 6.8 KB a tube of internal RAM on the LCD (step 7: the tiles'
+                                  // room), and only the hard-edge glow (edgeSoft 0, no residue) reads it
+#else
   EffectTable glowT[2];                                       // 0 = time edge, 1 = home edge
+#endif
+#if TILE_RENDER && defined(TILE_VERIFY)
+  uint16_t *tileVerifyStrip = nullptr;   // TUBE_HEIGHT_MAX x PANEL_W, PSRAM, render_init (-DTILE_VERIFY)
+#endif
   float edges[TUBE_HEIGHT_MAX], edgesL[TUBE_HEIGHT_MAX];      // render-frame liquid edges per row
   // rear-mark wet share per panel column (buildWetShare) + its scratch: PANEL_W / PANEL_W + 1 entries, PSRAM,
   // allocated once by render_init (internal RAM is ~2.7 KB from full once BLE is up; 4.3 KB here hung its init)
@@ -659,6 +1079,10 @@ struct Tube {
   // digit source offset from the axis per row behind air, then behind liquid (sim TickFollow dry / wet):
   // 2 x TUBE_HEIGHT_MAX, PSRAM, allocated once by render_init
   float *digitOff = nullptr;
+  DigitRow *digitRows = nullptr;   // TUBE_HEIGHT_MAX, PSRAM, allocated once by render_init (spriteRowFacts, drawTicks)
+#if DIGIT_PIE
+  FracMemo *fracMemo = nullptr;    // PSRAM, allocated once by render_init
+#endif
   float boundLo[TUBE_HEIGHT_MAX], boundHi[TUBE_HEIGHT_MAX];   // panel-frame bounds for the mark compositor (edges + surface stroke)
   float strokeR[TUBE_HEIGHT_MAX], strokeL[TUBE_HEIGHT_MAX];   // outward extent of the concave surface stroke per edge (sim strokeR/L)
   float bandFill[2][TUBE_HEIGHT_MAX], bandBlick[2][TUBE_HEIGHT_MAX], bandRim[2][TUBE_HEIGHT_MAX];   // its layer weights per row, 0 = time edge, 1 = home: rear-mark compositor (sim BandInfo)
@@ -671,7 +1095,7 @@ struct Tube {
   float springClock = 0;                                      // bubbles the spring may release now (its cadence accrued)
   uint16_t traceA[TUBE_LENGTH_PX];                            // dried-trace residue depth per column, 1/256 with headroom (traceAmount > 1)
   uint16_t traceRaw[TUBE_LENGTH_PX];                          // render-frame residue copy, input to the taper blur
-  uint16_t traceLut[TRACE_LUT];                               // traceFillRow's per-row colour table (one per tube: both cores render)
+  uint16_t *traceLut = nullptr;                               // traceFillRow's per-row colour table, TRACE_LUT entries (one per tube: both cores render), PSRAM, render_init
 
   inline bool inStrip(int x, int y) const { return x >= 0 && x < PANEL_W && y >= baseY && y < baseY + H; }
   inline uint16_t rd(int x, int y) const { return __builtin_bswap16(FB[(y - baseY) * PANEL_W + x]); }
@@ -699,15 +1123,18 @@ struct Tube {
     wr(x, y, T >= 256 ? c : blend565T(rd(x, y), c, T));
   }
 
-  float glassW(const Params &p, int y, int hiTop, float lam) const;
+  float glassW(const Params &p, int y, int hiTop, float lam, const PalCache &pc) const;
   int highlightTop(const Params &p, float lightDeg) const;
-  void buildPalette(const Params &p, float lightDeg, Palette &pal) const;
+  void buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const;
+  void buildBandRows(PalCache &pc) const;
+  void buildPalette(const Params &p, float lightDeg, Palette &pal, const PalCache &pc) const;
   ScaledGlyph *scaledGlyphs(int sheetIdx, int bw, int bh, float brightness, uint32_t tintHex, float tintAmt, float tone, int shadow, float shadowA, int shadowOff, float transK, bool rot, float floorC, uint16_t floorR);
   bool layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float acrossTilt, float edgeLight, float fill, Labels &lb);
+  void spriteRowFacts(int y0, const Labels &lb, const Mark &mark) const;
   void drawSpriteGlyph(const ScaledGlyph &g, int x, int y0, int yTop, const Labels &lb, const Warp &warp, const Mark &mark) const;
   void drawBitmapGlyph(const Font &f, int d, int x, int y0, int yTop, const Labels &lb, const Warp &warp, const Mark &mark) const;
-  void drawLabels(int y0, const Labels &lb, const Warp &warp, const Mark &mark) const;
-  void drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows, const int16_t *dryRows,
+  void drawLabels(int y0, const Labels &lb, const Warp &warp, const Mark &mark, bool rowFacts = false) const;
+  bool drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows, const int16_t *dryRows,
                  const Edges *edges, const Mark &mark, float dxFull = 0, float dyFull = 0) const;
   void ensureFizz(const Params &p, float len, float agitation);
   inline float fizzSquashRow(const Params &p, int y) const;
@@ -723,10 +1150,15 @@ struct Tube {
   void applyLens(const Params &p);
   const uint16_t *effectTable(EffectTable &T, const Params &p, const Palette &pal, uint32_t gen, float lightK, bool glow) const;
   void drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN);
+  void traceBlur(const uint16_t *trace, bool mir, int a0, int a1, int c0, int c1, float filmV, int &aLo, int &aHi);
+  void drawBubble(const Fizz &f, const Params &p, const FizzFrame &ff);
 };
 static Tube tubes[2];
 
 inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const {
+#ifdef TICK_PROF
+  if (prof) { profPixel(x, y, c, covT, rel); return; }
+#endif
   if (!t.inStrip(x, y)) return;
   int ry = y - y0;
   const bool inside = !onTop && x >= edges.lo[ry] && x < edges.hi[ry];
@@ -739,6 +1171,15 @@ inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const 
   else if (rel < 0) c = embossLo(c);
   t.wr(x, y, covT >= 256 ? c : blend565T(t.rd(x, y), c, covT));
 }
+#ifdef TICK_PROF
+// A tick pixel through the per-pixel compositor (band footprints, rows across the liquid's edge), timed.
+void __attribute__((noinline)) Mark::profPixel(int x, int y, uint16_t c, int covT, int rel) const {
+  const uint32_t c0 = esp_cpu_get_cycle_count();
+  Mark m = *this; m.prof = nullptr;
+  m(x, y, c, covT, rel);
+  prof[TP_CYC_GEN] += esp_cpu_get_cycle_count() - c0; prof[TP_PX_GEN]++;
+}
+#endif
 // The concave surface band's footprint at a rear-mark pixel — it overlaps the body by hw inside the profile:
 // its rim and blick stay on top of the mark (the write is scaled by what they let through; approximation as
 // in the sim: the layers' own colour also yields by that share). Past the body the rear wall is seen through
@@ -789,7 +1230,71 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
 
 // Glass wall shading weight 0..1 per row (sim: glassW): ambient cylinder shade, specular tent on the
 // top wall, faint band on the lower wall. The wall band and rim live in buildPalette.
-float Tube::glassW(const Params &p, int y, int hiTop, float lam) const {
+float Tube::glassW(const Params &p, int y, int hiTop, float lam, const PalCache &pc) const {   // pc: valid for this (gen, H)
+  float amb = 0.5f + 0.5f * pc.ambCos[y];
+  float w = p.glassBody * (amb + (lam - amb) * p.lightPhys);
+  if (y >= hiTop && y < hiTop + p.highlightH)
+    w += p.glassHiBright * powf(1 - fabsf((y - hiTop) / fmx(1, p.highlightH - 1) - 0.5f) * 2, p.highlightSharp);
+  w += p.glassReflect * pc.reflExp[y];
+  return fmn(1, w);
+}
+// The 3e band's per-row colours (PalCache), after buildPalette and buildRowCache: the expressions drawTube's surface()
+// evaluated per row and edge.
+void Tube::buildBandRows(PalCache &pc) const {
+  auto tone = [&](uint16_t c) -> uint16_t { return rc.toneT > 0 ? blend565T(c, rc.toneC, rc.toneT) : c; };
+  for (int ry = 0; ry < H; ry++) {
+    pc.bandInner[ry] = tone(blend565(pal.rows[ry], rc.darkC, 0.3f));
+    pc.bandLensMix[ry] = blend565(rc.lensC, pal.rows[ry], 0.2f);
+    pc.bandBackK[ry] = fmn(1, luma(to888(pal.tubeBackRows[ry])) / 255.0f);
+    pc.bandRimC[ry] = q(mix(to888(rc.hiC), to888(q(mix(to888(pal.rows[ry]), to888(rc.darkC), 0.75f))), pc.bandBackK[ry]));
+  }
+}
+// Fill pc for (p, H): the same calls on the same arguments as buildPalette / glassW made inline.
+void Tube::buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const {
+  if (pc.valid && pc.gen == gen && pc.H == H) return;
+  pc.valid = true; pc.gen = gen; pc.H = H;
+  const float yc = (H - 1) / 2.0f, wallU = 1 - 2 * fmx(1, p.glassWall) / H;
+  for (int y = 0; y < H; y++) {
+    const float t = (float)y / (H - 1);
+    const float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
+    pc.rimPow[y] = powf(fmx(0, (au - wallU) / (1 - wallU)), 2.5f);
+    pc.dryExp[y] = p.glassWall <= 0 || au >= wallU ? 0 : expf(-(wallU - au) / 0.04f);
+    pc.asinY[y] = asinf(clampf((yc - y) / yc, -1, 1));
+    pc.chord[y] = p.liquidThin > 0 ? sqrtf(fmx(0, 1 - u * u)) : 0;
+    pc.ambCos[y] = cosf((t - 0.3f) * (float)M_PI * 1.6f);
+    const float d = (t - 0.82f) / 0.07f;
+    pc.reflExp[y] = expf(-d * d);
+  }
+  const float wet = clampf(p.wallWet, 0, 1);
+  RGB body = hexToRgb(p.liquid), lo = hexToRgb(p.liquidLo), tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2);
+  for (int y = 0; y < H; y++) {   // buildPalette's loop, its light-independent part
+    float t = (float)y / (H - 1);
+    float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
+    float rim = p.glassRim * pc.rimPow[y];
+    float glow = p.glassWallGlow * clampf(0.4f + 3 * (au - wallU) / (1 - wallU), 0, 1);
+    pc.wall[y] = glow + rim - glow * rim;
+    const float gW = glow * (1 - wet); pc.wetRim[y] = gW + rim - gW * rim;
+    pc.dryT[y] = p.glassWall <= 0 ? 1 : au >= wallU ? 0 : 1 - pc.dryExp[y];
+    int gradient = (int)jround(p.tubeBackGradient);
+    float backMix = gradient == 1 ? t : gradient == 2 ? 1 - fabsf(t * 2 - 1)
+      : gradient == 3 ? fabsf(t * 2 - 1) : 0;
+    pc.back[y] = mix(tubeBack, tubeBack2, backMix);
+    RGB c;
+    if (t < 0.33f) c = mix(mix(body, lo, 0.25f), body, t / 0.33f);
+    else c = mix(body, lo, ((t - 0.33f) / 0.67f) * p.shadeDepth);
+    pc.c0[y] = c;
+  }
+}
+
+// Top row of the highlight band for highlight angle lightDeg (sim highlightTop).
+int Tube::highlightTop(const Params &p, float lightDeg) const {
+  float yc = (H - 1) / 2.0f;
+  return (int)jround(yc - yc * sinf(lightDeg * (float)M_PI / 180) - (p.highlightH - 1) / 2);
+}
+
+#ifdef TUBE_VERIFY
+// The step-5 palette code, verbatim (TUBE_VERIFY).
+float Tube::glassWRef(const Params &p, int y, int hiTop, float lam) const {
   float t = (float)y / (H - 1);
   float amb = 0.5f + 0.5f * cosf((t - 0.3f) * (float)M_PI * 1.6f);
   float w = p.glassBody * (amb + (lam - amb) * p.lightPhys);
@@ -799,15 +1304,7 @@ float Tube::glassW(const Params &p, int y, int hiTop, float lam) const {
   w += p.glassReflect * expf(-d * d);
   return fmn(1, w);
 }
-
-// Top row of the highlight band for highlight angle lightDeg (sim highlightTop).
-int Tube::highlightTop(const Params &p, float lightDeg) const {
-  float yc = (H - 1) / 2.0f;
-  return (int)jround(yc - yc * sinf(lightDeg * (float)M_PI / 180) - (p.highlightH - 1) / 2);
-}
-
-// Style top light blended (lightPhys) with a Lambert cylinder lit from 2*light (sim buildPalette).
-void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal) const {
+void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const {
   RGB body = hexToRgb(p.liquid), hi = hexToRgb(p.liquidHi), lo = hexToRgb(p.liquidLo);
   RGB tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2), ghi = hexToRgb(p.glassHi);
   float br = p.brightness * p.liquidBright;
@@ -866,7 +1363,83 @@ void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal) const {
       float k = powf(1 - fabsf((y - hiTop) / fmx(1, p.highlightH - 1) - 0.5f) * 2, p.highlightSharp);
       c = mix(c, liquidHiScaled, fmn(1, (0.35f + 0.65f * k) * p.highlightBright));
     }
-    float gw = glassW(p, y, hiTop, lam);
+    float gw = glassWRef(p, y, hiTop, lam);
+    float wetK = p.glassOverLiquid + (1 - p.glassOverLiquid) * p.liquidTransparency, glassWet = gw * wetK;
+    // Empty tube: back only where the ray reaches it (wall band dark), glass over it, glow + rim on top.
+    const RGB dryRow = mix(scale(mix(scale(back, dryT), ghi, gw), p.brightness), glassEdge, wall);
+    pal.tubeBackRows[y] = q(dryRow);
+    // Glass weight rises to the dry-side one with transparency; the grazing rim is the outer surface's
+    // reflection, full weight over the liquid (sim).
+    c = ambientize(mix(mix(c, glassHiScaled, glassWet), glassEdge, wetRim), bodyL, ambAmt);
+    if (wet < 1) c = mix(c, dryRow, (1 - wet) * (1 - dryT));   // unwetted band: the empty tube's row
+    pal.rows[y] = q(c);
+    pal.bubbleIn[y] = q(mix(c, {0, 0, 0}, p.bubbleDark));
+  }
+  // Fizz ring: the lit rim shaded as the liquid is lit at that row (body shading relative to its brightest row), cap 0.8 (sim).
+  float rowLMax = 1; for (int y = 0; y < H; y++) rowLMax = fmx(rowLMax, rowL[y]);
+  for (int y = 0; y < H; y++) pal.bubbleRimRows[y] = q(ambientize(scale(rimLit, 0.8f * rowL[y] / rowLMax), bodyL, ambAmt));
+  pal.body = q(scale(body, br));
+  pal.tubeBack = q(scale(tubeBack, p.brightness));
+  pal.bubbleRim = q(ambientize(scale(rimC, br), bodyL, ambAmt));
+  float lmax = 1;
+  for (int y = 0; y < H; y++) { pal.rowK[y] = luma(to888(pal.rows[y])); lmax = fmx(lmax, pal.rowK[y]); }
+  for (int y = 0; y < H; y++) pal.rowK[y] /= lmax;
+}
+#endif
+// Style top light blended (lightPhys) with a Lambert cylinder lit from 2*light (sim buildPalette).
+void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal, const PalCache &pc) const {
+  RGB body = hexToRgb(p.liquid), hi = hexToRgb(p.liquidHi), lo = hexToRgb(p.liquidLo);
+  RGB tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2), ghi = hexToRgb(p.glassHi);
+  float br = p.brightness * p.liquidBright;
+  RGB liquidHiScaled = scale(hi, br), glassHiScaled = scale(ghi, p.brightness);
+  const RGB rimTint = scale(hexToRgb(p.rimTint), p.brightness);
+  float bodyL = ambientBodyL(p), ambAmt = ambientAmt(p);
+  float yc = (H - 1) / 2.0f, lightRad = 2 * lightDeg * (float)M_PI / 180;
+  int hiTop = highlightTop(p, lightDeg);
+  const RGB rimC = hexToRgb(p.bubbleRim);
+  const RGB rimLit = { fmn(255, rimC.r * br), fmn(255, rimC.g * br), fmn(255, rimC.b * br) };   // clipped lit rim (sim rimLit)
+  float rowL[TUBE_HEIGHT_MAX];   // per-row body-shading luma (fixed-size local, sim rowL)
+  // Wall band (sim buildPalette): rows whose ray misses the bore never reach the back (dryT 0),
+  // ramping up over a few rows inside; the liquid still shows through there. A neutral grazing
+  // rim rises toward the silhouette on both sides (glassRim). glassWall 0 keeps a one-row rim.
+  float wallU = 1 - 2 * fmx(1, p.glassWall) / H;
+  RGB glassEdge = scale(mix(ghi, {180, 190, 195}, 0.72f), p.brightness);
+  const float wet = clampf(p.wallWet, 0, 1);   // sim: a gas (0) keeps the glow and the empty tube's band over its column
+  for (int y = 0; y < H; y++) {
+    float t = (float)y / (H - 1);
+    float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
+    // Wall glow (sim glowW/wallW): light piped along the wall lights the band itself; plateau with a
+    // short ramp starting just inside the band, the grazing rim on top. Dry glass only, as far as the contents
+    // wet the wall (wallWet): a liquid frustrates the internal reflection and fills the band (rim alone over it).
+    // Over the contents (wetRim): the glow they leave piped, the rim. These, dryT, the back gradient and the body
+    // shading before the light come from pc (buildPalCache: the same expressions, once per generation).
+    const float wall = pc.wall[y], wetRim = pc.wetRim[y], dryT = pc.dryT[y];
+    pal.dryT[y] = (uint16_t)(dryT * 256 + 0.5f);
+    const RGB back = pc.back[y];
+    float lam = fmx(0, cosf(pc.asinY[y] - lightRad));
+    RGB c = pc.c0[y];
+    if (p.lightPhys > 0) c = mix(c, mix(lo, body, 1 - p.shadeDepth * (1 - lam)), p.lightPhys);
+    // Thin edge: shorter chord toward the walls absorbs less, the colour drifts to a grey of its
+    // own peak channel, strongest on the outermost rows.
+    if (p.liquidThin > 0) {
+      float chord = pc.chord[y], m = fmx(c.r, fmx(c.g, c.b));
+      c = mix(c, {m, m, m}, p.liquidThin * (1 - chord) * (1 - chord));
+    }
+    rowL[y] = luma(c);   // the light inside the liquid at this row (before backing, highlight, glass: they do not light a bubble)
+    // Transparent liquid shows the per-row tube-back gradient. The highlight remains a surface
+    // reflection and goes on after it.
+    c = scale(c, br);
+    c = mix(c, scale(back, p.brightness), p.liquidTransparency);
+    // Side-lit rim (sim rimLight/rimTint): rises as u^2 toward the walls.
+    if (p.rimLight > 0) {
+      float rk = p.rimLight * u * u;
+      c = {fmn(255, c.r + rk * rimTint.r), fmn(255, c.g + rk * rimTint.g), fmn(255, c.b + rk * rimTint.b)};
+    }
+    if (y >= hiTop && y < hiTop + p.highlightH) {
+      float k = powf(1 - fabsf((y - hiTop) / fmx(1, p.highlightH - 1) - 0.5f) * 2, p.highlightSharp);
+      c = mix(c, liquidHiScaled, fmn(1, (0.35f + 0.65f * k) * p.highlightBright));
+    }
+    float gw = glassW(p, y, hiTop, lam, pc);
     float wetK = p.glassOverLiquid + (1 - p.glassOverLiquid) * p.liquidTransparency, glassWet = gw * wetK;
     // Empty tube: back only where the ray reaches it (wall band dark), glass over it, glow + rim on top.
     const RGB dryRow = mix(scale(mix(scale(back, dryT), ghi, gw), p.brightness), glassEdge, wall);
@@ -953,7 +1526,7 @@ ScaledGlyph *Tube::scaledGlyphs(int sheetIdx, int bw, int bh, float brightness, 
                                 int shadow, float shadowA, int shadowOff, float transK, bool rot, float floorC, uint16_t floorR) {
   if (sheetIdx < 0 || sheetIdx >= NUM_SPRITE_SHEETS) return nullptr;
   ScaledSet &S = set;
-  if (!S.poolC || !S.poolA) return nullptr;
+  if (!S.poolC || !S.poolA || !EXP565 || !digitRows) return nullptr;   // render_init failed: no sprite digits (visible)
   if (S.sheet == sheetIdx && S.bw == bw && S.bh == bh && S.brightness == brightness && S.tint == tintHex && S.tintAmt == tintAmt && S.tone == tone
       && S.shadow == shadow && S.shadowA == shadowA && S.shadowOff == shadowOff && S.transK == transK && S.rot == rot
       && S.floorC == floorC && S.floorR == floorR) return S.g;
@@ -1256,50 +1829,371 @@ struct LiquidMemo {
     covOut = covT; return out;
   }
 };
+// Profile (2026-10-29, LCD native, wide tubes, user preset; -DDIGIT_PROF and throwaway re-draw probes): the digit
+// pass is ~90 % compute, not PSRAM — each run drawn a second time right away (everything cached) costs 85-89 % of the
+// first draw, a whole glyph 92 % — at ~1.5-2 cycles an instruction. So fewer instructions per pixel: the scalar blend
+// on byte lanes from EXP565 (no unpacking of either colour, the strip pixel read and written byte-swapped as it lies),
+// the SIMD blend below on the LCD, the fractional taps in their own pass (FracMemo reuses a repeated source row's),
+// the per-row band / liquid facts once per row instead of once per glyph row (DigitRow). Hours tube, pinned: rear
+// digits 12.7-13.2 -> 9.7-10.1 ms, run kernels 0.97 -> 0.65 us a pixel; digit stage cost 14.9 -> 7.7 ms of the render.
+// Byte-identical (check_render_frames; the LCD SIMD path on the board, -DDIGIT_VERIFY).
+// The blend of MODE 0 / 1 runs on the LCD build: the S3's 128-bit SIMD (PIE), 8 strip pixels a step. Per pixel the
+// scalar part only finds the coverage T (0..256) and colour; the blend is blend565T's exactly, on 16-bit lanes:
+// channels expanded as expand565, out = a + floor((d T + 128) / 256) with d = b - a, computed as
+// floor(2 d T / 256) - floor(d T / 256) (ee.vmul.s16 = the product shifted right by SAR, floor; SAR = 8 throughout,
+// field shifts are multiplies by powers of two). T = 0 rewrites a pixel bit for bit and T = 256 gives the colour, so
+// a run is blended in whole 16-B blocks of its strip row with T = 0 around it (the core owns the row; a run whose
+// blocks would leave the row takes the scalar loop). Semantics probed on the board (2026-10-29: vmul floors the
+// shifted 32-bit product, keeps its low 16 bits); equal to the scalar path on every run (-DDIGIT_VERIFY).
+// AMOLED builds keep the scalar path (check_render_frames proves it on the host).
+#if DIGIT_PIE
+// The broadcast constants pieBlend reads, in its order (one ee.vldbc.16 each: no spare q registers to keep them).
+static const int16_t __attribute__((aligned(16))) PIE_K[24] = {
+  0x00f8, 1, 8, 0x00f8,                                                        // red
+  0x1f00, 8, 0x001f, 2048, 64, 0x00f8, 8192,                                   // blue
+  0x0007, 8192, 128, (int16_t)0xe000, 1, 32, 0x07e0, 32, 4, 8, 0x001c, 16384, 8192 };   // green
+// nb blocks of 8 strip pixels at d (16-B aligned, byte-swapped 565) blended toward colours C (565) by T (int16, 0..256).
+// q0 strip, q1 colour, q2 T, q5 result, q3 q4 q6 q7 scratch.
+TUBE_IRAM static void __attribute__((noinline)) pieBlend(uint16_t *d, const int16_t *T, const uint16_t *C, int nb) {
+  const int16_t *k;
+  asm volatile(
+    "ssai 8\n"
+    "1:\n"
+    "mov %[k], %[k0]\n"
+    "ee.vld.128.ip q0, %[d], 0\n"
+    "ee.vld.128.ip q1, %[C], 16\n"
+    "ee.vld.128.ip q2, %[T], 16\n"
+    // red: strip r5 << 3 sits at bits 3-7 (byte-swapped), the colour's at 11-15
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x00f8
+    "ee.andq q5, q0, q4\n"
+    "ee.vldbc.16.ip q6, %[k], 2\n"   // 1
+    "ee.vmul.u16 q7, q1, q6\n"       // c >> 8
+    "ee.andq q7, q7, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8
+    "ee.vmul.s16 q6, q5, q4\n"       // >> 5
+    "ee.orq q5, q5, q6\n"            // a = r8 behind
+    "ee.vmul.s16 q6, q7, q4\n"
+    "ee.orq q7, q7, q6\n"            // b = r8 of the mark
+    "ee.vsubs.s16 q7, q7, q5\n"      // d
+    "ee.vadds.s16 q6, q7, q7\n"
+    "ee.vmul.s16 q6, q6, q2\n"       // floor(2 d T / 256)
+    "ee.vmul.s16 q7, q7, q2\n"       // floor(d T / 256)
+    "ee.vsubs.s16 q6, q6, q7\n"
+    "ee.vadds.s16 q5, q5, q6\n"      // r8 out
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x00f8
+    "ee.andq q5, q5, q4\n"           // r5 << 3: bits 3-7
+    // blue: strip b5 at bits 8-12, the colour's at 0-4
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x1f00
+    "ee.andq q6, q0, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8
+    "ee.vmul.s16 q6, q6, q4\n"       // b5 << 3
+    "ee.vmul.s16 q7, q6, q4\n"       // b5 >> 2
+    "ee.orq q6, q6, q7\n"            // a
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x001f
+    "ee.andq q7, q1, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 2048
+    "ee.vmul.s16 q3, q7, q4\n"       // b5 << 3
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 64
+    "ee.vmul.s16 q7, q7, q4\n"       // b5 >> 2
+    "ee.orq q7, q3, q7\n"            // b
+    "ee.vsubs.s16 q7, q7, q6\n"
+    "ee.vadds.s16 q3, q7, q7\n"
+    "ee.vmul.s16 q3, q3, q2\n"
+    "ee.vmul.s16 q7, q7, q2\n"
+    "ee.vsubs.s16 q3, q3, q7\n"
+    "ee.vadds.s16 q6, q6, q3\n"      // b8 out
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x00f8
+    "ee.andq q6, q6, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8192
+    "ee.vmul.s16 q6, q6, q4\n"       // << 5: b5 at bits 8-12
+    "ee.orq q5, q5, q6\n"
+    // green: strip g[5:3] at bits 0-2, g[2:0] at 13-15; the colour's g6 at 5-10
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x0007
+    "ee.andq q6, q0, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8192
+    "ee.vmul.s16 q7, q6, q4\n"       // << 5
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 128
+    "ee.vmul.s16 q6, q6, q4\n"       // >> 1
+    "ee.orq q6, q6, q7\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0xe000
+    "ee.andq q7, q0, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 1
+    "ee.vmul.u16 q7, q7, q4\n"       // >> 8 (unsigned)
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 32
+    "ee.vmul.s16 q7, q7, q4\n"       // >> 3: g[2:0] << 2
+    "ee.orq q6, q6, q7\n"            // a = g8 behind
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x07e0
+    "ee.andq q7, q1, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 32
+    "ee.vmul.s16 q7, q7, q4\n"       // g6 << 2
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 4
+    "ee.vmul.s16 q3, q7, q4\n"       // g6 >> 4
+    "ee.orq q7, q7, q3\n"            // b
+    "ee.vsubs.s16 q7, q7, q6\n"
+    "ee.vadds.s16 q3, q7, q7\n"
+    "ee.vmul.s16 q3, q3, q2\n"
+    "ee.vmul.s16 q7, q7, q2\n"
+    "ee.vsubs.s16 q3, q3, q7\n"
+    "ee.vadds.s16 q6, q6, q3\n"      // g8 out
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8
+    "ee.vmul.s16 q7, q6, q4\n"       // >> 5: g[5:3] at bits 0-2
+    "ee.orq q5, q5, q7\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 0x001c
+    "ee.andq q6, q6, q4\n"
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 16384
+    "ee.vmul.s16 q6, q6, q4\n"       // << 6
+    "ee.vldbc.16.ip q4, %[k], 2\n"   // 8192
+    "ee.vmul.u16 q6, q6, q4\n"       // << 5 (unsigned): g[2:0] at bits 13-15
+    "ee.orq q5, q5, q6\n"
+    "ee.vst.128.ip q5, %[d], 16\n"
+    "addi %[nb], %[nb], -1\n"
+    "bnez %[nb], 1b\n"
+    : [d] "+r"(d), [T] "+r"(T), [C] "+r"(C), [nb] "+r"(nb), [k] "=&r"(k)
+    : [k0] "r"(PIE_K)
+    : "memory");
+}
+#if DIGIT_PIE
+// Step 6: drawTube's soft ramp + folded glow (rampRowR / rampRowL, trace mode: blended over the residue) on the SIMD
+// blend. The same alpha per pixel as the scalar loop, as T (a >= 1: 256, else (int)(a 256 + 0.5), what rowPxa's blend565
+// takes) into the lanes of the whole 16-B blocks around the drawn columns; skipped columns and lanes outside keep T 0
+// (pieBlend leaves them as they are). false (nothing written): the blocks would leave the strip [lo, hi) or the lanes.
+#define RAMP_LANES 144
+TUBE_IRAM static bool __attribute__((noinline)) rampPieR(uint16_t *row, int a0, int aEnd, float ex, float hw, float invW, float invGlow,
+                                               bool glow, float glowStrength, float lightK, int x0, int solidLo, int solidHi,
+                                               uint16_t fg, const uint16_t *lo, const uint16_t *hi) {
+  const int xa = a0 > x0 ? a0 : x0, xb = aEnd + 1 < PANEL_W ? aEnd + 1 : PANEL_W;   // the columns the loop may draw
+  if (xb <= xa) return true;
+  uint16_t *const blk = (uint16_t *)((uintptr_t)(row + xa) & ~(uintptr_t)15);
+  const int lead = (int)(row + xa - blk), nb = (lead + xb - xa + 7) >> 3;
+  if (blk < lo || blk + 8 * nb > hi || 8 * nb > RAMP_LANES) return false;
+  int16_t T[RAMP_LANES] __attribute__((aligned(16))); uint16_t C[RAMP_LANES] __attribute__((aligned(16)));
+  for (int i = 0; i < 8 * nb; i++) { T[i] = 0; C[i] = fg; }
+  int xl = xa;   // one past the last column reached
+  for (int x = a0; x <= aEnd; x++) {
+    float t = glow ? fmx(0, 1 - (x + 0.5f - ex) * invGlow) : 0;
+    float a = fmn(1, clampf((ex + hw - x - 0.5f) * invW, 0, 1) + t * t * glowStrength * lightK);
+    if (a <= 0) break;
+    if (a >= 1 && x >= solidLo && x < solidHi) continue;
+    const int Tx = a >= 1 ? 256 : (int)(a * 256 + 0.5f);
+    if (Tx <= 0) break;   // the alpha never rises along the walk (see rampRowR): every pixel from here on stays as it is
+    if (x >= x0 && x < PANEL_W) { T[lead + x - xa] = (int16_t)Tx; xl = x + 1; }
+  }
+  if (xl > xa) pieBlend(blk, T, C, (lead + xl - xa + 7) >> 3);
+  return true;
+}
+TUBE_IRAM static bool __attribute__((noinline)) rampPieL(uint16_t *row, int xStart, int bEnd, float exL, float hw, float invW, float invGlow,
+                                               bool glow, float glowStrength, float lightKL, int x0, int xi, int solidLo, int solidHi,
+                                               uint16_t fg, const uint16_t *lo, const uint16_t *hi) {
+  if (bEnd < x0) bEnd = x0;
+  int xa = bEnd, xb = xStart + 1; if (xb > xi) xb = xi; if (xb > PANEL_W) xb = PANEL_W;   // drawn columns lie in [xa, xb)
+  if (xb <= xa) return true;
+  uint16_t *const blk = (uint16_t *)((uintptr_t)(row + xa) & ~(uintptr_t)15);
+  const int lead = (int)(row + xa - blk), nb = (lead + xb - xa + 7) >> 3;
+  if (blk < lo || blk + 8 * nb > hi || 8 * nb > RAMP_LANES) return false;
+  int16_t T[RAMP_LANES] __attribute__((aligned(16))); uint16_t C[RAMP_LANES] __attribute__((aligned(16)));
+  for (int i = 0; i < 8 * nb; i++) { T[i] = 0; C[i] = fg; }
+  int xf = xb;   // the lowest column reached
+  for (int x = xStart; x >= bEnd; x--) {
+    float t = glow ? fmx(0, 1 - (exL - (x + 0.5f)) * invGlow) : 0;
+    float a = fmn(1, clampf((x + 0.5f - exL + hw) * invW, 0, 1) + t * t * glowStrength * lightKL);
+    if (a <= 0) break;
+    const int Tx = a >= 1 ? 256 : (int)(a * 256 + 0.5f);
+    if (Tx <= 0) break;   // as in rampPieR
+    if (x < x0 || x >= xi || x >= PANEL_W) continue;
+    if (a >= 1 && x >= solidLo && x < solidHi) continue;
+    T[lead + x - xa] = (int16_t)Tx; xf = x;
+  }
+  if (xf < xb) {   // blocks from the one holding xf to the one holding xb - 1
+    const int i0 = (lead + xf - xa) & ~7;
+    pieBlend(blk + i0, T + i0, C + i0, ((lead + xb - xa + 7) >> 3) - (i0 >> 3));
+  }
+  return true;
+}
+#endif
+#ifdef DIGIT_VERIFY
+// -DDIGIT_VERIFY: every pieBlend checked against the scalar blend (render_digit_verify, printed by `f`).
+static volatile uint32_t digitVerifyPx[2], digitVerifyBad[2];   // per core: both render at once
+static inline void digitVerify(int px, int bad) { const int k = esp_cpu_get_core_id() & 1; digitVerifyPx[k] += px; digitVerifyBad[k] += bad; }
+void render_digit_verify(uint32_t &px, uint32_t &bad) { px = digitVerifyPx[0] + digitVerifyPx[1]; bad = digitVerifyBad[0] + digitVerifyBad[1]; }
+#endif
+// A run's lanes for pieBlend: the whole 16-B blocks of its strip row around it, T = 0 outside the run.
+#define PIE_LANES 144   // a run of <= FRAC_RUN_MAX pixels plus <= 7 lanes before it, in whole blocks
+struct PieRun {
+  int16_t T[PIE_LANES] __attribute__((aligned(16)));
+  uint16_t C[PIE_LANES] __attribute__((aligned(16)));
+  uint16_t *blk; int lead, nb;
+  // fb: the run's first strip pixel, column px0, n pixels. false: its blocks would leave the strip row (scalar path).
+  static inline bool fits(const uint16_t *fb, int px0, int n) {
+    const int lead = (int)(((uintptr_t)fb & 15) >> 1), nb = (lead + n + 7) >> 3;
+    return px0 - lead >= 0 && px0 - lead + nb * 8 <= PANEL_W && nb * 8 <= PIE_LANES;
+  }
+  inline bool begin(uint16_t *fb, int px0, int n) {
+    if (!fits(fb, px0, n)) return false;
+    lead = (int)(((uintptr_t)fb & 15) >> 1); nb = (lead + n + 7) >> 3;
+    blk = fb - lead;
+    for (int i = 0; i < lead; i++) T[i] = 0;
+    for (int i = lead + n; i < nb * 8; i++) T[i] = 0;
+    return true;
+  }
+  inline void end() {
+#ifdef DIGIT_VERIFY
+    uint16_t want[PIE_LANES];
+    for (int i = 0; i < nb * 8; i++) {
+      const int t = T[i];
+      want[i] = t <= 0 ? blk[i] : t >= 256 ? __builtin_bswap16(C[i]) : blendLanesSw(lanesSw(blk[i]), lanes565(C[i]), t);
+    }
+#endif
+    pieBlend(blk, T, C, nb);
+#ifdef DIGIT_VERIFY
+    int bad = 0; for (int i = 0; i < nb * 8; i++) bad += blk[i] != want[i];
+    digitVerify(nb * 8, bad);
+#endif
+  }
+};
+#endif
+// fb: the run's first strip pixel (column px0), n pixels from glyph texel a / c on. scaleT: MODE 0's coverage scale.
 template <int MODE>
-static void __attribute__((noinline)) spriteRunInt(const Tube &t, int y, int px0, int px1, const uint8_t *a, const uint16_t *c,
-                                                   int scaleT, int T, int C) {
-  uint16_t *const fb = t.FB + (y - t.baseY) * PANEL_W;
+static void __attribute__((noinline)) spriteRunInt(uint16_t *fb, int px0, int n, const uint8_t *a, const uint16_t *c, int scaleT, int T, int C) {
+#if DIGIT_PIE
+  if (MODE < 2) {
+    PieRun r;
+    if (r.begin(fb, px0, n)) {
+      int16_t *t = r.T + r.lead; uint16_t *cc = r.C + r.lead;
+      for (int i = 0; i < n; i++) {
+        int covT = LUT_alphaT16[a[i]];   // 0 for alpha 0
+        if (MODE == 0) covT = covT * scaleT >> 8;
+        t[i] = (int16_t)covT; cc[i] = c[i];
+      }
+      r.end();
+      return;
+    }
+  }
+#endif
   LiquidMemo memo;
-  for (int px = px0; px < px1; px++, a++, c++) {
-    const int al = *a; if (!al) continue;
+  for (int i = 0; i < n; i++) {
+    const int al = a[i]; if (!al) continue;
     int covT = LUT_alphaT16[al];
     if (MODE == 0) { covT = covT * scaleT >> 8; if (covT <= 0) continue; }
-    uint16_t col = *c;
-    const uint16_t bg = __builtin_bswap16(fb[px]);
-    if (MODE >= 2) col = memo.get(bg, col, covT, T, C, MODE == 3);
-    fb[px] = __builtin_bswap16(covT >= 256 ? col : blend565T(bg, col, covT));
+    if (MODE >= 2) {
+      const uint16_t bg = __builtin_bswap16(fb[i]), col = memo.get(bg, c[i], covT, T, C, MODE == 3);
+      fb[i] = __builtin_bswap16(covT >= 256 ? col : blend565T(bg, col, covT));
+    } else fb[i] = covT >= 256 ? __builtin_bswap16(c[i]) : blendLanesSw(lanesSw(fb[i]), lanes565(c[i]), covT);
   }
 }
 // Fractional refraction shift: destination column cx samples taps (cx, cy), (cx-1, cy), (cx, cy-1),
 // (cx-1, cy-1) of one plane (weights 1/65536, taps outside the glyph are 0); the colour is the heaviest
-// tap's, ties resolved in that order (as the generic path).
+// tap's, ties resolved in that order (as the generic path; picked pairwise here: top row, bottom row, then between
+// them, the same order). The taps take their own pass over a run (alpha rows only, the left taps carried): each pixel's
+// coverage and colour tap, then the blend (SIMD lanes, or a scalar second pass). In one loop the weights, carries, row
+// pointers and the blend did not fit the register file and spilled every pixel. A tap outside the glyph has alpha 0
+// and is never the heaviest of a covered pixel, so the colour tap is always a real texel.
 // Zero rows stand in for taps outside the glyph (a glyph is at most 128 columns wide in the draw, see gw).
-static const uint8_t ZERO_A[256] = {}; static const uint16_t ZERO_C[256] = {};
+static const uint8_t ZERO_A[256] = {};
+struct FracRun {
+  const uint8_t *a0, *a1;   // alpha rows cy, cy - 1 at the run's first column (ZERO_A outside the glyph)
+  const uint16_t *cP;       // the plane's colours; k0 = texel index of (first column, cy), w = plane width
+  int k0, w, nIn;           // nIn: columns whose own taps lie in the glyph (cx < w); the rest (the overhang) read 0
+  int p0, p1;               // the first column's left alphas
+  int w00, w10, w01, w11, scaleT, T, C;
+#if DIGIT_PIE
+  FracMemo *memo;
+#endif
+};
+// The taps of one destination column: its coverage (0 = nothing) and the colour tap's offset back from (cx, cy):
+// 0, 1, w, w + 1. p0 / p1 carry the column's own taps to the next one as its left taps.
 template <int MODE>
-static void __attribute__((noinline)) spriteRunFrac(const Tube &t, int y, int px0, int px1, int cx, int cy, const uint8_t *aP, const uint16_t *cP,
-                                                    int w, int h, int w00, int w10, int w01, int w11, int scaleT, int T, int C) {
-  const bool r0 = cy >= 0 && cy < h, r1 = cy - 1 >= 0 && cy - 1 < h;
-  const uint8_t *a0 = r0 ? aP + cy * w : ZERO_A, *a1 = r1 ? aP + (cy - 1) * w : ZERO_A;
-  const uint16_t *c0 = r0 ? cP + cy * w : ZERO_C, *c1 = r1 ? cP + (cy - 1) * w : ZERO_C;
-  const int wz = r0 || r1 ? w : 256;   // zero rows: any column reads 0
-  // The left taps of column cx are the right taps of cx - 1: carry them, two loads per pixel.
-  int p0 = cx >= 1 && cx - 1 < wz ? a0[cx - 1] : 0, p1 = cx >= 1 && cx - 1 < wz ? a1[cx - 1] : 0;
-  uint16_t *const fb = t.FB + (y - t.baseY) * PANEL_W;
+static inline __attribute__((always_inline)) int fracTap(int n0, int n1, int &p0, int &p1, int w00, int w10, int w01, int w11,
+                                                          int scaleT, int wd, int &off) {
+  const int a00 = n0 * w00, a10 = p0 * w10, a01 = n1 * w01, a11 = p1 * w11;
+  p0 = n0; p1 = n1;
+  const int al = (a00 + a10 + a01 + a11 + 32768) >> 16;
+  int covT = al ? LUT_alphaT16[al] : 0;
+  if (MODE == 0) covT = covT * scaleT >> 8;
+  const bool t0 = a00 >= a10, t1 = a01 >= a11;
+  off = (t0 ? a00 : a10) >= (t1 ? a01 : a11) ? (t0 ? 0 : 1) : (t1 ? wd : wd + 1);
+  return covT;
+}
+#define FRAC_RUN_MAX 130   // a wet run spans at most gw + 1 <= 129 columns (gw is capped at 128); longer ones go in parts
+#if DIGIT_PIE
+static_assert(FRAC_MEMO_MAX == FRAC_RUN_MAX, "FracMemo holds one run part");
+#endif
+// Scalar: the taps into a row of covT << 16 | offset, then the blend. AMOLED, and runs the SIMD path does not take.
+template <int MODE>
+static void __attribute__((noinline)) spriteRunFracScalar(uint16_t *fb, int n, const FracRun &f) {
+  const uint8_t *a0 = f.a0, *a1 = f.a1; const uint16_t *cP = f.cP + f.k0;   // cP[i - off]: pixel i's colour
+  const int w00 = f.w00, w10 = f.w10, w01 = f.w01, w11 = f.w11, scaleT = f.scaleT, wd = f.w;
+  int p0 = f.p0, p1 = f.p1, nIn = f.nIn;
+  uint32_t row[FRAC_RUN_MAX];   // covT << 16 | offset, 0 = nothing
   LiquidMemo memo;
-  for (int px = px0; px < px1; px++, cx++) {
-    const int n0 = cx < wz ? a0[cx] : 0, n1 = cx < wz ? a1[cx] : 0;
-    const int a00 = n0 * w00, a10 = p0 * w10, a01 = n1 * w01, a11 = p1 * w11;
-    p0 = n0; p1 = n1;
-    const int al = (a00 + a10 + a01 + a11 + 32768) >> 16; if (!al) continue;
-    int covT = LUT_alphaT16[al];
-    if (MODE == 0) { covT = covT * scaleT >> 8; if (covT <= 0) continue; }
-    int m = a00; if (a10 > m) m = a10; if (a01 > m) m = a01; if (a11 > m) m = a11;
-    uint16_t col = m == a00 ? c0[cx] : m == a10 ? c0[cx - 1] : m == a01 ? c1[cx] : c1[cx - 1];
-    const uint16_t bg = __builtin_bswap16(fb[px]);
-    if (MODE >= 2) col = memo.get(bg, col, covT, T, C, MODE == 3);
-    fb[px] = __builtin_bswap16(covT >= 256 ? col : blend565T(bg, col, covT));
+  while (n > 0) {
+    const int m = n < FRAC_RUN_MAX ? n : FRAC_RUN_MAX, mIn = nIn < m ? nIn : m;
+    uint32_t *o = row;
+    for (const uint8_t *s0 = a0, *s1 = a1, *e = a0 + mIn; s0 < e; s0++, s1++) {
+      int off; const int covT = fracTap<MODE>(*s0, *s1, p0, p1, w00, w10, w01, w11, scaleT, wd, off);
+      *o++ = covT > 0 ? (uint32_t)covT << 16 | (uint32_t)off : 0;
+    }
+    for (int i = mIn; i < m; i++) {
+      int off; const int covT = fracTap<MODE>(0, 0, p0, p1, w00, w10, w01, w11, scaleT, wd, off);
+      *o++ = covT > 0 ? (uint32_t)covT << 16 | (uint32_t)off : 0;
+    }
+    for (int i = 0; i < m; i++) {
+      const uint32_t v = row[i]; if (!v) continue;
+      const int covT = (int)(v >> 16); const uint16_t col = cP[i - (int)(v & 0xffff)];
+      if (MODE >= 2) {
+        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, col, cT, f.T, f.C, MODE == 3);
+        fb[i] = __builtin_bswap16(cT >= 256 ? cc : blend565T(bg, cc, cT));
+      } else fb[i] = covT >= 256 ? __builtin_bswap16(col) : blendLanesSw(lanesSw(fb[i]), lanes565(col), covT);
+    }
+    fb += m; a0 += m; a1 += m; cP += m; n -= m; nIn -= mIn;
   }
+}
+#if DIGIT_PIE
+// SIMD (MODE 0 / 1, one part): the taps straight into the lanes; a run repeating the last one's source row and
+// columns (FracMemo) takes its lanes from there and only blends. Memo hits: ~1/3 of the hours wet rows under the user
+// preset's bottomLens; hours run kernels 7.2 -> 6.4 ms (2026-10-29, same boot, memo off / on).
+template <int MODE>
+static void __attribute__((noinline)) spriteRunFracPie(uint16_t *fb, int px0, int n, const FracRun &f) {
+  const uint8_t *a0 = f.a0, *a1 = f.a1; const uint16_t *cP = f.cP + f.k0;
+  const int w00 = f.w00, w10 = f.w10, w01 = f.w01, w11 = f.w11, scaleT = f.scaleT, wd = f.w, nIn = f.nIn;
+  int p0 = f.p0, p1 = f.p1;
+  PieRun r; r.begin(fb, px0, n);   // fits: checked by spriteRunFrac
+  FracMemo *mm = f.memo;
+  if (mm && mm->valid && mm->a0 == a0 && mm->a1 == a1 && mm->cq == cP && mm->m == n && mm->nIn == nIn && mm->p0 == p0
+      && mm->p1 == p1 && mm->scaleT == scaleT && mm->mode == MODE) {
+    memcpy(r.T + r.lead, mm->T, n * sizeof(int16_t)); memcpy(r.C + r.lead, mm->C, n * sizeof(uint16_t));
+#ifdef DIGIT_VERIFY
+    { int bad = 0; const uint16_t *cq = cP;   // the taps again: the memo must equal them
+      for (int i = 0; i < n; i++, cq++) {
+        int off; const int covT = fracTap<MODE>(i < nIn ? a0[i] : 0, i < nIn ? a1[i] : 0, p0, p1, w00, w10, w01, w11, scaleT, wd, off);
+        const int want = covT > 0 ? covT : 0;
+        bad += r.T[r.lead + i] != want || (want && r.C[r.lead + i] != cq[-off]);
+      }
+      digitVerify(n, bad); }
+#endif
+  } else {
+    if (mm) { mm->a0 = a0; mm->a1 = a1; mm->cq = cP; mm->m = n; mm->nIn = nIn; mm->p0 = p0; mm->p1 = p1; mm->scaleT = scaleT; mm->mode = MODE; }
+    int16_t *t = r.T + r.lead; uint16_t *cc = r.C + r.lead; const uint16_t *cq = cP;
+    for (const uint8_t *s0 = a0, *s1 = a1, *e = a0 + nIn; s0 < e; s0++, s1++, t++, cc++, cq++) {
+      int off; const int covT = fracTap<MODE>(*s0, *s1, p0, p1, w00, w10, w01, w11, scaleT, wd, off);
+      *t = (int16_t)(covT > 0 ? covT : 0); if (covT > 0) *cc = cq[-off];
+    }
+    for (int i = nIn; i < n; i++, t++, cc++, cq++) {
+      int off; const int covT = fracTap<MODE>(0, 0, p0, p1, w00, w10, w01, w11, scaleT, wd, off);
+      *t = (int16_t)(covT > 0 ? covT : 0); if (covT > 0) *cc = cq[-off];
+    }
+    if (mm) { memcpy(mm->T, r.T + r.lead, n * sizeof(int16_t)); memcpy(mm->C, r.C + r.lead, n * sizeof(uint16_t)); mm->valid = true; }
+  }
+  r.end();
+}
+#endif
+// fb: the run's first strip pixel (column px0), n pixels. Two functions so the scalar row and the SIMD lanes never
+// share a stack frame (the hours render task has 4 KB).
+template <int MODE>
+static inline void spriteRunFrac(uint16_t *fb, int px0, int n, const FracRun &f) {
+#if DIGIT_PIE
+  if (MODE < 2 && n <= FRAC_RUN_MAX && PieRun::fits(fb, px0, n)) { spriteRunFracPie<MODE>(fb, px0, n, f); return; }
+#endif
+  spriteRunFracScalar<MODE>(fb, n, f);
 }
 // Pixels a surface band may touch: the generic compositor, texel by texel (plane per pixel as before).
 static void __attribute__((noinline)) spriteRunSlow(const Mark &mark, const ScaledGlyph &g, int y, int ry, int px0, int px1, int cx, int cy,
@@ -1321,20 +2215,30 @@ static void __attribute__((noinline)) spriteRunSlow(const Mark &mark, const Scal
 }
 
 // One glyph row of one copy (dry: unshifted, wet: shifted by the integer part of the parallax): panel
-// columns [px0, px1) map to glyph columns from cx0; cut into runs and blit.
+// columns [px0, px1) map to glyph columns from cx0; cut into runs and blit. run / plain inline into copies (one call
+// per glyph row); seg is one function for every mode (its four templated copies inlined three times made copies
+// ~17 KB, more than the 16 KB instruction cache).
 struct SpriteRow {
   const Tube &t; const Mark &mark; const ScaledGlyph &g; int y, ry;
-  int Li, Hi;            // this row's liquid interval [Li, Hi) in panel x (empty when Hi <= Li)
-  int nb; int b0[2], b1[2];   // possible surface-band footprints on this row, sorted, half-open
+  uint16_t *fb;          // strip row y
+  const DigitRow *dr;    // this row's liquid interval and band footprints
   int w00, w10, w01, w11, liqMode, Tuse;
-  void run(int px0, int px1, int cx0, int cy, bool frac) const {
+  int x, ix, dA0, dA1, dB0, dB1, w0, w1; bool frac;   // the glyph's copies (drawSpriteGlyph)
+  void __attribute__((noinline)) copies(bool dry, int cyD, bool wet, int cy) const {
+    if (dry) {
+      if (dA1 > dA0) run(x + dA0, x + dA1, dA0, cyD, false);
+      if (dB1 > dB0) run(x + dB0, x + dB1, dB0, cyD, false);
+    }
+    if (wet) run(x + ix + w0, x + ix + w1, w0, cy, frac);
+  }
+  inline __attribute__((always_inline)) void run(int px0, int px1, int cx0, int cy, bool frac) const {
     if (px0 < 0) { cx0 += -px0; px0 = 0; }
     if (px1 > PANEL_W) px1 = PANEL_W;
-    for (int k = 0; k < nb && px0 < px1; k++) {   // band footprints: the slow path there, plain runs between
-      if (b1[k] <= px0) continue;
-      if (b0[k] > px0) { const int e = b0[k] < px1 ? b0[k] : px1; plain(px0, e, cx0, cy, frac); cx0 += e - px0; px0 = e; }
+    for (int k = 0; k < dr->nb && px0 < px1; k++) {   // band footprints: the slow path there, plain runs between
+      if (dr->b1[k] <= px0) continue;
+      if (dr->b0[k] > px0) { const int e = dr->b0[k] < px1 ? dr->b0[k] : px1; plain(px0, e, cx0, cy, frac); cx0 += e - px0; px0 = e; }
       if (px0 < px1) {
-        const int e = b1[k] < px1 ? b1[k] : px1;
+        const int e = dr->b1[k] < px1 ? dr->b1[k] : px1;
 #ifdef DIGIT_PROF
         t.prof[6] += e - px0; t.prof[7]++;
 #endif
@@ -1349,20 +2253,18 @@ struct SpriteRow {
     }
     if (px0 < px1) plain(px0, px1, cx0, cy, frac);
   }
-  void plain(int px0, int px1, int cx0, int cy, bool frac) const {
-    if (mark.onTop) { seg<0>(px0, px1, cx0, cy, frac, false, 256); return; }
-    const int dT = t.pal.dryT[ry];
-    if (Hi <= Li || px1 <= Li || px0 >= Hi) { seg<0>(px0, px1, cx0, cy, frac, false, dT); return; }
-    if (px0 < Li) { seg<0>(px0, Li, cx0, cy, frac, false, dT); cx0 += Li - px0; px0 = Li; }
+  inline __attribute__((always_inline)) void plain(int px0, int px1, int cx0, int cy, bool frac) const {
+    if (mark.onTop) { seg(0, px0, px1, cx0, cy, frac, false, 256); return; }
+    const int dT = t.pal.dryT[ry], Li = dr->Li, Hi = dr->Hi;
+    if (Hi <= Li || px1 <= Li || px0 >= Hi) { seg(0, px0, px1, cx0, cy, frac, false, dT); return; }
+    if (px0 < Li) { seg(0, px0, Li, cx0, cy, frac, false, dT); cx0 += Li - px0; px0 = Li; }
     const int e = Hi < px1 ? Hi : px1;
-    if (liqMode == 1) seg<1>(px0, e, cx0, cy, frac, true, 256);
-    else if (liqMode == 3) seg<3>(px0, e, cx0, cy, frac, true, 256);
-    else seg<2>(px0, e, cx0, cy, frac, true, 256);
+    seg(liqMode, px0, e, cx0, cy, frac, true, 256);
     cx0 += e - px0; px0 = e;
-    if (px0 < px1) seg<0>(px0, px1, cx0, cy, frac, false, dT);
+    if (px0 < px1) seg(0, px0, px1, cx0, cy, frac, false, dT);
   }
-  template <int MODE>
-  void seg(int px0, int px1, int cx0, int cy, bool frac, bool L, int scaleT) const {
+  // A run on one plane (L: behind liquid) and compositor mode, clipped to the glyph row's covered columns.
+  void __attribute__((noinline)) seg(int mode, int px0, int px1, int cx0, int cy, bool frac, bool L, int scaleT) const {
     if (px0 >= px1) return;
     const uint8_t *aP = L ? g.aw : g.a; const uint16_t *cP = L ? g.cw : g.c;
     if (const uint8_t *sp = g.span[L ? 1 : 0]) {   // clip to the columns that have coverage
@@ -1380,18 +2282,75 @@ struct SpriteRow {
       if (px0 >= px1) return;
     }
 #ifdef DIGIT_PROF
-    t.prof[(frac ? 4 : 2) + (MODE ? 1 : 0)] += px1 - px0; t.prof[7]++;
+    t.prof[(frac ? 4 : 2) + (mode ? 1 : 0)] += px1 - px0; t.prof[7]++;
 #endif
 #ifdef DIGIT_PROF
     const uint32_t c0 = esp_cpu_get_cycle_count();
 #endif
-    if (!frac) spriteRunInt<MODE>(t, y, px0, px1, aP + cy * g.w + cx0, cP + cy * g.w + cx0, scaleT, Tuse, mark.Cin);
-    else spriteRunFrac<MODE>(t, y, px0, px1, cx0, cy, aP, cP, g.w, g.h, w00, w10, w01, w11, scaleT, Tuse, mark.Cin);
+    uint16_t *const d = fb + px0; const int n = px1 - px0;
+    if (!frac) {
+      const uint8_t *a = aP + cy * g.w + cx0; const uint16_t *c = cP + cy * g.w + cx0;
+      switch (mode) {
+        case 0: spriteRunInt<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
+        case 1: spriteRunInt<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
+        case 2: spriteRunInt<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
+        default: spriteRunInt<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
+      }
+    } else {
+      const bool r0 = cy >= 0 && cy < g.h, r1 = cy >= 1 && cy - 1 < g.h;
+      const int wz = r0 || r1 ? g.w : 256;   // zero rows: any column reads 0
+      FracRun f;
+      f.a0 = (r0 ? aP + cy * g.w : ZERO_A) + cx0; f.a1 = (r1 ? aP + (cy - 1) * g.w : ZERO_A) + cx0;
+      f.cP = cP; f.k0 = cy * g.w + cx0; f.w = g.w;
+      f.nIn = clampI(wz - cx0, 0, n);
+      const bool left = cx0 >= 1 && cx0 - 1 < wz;
+      f.p0 = left ? f.a0[-1] : 0; f.p1 = left ? f.a1[-1] : 0;
+      f.w00 = w00; f.w10 = w10; f.w01 = w01; f.w11 = w11; f.scaleT = scaleT; f.T = Tuse; f.C = mark.Cin;
+#if DIGIT_PIE
+      f.memo = t.fracMemo;
+#endif
+      switch (mode) {
+        case 0: spriteRunFrac<0>(d, px0, n, f); break;
+        case 1: spriteRunFrac<1>(d, px0, n, f); break;
+        case 2: spriteRunFrac<2>(d, px0, n, f); break;
+        default: spriteRunFrac<3>(d, px0, n, f); break;
+      }
+    }
 #ifdef DIGIT_PROF
     t.profCyc[0] += esp_cpu_get_cycle_count() - c0;
 #endif
   }
 };
+
+// One row's facts (DigitRow, all but depth) for a mark layer.
+TICK_IRAM static void __attribute__((noinline)) markRowFacts(DigitRow &r, int ry, const Mark &mark) {
+  const BandInfo *band = mark.onTop ? nullptr : mark.edges.band;
+  r.Li = r.Hi = 0;
+  if (!mark.onTop) { r.Li = (int)fceil(mark.edges.lo[ry]); r.Hi = (int)fceil(mark.edges.hi[ry]); }
+  r.nb = 0;
+  if (!band) return;
+  // Where bandMark can return true on this row: per side with a stroke, its footprint in the render
+  // frame is -hw - 0.5 < tt < w + 0.5 (see bandMark); widened by a pixel each way and mirrored back.
+  for (int side = 0; side < 2; side++) {
+    const float wEff = band->w[side][ry]; if (wEff <= 0) continue;
+    const float xm = band->xm[side][ry], hw = band->hw;
+    const float lo = side == 0 ? xm - hw - 1 : xm - wEff - 1, hi = side == 0 ? xm + wEff : xm + hw;
+    int r0 = (int)ffloor(lo) - 1, r1 = (int)fceil(hi) + 1;
+    if (band->mirror) { const int t0 = band->L - 1 - r1, t1 = band->L - 1 - r0; r0 = t0; r1 = t1; }
+    r.b0[r.nb] = r0; r.b1[r.nb] = r1 + 1; r.nb++;
+  }
+  if (r.nb == 2 && r.b0[1] < r.b0[0]) { int t0 = r.b0[0], t1 = r.b1[0]; r.b0[0] = r.b0[1]; r.b1[0] = r.b1[1]; r.b0[1] = t0; r.b1[1] = t1; }
+  if (r.nb == 2 && r.b0[1] < r.b1[0]) { if (r.b1[1] > r.b1[0]) r.b1[0] = r.b1[1]; r.nb = 1; }   // overlapping: one footprint
+}
+// The row facts every glyph of a sprite layer shares (DigitRow), for the rows drawSpriteGlyph visits.
+void Tube::spriteRowFacts(int y0, const Labels &lb, const Mark &mark) const {
+  const int a0 = lb.dryRy0 < lb.ry0 ? lb.dryRy0 : lb.ry0, a1 = lb.dryRy1 > lb.ry1 ? lb.dryRy1 : lb.ry1;
+  for (int ry = a0; ry <= a1; ry++) {
+    const int y = y0 + ry;
+    if (y < baseY || y >= baseY + H) continue;
+    markRowFacts(digitRows[ry], ry, mark);
+  }
+}
 
 void Tube::drawSpriteGlyph(const ScaledGlyph &g, int x, int y0, int yTop, const Labels &lb, const Warp &warp, const Mark &mark) const {
   if (lb.vertical) x -= g.w - lb.bh;   // the baked shadow margin lies below the body as read: left of it on the panel
@@ -1423,43 +2382,21 @@ void Tube::drawSpriteGlyph(const ScaledGlyph &g, int x, int y0, int yTop, const 
 #ifdef DIGIT_PROF
   prof[0]++;
 #endif
-  SpriteRow r{*this, mark, g, 0, 0, 0, 0, 0, {0, 0}, {0, 0}, wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1,
-              !mark.bakedT ? 2 : mark.Cin <= 0 ? 1 : 3, mark.T};
+  SpriteRow r{*this, mark, g, 0, 0, nullptr, nullptr, wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1,
+              !mark.bakedT ? 2 : mark.Cin <= 0 ? 1 : 3, mark.T, x, ix, dA0, dA1, dB0, dB1, w0, w1, frac};
   const int a0 = lb.dryRy0 < lb.ry0 ? lb.dryRy0 : lb.ry0, a1 = lb.dryRy1 > lb.ry1 ? lb.dryRy1 : lb.ry1;
-  const BandInfo *band = mark.onTop ? nullptr : mark.edges.band;
   for (int ry = a0; ry <= a1; ry++) {
     const int y = y0 + ry;
     if (y < baseY || y >= baseY + H) continue;
-    r.y = y; r.ry = ry;
 #ifdef DIGIT_PROF
     prof[1]++;
 #endif
-    if (!mark.onTop) { r.Li = (int)fceil(mark.edges.lo[ry]); r.Hi = (int)fceil(mark.edges.hi[ry]); }
-    r.nb = 0;
-    if (band) {
-      // Where bandMark can return true on this row: per side with a stroke, its footprint in the render
-      // frame is -hw - 0.5 < tt < w + 0.5 (see bandMark); widened by a pixel each way and mirrored back.
-      for (int side = 0; side < 2; side++) {
-        const float wEff = band->w[side][ry]; if (wEff <= 0) continue;
-        const float xm = band->xm[side][ry], hw = band->hw;
-        const float lo = side == 0 ? xm - hw - 1 : xm - wEff - 1, hi = side == 0 ? xm + wEff : xm + hw;
-        int r0 = (int)ffloor(lo) - 1, r1 = (int)fceil(hi) + 1;
-        if (band->mirror) { const int t0 = band->L - 1 - r1, t1 = band->L - 1 - r0; r0 = t0; r1 = t1; }
-        r.b0[r.nb] = r0; r.b1[r.nb] = r1 + 1; r.nb++;
-      }
-      if (r.nb == 2 && r.b0[1] < r.b0[0]) { int t0 = r.b0[0], t1 = r.b1[0]; r.b0[0] = r.b0[1]; r.b1[0] = r.b1[1]; r.b0[1] = t0; r.b1[1] = t1; }
-      if (r.nb == 2 && r.b0[1] < r.b1[0]) { if (r.b1[1] > r.b1[0]) r.b1[0] = r.b1[1]; r.nb = 1; }   // overlapping: one footprint
-    }
-    const int cyD = lb.drySourceRows[ry] - sourceTop;
-    if (anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && cyD < g.h) {
-      if (dA1 > dA0) r.run(x + dA0, x + dA1, dA0, cyD, false);
-      if (dB1 > dB0) r.run(x + dB0, x + dB1, dB0, cyD, false);
-    }
-    const int cy = lb.sourceRows[ry] - sourceTop - iy;
-    if (anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && cy <= g.h) {
-      if (!frac) { if (cy < g.h) r.run(x + ix + w0, x + ix + w1, w0, cy, false); }
-      else r.run(x + ix + w0, x + ix + w1, w0, cy, true);
-    }
+    const int cyD = lb.drySourceRows[ry] - sourceTop, cy = lb.sourceRows[ry] - sourceTop - iy;
+    const bool dry = anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && cyD < g.h;
+    const bool wet = anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && cy <= g.h && (frac || cy < g.h);
+    if (!dry && !wet) continue;
+    r.y = y; r.ry = ry; r.fb = FB + (y - baseY) * PANEL_W; r.dr = digitRows + ry;
+    r.copies(dry, cyD, wet, cy);
   }
   if (!anyRamp) return;
   const SpriteSampler ss(g);
@@ -1476,7 +2413,12 @@ void Tube::drawBitmapGlyph(const Font &f, int d, int x, int y0, int yTop, const 
   if (lb.shadow >= 0) drawGlyph(s, x, y0, yTop, lb, warp, mark, true);   // 1 px shadow copy offset down-right, then the body
   drawGlyph(s, x, y0, yTop, lb, warp, mark, false);
 }
-void Tube::drawLabels(int y0, const Labels &lb, const Warp &warp, const Mark &mark) const {
+// rowFacts: digitRows already holds every row's facts for an equal mark (the rear ticks' layer, drawTicks).
+void Tube::drawLabels(int y0, const Labels &lb, const Warp &warp, const Mark &mark, bool rowFacts) const {
+  if (lb.sprite && !rowFacts) spriteRowFacts(y0, lb, mark);
+#if DIGIT_PIE
+  if (fracMemo) fracMemo->valid = false;   // the planes may have been rebaked since the last frame
+#endif
   for (int i = 0; i < lb.n; i++) {
     const Label &l = lb.list[i]; int x = l.x0, y = l.y;
     for (int k = 0; k < l.len; k++) {
@@ -1488,12 +2430,222 @@ void Tube::drawLabels(int y0, const Labels &lb, const Warp &warp, const Mark &ma
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// ticks: one call per tick row
+// ---------------------------------------------------------------------------------------------
+// Profile (2026-10-29, LCD native, wide tubes, user preset; -DTICK_PROF): ~3.8 ms a tube for ~320 tick rows (~1,600
+// px), compute-bound (a row drawn again at once: 93 % of its first draw) plus one PSRAM line fill a row (~1.3 us).
+// Through Mark::operator() a pixel was ~575 cycles: the out-of-line operator, bandMark's footprint test on every pixel
+// while the surface band is on, wetColourT -> throughLiquid (two lumas), the emboss, blend565T. Hours, pinned, now
+// ~1.5 ms: line fills, the row facts, memo fills. The kernels sit in IRAM on the LCD (TICK_IRAM): from flash, behind
+// the 16 KB instruction cache both render cores share, the same rows took ~1.7x as long. Here a plot / plotF row is one call. A row wholly
+// behind liquid or wholly not, clear of the band footprints and of the strip's ends (nearly all of them), writes per
+// pixel what TickMemo holds for the pixel behind: along a row the pixel behind is the liquid's (or the back's) row
+// colour, so after the first pixel each one is a load, a compare and a store. Other rows go pixel by pixel (tickPx),
+// band-footprint pixels through Mark::operator(). A pixel's ops read and write only that pixel, so pixels may go in any
+// order, the two ops of one pixel (plotF's edge columns: emboss, then body) in theirs. Byte-identical (check_render_frames).
+struct TickInk { uint16_t c, hi, lo; };   // a tick colour and its emboss highlight / shadow
+struct TickRows {
+  const Mark &mark; uint16_t *fb; DigitRow *rows; const uint16_t *dryT;   // fb: strip row of tick row 0
+  int y0, H, T, C, embT; float emb; bool rear, emboss;   // emb: tickEmboss clamped (plotF's edge-column shares)
+  bool generic;   // every pixel through Mark::operator() (no row facts: render_init failed, or a baked mark)
+  bool depth;     // rows[].depth holds the lens depth of every row (else computed per base row)
+#ifdef TICK_PROF
+  uint32_t *prof;
+#endif
+};
+// One tick op over the pixel behind bg (565) of a known kind: Mark::operator()'s colour and coverage (w: bg's colour
+// through the liquid, when wet). blend565T gives bg for a coverage <= 0, where Mark::operator() writes nothing.
+static inline uint16_t tickOp(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t bg, uint16_t w, int covT, int rel) {
+  uint16_t col; int cv = covT;
+  if (wet) { col = rel > 0 ? embossHi(w) : rel < 0 ? embossLo(w) : w; if (rel) cv = cv * k.T >> 8; }   // rear relief fades with the liquid's opacity
+  else { col = rel > 0 ? ink.hi : rel < 0 ? ink.lo : ink.c; if (k.rear) cv = cv * dT >> 8; }        // rear marks vanish behind the wall band
+  return blend565T(bg, col, cv);
+}
+// Column class i of a row (TickMemo::o) over the pixel behind bg: its ops in their order (w0: bg through the liquid).
+static uint16_t tickColumn(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t bg, uint16_t w0, int i, int fT, int eA, int eF) {
+  auto wc = [&](uint16_t b) { return wet ? throughLiquid(b, ink.c, k.T, k.C) : (uint16_t)0; };
+  switch (i) {
+    case 0: return tickOp(k, ink, wet, dT, bg, w0, eA, 1);
+    case 1:
+      if (!fT) return tickOp(k, ink, wet, dT, bg, w0, 256, 0);
+      if (k.emboss) { const uint16_t b = tickOp(k, ink, wet, dT, bg, w0, eF, 1); return tickOp(k, ink, wet, dT, b, wc(b), 256 - fT, 0); }
+      return tickOp(k, ink, wet, dT, bg, w0, 256 - fT, 0);
+    case 2: return tickOp(k, ink, wet, dT, bg, w0, 256, 0);
+    case 3:
+      if (!fT) return tickOp(k, ink, wet, dT, bg, w0, eA, -1);
+      if (k.emboss) { const uint16_t b = tickOp(k, ink, wet, dT, bg, w0, eA, -1); return tickOp(k, ink, wet, dT, b, wc(b), fT, 0); }
+      return tickOp(k, ink, wet, dT, bg, w0, fT, 0);
+    default: return tickOp(k, ink, wet, dT, bg, w0, eF, -1);
+  }
+}
+// The memo for the pixel behind raw: every column class the row has (plot: no x + w + 1; without emboss no x - 1).
+TICK_IRAM static void __attribute__((noinline)) tickMemoFill(const TickRows &k, const TickInk &ink, TickMemo &m, bool wet, int dT, uint16_t raw,
+                                                             int fT, int eA, int eF) {
+  const uint16_t bg = __builtin_bswap16(raw), w0 = wet ? throughLiquid(bg, ink.c, k.T, k.C) : 0;
+  m.raw = raw; m.c = ink.c; m.fT = (int16_t)fT;
+  for (int i = 0; i < 5; i++)
+    m.o[i] = (i == 0 && !k.emboss) || (i == 4 && (!fT || !k.emboss)) ? 0 : __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, w0, i, fT, eA, eF));
+}
+// A pixel of a memo row that shows another pixel behind than the memo's (strip layout in and out).
+static uint16_t __attribute__((noinline)) tickColumnRaw(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t raw, int i, int fT, int eA, int eF) {
+  const uint16_t bg = __builtin_bswap16(raw);
+  return __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, wet ? throughLiquid(bg, ink.c, k.T, k.C) : 0, i, fT, eA, eF));
+}
+// One op of a row that straddles the liquid's edge, a band footprint or the strip's ends: Mark::operator() given the
+// row's facts.
+TICK_IRAM static void __attribute__((noinline)) tickPx(const TickRows &k, const TickInk &ink, const DigitRow &r, int dT, uint16_t *row,
+                                              int y, int px, int covT, int rel) {
+  if (r.nb && ((px >= r.b0[0] && px < r.b1[0]) || (r.nb > 1 && px >= r.b0[1] && px < r.b1[1]))) { k.mark(px, y, ink.c, covT, rel); return; }
+  if ((unsigned)px >= (unsigned)PANEL_W) return;
+  uint16_t *const d = row + px;
+  const uint16_t bg = __builtin_bswap16(*d);
+  uint16_t col; int cv = covT;
+  if (k.rear && px >= r.Li && px < r.Hi) {
+    col = throughLiquid(bg, ink.c, k.T, k.C);
+    if (rel) { col = rel > 0 ? embossHi(col) : embossLo(col); cv = cv * k.T >> 8; }   // rear relief fades with the liquid's opacity
+  } else {
+    if (k.rear) cv = cv * dT >> 8;   // rear marks vanish behind the wall band
+    col = rel > 0 ? ink.hi : rel < 0 ? ink.lo : ink.c;
+  }
+  if (cv <= 0) return;   // on top Mark::operator() writes the pixel back unchanged
+  *d = __builtin_bswap16(cv >= 256 ? col : blend565T(bg, col, cv));
+}
+// One plot (fT 0: columns x .. x + w - 1, emboss eA at x - 1 / x + w) or plotF row (edge columns x / x + w at
+// 256 - fT / fT, emboss eA at x - 1 / x + w and eF at x / x + w + 1) of tick row ry (0 <= ry < H, checked by the caller).
+TICK_IRAM static void __attribute__((noinline)) tickRow(const TickRows &k, const TickInk &ink, int ry, int x, int w, int fT, int eA, int eF) {
+  const int y = k.y0 + ry;
+  const bool emb = k.emboss;
+  if (k.generic) {
+    const uint16_t c = ink.c;
+    if (!fT) {
+      if (emb) { k.mark(x - 1, y, c, eA, 1); k.mark(x + w, y, c, eA, -1); }
+      for (int i = 0; i < w; i++) k.mark(x + i, y, c);
+      return;
+    }
+    if (emb) { k.mark(x - 1, y, c, eA, 1); k.mark(x, y, c, eF, 1); k.mark(x + w, y, c, eA, -1); k.mark(x + w + 1, y, c, eF, -1); }
+    k.mark(x, y, c, 256 - fT);
+    for (int i = 1; i < w; i++) k.mark(x + i, y, c);
+    k.mark(x + w, y, c, fT);
+    return;
+  }
+  uint16_t *const row = k.fb + ry * PANEL_W;
+  DigitRow &r = k.rows[ry];
+  const int dT = k.rear ? k.dryT[ry] : 256;
+  const int xa = emb ? x - 1 : x, xb = x + w - 1 + (fT ? 1 : 0) + (emb ? 1 : 0);   // the row's pixels, inclusive
+  int kind = -1;   // 0: every pixel behind air (or on top), 1: every pixel behind liquid; -1: pixel by pixel
+  if (xa >= 0 && xb < PANEL_W && !(r.nb && ((xa < r.b1[0] && xb >= r.b0[0]) || (r.nb > 1 && xa < r.b1[1] && xb >= r.b0[1])))) {
+    if (!k.rear || xb < r.Li || xa >= r.Hi) kind = 0;
+    else if (xa >= r.Li && xb < r.Hi) kind = 1;
+  }
+#ifdef TICK_PROF
+  if (k.prof) k.prof[kind < 0 ? TP_ROW_MIX : kind ? TP_ROW_WET : TP_ROW_DRY]++;
+#endif
+  if (kind < 0) {
+    if (!fT) {
+      if (emb) { tickPx(k, ink, r, dT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, row, y, x + w, eA, -1); }
+      for (int i = 0; i < w; i++) tickPx(k, ink, r, dT, row, y, x + i, 256, 0);
+      return;
+    }
+    if (emb) {
+      tickPx(k, ink, r, dT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, row, y, x, eF, 1);
+      tickPx(k, ink, r, dT, row, y, x + w, eA, -1); tickPx(k, ink, r, dT, row, y, x + w + 1, eF, -1);
+    }
+    tickPx(k, ink, r, dT, row, y, x, 256 - fT, 0);
+    for (int i = 1; i < w; i++) tickPx(k, ink, r, dT, row, y, x + i, 256, 0);
+    tickPx(k, ink, r, dT, row, y, x + w, fT, 0);
+    return;
+  }
+  // Every pixel of the row is one column class of TickMemo: written from the memo when it shows the pixel behind the
+  // memo was made for (along a row nearly all do, and the next ticks' rows too: same pixel behind, same fT), else on its own.
+  const bool wet = kind;
+  TickMemo &m = r.tm[kind];
+  uint16_t *const d = row + x;
+  const uint16_t raw0 = d[emb ? -1 : 0];
+  if (!(m.fT == fT && m.raw == raw0 && m.c == ink.c)) {
+#ifdef TICK_PROF
+    const uint32_t f0 = esp_cpu_get_cycle_count();
+#endif
+    tickMemoFill(k, ink, m, wet, dT, raw0, fT, eA, eF);
+#ifdef TICK_PROF
+    if (k.prof) { k.prof[TP_FILLS]++; k.prof[TP_CYC_FILLS] += esp_cpu_get_cycle_count() - f0; }
+#endif
+  }
+  const uint16_t key = m.raw;
+#define TICK_PIX(q, i) do { const uint16_t rq = *(q); *(q) = rq == key ? m.o[i] : tickColumnRaw(k, ink, wet, dT, rq, i, fT, eA, eF); } while (0)
+  if (emb) TICK_PIX(d - 1, 0);
+  TICK_PIX(d, 1);
+  for (int i = 1; i < w; i++) TICK_PIX(d + i, 2);
+  if (fT || emb) TICK_PIX(d + w, 3);
+  if (fT && emb) TICK_PIX(d + w + 1, 4);
+#undef TICK_PIX
+}
+
+// The lens depth of tick row by (sim drawTicks point): the same expression as the table drawTicks fills.
+static inline float tickDepth(int by, int H) {
+  const float radius = fmx(1, (H - 1) / 2.0f), centre = (H - 1) / 2.0f;
+  const float qy = (by - centre) / radius;
+  return sqrtf(fmx(0, 1 - qy * qy));
+}
+// One segment of a tick (sim drawTicks): rows outer .. inner, each at its subpixel position x0 + dx * depth (rows
+// whole, shifted by dy * depth; a jump of more than one row is filled in between), edge columns antialiased. One
+// call per segment: the per-row bookkeeping in registers, one tickRow call a row.
+TICK_IRAM static void __attribute__((noinline)) tickSegment(const TickRows &k, const TickInk &ink, int x0, int w, int outer, int inner, float dx, float dy) {
+  const int H = k.H, dir = inner >= outer ? 1 : -1;
+  auto plotF = [&](float xf, int ry) __attribute__((always_inline)) {
+    if (ry < 0 || ry >= H) return;
+    const int x = (int)ffloor(xf), fT = (int)jround((xf - x) * 256);
+#ifdef TICK_PROF
+    if (k.prof) k.prof[TP_ROWS]++;
+    const uint32_t k0 = esp_cpu_get_cycle_count();
+#endif
+    if (fT == 0 || fT == 256) tickRow(k, ink, ry, x + (fT >> 8), w, 0, k.embT, 0);
+    else {
+      const int a = 256 - fT;   // left share of the edge columns; fT the right one
+      tickRow(k, ink, ry, x, w, fT, k.emboss ? alphaT(k.emb * (a * (1 / 256.0f))) : 0, k.emboss ? alphaT(k.emb * (fT * (1 / 256.0f))) : 0);   // sim emboss * share / 256
+    }
+#ifdef TICK_PROF
+    if (k.prof) k.prof[TP_CYC_ROWS] += esp_cpu_get_cycle_count() - k0;
+#endif
+  };
+  // Without parallax every segment is vertical: no lens-depth or line interpolation needed.
+  if (dx == 0 && dy == 0) {
+    for (int ry = outer;; ry += dir) {
+#ifdef TICK_PROF
+      if (k.prof) k.prof[TP_ROWS]++;
+      const uint32_t k0 = esp_cpu_get_cycle_count();
+#endif
+      tickRow(k, ink, ry, x0, w, 0, k.embT, 0);   // plot: rows outer .. inner lie in the strip
+#ifdef TICK_PROF
+      if (k.prof) k.prof[TP_CYC_ROWS] += esp_cpu_get_cycle_count() - k0;
+#endif
+      if (ry == inner) break;
+    }
+    return;
+  }
+  auto depth = [&](int by) __attribute__((always_inline)) { return k.depth ? k.rows[by].depth : tickDepth(by, H); };
+  float d = depth(outer);
+  float px0 = x0 + dx * d; int py0 = outer + (int)jround(dy * d);
+  plotF(px0, py0);
+  if (outer == inner) return;
+  for (int by = outer + dir;; by += dir) {
+    d = depth(by);
+    const float px1 = x0 + dx * d; const int py1 = by + (int)jround(dy * d);
+    int n = abs(py1 - py0); if (n < 1) n = 1;
+    if (n == 1) plotF(px1, py1);   // one row on (also preserves repeated rows)
+    else for (int j = 1; j <= n; j++) plotF(px0 + (px1 - px0) * j / n, (int)jround(py0 + (float)(py1 - py0) * j / n));
+    px0 = px1; py0 = py1;
+    if (by == inner) break;
+  }
+}
+
 // wetRows/dryRows: source-row tables behind liquid vs behind air, blended by a tick's wet share (wetShare,
-// built by drawTube for these edges); edges null = all wet. Parallax is liquid-only.
-void Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows, const int16_t *dryRows,
+// built by drawTube for these edges); edges null = all wet. Parallax is liquid-only. True: digitRows holds every row's
+// facts for this mark (markRowFacts), for a digit layer with an equal mark (drawLabels).
+bool Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows, const int16_t *dryRows,
                      const Edges *edges, const Mark &mark, float dxFull, float dyFull) const {
   bool minutes = ticksN == 60;
-  if (!(minutes ? p.ticksM : p.ticksH)) return;
+  if (!(minutes ? p.ticksM : p.ticksH)) return false;
   int step = (int)fmx(1, jround(minutes ? p.tickStepM : p.tickStepH));
   int majorEvery = (int)fmx(0, jround(minutes ? p.tickMajorEveryM : p.tickMajorEveryH));
   int hMin = (int)fmx(0, jround(minutes ? p.tickMinorHeightM : p.tickMinorHeightH));
@@ -1512,57 +2664,33 @@ void Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
     }
   };
   int embT = alphaT(clampf(p.tickEmboss, 0, 1));
-  auto embossShare = [&](const Params &pp, int share) { return alphaT(clampf(pp.tickEmboss, 0, 1) * (share * (1 / 256.0f))); };   // sim emboss * share / 256
   bool emboss = p.tickEmboss > 0;
+  // The row kernels' context: the facts of every row (the strip rows are the tick rows: y0 is the strip's first row)
+  // with an empty TickMemo, the lens depth table when there is parallax; the generic per-pixel path without them.
+  const bool rear = !mark.onTop;
+  TickRows K{mark, FB + (y0 - baseY) * PANEL_W, digitRows, pal.dryT, y0, H, mark.T, mark.Cin, embT, clampf(p.tickEmboss, 0, 1),
+             rear, emboss, !digitRows || mark.bakedT || y0 != baseY, digitRows && (dxFull != 0 || dyFull != 0)};
+#ifdef TICK_PROF
+  K.prof = mark.prof;
+  const uint32_t f0 = esp_cpu_get_cycle_count();
+#endif
+  if (!K.generic) for (int ry = 0; ry < H; ry++) {
+    DigitRow &r = digitRows[ry];
+    markRowFacts(r, ry, mark); r.tm[0].fT = r.tm[1].fT = -1;
+  }
+  if (K.depth) for (int ry = 0; ry < H; ry++) digitRows[ry].depth = tickDepth(ry, H);
+#ifdef TICK_PROF
+  if (mark.prof) mark.prof[TP_CYC_FACTS] += esp_cpu_get_cycle_count() - f0;
+#endif
+  const TickInk inkMin{cMin, embossHi(cMin), embossLo(cMin)}, inkMaj{cMaj, embossHi(cMaj), embossLo(cMaj)};
   auto drawSegment = [&](int x0, int w, uint16_t c, int rangeA, int rangeB, bool top, float k) {
     if (rangeB < 0) return;
-    float dx = dxFull * k, dy = dyFull * k;
-    int outer = top ? 0 : H - 1;
+#ifdef TICK_PROF
+    if (mark.prof) mark.prof[TP_SEGS]++;
+#endif
+    const int outer = top ? 0 : H - 1;
     int inner = top ? rangeB : rangeA; if (inner < 0) inner = 0; if (inner >= H) inner = H - 1;
-    int dir = inner >= outer ? 1 : -1;
-    float radius = fmx(1, (H - 1) / 2.0f), centre = (H - 1) / 2.0f;
-    // x fractional, rows whole: each row of the tick at its subpixel position, edge columns antialiased (sim drawTicks).
-    auto point = [&](int baseY, float &x, int &y) {
-      float qy = (baseY - centre) / radius;
-      float depth = sqrtf(fmx(0, 1 - qy * qy));
-      x = x0 + dx * depth; y = baseY + (int)jround(dy * depth);
-    };
-    auto plot = [&](int x, int ry) {
-      if (ry < 0 || ry >= H) return;
-      if (emboss) { mark(x - 1, y0 + ry, c, embT, 1); mark(x + w, y0 + ry, c, embT, -1); }
-      for (int k = 0; k < w; k++) mark(x + k, y0 + ry, c);
-    };
-    auto plotF = [&](float xf, int ry) {
-      if (ry < 0 || ry >= H) return;
-      const int x = (int)ffloor(xf), fT = (int)jround((xf - x) * 256);
-      if (fT == 0 || fT == 256) { plot(x + (fT >> 8), ry); return; }
-      const int a = 256 - fT;   // left share of the edge columns; fT the right one
-      if (emboss) {
-        mark(x - 1, y0 + ry, c, embossShare(p, a), 1); mark(x, y0 + ry, c, embossShare(p, fT), 1);
-        mark(x + w, y0 + ry, c, embossShare(p, a), -1); mark(x + w + 1, y0 + ry, c, embossShare(p, fT), -1);
-      }
-      mark(x, y0 + ry, c, a);
-      for (int k = 1; k < w; k++) mark(x + k, y0 + ry, c);
-      mark(x + w, y0 + ry, c, fT);
-    };
-    // Without parallax every segment is vertical: no lens-depth or line interpolation needed.
-    if (dx == 0 && dy == 0) {
-      for (int ry = outer;; ry += dir) {
-        plot(x0, ry);
-        if (ry == inner) break;
-      }
-      return;
-    }
-    float px0; int py0; point(outer, px0, py0); plotF(px0, py0);
-    if (outer == inner) return;
-    for (int baseY = outer + dir;; baseY += dir) {
-      float px1; int py1; point(baseY, px1, py1);
-      int n = abs(py1 - py0); if (n < 1) n = 1;
-      if (n == 1) plotF(px1, py1);   // one row on (also preserves repeated rows)
-      else for (int j = 1; j <= n; j++) plotF(px0 + (px1 - px0) * j / n, (int)jround(py0 + (float)(py1 - py0) * j / n));
-      px0 = px1; py0 = py1;
-      if (baseY == inner) break;
-    }
+    tickSegment(K, c == cMin ? inkMin : inkMaj, x0, w, outer, inner, dxFull * k, dyFull * k);
   };
   // Where wet, the ticks follow the digits' remap (sim tickFollowRange): rows of a tick ending at `edge` in a
   // column of wet share `share`, [0, topB] from the near wall and [botA, H - 1] from the far one.
@@ -1579,13 +2707,19 @@ void Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
     topA = b < 0 ? H : 0; topB = b; botA = a; botB = a < H ? H - 1 : -1;
   };
   // Warped row ranges depend only on (wet/dry table, minor/major height): 8 ranges, computed once.
+#ifdef TICK_PROF
+  const uint32_t r0 = esp_cpu_get_cycle_count();
+#endif
   int rng[2][2][4];   // [wet][major][topA, topB, botA, botB]
   for (int wi = 0; wi < 2; wi++) for (int mj = 0; mj < 2; mj++) {
     const int16_t *rows = wi ? wetRows : dryRows; int h = mj ? hMaj : hMin;
-    if (h <= 0) continue;
+    if (h <= 0 || (mj && majorEvery <= 0)) continue;   // no major tick: their ranges are never read
     if (wi && follow) { followRange(rc.tickEdge[minutes][mj], 256, rng[wi][mj][0], rng[wi][mj][1], rng[wi][mj][2], rng[wi][mj][3]); continue; }
     warpedRange(rows, 0, h - 1, rng[wi][mj][0], rng[wi][mj][1]); warpedRange(rows, H - h, H - 1, rng[wi][mj][2], rng[wi][mj][3]);
   }
+#ifdef TICK_PROF
+  if (mark.prof) mark.prof[TP_CYC_RANGE] += esp_cpu_get_cycle_count() - r0;
+#endif
   const bool flip = p.vertical && p.remaining;   // the scale runs from the top (right) end
   for (int i = step; i < ticksN; i += step) {
     int xc = (int)jround((float)i * L / ticksN); if (flip) xc = L - xc;
@@ -1594,6 +2728,10 @@ void Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
     int w = major ? wMaj : wMin, x0 = xc - ((w - 1) >> 1); uint16_t c = major ? cMaj : cMin;
     const int share = Warp(edges ? wetShare : nullptr)(xc);
     int topA, topB, botA, botB;
+#ifdef TICK_PROF
+    const uint32_t r1 = esp_cpu_get_cycle_count();
+    if (mark.prof) mark.prof[TP_TICKS]++;
+#endif
     if (share == 0 || share == 256) { const int *R = rng[share ? 1 : 0][major ? 1 : 0]; topA = R[0]; topB = R[1]; botA = R[2]; botB = R[3]; }
     else if (follow) followRange(rc.tickEdge[minutes][major], share, topA, topB, botA, botB);
     else {   // across the meniscus: the tick's own source rows (sim drawTicks)
@@ -1601,16 +2739,46 @@ void Tube::drawTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
       for (int ry = 0; ry < H; ry++) rows[ry] = (int16_t)blendRow(dryRows[ry], wetRows[ry], share);
       warpedRange(rows, 0, h - 1, topA, topB); warpedRange(rows, H - h, H - 1, botA, botB);
     }
+#ifdef TICK_PROF
+    if (mark.prof) mark.prof[TP_CYC_RANGE] += esp_cpu_get_cycle_count() - r1;
+#endif
     const float k = share * (1 / 256.0f);   // air refracts nothing: the parallax grows with the wet share
     if (pos != 1) drawSegment(x0, w, c, topA, topB, true, k);
     if (pos != 0) drawSegment(x0, w, c, botA, botB, false, k);
   }
+  return !K.generic;
 }
 
 // ---------------------------------------------------------------------------------------------
 // fizz
 // ---------------------------------------------------------------------------------------------
-static inline float frand() { return (esp_random() >> 8) / 16777216.0f; }
+// The fizz's random draws. LCD: a xorshift32 per core (frand runs in stepFizz on core 1 and, for scattered presets, in
+// both renders), seeded from the hardware RNG once (render_init). esp_random() itself waits until ~22 us passed since
+// its previous call (S3: 1778 APB cycles, a 45 kHz cap), and a fizz step draws 5-15 times in a burst (step 5,
+// 2026-10-29). AMOLED (no static RAM to spare) and host builds: esp_random.
+#if defined(BOARD_LCD316) && defined(__XTENSA__)
+#include "esp_cpu.h"
+static uint32_t fizzRng[2] = {0x9e3779b9u, 0x7f4a7c15u};
+static inline uint32_t fizzDraw() { uint32_t &x = fizzRng[esp_cpu_get_core_id() & 1]; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x; }
+static void fizzSeed() { for (int i = 0; i < 2; i++) { uint32_t v; do v = esp_random(); while (!v); fizzRng[i] = v; } }
+#else
+static inline uint32_t fizzDraw() { return esp_random(); }
+static void fizzSeed() {}
+#endif
+#ifdef FIZZ_PROF
+static uint32_t fizzStepProf[FS_N];   // stepFizz counters (core 1 only: the spring preset never draws frand in the render)
+static inline float frand() {
+  const uint32_t c0 = esp_cpu_get_cycle_count(), v = fizzDraw();
+  fizzStepProf[FS_CYC_RAND] += esp_cpu_get_cycle_count() - c0; fizzStepProf[FS_RANDS]++;
+  return (v >> 8) / 16777216.0f;
+}
+#define FS_ADD(i, v) FZ_ADD(fizzStepProf, i, v)
+#define FS_CNT(i, n) (fizzStepProf[i] += (n))
+#else
+static inline float frand() { return (fizzDraw() >> 8) / 16777216.0f; }
+#define FS_ADD(i, v) ((void)0)
+#define FS_CNT(i, n) ((void)0)
+#endif
 static inline float fizzR(const Params &p, float v) { return p.fizzSize / 2 * (1 + (v - 1) * p.fizzSizeVar); }
 static inline float fizzWall(const Params &p) { return p.glassWall > 0 ? fmx(1, p.glassWall) : 0; }   // band px per side (buildPalette wallU)
 // Row where a bubble of size v is fully behind the wall band (respawn/turnaround bound); 3 px without a band.
@@ -1618,24 +2786,48 @@ static inline float fizzHideY(const Params &p, float v) { float w = fizzWall(p);
 // Random row with the whole bubble in the bore, so bubbles never sit half behind the wall.
 static inline float fizzSpawnY(const Params &p, int H, float v) { float lo = fizzWall(p) + fizzR(p, v), hi = H - lo; return hi <= lo ? H / 2.0f : lo + frand() * (hi - lo); }
 // Surface front `surf` (liquid frame) at float row y, in u = side * x: where a parked bubble's centre sits.
-static float foamFront(const float *surf, int H, float y, int side) {
+FIZZ_IRAM static float foamFront(const float *surf, int H, float y, int side) {
   const float yc = clampf(y, 0, H - 1); const int i = (int)ffloor(yc), j = i + 1 < H ? i + 1 : H - 1;
   return side * (surf[i] + (surf[j] - surf[i]) * (yc - i));
 }
 // Furthest centre (in u = side * x) a bubble of radius r at row y can take with its whole disc inside the
 // surface `surf` (liquid frame): the tightest row of the disc. See sim discFit.
-static float discFit(const float *surf, int H, float y, float r, int side) {
+FIZZ_IRAM static float discFit(const float *surf, int H, float y, float r, int side) {
+#ifdef FIZZ_PROF
+  FZ_T0(c0);
+  const int a = (int)fmx(0, fceil(y - r)), b = (int)fmn(H - 1, ffloor(y + r));
+  float u;
+  if (a > b) u = foamFront(surf, H, y, side) - r;
+  else { u = INFINITY; for (int iy = a; iy <= b; iy++) { const float dy = iy - y; u = fmn(u, side * surf[iy] - sqrtExact(fmx(0, r * r - dy * dy))); } }
+  FS_ADD(FS_CYC_FIT, c0); FS_CNT(FS_FITS, 1); FS_CNT(FS_FIT_ROWS, b >= a ? b - a + 1 : 0);
+  return u;
+#else
   const int a = (int)fmx(0, fceil(y - r)), b = (int)fmn(H - 1, ffloor(y + r));
   if (a > b) return foamFront(surf, H, y, side) - r;
   float u = INFINITY;
-  for (int iy = a; iy <= b; iy++) { const float dy = iy - y; u = fmn(u, side * surf[iy] - sqrtf(fmx(0, r * r - dy * dy))); }
+  for (int iy = a; iy <= b; iy++) { const float dy = iy - y; u = fmn(u, side * surf[iy] - sqrtExact(fmx(0, r * r - dy * dy))); }
+  return u;
+#endif
+}
+// A lower bound of discFit without its roots: every row's root is at most r (rounded up to r1 here), so each row's
+// term side * surf - root is at least side * surf - r1 (rounding is monotone), and so is their minimum. Lets stepFizz
+// skip discFit for a bubble far from the surface: f.x <= low - FOAM_CATCH implies f.x <= discFit - FOAM_CATCH.
+static inline float discFitLow(const float *surf, int H, float y, float r, int side) {
+  const int a = (int)fmx(0, fceil(y - r)), b = (int)fmn(H - 1, ffloor(y + r));
+  if (a > b) return -INFINITY;   // discFit takes another path there: no bound
+  const float r1 = r + r * 1e-6f;   // >= the float above r, >= any rounded root of r * r - dy * dy
+  float u = INFINITY;
+  for (int iy = a; iy <= b; iy++) u = fmn(u, side * surf[iy] - r1);
   return u;
 }
 // A free bubble f (radius r) touching foam parked on `side` — not foam on the other edge, nor foam this tick is
 // still to release (its life still carries the old side).
-static bool touchesFoam(const Tube &t, const Fizz &f, float r, const Params &p, int side) {
-  for (int j = 0; j < t.fizzN; j++) {
-    const Fizz &g = t.fizz[j];
+// Scans `cand` (n slots): every slot that is foam on `side` now is in it (stepFizz keeps it), others are skipped by
+// the same test as before. The answer is an OR over that set, so the order of the scan does not matter.
+FIZZ_IRAM static bool touchesFoam(const Tube &t, const Fizz &f, float r, const Params &p, int side, const int16_t *cand, int n) {
+  FS_CNT(FS_TOUCHES, 1); FS_CNT(FS_TOUCH_SCAN, n);
+  for (int c = 0; c < n; c++) {
+    const Fizz &g = t.fizz[cand[c]];
     if (g.life * side <= 0) continue;
     const float m = r + fizzR(p, g.v) + 0.5f, dx = g.x - f.x, dy = g.y - f.y;
     if (fabsf(dx) < m && fabsf(dy) < m && dx * dx + dy * dy < m * m) return true;
@@ -1644,7 +2836,7 @@ static bool touchesFoam(const Tube &t, const Fizz &f, float r, const Params &p, 
 }
 // Respawn x in the liquid of the bubble's (new) row: at < 0 random, 0 just inside the time edge, > 0 just
 // inside the home edge (the side the flow comes from). See sim stepFizz respawn.
-static void fizzRespawnX(const Tube &t, const Params &p, Fizz &f, int at) {
+static void __attribute__((noinline)) fizzRespawnX(const Tube &t, const Params &p, Fizz &f, int at) {   // births / respawns: rare, flash
   const float r = fizzR(p, f.v);
   const float lo = -discFit(t.fizzSurfL, t.H, f.y, r, -1) + FOAM_CATCH, hi = discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH;
   f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + frand() * (hi - lo) : at > 0 ? lo : hi;
@@ -1653,7 +2845,7 @@ static void fizzRespawnX(const Tube &t, const Params &p, Fizz &f, int at) {
 // inside), fizzSourceX along that row's liquid (between the surfaces, as a respawn) as it sits at home, so
 // fizzShift px back in a slug that slid away — each axis jittered by up to ±fizzSourceSpread px, kept in the
 // liquid. See sim springSpawn.
-static void springSpawn(const Tube &t, const Params &p, Fizz &f) {
+static void __attribute__((noinline)) springSpawn(const Tube &t, const Params &p, Fizz &f) {
   f.v = 0.5f + frand(); f.z = frand(); f.life = 0;
   const float r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = t.H - lo;
   f.y = hi <= lo ? t.H / 2.0f : clampf(lo + p.fizzSourceY * (hi - lo) + (2 * frand() - 1) * s, lo, hi);
@@ -1661,7 +2853,7 @@ static void springSpawn(const Tube &t, const Params &p, Fizz &f) {
   f.x = xh <= xl ? (xl + xh) / 2 : clampf(xl + p.fizzSourceX * (xh - xl) - t.fizzShift + (2 * frand() - 1) * s, xl, xh);
 }
 // Scattered birth: a new size and depth anywhere in the liquid. See sim stepFizz scatter.
-static void fizzScatter(const Tube &t, const Params &p, Fizz &f) {
+static void __attribute__((noinline)) fizzScatter(const Tube &t, const Params &p, Fizz &f) {
   f.life = 0; f.v = 0.5f + frand(); f.y = fizzSpawnY(p, t.H, f.v); fizzRespawnX(t, p, f, -1); f.z = frand();
 }
 // A spring's bubble leaving or popping: its slot goes idle until the cadence fills it.
@@ -1690,7 +2882,7 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
 static int16_t foamOrder[MAX_FIZZ];   // the packing sweep order (parked, front first); one tube at a time
-static void settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy) {
+FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
   auto front = [&](float y, float r) { return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side); };
   auto place = [&](Fizz &f, float u, float y) {   // in the bore and not past the front of its row
@@ -1698,9 +2890,12 @@ static void settleFoam(Tube &t, const Params &p, float speed, const float *surf,
     f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi);
     f.x = side * fmn(u, front(f.y, r));
   };
-  for (int i = 0; i < t.fizzN; i++) {
+  // The parked bubbles, in slot order (none parks or leaves in here): the slide pass and the packing sweep run over them.
+  int n = 0;
+  for (int i = 0; i < t.fizzN; i++) if (t.fizz[i].life != 0) foamOrder[n++] = (int16_t)i;
+  for (int a = 0; a < n; a++) {
+    const int i = foamOrder[a];
     Fizz &f = t.fizz[i];
-    if (f.life == 0) continue;
     const float r = fizzR(p, f.v);
     const int fy = (int)clampf(jround(f.y), 0, H - 1);
     const float tu = front(f.y, r);
@@ -1708,9 +2903,9 @@ static void settleFoam(Tube &t, const Params &p, float speed, const float *surf,
     u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu;   // buoyancy: no faster than the rise
     const float slope = side * (surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0]) / 2;   // px per row
     float slide = glass ? glassVy * dt : FOAM_SLIDE * speed * clampf(2 * slope, -1, 1) * dt;
-    for (int j = 0; j < t.fizzN; j++) {   // touching a neighbour on the slide side: line up along the surface
-      const Fizz &g = t.fizz[j];
-      if (j == i || g.life == 0 || slide * (g.y - f.y) <= 0) continue;
+    for (int b = 0; b < n; b++) {   // touching a neighbour on the slide side: line up along the surface
+      const int j = foamOrder[b]; const Fizz &g = t.fizz[j];
+      if (j == i || slide * (g.y - f.y) <= 0) continue;
       const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dy = g.y - f.y;
       if (du * du + dy * dy < m * m) { slide = 0; break; }
     }
@@ -1718,8 +2913,6 @@ static void settleFoam(Tube &t, const Params &p, float speed, const float *surf,
   }
   // Pack: pairwise relaxation swept front to back; an overlapping pair is pushed apart, clamped to the bore
   // and the front, and whatever overlap the clamps leave the rear one takes by stepping back. See sim.
-  int n = 0;
-  for (int i = 0; i < t.fizzN; i++) if (t.fizz[i].life != 0) foamOrder[n++] = (int16_t)i;
   for (int it = 0; it < FOAM_RELAX; it++) {
     for (int a = 1; a < n; a++) {   // insertion sort: nearly sorted from the last step
       const int16_t k = foamOrder[a]; const float uk = side * t.fizz[k].x; int b = a - 1;
@@ -1733,14 +2926,14 @@ static void settleFoam(Tube &t, const Params &p, float speed, const float *surf,
         const float m = rf + fizzR(p, g.v) + 0.5f;
         float du = side * (g.x - f.x), dy = g.y - f.y;
         if (fabsf(du) >= m || fabsf(dy) >= m || du * du + dy * dy >= m * m) continue;
-        const float d = sqrtf(du * du + dy * dy), k = (m - d) / 2;
+        const float d = sqrtExact(du * du + dy * dy), k = (m - d) / 2;
         const float nu = d > 1e-4f ? du / d : -1, ny = d > 1e-4f ? dy / d : 0;   // coincident: g (later in the sweep) steps back
         place(f, side * f.x - k * nu, f.y - k * ny);
         place(g, side * g.x + k * nu, g.y + k * ny);
         du = side * (g.x - f.x); dy = g.y - f.y;
         if (du * du + dy * dy >= m * m) continue;
         Fizz &front = du > 0 ? g : f, &rear = du > 0 ? f : g;
-        place(rear, side * front.x - sqrtf(fmx(0, m * m - dy * dy)), rear.y);
+        place(rear, side * front.x - sqrtExact(fmx(0, m * m - dy * dy)), rear.y);
       }
     }
   }
@@ -1759,10 +2952,11 @@ int fizzCounts(int idx, int &foam, int &slots) {
   return live;
 }
 
-void stepFizz(const Params &p, float dt, float along, float across, float agitation) {
+FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, float agitation) {
+  FZ_T0(st0); FS_CNT(FS_STEPS, 1);
   if (mirrored(p)) along = -along;   // fizz lives in the mirrored liquid frame (see drawTube)
   const float speed = p.fizzSpeed * (1 + 3 * agitation);
-  const float up = sqrtf(fmx(0.0f, 1 - along * along - across * across));
+  const float up = sqrtExact(fmx(0.0f, 1 - along * along - across * across));
   const float a = clampf(across * p.fizzAcrossGain, -1, 1), al = clampf(along * p.fizzDriftGain, -1, 1);
   // Vertical watch: the viewer's up is the tube's top end (+x), so the face-up rise goes along the tube, not across it.
   const float flat = up * p.fizzFlatRise; const bool V = p.vertical;
@@ -1774,6 +2968,7 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
   for (int i = 0; i < 2; i++) {
     Tube &t = tubes[i]; const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
     if (len <= 0) continue;   // no liquid drawn yet: no surfaces
+    FZ_T0(sp0);
     // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
     // the slug slides it past its home surface.
     const float sr = fizzR(p, 1), slo = fizzWall(p) + sr, sy = H - slo <= slo ? H / 2.0f : slo + p.fizzSourceY * (H - 2 * slo);
@@ -1789,9 +2984,16 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
     // On the bore wall the rise points at (row wallY: the disc touching the glass), held by it.
     auto wallY = [&](const Fizz &g) { return vy < 0 ? wall + fizzR(p, g.v) : H - wall - fizzR(p, g.v); };
     auto held = [&](const Fizz &g) { return g.v != 0 && g.life == 0 && fabsf(g.y - wallY(g)) < 1e-3f; };
+    FS_ADD(FS_CYC_SPRINGPT, sp0); FS_CNT(FS_SLOTS, t.fizzN);
+    // touchesFoam's candidates (in foamOrder, free until settleFoam below): the foam on `side` now, plus every bubble
+    // that parks during the loop (only bubble k changes in step k; foam does not move before settleFoam).
+    int nFoam = 0;
+    if (side != 0) for (int j = 0; j < t.fizzN; j++) if (t.fizz[j].life * side > 0) foamOrder[nFoam++] = (int16_t)j;
+    FZ_T0(lp0);
     for (int k = 0; k < t.fizzN; k++) {
       Fizz &f = t.fizz[k];
       if (f.v == 0) { if (!spring) fizzScatter(t, p, f); continue; }   // idle: the spring's cadence fills it below
+      FS_CNT(FS_LIVE, 1);
       if (f.life != 0) {
         const int was = f.life > 0 ? 1 : -1;
         if (was != side) {   // the surface tilted away: the foam releases into the flow, from where it is drawn
@@ -1807,6 +3009,9 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
         }
       }
       const float r = fizzR(p, f.v), wlo = wall + r, whi = H - wlo; const bool grip = hold && whi > wlo;
+#ifdef FIZZ_PROF
+      if (grip && held(f)) FS_CNT(FS_HELD, 1);
+#endif
       if (grip && held(f) && frand() >= letGo) f.x += vx * dt;   // held by the glass: slides along it
       else {
         const bool inBore = f.y > wlo && f.y < whi;   // not one letting go, already on the glass row
@@ -1815,12 +3020,14 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
         if (grip && inBore && (vy < 0 ? f.y < wlo : f.y > whi)) {   // carried into the glass: held, or coalesces into a held bubble
           f.y = vy < 0 ? wlo : whi;
           bool merge = false;
+          FZ_T0(mg0);
           for (int j = 0; j < t.fizzN; j++) {
             const Fizz &g = t.fizz[j];
             if (j == k || !held(g)) continue;
             const float m = r + fizzR(p, g.v) + 0.5f, dx = g.x - f.x, dy = g.y - f.y;
             if (dx * dx + dy * dy < m * m) { merge = true; break; }
           }
+          FS_ADD(FS_CYC_MERGE, mg0);
           if (merge) { fizzFree(f); continue; }
         }
       }
@@ -1835,12 +3042,24 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
       // through), or into the foam already there (it joins at the back): at the surface the rise heads for it
       // parks (settleFoam); anywhere else it is recycled at the side the flow comes from. A bubble the flow does
       // not carry into a surface only rides it, centre held inside, floating half out like the foam.
-      const bool outR = vx > 0 && f.x > discFit(t.fizzSurf, H, f.y, r, 1) - FOAM_CATCH, outL = vx < 0 && -f.x > discFit(t.fizzSurfL, H, f.y, r, -1) - FOAM_CATCH;
-      if ((side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, f, r, p, side))) f.life = side * p.fizzFoamLife * (0.5f + frand());
+      const bool outR = vx > 0 && f.x > discFitLow(t.fizzSurf, H, f.y, r, 1) - FOAM_CATCH && f.x > discFit(t.fizzSurf, H, f.y, r, 1) - FOAM_CATCH,
+                 outL = vx < 0 && -f.x > discFitLow(t.fizzSurfL, H, f.y, r, -1) - FOAM_CATCH && -f.x > discFit(t.fizzSurfL, H, f.y, r, -1) - FOAM_CATCH;
+#ifdef FIZZ_PROF
+      FZ_T0(tf0);
+      const bool touch = (side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, f, r, p, side, foamOrder, nFoam));
+      FS_ADD(FS_CYC_TOUCH, tf0);
+      if (touch) { f.life = side * p.fizzFoamLife * (0.5f + frand()); foamOrder[nFoam++] = (int16_t)k; }
+#else
+      if ((side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, f, r, p, side, foamOrder, nFoam))) {
+        f.life = side * p.fizzFoamLife * (0.5f + frand()); foamOrder[nFoam++] = (int16_t)k;   // parked: a candidate from now on
+      }
+#endif
       else if ((outR || outL) && spring) fizzFree(f);
       else if (outR || outL) { f.v = 0.5f + frand(); f.y = fizzSpawnY(p, H, f.v); fizzRespawnX(t, p, f, vx < 0 ? 0 : 1); f.z = frand(); }
       else f.x = fmx(-foamFront(t.fizzSurfL, H, f.y, -1), fmn(foamFront(t.fizzSurf, H, f.y, 1), f.x));
     }
+    FS_ADD(FS_CYC_LOOP, lp0);
+    FZ_T0(cd0);
     if (spring) {
       // Cadence: fizzSourceRate bubbles/s (shaking nucleates up to twice as many), each into an idle slot (the first,
       // else a new one); idle slots at the end are dropped, so the loops stay as short as the bubbles in flight.
@@ -1862,8 +3081,12 @@ void stepFizz(const Params &p, float dt, float along, float across, float agitat
       }
       while (t.fizzN > 0 && t.fizz[t.fizzN - 1].v == 0) t.fizzN--;
     }
+    FS_ADD(FS_CYC_CADENCE, cd0);
+    FZ_T0(se0);
     if (side != 0) settleFoam(t, p, speed, side > 0 ? t.fizzSurf : t.fizzSurfL, side, dt, glass, vy);
+    FS_ADD(FS_CYC_SETTLE, se0);
   }
+  FS_ADD(FS_CYC, st0);
 }
 
 // Magnification for a bubble of radius r at float row y: mean of the row table over the rows the
@@ -2088,6 +3311,7 @@ const uint16_t *Tube::effectTable(EffectTable &T, const Params &p, const Palette
 }
 
 void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN) {
+  TU_T0();
   TubeState s = st;
   const bool mir = mirrored(p);
   if (mir) { s.fillPos = -st.fillPos; s.edgeLight = -st.edgeLight; s.cap = -st.cap; }
@@ -2116,30 +3340,34 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   int softW = p.edgeSoft > 0 ? (int)fmx(1, jround(p.edgeSoft)) : 0;
   const bool traceMode = p.traces && p.traceAmount > 0 && st.trace;
 
-  // Tube back and cached edge geometry, before the residue backing and liquid body.
+  // Cached edge geometry, before the residue backing and liquid body.
   const int16_t *capX0 = rc.capX0;
   for (int ry = 0; ry < H; ry++) {
     float ex = edgeX(ry, xe, tanR, capR);
     float exL = p.freeLiquid ? edgeXL(ry, xs, tanL, capL) : 0;
     edges[ry] = ex; edgesL[ry] = exL;
     fizzSurf[ry] = ex - xs; fizzSurfL[ry] = exL - xs;   // surface fronts for stepFizz (foam parks on the profile)
-    hspan(y0 + ry, 0, L, pal.tubeBackRows[ry]);
   }
+  TU_MARK(TU_BACK);
 
   // Residue and wet film form the backing UNDER the liquid. Paint them first, then
   // blend the body AA over that backing once. Masking residue by (1 - coverage)
   // over an already-AA body leaks the bare tube colour at their junction.
+  // The residue's per-frame terms (computed here once; its rows are drawn band by band below).
+  bool trRows = false, bandR = false, bandL = false, shearR = false, shearL = false;
+  int trN = 0, trA0 = 0, trA1 = 0, aLo = 65535, aHi = 0, trG = 0;   // aLo / aHi: path coefficient band of the span (traceFillRow's LUT)
+  float invSoftW = 0, invN = 0, invBW = 1, etaR = 0, etaL = 0, visR = 0, visL = 0, ZR = 1, ZL = 1, invZR = 1, invZL = 1;
   if (traceMode) {
     const float hw = softW * 0.5f;
-    const int N = p.wetFilm > 0 ? (int)fmx(1, jround(p.wetFilm)) : 0;
-    const bool bandR = hasLiquid && N > 0 && s.filmFree > 0.02f;
-    const bool bandL = hasLiquid && N > 0 && p.freeLiquid && s.filmHome > 0.02f;
-    const float invSoftW = softW > 0 ? 1.0f / softW : 0.0f;
-    const float invN = N > 0 ? 1.0f / N : 0.0f, invBW = 1.0f / (softW > 1 ? softW : 1);
+    const int N = p.wetFilm > 0 ? (int)fmx(1, jround(p.wetFilm)) : 0; trN = N;
+    bandR = hasLiquid && N > 0 && s.filmFree > 0.02f;
+    bandL = hasLiquid && N > 0 && p.freeLiquid && s.filmHome > 0.02f;
+    invSoftW = softW > 0 ? 1.0f / softW : 0.0f;
+    invN = N > 0 ? 1.0f / N : 0.0f; invBW = 1.0f / (softW > 1 ? softW : 1);
     // film thickness per edge (eta * follower) and its visibility, fading out with the follower from 0.2 to
     // the 0.02 gate (see sim: a tangent row sees a vanishing film at full chord)
-    const float eta = filmEta(p), etaR = bandR ? eta * s.filmFree : 0.0f, etaL = bandL ? eta * s.filmHome : 0.0f;
-    const float visR = bandR ? ease((0.2f - s.filmFree) * (1.0f / 0.18f)) : 0.0f, visL = bandL ? ease((0.2f - s.filmHome) * (1.0f / 0.18f)) : 0.0f;
+    const float eta = filmEta(p); etaR = bandR ? eta * s.filmFree : 0.0f; etaL = bandL ? eta * s.filmHome : 0.0f;
+    visR = bandR ? ease((0.2f - s.filmFree) * (1.0f / 0.18f)) : 0.0f; visL = bandL ? ease((0.2f - s.filmHome) * (1.0f / 0.18f)) : 0.0f;
     // Columns that may receive residue or band: the occupied residue range (physics keeps
     // [traceLo, traceHi) tight) mirrored into the render frame, plus each band's reach over all rows.
     // Permanent film (traceFilm, a share of the thin-film cap, see sim): every column carries residue at least
@@ -2156,11 +3384,11 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       dR = fmx(dR, fabsf(edges[ry] - xe)); eR0 = fmn(eR0, edges[ry]); eR1 = fmx(eR1, edges[ry]);
       dL = fmx(dL, fabsf(edgesL[ry] - xs)); eL0 = fmn(eL0, edgesL[ry]); eL1 = fmx(eL1, edgesL[ry]);
     }
-    const float ZR = fmx(1, 2 * dR), ZL = fmx(1, 2 * dL), invZR = 1.0f / ZR, invZL = 1.0f / ZL;
+    ZR = fmx(1, 2 * dR); ZL = fmx(1, 2 * dL); invZR = 1.0f / ZR; invZL = 1.0f / ZL;
     const int depLo = mir ? L - st.traceHi : st.traceLo, depHi = mir ? L - st.traceLo : st.traceHi;
     auto nearDep = [depLo, depHi](float e0, float e1, float z) { return depHi > depLo && depLo < e1 + z + 4 && depHi > e0 - z - 4; };
-    const bool shearR = hasLiquid && dR >= 0.125f && nearDep(eR0, eR1, ZR);
-    const bool shearL = hasLiquid && p.freeLiquid && dL >= 0.125f && nearDep(eL0, eL1, ZL);
+    shearR = hasLiquid && dR >= 0.125f && nearDep(eR0, eR1, ZR);
+    shearL = hasLiquid && p.freeLiquid && dL >= 0.125f && nearDep(eL0, eL1, ZL);
     const float extR = fmx(bandR ? (float)N : 0.0f, shearR ? ZR : 0.0f), extL = fmx(bandL ? (float)N : 0.0f, shearL ? ZL : 0.0f);
     if (extL > 0 || extR > 0) for (int ry = 0; ry < H; ry++) {
       if (extL > 0) { int a = (int)ffloor(edgesL[ry] - extL), b = (int)fceil(edgesL[ry] + hw) + 1; if (a < lo) lo = a; if (b > hi) hi = b; }
@@ -2171,25 +3399,51 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       // the residue range are guaranteed zero and the band only reads its own columns.
       const int a0 = lo - 4 < 0 ? 0 : lo - 4, a1 = hi + 4 > L ? L : hi + 4;
       const int c0 = a0 - 4 < 0 ? 0 : a0 - 4, c1 = a1 + 4 > L ? L : a1 + 4;
-      for (int x = c0; x < c1; x++) traceRaw[x] = st.trace[mir ? L - 1 - x : x];
-      int aLo = 65535, aHi = 0;   // path coefficient band of the span (traceFillRow's LUT)
-      // +-4 px triangular blur before the streak texture (see sim): tapers the smear's outer end
-      // (dense turnaround deposit next to bare glass) into a tide mark instead of a 1-px cliff. The streak
-      // scatters the coat's thickness; A = eta (2 - eta) 2^16 is the column's film path coefficient
-      for (int x = a0; x < a1; x++) {
-        uint32_t acc = 5u * traceRaw[x];
-        for (int d = 1; d <= 4; d++) {
-          const int m = x < d ? 0 : x - d, q2 = x > L - 1 - d ? L - 1 : x + d;
-          acc += (uint32_t)(5 - d) * (traceRaw[m] + traceRaw[q2]);
-        }
-        const float v = acc * (1.0f / 25.0f);
-        const float eta = FILM_ETA_MAX * fmx(v * (1.0f / TRACE_FULL), filmV) * traceStreak(x + (uint32_t)idx * 6151u);
-        const int ta = (int)(eta * (2 - eta) * 65536.0f + 0.5f);
-        traceA[x] = (uint16_t)ta;
-        if (ta) { if (ta < aLo) aLo = ta; if (ta > aHi) aHi = ta; }
-      }
-      const int G = (int)(p.traceAmount * 256 + 0.5f);   // stain depth gain 1/256
-      for (int ry = 0; ry < H; ry++) {
+      // Memo across frames (step 6): traceA[x] is a function of traceRaw over [x - 4, x + 4] (clamped), filmV, x and
+      // the tube only, so a column is recomputed only where its window holds a changed or unknown value or it was not
+      // computed last frame (pinned, the stain dried: none; the blur and streak were ~1.1 ms a tube).
+      traceBlur(st.trace, mir, a0, a1, c0, c1, filmV, aLo, aHi);
+      trRows = true; trA0 = a0; trA1 = a1;
+      trG = (int)(p.traceAmount * 256 + 0.5f);   // stain depth gain 1/256
+    }
+  }
+  TU_MARK(TU_TRPREP);
+  float strokeA = 0, pullR = 0, pullL = 0, veilA = 0;   // 3e: the stroke's opacity; receding pull per edge; foam veil opacity
+
+  // Everything up to the marks, row band by row band: each stage below writes and reads only its own row, so running
+  // them over TUBE_BAND rows at a time (stage order kept within every row) gives the same pixels while the band's strip
+  // rows stay in the data cache (one pass over the whole strip per stage missed every line each time, 2026-10-29).
+  // The band's code is a lambda, in IRAM on the LCD (12.6 KB): from flash, all of it went through the instruction
+  // cache again for every band (+1 fps, step 6). -DTUBE_BAND_INLINE keeps it inline in flash (gives the IRAM back).
+  // The rows a band's SIMD ramps may blend whole 16-B blocks in (rampPieR / L): the strip, or the band's tile.
+  const uint16_t *bandLo = FB, *bandHi = FB + H * PANEL_W;
+#if TILE_RENDER
+  // Tiled (tiles.h): each band renders into a tile slot (FB points so that its rows land there), copied to the strip
+  // while the next band renders into the other slot. A slot's rows start 16-B aligned like the strip's (TILE_ROWS 4,
+  // rows of 1,640 B), so the ramps take the same SIMD / scalar path as on the strip.
+  uint16_t *const stripFB = FB;
+  int tileSlot = 0;
+  tile_begin(idx, stripFB, H);
+  TU_MARK(TU_TILE);
+#define TILE_BAND_START(rb0) do { uint16_t *const t_ = tile_slot(idx, tileSlot); FB = t_ - (rb0) * PANEL_W; bandLo = t_; bandHi = t_ + TILE_ROWS * PANEL_W; } while (0)
+#define TILE_BAND_END(rb0, rb1) do { tile_put(idx, tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); tileSlot ^= 1; TU_MARK(TU_TILE); } while (0)
+#else
+#define TILE_BAND_START(rb0) ((void)0)
+#define TILE_BAND_END(rb0, rb1) ((void)0)
+#endif
+#ifndef TUBE_BAND_INLINE
+  auto bandRows = [&](const int rb0, const int rb1) TUBE_IRAM {
+#else
+  for (int rb0 = 0; rb0 < H; rb0 += TUBE_BAND) {
+  const int rb1 = rb0 + TUBE_BAND < H ? rb0 + TUBE_BAND : H;
+  TILE_BAND_START(rb0);
+#endif
+  for (int ry = rb0; ry < rb1; ry++) hspan(y0 + ry, 0, L, pal.tubeBackRows[ry]);   // the tube back
+  TU_MARK(TU_BACK);
+  if (trRows) {
+      const float hw = softW * 0.5f;
+      const int N = trN, a0 = trA0, a1 = trA1, G = trG;
+      for (int ry = rb0; ry < rb1; ry++) {
         const int y = y0 + ry;
         const float ex = edges[ry], exL = edgesL[ry], xm = (ex + exL) * 0.5f;
         // film path weight 1/(1 - u^2) of this row (sim kRow); the outermost rows graze the wall. K: the same
@@ -2234,12 +3488,24 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         // strip row directly — y is inside the strip (drawTube's y0 is baseY), [a0, a1) inside [0, PANEL_W).
         static_assert(TUBE_LENGTH_PX <= PANEL_W, "trace columns index the strip row directly");
         uint16_t *const row = FB + ry * PANEL_W;
-        traceFillRow(row, traceA, a0, pl1, tint, aLo, aHi, traceLut);
-        traceFillRow(row, traceA, pr0, a1, tint, aLo, aHi, traceLut);
+        TU_SUB0(tuF);
+        traceFillRow(row, traceA, a0, pl1, pr0, a1, tint, aLo, aHi, traceLut);
+        TU_SUB(TU_TRFILL, tuF); TU_SUB0(tuS);
         if (zl0 > pl1) traceShearRow(row, traceA, a0, a1, pl1, zl0, tint, exL, true, shL, invZL);
         if (pr0 > zr1) traceShearRow(row, traceA, a0, a1, zr1, pr0, tint, ex, false, shR, invZR);
+        TU_SUB(TU_TRSHEAR, tuS); TU_SUB0(tuZ);
         // a row with no shear and no film up: the zone is only the soft ramp over plain residue
         const bool rowPlain = shL == 0 && shR == 0 && !bandL && !bandR;
+        {
+          const ZoneRow zr{traceA, &tint, ex, exL, hw, invSoftW, xm, invBW, invN, shL, shR, invZL, invZR, etaL, etaR, kRow, visL, visR,
+                           softW, xrL, xr, a0, a1, rowPlain};
+#ifdef TUBE_VERIFY
+          memcpy(verifyRow, row, PANEL_W * 2);
+#endif
+          traceZoneRow(row, zl0, zl1, zr);
+          traceZoneRow(row, zr0, zr1, zr);
+#ifdef TUBE_VERIFY
+          { uint16_t *const keep = FB; FB = verifyRow - ry * PANEL_W;   // the step-5 loop on the copy (px writes FB)
         for (int seg = 0; seg < 2; seg++) {
           const int z0 = seg ? zr0 : zl0, z1 = seg ? zr1 : zl1;
           for (int x = z0; x < z1; x++) {
@@ -2253,7 +3519,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
             if (cov >= 1) continue;
             if (rowPlain) {   // the general path below reduces to exactly this
               const int T = traceA[x] ? tint.depthT(traceA[x]) : 0;
-              if (T > 0) px(x, y, tint.at(T));
+              if (T > 0) px(x, y0 + ry, tint.at(T));
               continue;
             }
             // px outward of each contact line; bt = the time edge's share, 0 / 1 on each half, blended across
@@ -2272,19 +3538,24 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
             // the residue the line just laid and the wet film behind it are one coat, counted once: the deeper
             // of the two, never lighter than the residue beside it (see sim)
             const int T = (int)(fmx(r0 + r1 > 0 ? tint.depthF(r0 + (r1 - r0) * ft) : 0.0f, fw) + 0.5f);
-            if (T > 0) px(x, y, tint.at(T));
+            if (T > 0) px(x, y0 + ry, tint.at(T));
           }
         }
+            FB = keep; int bad = 0; for (int x = 0; x < PANEL_W; x++) bad += verifyRow[x] != row[x];
+            tubeVerify(TV_ZONE, zl1 - zl0 + zr1 - zr0, bad); }
+#endif
+        }
+        TU_SUB(TU_TRZONE, tuZ);
       }
-    }
   }
+  TU_MARK(TU_TRROWS);
 
   // Local backing per row and edge for the convex nose (3e): first pixel past the soft ramp, before the
   // body and glow paint it, plus the first pixel of the 3c wet film. See sim.
   if (hasLiquid) {
     const float hw = softW * 0.5f, yc = (H - 1) / 2.0f;
     const bool film3c = !traceMode && p.wetFilm > 0;
-    for (int ry = 0; ry < H; ry++) {
+    for (int ry = rb0; ry < rb1; ry++) {
       const int y = y0 + ry; const float d = (ry - yc) / yc, rowW = 0.4f + 0.6f * d * d;
       const int xr = (int)ffloor(edges[ry] + hw - 0.5f) + 1, xl = (int)fceil(edgesL[ry] - hw - 0.5f) - 1;
       uint16_t bR = xr >= 0 && xr < L && inStrip(xr, y) ? rd(xr, y) : pal.tubeBackRows[ry];
@@ -2294,9 +3565,10 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       backR[ry] = bR; backL[ry] = bL;
     }
   }
+  TU_MARK(TU_BACKING);
 
   // Liquid body and its soft edge, over the residue backing.
-  for (int ry = 0; ry < H; ry++) {
+  for (int ry = rb0; ry < rb1; ry++) {
     const float ex = edges[ry], exL = edgesL[ry];
     const int x0 = capX0[ry];
     if (!hasLiquid) continue;
@@ -2331,24 +3603,39 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       int a0 = (int)ffloor(ex - hw - 0.5f) + 1;
       int aEnd = glow ? (int)fceil(ex + hw - 0.5f + p.edgeGlow) : (int)fceil(ex + hw - 0.5f) - 1;
       uint16_t *const row = FB + ry * PANEL_W;
+      TU_SUB0(tuR);
+#ifdef TUBE_VERIFY
+      memcpy(verifyRow, row, PANEL_W * 2);
+      rampRowRScalar(verifyRow, a0, aEnd, ex, hw, invW, invGlow, glow, p.glowStrength, lightK, x0, solidLo, solidHi,
+                     traceMode, pal.tubeBackRows[ry], pal.rows[ry]);
+#endif
       rampRowR(row, a0, aEnd, ex, hw, invW, invGlow, glow, p.glowStrength, lightK, x0, solidLo, solidHi,
-               traceMode, pal.tubeBackRows[ry], pal.rows[ry]);
+               traceMode, pal.tubeBackRows[ry], pal.rows[ry], bandLo, bandHi);
       int b0 = (int)ffloor(exL - hw - 0.5f) + 1;
       int bEnd = glow ? (int)ffloor(exL - hw - 0.5f - p.edgeGlow) : b0;  // home edge: glow to the left
+#ifdef TUBE_VERIFY
+      rampRowLScalar(verifyRow, (int)fceil(exL + hw - 0.5f) - 1, bEnd, exL, hw, invW, invGlow, glow, p.glowStrength, lightKL, x0, xi,
+                     solidLo, solidHi, traceMode, pal.tubeBackRows[ry], pal.rows[ry]);
+#endif
       rampRowL(row, (int)fceil(exL + hw - 0.5f) - 1, bEnd, exL, hw, invW, invGlow, glow, p.glowStrength, lightKL, x0, xi,
-               solidLo, solidHi, traceMode, pal.tubeBackRows[ry], pal.rows[ry]);
+               solidLo, solidHi, traceMode, pal.tubeBackRows[ry], pal.rows[ry], bandLo, bandHi);
+#ifdef TUBE_VERIFY
+      { int bad = 0; for (int x = 0; x < PANEL_W; x++) bad += verifyRow[x] != row[x]; tubeVerify(TV_RAMP, 1, bad); }
+#endif
+      TU_SUB(TU_RAMP, tuR);
     } else {
       if (frac >= 0.5f) px(xi, y0 + ry, pal.rows[ry]);
       if (fracL < 0.5f && xiL >= x0) px(xiL, y0 + ry, pal.rows[ry]);
     }
   }
 
+  TU_MARK(TU_BODY);
   // 3a: front brightening, weighted by row luma
   if (hasLiquid && p.frontBright > 0) {
     const float invFront = 1 / p.frontBright;
     const uint16_t hiC = rc.hiC;
     const uint16_t *fT = nullptr, *fTL = nullptr; const bool tab = false;
-    for (int ry = 0; ry < H; ry++) {
+    for (int ry = rb0; ry < rb1; ry++) {
       int xi = (int)ffloor(edges[ry]); float rowK = pal.rowK[ry];
       int xiL = (int)ffloor(edgesL[ry]);
       for (int k = 1; k <= p.frontBright; k++) {
@@ -2367,6 +3654,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     }
   }
 
+  TU_MARK(TU_FRONT);
   // 3b: edge glow — a few px past the edge. Hard-edge path only (edgeSoft = 0); with a soft
   // edge the glow is folded into the step-3 per-pixel alpha.
   if (hasLiquid && p.edgeSoft <= 0 && p.edgeGlow > 0 && p.glowStrength > 0) {
@@ -2374,7 +3662,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     const uint16_t *gT = traceMode ? nullptr : effectTable(glowT[0], p, pal, gen, lightK, true);
     const uint16_t *gTL = !traceMode && p.freeLiquid ? effectTable(glowT[1], p, pal, gen, lightKL, true) : nullptr;
     const bool tab = gT && (!p.freeLiquid || gTL);
-    for (int ry = 0; ry < H; ry++) {
+    for (int ry = rb0; ry < rb1; ry++) {
       // glow starts at the first px past the RENDERED hard edge (round(ex)), never leaving a
       // 1-px tube-back gap that flickers as frac crosses 0.5
       int xg = (int)jround(edges[ry]), xgL = (int)jround(edgesL[ry]) - 1;
@@ -2398,11 +3686,12 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     }
   }
 
+  TU_MARK(TU_GLOW);
   // 3c: wet film left by a receding edge (see sim step 3c). In trace mode the film is the wet band
   // of 3d instead (full liquid at the edge, thinning into the residue), so this faint one is skipped.
   if (!traceMode && hasLiquid && p.wetFilm > 0 && (s.filmFree > 0.02f || (p.freeLiquid && s.filmHome > 0.02f))) {
     const float yc = (H - 1) / 2.0f;
-    for (int ry = 0; ry < H; ry++) {
+    for (int ry = rb0; ry < rb1; ry++) {
       float d = (ry - yc) / yc, rowW = 0.4f + 0.6f * d * d;
       int nR = (int)jround(p.wetFilm * s.filmFree), nL = p.freeLiquid ? (int)jround(p.wetFilm * s.filmHome) : 0;
       int xg = softW > 0 ? (int)fceil(edges[ry] + softW * 0.5f - 0.5f) : (int)fceil(edges[ry]);
@@ -2412,10 +3701,11 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     }
   }
 
+  TU_MARK(TU_FILM);
   // 4: highlight inset
   if (hasLiquid && p.highlightInset > 0) {
     int hiTop = highlightTop(p, s.light);
-    for (int ry = hiTop; ry < hiTop + p.highlightH && ry < H; ry++) {
+    for (int ry = hiTop > rb0 ? hiTop : rb0; ry < hiTop + p.highlightH && ry < rb1; ry++) {
       if (ry < 0) continue;
       float ex = edges[ry];
       int bi = hiTop + (int)p.highlightH + 1; if (bi > H - 1) bi = H - 1;
@@ -2433,15 +3723,15 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     }
   }
 
+  TU_MARK(TU_INSET);
   // 3e: meniscus surface, over residue and the inset highlight. Concave bands grade from
   // a dark inner shoulder to a lit rim with subpixel coverage; convex noses shade inward.
   // Alpha-over blends the stroke over the actual smear. Both branches fade as the ring
   // meets the profile. See sim step 3e. No extra buffers or allocations.
-  for (int ry = 0; ry < H; ry++) {
+  for (int ry = rb0; ry < rb1; ry++) {
     strokeR[ry] = strokeL[ry] = 0;
     bandFill[0][ry] = bandFill[1][ry] = bandBlick[0][ry] = bandBlick[1][ry] = bandRim[0][ry] = bandRim[1][ry] = 0;
   }
-  float strokeA = 0, pullR = 0, pullL = 0, veilA = 0;   // the stroke's opacity; receding pull per edge; foam veil opacity
   if (hasLiquid && p.surfaceBand > 0) {
     const float hw = softW * 0.5f, transK = clampf(p.liquidTransparency, 0, 1);
     // opaque from surfaceBand ~0.6 whatever the light; the unlit edge gets a darker stroke; motion
@@ -2462,7 +3752,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       return p.surfaceBlick > 0 ? p.surfaceBlick * fmx(0, 1 - fabsf(ry - blickY) * blickInvH) : 0.0f; };
     const uint16_t hiC = rc.hiC;
     auto tone = [&](uint16_t c) -> uint16_t { return rc.toneT > 0 ? blend565T(c, rc.toneC, rc.toneT) : c; };
-    auto surface = [&](int ry, float xm, float xw, int dir, float lk, int xlo, int xhi) -> float {
+    auto surface = [&](int ry, float xm, float xw, int dir, float lk, int xlo, int xhi) TUBE_IRAM -> float {
       const int y = y0 + ry; const float tw = dir * (xw - xm);   // ring lead in the edge's own outward sense
       if (tw == 0) return 0;
       const float lo = fmn(xm, xw), hi = fmx(xm, xw);   // pixel centres in [lo, hi)
@@ -2472,8 +3762,9 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         const float a = strokeA * fmn(1, tw);
         if (a < 1 / 255.0f) return 0;   // below visible opacity: no stroke, rim or band for the marks
         const float shade = 0.6f * (1 - fmn(1, lk));   // unlit edge: toward the deep liquid colour
-        const uint16_t inner = tone(blend565(pal.rows[ry], rc.darkC, 0.3f));
-        const uint16_t outer = tone(blend565(blend565(rc.lensC, pal.rows[ry], 0.2f), rc.darkC, shade));
+        const PalCache &pc = *palCache;   // per-row colours (buildBandRows)
+        const uint16_t inner = pc.bandInner[ry];
+        const uint16_t outer = tone(blend565(pc.bandLensMix[ry], rc.darkC, shade));
         const float wEff = fmn(p.surfaceWidth, tw);
         const float invWidth = 1 / (wEff + hw);
         const float pull = dir > 0 ? pullR : pullL;
@@ -2481,15 +3772,26 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         // the ring is a thin liquid lens: lit (light side, row shaded) over a dark back, a deep liquid tone
         // at light-independent opacity over a light one; backK blends the two (sim rimK / rimC). Float
         // mixes once per row, like the sim's blend565.
-        const float backK = fmn(1, luma(to888(pal.tubeBackRows[ry])) / 255.0f);
+        const float backK = pc.bandBackK[ry];
         const float rimK = p.surfaceRim * fmn(1, wEff / 2) * (1 - pull) * ((1 - backK) * (0.5f + 0.5f * pal.rowK[ry]) * fmn(1, lk) + backK);
-        const uint16_t rimC = q(mix(to888(hiC), to888(q(mix(to888(pal.rows[ry]), to888(rc.darkC), 0.75f))), backK));
+        const uint16_t rimC = pc.bandRimC[ry];
+#ifdef TUBE_VERIFY
+        {
+          const float backK0 = fmn(1, luma(to888(pal.tubeBackRows[ry])) / 255.0f);
+          const uint16_t inner0 = tone(blend565(pal.rows[ry], rc.darkC, 0.3f));
+          const uint16_t outer0 = tone(blend565(blend565(rc.lensC, pal.rows[ry], 0.2f), rc.darkC, shade));
+          const uint16_t rimC0 = q(mix(to888(hiC), to888(q(mix(to888(pal.rows[ry]), to888(rc.darkC), 0.75f))), backK0));
+          tubeVerify(TV_BAND, 4, (inner0 != inner) + (outer0 != outer) + (rimC0 != rimC) + (memcmp(&backK0, &backK, 4) != 0));
+        }
+#endif
         const int side = dir > 0 ? 0 : 1;   // layer weights for the rear-mark compositor (Mark::bandMark)
         bandFill[side][ry] = a * fill; bandBlick[side][ry] = a * blickK; bandRim[side][ry] = a * rimK;
         // Pixel-footprint coverage for the stroke and rim; no integer-column snapping. See sim.
         const float cLo = dir > 0 ? xm - hw : xm - wEff, cHi = dir > 0 ? xm + wEff : xm + hw;
         int xa = (int)ffloor(cLo), xb = (int)fceil(cHi); if (xa < xlo) xa = xlo; if (xb > xhi) xb = xhi;
+        TU_SUB0(tuB);
         bandRow(FB + ry * PANEL_W, xa, xb, xm, dir, hw, wEff, invWidth, a, fill, blickK, pull, rimK, inner, outer, pal.rows[ry], hiC, rimC);
+        TU_SUB(TU_BANDK, tuB);
         return wEff;
       } else {   // convex: thin nose inside the profile back to the ring
         // The thin nose shows the local backing sampled before body and glow (bare back, or a receding
@@ -2506,20 +3808,18 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         return 0;
       }
     };
-    for (int ry = 0; ry < H; ry++) {
+    for (int ry = rb0; ry < rb1; ry++) {
       int xi = (int)ffloor(edges[ry]), xa = (int)ffloor(edgesL[ry]) + 1; if (xa < capX0[ry]) xa = capX0[ry];
       strokeR[ry] = surface(ry, edges[ry], wallX(ry, xe, tanR, capR), 1, lightK, xa, L);
       if (p.freeLiquid) strokeL[ry] = surface(ry, edgesL[ry], wallXL(ry, xs, tanL, capL), -1, lightKL, capX0[ry], xi);
     }
   }
 
+  TU_MARK(TU_BAND);
   // Panel-frame column bounds for the mark compositor (liquid where lo <= x < hi): the body only. The
   // concave band past it is composited per pixel by its own layer opacities (Mark::bandMark, render
   // frame), so a faint or receding band never hides a mark as liquid and there is no threshold (see sim).
-  const BandInfo band{{edges, edgesL}, {strokeR, strokeL}, {bandFill[0], bandFill[1]}, {bandBlick[0], bandBlick[1]},
-                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L};
-  Edges bounds{boundLo, boundHi, hasLiquid && p.surfaceBand > 0 ? &band : nullptr};
-  for (int ry = 0; ry < H; ry++) {
+  for (int ry = rb0; ry < rb1; ry++) {
     float lo = edgesL[ry], hi = edges[ry];
     if (mir) {
       uint16_t *row = FB + ry * PANEL_W;
@@ -2527,37 +3827,87 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       boundLo[ry] = L - hi; boundHi[ry] = L - lo;
     } else { boundLo[ry] = lo; boundHi[ry] = hi; }
   }
+  TU_MARK(TU_BOUNDS);
+#ifndef TUBE_BAND_INLINE
+  };
+  for (int rb0 = 0; rb0 < H; rb0 += TUBE_BAND) {
+    const int rb1 = rb0 + TUBE_BAND < H ? rb0 + TUBE_BAND : H;
+    TILE_BAND_START(rb0);
+    bandRows(rb0, rb1);
+    TILE_BAND_END(rb0, rb1);
+  }
+#else
+  TILE_BAND_END(rb0, rb1);
+  }   // row bands
+#endif
+#if TILE_RENDER
+  FB = stripFB; bandLo = FB; bandHi = FB + H * PANEL_W;   // the last tile lands while the wet share and labels lay out
+#endif
+#undef TILE_BAND_START
+#undef TILE_BAND_END
+  const BandInfo band{{edges, edgesL}, {strokeR, strokeL}, {bandFill[0], bandFill[1]}, {bandBlick[0], bandBlick[1]},
+                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L};
+  Edges bounds{boundLo, boundHi, hasLiquid && p.surfaceBand > 0 ? &band : nullptr};
   if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H, wetShare, wetRun);
+  TU_MARK(TU_BOUNDS);
 
   // Scale marks, all before bubbles.
 #ifdef DIGIT_PROF
   uint32_t profT = esp_timer_get_time();
 #endif
   bool haveLabels = layoutLabels(y0, p, gen, ticksN, st.acrossTilt, st.edgeLight, st.fillTarget, labels);
+  TU_MARK(TU_LABELS);
+#if TILE_RENDER
+  tile_end(idx);   // nothing above since the band loop touched the strip
+  TU_MARK(TU_TILE);
+#if defined(TILE_VERIFY) && !defined(TUBE_BAND_INLINE)
+  {   // the same bands straight into a PSRAM copy of the strip (the step-6 path), compared with what the tiles left
+    FB = tileVerifyStrip; bandLo = FB; bandHi = FB + H * PANEL_W;
+    for (int rb0 = 0; rb0 < H; rb0 += TUBE_BAND) bandRows(rb0, rb0 + TUBE_BAND < H ? rb0 + TUBE_BAND : H);
+    uint32_t bad = 0;
+    for (int i = 0; i < H * PANEL_W; i++) bad += tileVerifyStrip[i] != stripFB[i];
+    tileVerify((uint32_t)H * PANEL_W, bad);
+    FB = stripFB; bandLo = FB; bandHi = FB + H * PANEL_W;
+    TU_MARK(TU_TILE);
+  }
+#endif
+#endif
 #ifdef DIGIT_PROF
   prof[8] = esp_timer_get_time() - profT; profT = esp_timer_get_time();
 #endif
-  auto drawTickLayer = [&](bool onTop) {
+  auto drawTickLayer = [&](bool onTop) -> bool {   // true: digitRows holds this layer's row facts (drawTicks)
+    bool facts = false;
     if (p.ticksOnTop == onTop) {
       Mark tickMark(*this, y0, bounds, p, onTop, p.markContrast * p.tickBright);
       float dx = onTop ? 0 : -st.edgeLight * p.tickParallax;
       float dy = onTop ? 0 : st.acrossTilt * p.tickParallax;
-      drawTicks(y0, p, ticksN, rc.tickWet, onTop ? rc.tickWet : rc.tickDry, onTop ? nullptr : &bounds, tickMark, dx, dy);
+#ifdef TICK_PROF
+      tickMark.prof = tickProf;
+      const uint32_t c0 = esp_cpu_get_cycle_count();
+#endif
+      facts = drawTicks(y0, p, ticksN, rc.tickWet, onTop ? rc.tickWet : rc.tickDry, onTop ? nullptr : &bounds, tickMark, dx, dy);
+#ifdef TICK_PROF
+      tickProf[TP_CYC] += esp_cpu_get_cycle_count() - c0; tickProf[TP_FRAMES]++;
+#endif
     }
+    return facts;
   };
-  auto drawDigitLayer = [&](bool onTop) {
+  // rowFacts: the layer below left every row's facts for the same mark (both behind the liquid, same bounds)
+  auto drawDigitLayer = [&](bool onTop, bool rowFacts) {
     if (haveLabels && p.digitsOnTop == onTop) {
       const bool baked = labels.sprite && labels.shadow >= 0;
       float floorC; uint16_t floorR; floorBake(p, floorC, floorR);
       Mark digitMark(*this, y0, bounds, p, onTop, p.markContrast * p.digitBright, baked, baked && floorC > 0);
-      drawLabels(y0, labels, Warp(onTop ? nullptr : wetShare), digitMark);
+      drawLabels(y0, labels, Warp(onTop ? nullptr : wetShare), digitMark, rowFacts);
     }
   };
-  drawTickLayer(false);
+  const bool rearFacts = drawTickLayer(false);
+  TU_MARK(TU_TICKS);
 #ifdef DIGIT_PROF
   prof[9] = esp_timer_get_time() - profT; profT = esp_timer_get_time();
 #endif
-  drawDigitLayer(false);
+  drawDigitLayer(false, rearFacts);
+  TU_MARK(TU_DIGITS);
 #ifdef DIGIT_PROF
   prof[10] = esp_timer_get_time() - profT;
 #endif
@@ -2569,58 +3919,22 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
 
   // 5: fizz — AA discs, pre-squashed by the local lens magnification (see sim step 5)
   if (p.fizz) {
-    const float *mag = rc.mag;
-    const uint16_t blickC = q({255 * p.brightness, 255 * p.brightness, 255 * p.brightness});   // sim blickC
-    // Highlight row (continuous, from the light angle): the core shifts away from it, the pinpoint toward it (see sim).
-    const float yHi = (H - 1) / 2.0f * (1 - sinf(st.light * (float)M_PI / 180));
-    const float lxS = -0.7f, lxSign = mir ? -1.0f : 1.0f;   // light from screen-left; liquid frame mirrored under remaining
-    const float invHalfH = 2.0f / H;   // one division per tube, not per bubble
-    for (int k = 0; k < fizzN; k++) {
-      const Fizz &f = fizz[k];
-      if (f.v == 0) continue;   // idle slot
-      int fy = (int)clampf(jround(f.y), 0, H - 1);
-      // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface pushes
-      // them back here): whatever touches a surface floats at most half out of it, like the foam.
-      const float fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
-      // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface.
-      const float pop = f.life != 0 && fabsf(f.life) < FOAM_POP_T ? fabsf(f.life) / FOAM_POP_T : 1;
-      const float r = fizzR(p, f.v) * (1 + 0.6f * (1 - pop));
-      // Seen through liquid in proportion to its depth: a deeper bubble fades toward the liquid (see sim).
-      const float depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency);   // rim/pinpoint: colour mix toward the body (sim cRimD / cBlickD); interior tint: alpha scale
-      const float m = fizzMag(mag, H, f.y, r), ry = r / m, off = fmn(r * p.fizzShadeOff, r - 1);   // core shift, centre kept in the disc (sim)
-      // Light direction in unsquashed disc space (liquid frame): x fixed toward screen-left, y toward the highlight row.
-      const float ly = clampf((yHi - f.y) * invHalfH, -1, 1), nrm = rsqrtApprox(lxS * lxS + ly * ly);   // sim: exact 1/sqrt; <= 2.1e-7 rel.
-      const float dirX = lxSign * lxS * nrm, dirY = ly * nrm;
-      const float rIn = r - 0.5f, rOut = r + 0.5f, kc = r - 1;   // ring 1 px at its thinnest; the offset only shifts the core
-      DiscRow d;
-      d.fx = fx; d.r = r; d.offX = -dirX * off; d.offY = -dirY * off; d.kc = kc;   // dark core shifted away from the light
-      // Specular pinpoint on the lit side (r >= 2.5, fizzBlick > 0).
-      d.blick = r >= 2.5f && p.fizzBlick > 0;
-      if (d.blick) {
-        const float bk = 0.4f * (r - 1), rb = fmx(0.6f, r * 0.25f), rbIn = rb - 0.5f;
-        d.blickK = p.fizzBlick; d.bX = dirX * bk; d.bY = dirY * bk; d.rbOut = rb + 0.5f;
-        d.bIn2 = rbIn * rbIn * (1 - 1e-4f); d.bOut2 = d.rbOut * d.rbOut * (1 + 1e-4f); d.cBlick = depthK < 1 ? blend565(pal.rows[fy], blickC, depthK) : blickC;   // specular, depth-tinted (sim cBlickD)
-      } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; d.cBlick = 0; }
-      d.in2 = rIn >= 1 ? rIn * rIn * (1 - 1e-4f) : -1; d.out2 = rOut * rOut * (1 + 1e-4f);
-      d.core = r >= 1.5f && kc > 0; d.core2Lo = kc * kc * (1 - 1e-4f); d.core2Hi = kc * kc * (1 + 1e-4f);
-      d.veilA = veilA; d.pullR = pullR; d.pullL = pullL;
-      d.mirror = mir; d.xsI = xsI; d.L = L; d.tintA = p.bubbleDark * depthK;   // sim tintA
-      const int ixa = (int)ffloor(fx - r - 1), ixb = (int)fceil(fx + r);
-      for (int iy = (int)ffloor(f.y - ry - 1); iy <= (int)fceil(f.y + ry); iy++) {
-        if (iy < 0 || iy >= H) continue;
-        d.wallT = pal.dryT[iy] / 256.0f * pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
-        if (d.wallT <= 0) continue;
-        // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
-        // profile and gone at the band's outer rim.
-        d.sR = fizzSurf[iy]; d.sL = fizzSurfL[iy]; d.bR = strokeR[iy]; d.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
-        d.veilLo = d.bR > 0 ? (int)ffloor(d.sR) : INT_MAX; d.veilHi = d.bL > 0 ? (int)fceil(d.sL) : INT_MIN;   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL)
-        d.dy = (iy + 0.5f - f.y) * m;
-        d.cRim = depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy];
-        discRow(FB + iy * PANEL_W, ixa, ixb, d);
-      }
-    }
+    FZ_T0(fz0);
+#ifdef FIZZ_PROF
+    fizzProf[FZ_FRAMES]++;
+#endif
+    const FizzFrame ff{rc.mag,
+                       (H - 1) / 2.0f * (1 - sinf(st.light * (float)M_PI / 180)),   // highlight row (continuous, from the light angle): the core shifts away from it, the pinpoint toward it (see sim)
+                       2.0f / H,                // one division per tube, not per bubble
+                       mir ? -1.0f : 1.0f,      // liquid frame mirrored under remaining
+                       veilA, pullR, pullL, xsI, L,
+                       q({255 * p.brightness, 255 * p.brightness, 255 * p.brightness}),   // sim blickC
+                       mir};
+    for (int k = 0; k < fizzN; k++) if (fizz[k].v != 0) drawBubble(fizz[k], p, ff);   // idle slots: v 0
+    FZ_ADD(fizzProf, FZ_CYC, fz0);
   }
 
+  TU_MARK(TU_FIZZ);
   // 6: bubble
   if (p.bubble) {
     float bx = xe - p.bubbleGap - s.edgeLight * p.bubbleTiltGain, by = (H - 1) * p.bubbleY - (H - 1) / 2.0f * s.acrossTilt * p.bubbleRollGain;
@@ -2643,13 +3957,79 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   drawTickLayer(true);
   if (lensRowsOut && !(haveLabels && p.digitsOnTop)) *lensRowsOut = rc.lensOn ? rc.lensSrc : nullptr;   // the push applies it
   else applyLens(p);
-  drawDigitLayer(true);
+  drawDigitLayer(true, false);
+  TU_MARK(TU_TOP);
 }
 
 
+// Step 5, one bubble (drawTube): its disc setup, then its rows (discRow). Out of drawTube (noinline, in IRAM on the
+// LCD): inside it the setup spilled and its code competed for the instruction cache with the other core's render.
+FIZZ_IRAM void __attribute__((noinline)) Tube::drawBubble(const Fizz &f, const Params &p, const FizzFrame &ff) {
+  const float *mag = ff.mag; const float yHi = ff.yHi, invHalfH = ff.invHalfH, lxSign = ff.lxSign;
+  const float lxS = -0.7f;   // light from screen-left (a constant, as it was in drawTube: lxS * lxS folds)
+  FZ_T0(fb0);
+  int fy = (int)clampf(jround(f.y), 0, H - 1);
+  // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface pushes
+  // them back here): whatever touches a surface floats at most half out of it, like the foam.
+  const float fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
+  // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface.
+  const float pop = f.life != 0 && fabsf(f.life) < FOAM_POP_T ? fabsf(f.life) / FOAM_POP_T : 1;
+  const float r = fizzR(p, f.v) * (1 + 0.6f * (1 - pop));
+  // Seen through liquid in proportion to its depth: a deeper bubble fades toward the liquid (see sim).
+  const float depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency);   // rim/pinpoint: colour mix toward the body (sim cRimD / cBlickD); interior tint: alpha scale
+  const float m = fizzMag(mag, H, f.y, r), ry = r / m, off = fmn(r * p.fizzShadeOff, r - 1);   // core shift, centre kept in the disc (sim)
+  // Light direction in unsquashed disc space (liquid frame): x fixed toward screen-left, y toward the highlight row.
+  const float ly = clampf((yHi - f.y) * invHalfH, -1, 1), nrm = rsqrtApprox(lxS * lxS + ly * ly);   // sim: exact 1/sqrt; <= 2.1e-7 rel.
+  const float dirX = lxSign * lxS * nrm, dirY = ly * nrm;
+  const float rIn = r - 0.5f, rOut = r + 0.5f, kc = r - 1;   // ring 1 px at its thinnest; the offset only shifts the core
+  DiscRow d;
+  d.fx = fx; d.r = r; d.offX = -dirX * off; d.offY = -dirY * off; d.kc = kc;   // dark core shifted away from the light
+  // Specular pinpoint on the lit side (r >= 2.5, fizzBlick > 0).
+  d.blick = r >= 2.5f && p.fizzBlick > 0;
+  if (d.blick) {
+    const float bk = 0.4f * (r - 1), rb = fmx(0.6f, r * 0.25f), rbIn = rb - 0.5f;
+    d.blickK = p.fizzBlick; d.bX = dirX * bk; d.bY = dirY * bk; d.rbOut = rb + 0.5f;
+    d.bIn2 = rbIn * rbIn * (1 - 1e-4f); d.bOut2 = d.rbOut * d.rbOut * (1 + 1e-4f); d.cBlick = depthK < 1 ? blend565(pal.rows[fy], ff.blickC, depthK) : ff.blickC;   // specular, depth-tinted (sim cBlickD)
+  } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; d.cBlick = 0; }
+  d.in2 = rIn >= 1 ? rIn * rIn * (1 - 1e-4f) : -1; d.out2 = rOut * rOut * (1 + 1e-4f);
+  d.core = r >= 1.5f && kc > 0; d.core2Lo = kc * kc * (1 - 1e-4f); d.core2Hi = kc * kc * (1 + 1e-4f);
+  d.veilA = ff.veilA; d.pullR = ff.pullR; d.pullL = ff.pullL;
+  d.mirror = ff.mir; d.xsI = ff.xsI; d.L = ff.L; d.tintA = p.bubbleDark * depthK;   // sim tintA
+  const int ixa = (int)ffloor(fx - r - 1), ixb = (int)fceil(fx + r);
+#ifdef FIZZ_PROF
+  d.prof = fizzProf; fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
+#endif
+  for (int iy = (int)ffloor(f.y - ry - 1); iy <= (int)fceil(f.y + ry); iy++) {
+    FZ_T0(fr0);
+    if (iy < 0 || iy >= H) continue;
+    d.wallT = pal.dryT[iy] / 256.0f * pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
+    if (d.wallT <= 0) continue;
+    d.dy = (iy + 0.5f - f.y) * m;
+    if (d.dy * d.dy >= d.out2) continue;     // the disc misses this row (discRowT would return at once)
+    // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
+    // profile and gone at the band's outer rim.
+    d.sR = fizzSurf[iy]; d.sL = fizzSurfL[iy]; d.bR = strokeR[iy]; d.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
+    d.veilLo = d.bR > 0 ? (int)ffloor(d.sR) : INT_MAX; d.veilHi = d.bL > 0 ? (int)fceil(d.sL) : INT_MIN;   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL)
+    d.cRim = depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy];
+#ifdef FIZZ_PROF
+    FZ_ADD(fizzProf, FZ_CYC_ROWPREP, fr0); fizzProf[FZ_ROWS]++;
+    FZ_T0(fr1);
+#endif
+    discRow(FB + iy * PANEL_W, ixa, ixb, d);
+#ifdef FIZZ_PROF
+    FZ_ADD(fizzProf, FZ_CYC_DISC, fr1);
+#if FIZZ_PROF == 3
+    FZ_T0(fr2); discRow(FB + iy * PANEL_W, ixa, ixb, d); FZ_ADD(fizzProf, FZ_CYC_REDRAW, fr2);   // cache probe: blends twice
+#endif
+#endif
+  }
+}
+
 bool render_init() {
+  fizzSeed();
+  EXP565 = (uint32_t *)heap_caps_malloc(512 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   buildLuts();
-  bool ok = true;
+  bool ok = EXP565 != nullptr;
   for (int i = 0; i < 2; i++) {
     tubes[i].set.poolC = (uint16_t *)heap_caps_malloc(GLYPH_POOL_PX * 2, GLYPH_POOL_CAPS);
     tubes[i].set.poolA = (uint8_t *)heap_caps_malloc(GLYPH_POOL_PX, GLYPH_POOL_CAPS);
@@ -2657,14 +4037,114 @@ bool render_init() {
     tubes[i].wetShare = (uint16_t *)heap_caps_malloc(PANEL_W * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     tubes[i].wetRun = (int16_t *)heap_caps_malloc((PANEL_W + 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     tubes[i].digitOff = (float *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
-    ok = ok && tubes[i].set.poolC && tubes[i].set.poolA && tubes[i].set.poolS && tubes[i].wetShare && tubes[i].wetRun && tubes[i].digitOff;
+    tubes[i].traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    tubes[i].palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
+#ifdef BOARD_LCD316
+    tubes[i].glowT = (EffectTable *)heap_caps_malloc(2 * sizeof(EffectTable), MALLOC_CAP_SPIRAM);
+    if (tubes[i].glowT) for (int k = 0; k < 2; k++) tubes[i].glowT[k].valid = false;
+    ok = ok && tubes[i].glowT;
+#endif
+#if TILE_RENDER && defined(TILE_VERIFY)
+    tubes[i].tileVerifyStrip = (uint16_t *)heap_caps_malloc((size_t)TUBE_HEIGHT_MAX * PANEL_W * 2, MALLOC_CAP_SPIRAM);
+    ok = ok && tubes[i].tileVerifyStrip;
+#endif
+#ifdef TUBE_VERIFY
+    tubes[i].verifyRow = (uint16_t *)heap_caps_malloc(PANEL_W * 2, MALLOC_CAP_SPIRAM);
+    tubes[i].verifyPal = (Palette *)heap_caps_malloc(sizeof(Palette), MALLOC_CAP_SPIRAM);
+    ok = ok && tubes[i].verifyRow && tubes[i].verifyPal;
+#endif
+    if (tubes[i].palCache) tubes[i].palCache->valid = false;
+    tubes[i].traceMemo = (TraceMemo *)heap_caps_malloc(sizeof(TraceMemo), MALLOC_CAP_SPIRAM);
+    if (tubes[i].traceMemo) tubes[i].traceMemo->valid = false;
+    tubes[i].traceStreakTab = (float *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (tubes[i].traceStreakTab) for (int x = 0; x < TUBE_LENGTH_PX; x++) tubes[i].traceStreakTab[x] = traceStreak(x + (uint32_t)i * 6151u);
+    ok = ok && tubes[i].traceStreakTab;
+    if (uint8_t *rows = (uint8_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(DigitRow) + 63, MALLOC_CAP_SPIRAM))   // one row per cache line
+      tubes[i].digitRows = (DigitRow *)(((uintptr_t)rows + 63) & ~(uintptr_t)63);
+#if DIGIT_PIE
+    tubes[i].fracMemo = (FracMemo *)heap_caps_malloc(sizeof(FracMemo), MALLOC_CAP_SPIRAM);
+    if (tubes[i].fracMemo) tubes[i].fracMemo->valid = false;
+    ok = ok && tubes[i].fracMemo;
+#endif
+    ok = ok && tubes[i].set.poolC && tubes[i].set.poolA && tubes[i].set.poolS && tubes[i].wetShare && tubes[i].wetRun && tubes[i].digitOff
+         && tubes[i].digitRows && tubes[i].traceLut && tubes[i].palCache && tubes[i].traceMemo;
   }
   FILM_PHI = (uint16_t *)heap_caps_malloc(257 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
   FILM_LG = (uint16_t *)heap_caps_malloc(256 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
   FILM_EX = (uint8_t *)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
   ok = ok && FILM_PHI && FILM_LG && FILM_EX;
   if (FILM_PHI && FILM_LG && FILM_EX) buildFilmLuts();
+#if TILE_RENDER
+  ok = tiles_init() && ok;   // the tile slots and their copy engine (tiles.h)
+#endif
   return ok;
+}
+
+// drawTube 3d's residue blur and streak (traceA over [a0, a1), and its non-zero range aLo / aHi), with its memo across
+// frames (TraceMemo): traceA[x] is a function of traceRaw over [x - 4, x + 4] (clamped), filmV, x and the tube only, so a
+// column is recomputed only where its window holds a changed or unknown value or it was not computed last frame; a frame
+// with no change at all over the same range keeps last frame's aLo / aHi too (pinned, the stain dried: the whole blur
+// was ~1.1 ms a tube, step 6). The streak per column comes from a table built once (traceStreakTab, the same function).
+TUBE_IRAM void __attribute__((noinline)) Tube::traceBlur(const uint16_t *trace, bool mir, int a0, int a1, int c0, int c1, float filmV,
+                                                           int &aLoOut, int &aHiOut) {
+  TraceMemo &tm = *traceMemo;
+  const bool memo = tm.valid && __builtin_bit_cast(uint32_t, tm.filmV) == __builtin_bit_cast(uint32_t, filmV);
+#ifdef TUBE_VERIFY
+  bool fastHit = false; const int keepLo = tm.aLo, keepHi = tm.aHi;
+#endif
+  if (memo && a0 == tm.a0 && a1 == tm.a1 && c0 == tm.c0 && c1 == tm.c1) {
+    uint32_t diff = 0;
+    for (int x = c0; x < c1; x++) diff |= (uint32_t)(trace[mir ? L - 1 - x : x] ^ traceRaw[x]);
+#ifndef TUBE_VERIFY
+    if (!diff) { aLoOut = tm.aLo; aHiOut = tm.aHi; return; }
+#else
+    fastHit = !diff;   // verify: recompute every column (all memo hits, checked below) and the range
+#endif
+  }
+  uint8_t *const dirty = tm.dirty;
+  for (int x = a0; x < a1; x++) dirty[x] = !memo || x < tm.a0 || x >= tm.a1;
+  for (int x = c0; x < c1; x++) {
+    const uint16_t v = trace[mir ? L - 1 - x : x];
+    if (!memo || x < tm.c0 || x >= tm.c1 || v != traceRaw[x]) {
+      const int d0 = x - 4 < a0 ? a0 : x - 4, d1 = x + 5 > a1 ? a1 : x + 5;
+      for (int d = d0; d < d1; d++) dirty[d] = 1;
+    }
+    traceRaw[x] = v;
+  }
+  tm.valid = true; tm.filmV = filmV; tm.a0 = a0; tm.a1 = a1; tm.c0 = c0; tm.c1 = c1;
+  int aLo = 65535, aHi = 0;
+  // +-4 px triangular blur before the streak texture (see sim): tapers the smear's outer end
+  // (dense turnaround deposit next to bare glass) into a tide mark instead of a 1-px cliff. The streak
+  // scatters the coat's thickness; A = eta (2 - eta) 2^16 is the column's film path coefficient.
+  // Columns 4 .. L - 5 read their window without clamping (the same indices).
+  const float *const streak = traceStreakTab;
+  for (int x = a0; x < a1; x++) {
+#ifndef TUBE_VERIFY
+    if (!dirty[x]) { const int ta = traceA[x]; if (ta) { if (ta < aLo) aLo = ta; if (ta > aHi) aHi = ta; } continue; }
+#endif
+    uint32_t acc = 5u * traceRaw[x];
+    if (x >= 4 && x <= L - 5) {
+      const uint16_t *r = traceRaw + x;
+      acc += 4u * (r[-1] + r[1]) + 3u * (r[-2] + r[2]) + 2u * (r[-3] + r[3]) + (uint32_t)(r[-4] + r[4]);
+    } else for (int d = 1; d <= 4; d++) {
+      const int m = x < d ? 0 : x - d, q2 = x > L - 1 - d ? L - 1 : x + d;
+      acc += (uint32_t)(5 - d) * (traceRaw[m] + traceRaw[q2]);
+    }
+    const float v = acc * (1.0f / 25.0f);
+    const float eta = FILM_ETA_MAX * fmx(v * (1.0f / TRACE_FULL), filmV) * streak[x];
+    const int ta = (int)(eta * (2 - eta) * 65536.0f + 0.5f);
+#ifdef TUBE_VERIFY
+    if (!dirty[x]) tubeVerify(TV_TRACE, 1, traceA[x] != (uint16_t)ta);
+    { const float sk = traceStreak(x + (uint32_t)idx * 6151u); tubeVerify(TV_TRACE, 1, __builtin_bit_cast(uint32_t, sk) != __builtin_bit_cast(uint32_t, streak[x])); }
+#endif
+    traceA[x] = (uint16_t)ta;
+    if (ta) { if (ta < aLo) aLo = ta; if (ta > aHi) aHi = ta; }
+  }
+#ifdef TUBE_VERIFY
+  if (fastHit) tubeVerify(TV_TRACE, 2, (keepLo != aLo) + (keepHi != aHi));
+#endif
+  tm.aLo = aLo; tm.aHi = aHi;
+  aLoOut = aLo; aHiOut = aHi;
 }
 
 // Safe to call for idx 0 and 1 concurrently from different tasks: each touches only tubes[idx] and its
@@ -2674,18 +4154,61 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
   memset(tubes[idx].prof, 0, sizeof(tubes[idx].prof)); memset(tubes[idx].profCyc, 0, sizeof(tubes[idx].profCyc));
 #endif
   Tube &t = tubes[idx & 1];
+#ifdef TUBE_PROF
+  const uint32_t tu0 = esp_cpu_get_cycle_count();
+#endif
   TubeLayout lay = tubeLayout(p);
   t.FB = strip; t.H = lay.H; t.baseY = idx == 0 ? lay.yH : lay.yM; t.idx = idx & 1;
   t.lensRowsOut = lensRows; if (lensRows) *lensRows = nullptr;
   t.buildRowCache(p, gen);
   Palette &pal = t.pal;
   if (!(pal.valid && pal.gen == gen && pal.H == t.H && pal.light == s.light)) {
-    t.buildPalette(p, s.light, pal);
+    t.buildPalCache(p, gen, *t.palCache);
+#ifdef TUBE_PROF
+    const uint32_t tp0 = esp_cpu_get_cycle_count();
+#endif
+    t.buildPalette(p, s.light, pal, *t.palCache);
+#ifdef TUBE_PROF
+    const uint32_t tp1 = esp_cpu_get_cycle_count(); t.tubeProf[TU_PALP] += tp1 - tp0;
+#endif
+    t.buildBandRows(*t.palCache);
+#ifdef TUBE_PROF
+    t.tubeProf[TU_PALB] += esp_cpu_get_cycle_count() - tp1;
+#endif
+#ifdef TUBE_VERIFY
+    {
+      Palette &r = *t.verifyPal; t.buildPaletteRef(p, s.light, r); int bad = 0;
+      for (int y = 0; y < t.H; y++)
+        bad += (r.rows[y] != pal.rows[y]) + (r.bubbleIn[y] != pal.bubbleIn[y]) + (r.tubeBackRows[y] != pal.tubeBackRows[y])
+               + (r.bubbleRimRows[y] != pal.bubbleRimRows[y]) + (memcmp(&r.rowK[y], &pal.rowK[y], 4) != 0) + (r.dryT[y] != pal.dryT[y]);
+      bad += (r.body != pal.body) + (r.tubeBack != pal.tubeBack) + (r.bubbleRim != pal.bubbleRim);
+      tubeVerify(TV_PAL, 6 * t.H + 3, bad);
+    }
+#endif
     pal.valid = true; pal.gen = gen; pal.H = t.H; pal.light = s.light;
   }
+#ifdef TUBE_PROF
+  t.tubeProf[TU_PAL] += esp_cpu_get_cycle_count() - tu0;
+#endif
   t.drawTube(t.baseY, s, p, gen, idx == 0 ? 12 : 60);
+#ifdef TUBE_PROF
+  t.tubeProf[TU_ALL] += esp_cpu_get_cycle_count() - tu0; t.tubeProf[TU_FRAMES]++;
+#endif
 }
 
+#ifdef FIZZ_PROF
+const uint32_t *render_fizz_profile(int idx) { return tubes[idx].fizzProf; }
+const uint32_t *render_fizz_step_profile() { return fizzStepProf; }
+void render_fizz_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].fizzProf, 0, sizeof(tubes[i].fizzProf)); memset(fizzStepProf, 0, sizeof(fizzStepProf)); }
+#endif
+#ifdef TUBE_PROF
+const uint32_t *render_tube_profile(int idx) { return tubes[idx].tubeProf; }
+void render_tube_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].tubeProf, 0, sizeof(tubes[i].tubeProf)); }
+#endif
+#ifdef TICK_PROF
+const uint32_t *render_tick_profile(int idx) { return tubes[idx].tickProf; }
+void render_tick_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].tickProf, 0, sizeof(tubes[i].tickProf)); }
+#endif
 #ifdef DIGIT_PROF
 const uint32_t *render_profile(int idx) { return tubes[idx].prof; }
 const uint32_t *render_profile_cycles(int idx) { return tubes[idx].profCyc; }

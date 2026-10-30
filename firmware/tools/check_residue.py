@@ -7,6 +7,7 @@ Run: python3 firmware/tools/check_residue.py
 """
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 
@@ -100,7 +101,7 @@ int main() {
   FILM_PHI = new uint16_t[257]; FILM_LG = new uint16_t[256]; FILM_EX = new uint8_t[4096];
   buildFilmLuts();
   for (int i = 0; i <= 256; ++i) identityPhi[i] = (uint16_t)i;
-  uint16_t row[303], depth[303], lut[TRACE_LUT];
+  uint16_t row[303], depth[303], lut[2 * TRACE_LUT];
   for (int i = 0; i < 303; ++i) depth[i] = (uint16_t)(i ? i - 1 : 0);
   // Shared blends: every RGB565 colour in both roles against the anchors, every fractional alpha,
   // opposing packed lanes (including borrows from red into blue).
@@ -116,7 +117,8 @@ int main() {
     uint16_t bg = reverse ? anchor : c, fg = reverse ? c : anchor;
     const ResidueTint t = tintOf(bg, fg);
     std::fill_n(row, 303, __builtin_bswap16(bg));
-    traceFillRow(row, depth, 1, 302, t, 1, 300, lut);
+    if (c & 1) traceFillRow(row, depth, 1, 302, 0, 0, t, 1, 300, lut);   // one span, or the same split in two
+    else traceFillRow(row, depth, 1, 151, 151, 302, t, 1, 300, lut);
     checkTint(row[0], bg, fg, 0); checkTint(row[302], bg, fg, 0);
     for (int i = 1; i < 302; ++i) checkTint(row[i], bg, fg, std::min(256, i - 1));
     tints += 301;
@@ -145,13 +147,14 @@ int main() {
       if (i >= 1 && i < 302 && band[i]) { lo = std::min(lo, (int)band[i]); hi = std::max(hi, (int)band[i]); }
     }
     std::fill_n(row, 303, __builtin_bswap16(bg));
-    traceFillRow(row, band, 1, 302, tintOf(bg, fg, FILM_PHI, K, G), lo, hi, lut);
+    if (c & 1) traceFillRow(row, band, 1, 302, 0, 0, tintOf(bg, fg, FILM_PHI, K, G), lo, hi, lut);
+    else traceFillRow(row, band, 1, 100, 100, 302, tintOf(bg, fg, FILM_PHI, K, G), lo, hi, lut);
     checkTint(row[0], bg, fg, 0); checkTint(row[302], bg, fg, 0);
     for (int i = 1; i < 302; ++i) checkTint(row[i], bg, fg, band[i] ? depthReference(band[i], K, G) : 0);
     tints += 301;
   }
   row[0] = 0xa55a;
-  traceFillRow(row, depth, 0, 0, tintOf(0, 0xffff), 1, 300, lut);
+  traceFillRow(row, depth, 0, 0, 0, 0, tintOf(0, 0xffff), 1, 300, lut);
   if (row[0] != 0xa55a) return 1;
   std::printf("shared blends: %llu scalar cases; residue tint: %llu cases match the sim's filmMix; depth law: %llu cases; span guards intact\n",
               (unsigned long long)blends, (unsigned long long)tints, (unsigned long long)depths);
@@ -162,8 +165,9 @@ int main() {
 def main():
     source = (ROOT / 'firmware/src/render.cpp').read_text()
     helpers = '\n'.join([*(function(source, name) for name in ('fmn', 'expand565', 'rgb565', 'blend565T', 'blend565', 'srgbLin', 'srgbEnc', 'buildFilmLuts')),
-                         block(source, 'struct ResidueTint {', ';'), '#define TRACE_LUT 48',
-                         function(source, 'traceFillRow')])
+                         block(source, 'struct ResidueTint {', ';'), '#define TUBE_IRAM',
+                         re.search(r'#define TRACE_LUT \d+', source).group(0),
+                         *(function(source, name) for name in ('traceFillLut', 'traceFillLutI', 'traceFillRow'))])
     with tempfile.TemporaryDirectory(prefix='watches-residue-') as tmp:
         cpp, exe = Path(tmp) / 'check.cpp', Path(tmp) / 'check'
         cpp.write_text(HARNESS.replace('__HELPERS__', helpers))

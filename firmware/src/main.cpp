@@ -29,6 +29,7 @@
 #include "rtc.h"
 #include "physics.h"
 #include "render.h"
+#include "tiles.h"
 #ifdef AB_COMPARE
 #include "render_ab.h"
 #endif
@@ -76,7 +77,7 @@ static bool have_imu = false, imu_ok = false;   // have_imu: tilt is fed to the 
 
 // ---- liquid face state ----
 static Params params = PRESET_DEFAULT;   // design px: what `p` writes, `p?` dumps and NVS keeps
-#if PANEL_H != DESIGN_H
+#if PX_SCALED
 static Params eff = PRESET_DEFAULT;      // params scaled to the canvas (PARAM_FIELDS px): what physics and render run on
 #else
 static Params &eff = params;             // scale 1 (AMOLED): the same struct, no internal RAM spent on a copy
@@ -84,7 +85,7 @@ static Params &eff = params;             // scale 1 (AMOLED): the same struct, n
 static uint32_t paramsGen = 1;   // bumped on every param change; renderer caches key on it
 // Every param change goes through here (the render worker is idle outside renderBoth, see below).
 static void paramsChanged() {
-#if PANEL_H != DESIGN_H
+#if PX_SCALED
   boardParams(params, eff);
 #endif
   paramsGen++;
@@ -183,13 +184,21 @@ static float tubeStepMs = 0, fizzStepMs = 0, fizzStepMaxMs = 0, stepsPerFrame = 
 static bool tiltOverride = false;                  // `g`: rawTilt comes from the serial line, not the IMU
 static float renderMs = 0, waitMs = 0, hoursMs = 0, minutesMs = 0;   // per-frame averages of the last window
 static uint32_t busyCycles0 = 0; static float scanPct = 0;           // display ISR (LCD scan fill): share of one core
+static DisplayRefill refill = {0, 0, 0};                             // panel refill health (display.h), per 2 s window
 static uint16_t frameIntervalHist[256];             // 1 ms bins; bin 255 includes all slower frames
 static uint32_t lastFrameStartUs = 0, frameIntervalSamples = 0;
 static uint16_t frameP95Ms = 0;
 // Tube strips of the frame being rendered (owned by the display backend, display_next_strips each frame): AMOLED
 // the same two internal DMA buffers (its panel DMA reads them while the next frame renders), LCD a free set.
 static uint16_t *strip[2] = {nullptr, nullptr};
-static char dumpHex[PANEL_W * 4 + 2];
+// `x` dump line buffer (strip rows, then residue arrays): LCD in PSRAM, allocated in setup (internal RAM went to the
+// step-7 tiles); AMOLED static.
+#define DUMP_HEX_BYTES (PANEL_W > TUBE_LENGTH_PX ? PANEL_W * 4 + 2 : TUBE_LENGTH_PX * 4 + 2)
+#ifdef BOARD_LCD316
+static char *dumpHex = nullptr;
+#else
+static char dumpHex[DUMP_HEX_BYTES];
+#endif
 
 struct DisplayLayout {
   int H, yH, yM;
@@ -338,9 +347,81 @@ static void face_calibration() {
 static void report_fps() {
   int foamH = 0, foamM = 0, slotsH = 0, slotsM = 0; const int fizzH = fizzCounts(0, foamH, slotsH), fizzM = fizzCounts(1, foamM, slotsM);
   out.printf("fps %.1f  render %.2f ms  push-wait %.2f ms  cores h %.2f / m %.2f ms  (mode %c, transp %.2f)  frame-p95 %u ms"
-             "  phys %.2f steps x (tube %.2f + fizz %.2f ms, max %.2f)  push %.2f ms  rest %.2f ms  fizz h %d (foam %d, slots %d) m %d (foam %d, slots %d)  scan-isr %.1f%%\n",
+             "  phys %.2f steps x (tube %.2f + fizz %.2f ms, max %.2f)  push %.2f ms  rest %.2f ms  fizz h %d (foam %d, slots %d) m %d (foam %d, slots %d)  scan-isr %.1f%%"
+             "  refill late %u restarts %u worst %u%%",
              fps, renderMs, waitMs, hoursMs, minutesMs, mode, params.liquidTransparency,
-             (unsigned)frameP95Ms, stepsPerFrame, tubeStepMs, fizzStepMs, fizzStepMaxMs, pushMs, restMs, fizzH, foamH, slotsH, fizzM, foamM, slotsM, scanPct);
+             (unsigned)frameP95Ms, stepsPerFrame, tubeStepMs, fizzStepMs, fizzStepMaxMs, pushMs, restMs, fizzH, foamH, slotsH, fizzM, foamM, slotsM, scanPct,
+             (unsigned)refill.late, (unsigned)refill.restarts, (unsigned)refill.worstPct);
+#ifdef DIGIT_VERIFY
+  { uint32_t px = 0, bad = 0; render_digit_verify(px, bad); out.printf("  digit-verify bad %u of %u px", (unsigned)bad, (unsigned)px); }
+#endif
+#ifdef TUBE_VERIFY
+  { const char *nm[] = {"zone px", "palette", "band rows", "trace memo", "ramp rows px"}; out.printf("  tube-verify");
+    for (int k = 0; k < 5; k++) { uint32_t n = 0, bad = 0; render_tube_verify(k, n, bad); out.printf(" %s bad %u of %u", nm[k], (unsigned)bad, (unsigned)n); } }
+#endif
+#ifdef TILE_VERIFY
+  { uint32_t n = 0, bad = 0; render_tile_verify(n, bad); out.printf("  tile-verify bad %u of %u px", (unsigned)bad, (unsigned)n); }
+#endif
+#if defined(PUSH_VERIFY) && defined(BOARD_LCD316)
+  { const PushVerify v = display_push_verify();
+    out.printf("  push-verify bad %u of %u px  stored %u of %u words  skipped %u of %u segments", (unsigned)v.bad, (unsigned)v.checked,
+               (unsigned)v.stored, (unsigned)v.words, (unsigned)v.skipped, (unsigned)v.segs); }
+#endif
+  out.printf("\n");
+#if defined(PUSH_PROF) && defined(BOARD_LCD316)
+  { uint32_t k[2][5]; display_push_prof(k, true);
+    for (int i = 0; i < 2; i++) { const float n = k[i][0] ? (float)k[i][0] : 1;
+      out.printf("push-prof %d pushes %u  us hash %.0f store %.0f gather-wait %.0f  changed segs %.0f\n", i, (unsigned)k[i][0], k[i][1] / 240.0f / n,
+                 k[i][2] / 240.0f / n, k[i][4] / 240.0f / n, k[i][3] / n); } }
+#endif
+#ifdef TUBE_PROF
+  const uint32_t k0frames = render_tube_profile(0)[0];
+  for (int i = 0; i < 2; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us), TU_* order
+    const uint32_t *k = render_tube_profile(i); const float n = k[0] ? (float)k[0] : 1, us = 240 * n;
+    out.printf("tube-prof %c frames %u  us all %.0f pal %.0f back %.0f trprep %.0f trrows %.0f (fill %.0f shear %.0f zone %.0f) backing %.0f"
+               " body %.0f front %.0f glow %.0f film %.0f inset %.0f band %.0f bounds %.0f labels %.0f ticks %.0f digits %.0f fizz %.0f top %.0f ramp %.0f bandk %.0f palp %.0f palb %.0f tile %.0f\n",
+               i ? 'm' : 'h', (unsigned)k[0], k[1] / us, k[2] / us, k[3] / us, k[4] / us, k[5] / us, k[19] / us, k[20] / us, k[21] / us,
+               k[6] / us, k[7] / us, k[8] / us, k[9] / us, k[10] / us, k[11] / us, k[12] / us, k[13] / us, k[14] / us, k[15] / us,
+               k[16] / us, k[17] / us, k[18] / us, k[22] / us, k[23] / us, k[25] / us, k[24] / us, k[26] / us);
+  }
+  render_tube_profile_reset();
+#if TILE_RENDER
+  { static uint32_t last[2][5]; const float n = k0frames ? (float)k0frames : 1;
+    for (int i = 0; i < 2; i++) { const uint32_t *t = tile_prof(i); uint32_t d[5]; for (int j = 0; j < 5; j++) { d[j] = t[j] - last[i][j]; last[i][j] = t[j]; }
+      out.printf("tile-prof %c  us begin %.0f put-wait %.0f end-wait %.0f put %.0f gather-wait %.0f\n", i ? 'm' : 'h', d[0] / 240.0f / n, d[1] / 240.0f / n,
+                 d[2] / 240.0f / n, d[3] / 240.0f / n, d[4] / 240.0f / n); } }
+#endif
+#endif
+#ifdef TICK_PROF
+  for (int i = 0; i < 2; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us)
+    const uint32_t *k = render_tick_profile(i); const float n = k[0] ? (float)k[0] : 1, us = 240 * n;
+    out.printf("tick-prof %c frames %u  us all %.1f facts %.1f ranges %.1f rows %.1f (fills %.1f, per-pixel %.1f)  rows %.0f (dry %.0f wet %.0f mixed %.0f)"
+               "  fills %.0f  per-pixel px %.0f  segs %.0f ticks %.0f\n",
+               i ? 'm' : 'h', (unsigned)k[0], k[1] / us, k[2] / us, k[3] / us, k[4] / us, k[14] / us, k[5] / us, k[6] / n, k[7] / n, k[8] / n,
+               k[9] / n, k[10] / n, k[11] / n, k[12] / n, k[13] / n);
+  }
+  render_tick_profile_reset();
+#endif
+#ifdef FIZZ_PROF
+  for (int i = 0; i < 2; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us)
+    const uint32_t *k = render_fizz_profile(i); const float n = k[FZ_FRAMES] ? (float)k[FZ_FRAMES] : 1, us = 240 * n;
+    out.printf("fizz-prof %c frames %u  us all %.1f setup %.1f rowprep %.1f disc %.1f redraw %.1f  bubbles %.1f rows %.1f"
+               "  px visit %.0f skip %.0f out %.0f cov0 %.0f aa %.0f veil %.0f core %.0f corew %.0f sqrt %.0f blick %.0f ring %.0f solid %.0f off %.0f\n",
+               i ? 'm' : 'h', (unsigned)k[FZ_FRAMES], k[FZ_CYC] / us, k[FZ_CYC_SETUP] / us, k[FZ_CYC_ROWPREP] / us, k[FZ_CYC_DISC] / us,
+               k[FZ_CYC_REDRAW] / us, k[FZ_BUBBLES] / n, k[FZ_ROWS] / n, k[FZ_PX_VISIT] / n, k[FZ_PX_SKIP] / n, k[FZ_PX_OUT] / n,
+               k[FZ_PX_COV0] / n, k[FZ_PX_AA] / n, k[FZ_PX_VEIL] / n, k[FZ_PX_CORE] / n, k[FZ_PX_COREW] / n, k[FZ_PX_SQRT] / n,
+               k[FZ_PX_BLICK] / n, k[FZ_PX_RING] / n, k[FZ_PX_SOLID] / n, k[FZ_PX_OFF] / n);
+  }
+  {   // per stepFizz call (both tubes)
+    const uint32_t *k = render_fizz_step_profile(); const float n = k[FS_STEPS] ? (float)k[FS_STEPS] : 1, us = 240 * n;
+    out.printf("fizz-step steps %u  us all %.1f rand %.1f (%.2f calls) springpt %.1f loop %.1f fit %.1f (%.1f calls, %.1f rows) touch %.1f (%.1f calls, %.0f slots)"
+               "  merge %.1f cadence %.1f settle %.1f  live %.1f held %.1f slots %.1f\n",
+               (unsigned)k[FS_STEPS], k[FS_CYC] / us, k[FS_CYC_RAND] / us, k[FS_RANDS] / n, k[FS_CYC_SPRINGPT] / us, k[FS_CYC_LOOP] / us,
+               k[FS_CYC_FIT] / us, k[FS_FITS] / n, k[FS_FIT_ROWS] / n, k[FS_CYC_TOUCH] / us, k[FS_TOUCHES] / n, k[FS_TOUCH_SCAN] / n,
+               k[FS_CYC_MERGE] / us, k[FS_CYC_CADENCE] / us, k[FS_CYC_SETTLE] / us, k[FS_LIVE] / n, k[FS_HELD] / n, k[FS_SLOTS] / n);
+  }
+  render_fizz_profile_reset();
+#endif
 #ifdef DIGIT_PROF
   for (int i = 0; i < 2; i++) {
     const uint32_t *c = render_profile(i);
@@ -407,6 +488,7 @@ static void liquid_tick() {
   if (millis() - fpsT0 >= 2000) {
     fps = frames * 1000.0f / (millis() - fpsT0);
     { const uint32_t c = display_busy_cycles(); scanPct = (c - busyCycles0) * 100.0f / (getCpuFrequencyMhz() * 1e6f * (millis() - fpsT0) / 1000.0f); busyCycles0 = c; }
+    refill = display_refill_health();
     renderMs = renderUs / 1000.0f / frames; waitMs = waitUs / 1000.0f / frames;
     hoursMs = hoursUs / 1000.0f / frames; minutesMs = minutesUs / 1000.0f / frames;
     stepsPerFrame = (float)physSteps / frames; pushMs = pushUs / 1000.0f / frames; restMs = restUs / 1000.0f / frames;
@@ -534,7 +616,7 @@ static void handleLine(char *line) {
                    t.lineVFree, t.lineVHome);
       };
       out.print("STATE"); dumpState(tubeH); dumpState(tubeM); out.println();
-      static char thex[TUBE_LENGTH_PX * 4 + 1];   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
+      char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
       auto dumpTrace = [&](const uint16_t *v) {
         if (v) for (int x = 0; x < TUBE_LENGTH_PX; x++) sprintf(thex + x * 4, "%04x", v[x]);
         else thex[0] = 0;
@@ -576,8 +658,12 @@ void setup() {
                 getCpuFrequencyMhz(), ESP.getPsramSize() / 1024, ESP.getFreeHeap() / 1024,
                 rr >= 0 && rr < 16 ? RST[rr] : "?");
   if (!fb.buf) { out.println("FATAL: framebuffer alloc failed"); }
+#ifdef BOARD_LCD316
+  dumpHex = (char *)heap_caps_malloc(DUMP_HEX_BYTES, MALLOC_CAP_SPIRAM);
+  if (!dumpHex) out.println("FATAL: dump buffer alloc failed");
+#endif
   if (!display_init()) out.println("display init FAILED");
-  if (!render_init()) out.println("render init FAILED (glyph pools / mark tables / film tables, PSRAM)");
+  if (!render_init()) out.println("render init FAILED (glyph pools / mark tables / film tables / lane table, PSRAM)");
   if (!physics_init()) out.println("physics init FAILED (wet-film buffers, PSRAM): no residue");
 #ifdef AB_COMPARE
   out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");

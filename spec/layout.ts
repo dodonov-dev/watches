@@ -3,13 +3,15 @@
 // The board (and the LCD's render height) is picked once at start-up, because modules size their buffers from
 // these constants at import: browser `?board=lcd316&res=320` (remembered in localStorage), node tools
 // LW_BOARD / LW_RES. Default: the AMOLED. No live switching — the sim reloads with the new choice.
+// LCD res with an `f` (`320f`, not remembered): px params scaled with the canvas height (layout.h LCD_FILL 1); without,
+// at the AMOLED's physical size.
 
 export type Board = 'amoled191' | 'lcd316';
 export const BOARDS: readonly Board[] = ['amoled191', 'lcd316'];
 export const LCD_RES: readonly number[] = [240, 256, 288, 320];   // render heights the LCD build takes (RENDER_H)
 
 const STORE_KEY = 'liquid-watch.board';
-function pick(): { board: Board; res: number } {
+function pick(): { board: Board; res: number; fill: boolean } {
   const g = globalThis as any;
   let board: string | null | undefined, res: string | null | undefined;
   if (g.location?.search !== undefined) {
@@ -19,22 +21,23 @@ function pick(): { board: Board; res: number } {
   } else { board = g.process?.env?.LW_BOARD; res = g.process?.env?.LW_RES; }
   if (board && !(BOARDS as readonly string[]).includes(board)) { console.warn(`board ${board}: unknown, using amoled191`); board = undefined; }
   const b = (board || 'amoled191') as Board;
-  let r = b === 'lcd316' ? Number(res || 320) : 240;
+  const fill = b === 'lcd316' && /f$/.test(res ?? '');
+  let r = b === 'lcd316' ? Number((res || '320').replace(/f$/, '')) : 240;
   if (b === 'lcd316' && !LCD_RES.includes(r)) { console.warn(`res ${res}: not one of ${LCD_RES.join(' / ')}, using 320`); r = 320; }
-  return { board: b, res: r };
+  return { board: b, res: r, fill };
 }
 const chosen = pick();
 export const BOARD: Board = chosen.board;
 /** Reload the sim on another board / render height (the page's other URL parameters are kept). */
 export function switchBoard(board: Board, res = 320): void {
   const g = globalThis as any;
-  g.localStorage?.setItem(STORE_KEY, JSON.stringify({ board, res }));
+  g.localStorage?.setItem(STORE_KEY, JSON.stringify({ board, res }));   // fill is not remembered
   const u = new URL(g.location.href);
   u.searchParams.set('board', board);
   if (board === 'lcd316') u.searchParams.set('res', String(res)); else u.searchParams.delete('res');
   g.location.href = u.toString();
 }
-if ((globalThis as any).location?.search !== undefined) (globalThis as any).localStorage?.setItem(STORE_KEY, JSON.stringify(chosen));
+if ((globalThis as any).location?.search !== undefined) (globalThis as any).localStorage?.setItem(STORE_KEY, JSON.stringify({ board: chosen.board, res: chosen.res }));
 
 export const DESIGN_H = 240;               // canvas rows the params / presets are tuned on
 export const DESIGN_TUBE_HEIGHT_MAX = 80;  // largest tubeHeight a preset may ask for, design px
@@ -42,16 +45,17 @@ export const DESIGN_TUBE_HEIGHT_MAX = 80;  // largest tubeHeight a preset may as
 export const LCD_PANEL_W = 820, LCD_PANEL_H = 320;
 export const PANEL_W = BOARD === 'lcd316' ? chosen.res * LCD_PANEL_W / LCD_PANEL_H : 536;
 export const PANEL_H = BOARD === 'lcd316' ? chosen.res : 240;
-/** Canvas px per design px (1 on the AMOLED): params.ts boardParams scales every px param by it. */
-export const PX_SCALE = PANEL_H / DESIGN_H;
-/** Short name of the canvas for labels: `amoled191`, `lcd316@320`. */
-export const BOARD_TAG = BOARD === 'lcd316' ? `lcd316@${PANEL_H}` : BOARD;
+/** Canvas px per design px (1 on the AMOLED): params.ts boardParams scales every px param by it. LCD: at the AMOLED's
+ *  physical size (0.083 / 0.0912 mm per panel px, the float32 of layout.h) unless `fill` (with the canvas height). */
+export const PX_SCALE = BOARD === 'lcd316' && !chosen.fill ? Math.fround(830 * PANEL_H / (912 * LCD_PANEL_H)) : PANEL_H / DESIGN_H;
+/** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f` (fill). */
+export const BOARD_TAG = BOARD === 'lcd316' ? `lcd316@${PANEL_H}${chosen.fill ? 'f' : ''}` : BOARD;
 
 export const TUBE_LENGTH_PX = PANEL_W; // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).
-export const TUBE_HEIGHT_MAX = Math.floor((DESIGN_TUBE_HEIGHT_MAX * PANEL_H + DESIGN_H - 1) / DESIGN_H);
-export const TUBE_HEIGHT_PX = Math.floor(72 * PANEL_H / DESIGN_H);  // ≈ 6 mm on the AMOLED at 0.083 mm/px
+export const TUBE_HEIGHT_MAX = Math.floor(Math.fround(Math.fround(DESIGN_TUBE_HEIGHT_MAX * Math.fround(PX_SCALE)) + Math.fround(0.999)));
+export const TUBE_HEIGHT_PX = Math.floor(Math.fround(72 * Math.fround(PX_SCALE)));  // ≈ 6 mm at 0.083 mm per design px
 export const HOURS_TUBE_Y = 0;                          // along the top edge
 export const MINUTES_TUBE_Y = PANEL_H - TUBE_HEIGHT_PX; // along the bottom edge
 export const BRIDGE_Y0 = TUBE_HEIGHT_PX;                // bridge zone between the tubes must stay pure black

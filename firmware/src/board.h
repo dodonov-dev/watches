@@ -7,7 +7,11 @@
 #define BOARD_STR(x)  BOARD_STR_(x)
 #ifdef BOARD_LCD316
 #define BOARD_NAME   "lcd316"
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H)   // board + canvas rows, as the sim names it (spec/layout.ts BOARD_TAG)
+#if LCD_FILL
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "f"   // board + canvas rows (+ f: LCD_FILL), as the sim names it (spec/layout.ts BOARD_TAG)
+#else
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H)
+#endif
 #define BOARD_PANEL_W LCD_PANEL_W
 #define BOARD_PANEL_H LCD_PANEL_H
 #define PIN_I2C_SDA  15      // QMI8658 + PCF85063 RTC (0x51)

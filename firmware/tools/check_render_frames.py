@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Compare complete firmware strips against a saved reference render.cpp (native C++).
 
-Usage: python3 firmware/tools/check_render_frames.py --reference /tmp/render-before.cpp [--no-fizz | --big-fizz]
+Usage: python3 firmware/tools/check_render_frames.py --reference /tmp/render-before.cpp [--no-fizz | --big-fizz] [--tube-seq] [--tiles]
                                                     [--tolerance N] [--list-diffs]
 --no-fizz forces fizz off in every scene of both builds, so a fizz-only change must stay byte-identical.
 --big-fizz gives the random group large bubbles (sizes 3/5/14, spread 0.65, blick and depth fade cycling) so the
 disc interior, core, pinpoint and depth paths are exercised; both builds see the same scenes.
+--tube-seq adds 400 ten-frame sequences at one params generation per tube (light holding then moving, small edge moves,
+pulls, films, residue arrays edited in a few columns a frame; band / glow / front / inset / glass params varied), for
+state carried across frames (the residue blur memo, the palette and band-row caches).
+--tiles builds the current side with the tiled band loop (-DTILE_RENDER=1, tiles.h; host sink = memcpy), so the LCD's
+tile path is proven against the reference strip path.
 --list-diffs keeps streaming past the first differing scene and prints, per scene group, how many scenes differ
 (beyond --tolerance), up to 10 of their indices and whether every one had fizz on — so a fizz-only change proves
 "only fizz-on scenes differ" in one run. Still exits non-zero if any scene differs.
@@ -199,6 +204,44 @@ int main() {
       }
     }
   }
+#ifdef TUBE_SEQ
+  // Tube-body sequences (step 6): frames at one params generation on one tube, so per-frame state carried across
+  // frames shows up (the residue blur memo, palette / band-row caches keyed on the light): the light holds, then
+  // moves; the edges, pulls and films move a little; the residue array keeps most columns and edits a few (all
+  // zero, a full coat, sparse spots); the band, glow, front, inset and glass params vary between sequences.
+  group("tube-sequences");
+  for(int q=0;q<400;q++) {
+    Params p=PRESET_DEFAULT; ++gen;
+    p.fizz=false; p.bubble=q%9==0; p.digits=q%3!=0; p.digitFont=q%12; p.tubeHeight=10+(q*13)%71;
+    p.remaining=q&1; p.freeLiquid=(q>>1)&1; p.traces=q%7!=0; p.traceAmount=0.2f+(q%5)*0.3f;
+    p.traceFilm=q%4==0 ? 0 : q%4==1 ? 0.0002f : (q%4)*0.15f; p.wetFilm=q%13; p.edgeSoft=(q%6)*0.7f;
+    p.contactAngle=(q%13)*15.0f; p.contactHyst=(q%3)*5; p.contactDyn=(q%4)*4; p.capLength=1+(q%4);
+    p.surfaceBand=(q%5)*0.3f; p.surfaceRim=(q%4)*0.3f; p.surfaceFill=(q%3)*0.5f; p.surfaceBlick=(q%3)*0.4f;
+    p.surfaceWidth=1+(q%6); p.surfaceTone=((q%5)-2)*0.4f;
+    p.edgeGlow=(q%4)*8.0f+(q%3); p.glowStrength=(q%5)*0.06f; p.frontBright=(q%3)*9.0f; p.highlightInset=(q%5==0)*6.0f;
+    p.glassWall=(q%4)*2.5f; p.glassRim=(q%3)*0.3f; p.glassBody=(q%4)*0.1f; p.glassWallGlow=(q%3)*0.2f; p.wallWet=(q%3)*0.5f;
+    p.liquidThin=(q%3)*0.5f; p.lightPhys=(q%3)*0.5f; p.highlightH=2+(q%9); p.highlightSharp=1+(q%3);
+    p.liquidTransparency=(q%5)*0.2f; p.lens=(q%5-2)*0.3f; p.lensCurve=(q%4-1)*0.5f; p.ambientLight=(q%3)*0.5f;
+    p.tubeBackGradient=q%4; p.cornerR=(q%6==0)*8.0f;
+    const int idx=q&1;
+    // the residue: zero, a sparse set of spots, or a full random coat; edited in a few columns per frame
+    const int mode=q%3;
+    for(int x=0;x<536;x++) trace[x]=mode==0 ? 0 : mode==1 ? (randf()<0.05f ? (uint16_t)(randf()*TRACE_FULL) : 0) : (uint16_t)(randf()*TRACE_FULL);
+    TubeState s; s.fillTarget=0.15f+randf()*0.7f; s.angle=randf()*8-4; s.cap=randf()*6-3;
+    s.slugPos=p.freeLiquid ? randf()*(536-columnLen(s.fillTarget,p)) : 0;
+    s.light=randf()*80; s.edgeLight=randf()*2-1; s.acrossTilt=randf()*2-1;
+    s.trace=trace; s.traceLo=mode==0 ? 536 : 0; s.traceHi=mode==0 ? 0 : 536;
+    for(int f=0;f<10;f++) {
+      if (f>=3) { s.light+=randf()*6-3; s.edgeLight=fminf(1,fmaxf(-1,s.edgeLight+randf()*0.2f-0.1f)); }   // frames 0-2: same light
+      if (f%2) { s.fillPos+=randf()*2-1; s.slugPos+=p.freeLiquid ? randf()*2-1 : 0; s.cap+=randf()*0.5f-0.25f; }
+      s.fillVel=(f%4==3) ? randf()*40-20 : 0; s.slugVel=(f%5==4) ? randf()*40-20 : 0;
+      s.filmFree=f%3 ? randf() : 0; s.filmHome=f%4 ? randf() : 0; s.agitation=f%6==5 ? 0.3f : 0;
+      if (f && mode) for(int e=0;e<1+(int)(randf()*4);e++) { int x=(int)(randf()*536); trace[x]=(uint16_t)(randf()*TRACE_FULL); }
+      if (f==6 && mode==1) for(int x=0;x<536;x+=3) trace[x]=0;
+      emit(idx,s,p,gen);
+    }
+  }
+#endif
   group("end");
 }
 '''
@@ -213,6 +256,10 @@ def main():
                         help='force fizz off (fizz=false, fizzCount=0) in every scene of both builds')
     parser.add_argument('--big-fizz', action='store_true',
                         help='large fizz with blick/depth variety in the random group (exercises the disc interior paths)')
+    parser.add_argument('--tube-seq', action='store_true',
+                        help='add tube-body sequences: frames at one generation per tube (light, edges, residue edits) for per-frame state')
+    parser.add_argument('--tiles', action='store_true',
+                        help='current side: tiled band loop (-DTILE_RENDER=1, host memcpy sink) against the reference')
     parser.add_argument('--list-diffs', action='store_true',
                         help='do not stop at the first differing scene: list differing scenes per group with their fizz flag')
     args = parser.parse_args()
@@ -228,8 +275,9 @@ def main():
         cpp = tmp / 'frames.cpp'
         cpp.write_text(HARNESS)
         sides = [('reference', reference), ('current', ROOT / 'firmware/src/render.cpp')]
-        defines = (['-DNO_FIZZ'] if args.no_fizz else []) + (['-DBIG_FIZZ'] if args.big_fizz else [])
+        defines = (['-DNO_FIZZ'] if args.no_fizz else []) + (['-DBIG_FIZZ'] if args.big_fizz else []) + (['-DTUBE_SEQ'] if args.tube_seq else [])
         builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', *defines,
+                                    *(['-DTILE_RENDER=1'] if args.tiles and name == 'current' else []),
                                     '-ffp-contract=off', '-fsanitize=undefined,float-cast-overflow', '-fno-sanitize-recover=all',
                                     '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                                     str(cpp), str(source), str(ROOT / 'firmware/src/physics.cpp'),

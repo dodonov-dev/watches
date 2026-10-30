@@ -14,6 +14,9 @@
 #include "gen/sprites_gen.h"
 #undef RENDER_H
 #define RENDER_H AB_COMPARE   // read by layout.h, first included below, inside the namespace
+// No tiles (tiles.h) for this renderer: the tile slots, their GDMA channels and tile_dma.cpp are the native renderer's
+// (sized for its canvas, one channel per tube), so the comparison tube draws on its strip as in step 6.
+#define TILE_RENDER 0
 namespace ab {
 #define clampf physics_clampf   // file-local helpers of both files, now in one translation unit
 #include "physics.cpp"

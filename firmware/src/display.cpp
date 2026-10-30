@@ -91,6 +91,7 @@ bool display_init(void) {
 
 void display_next_strips(uint16_t *s[2]) { s[0] = strips[0]; s[1] = strips[1]; }
 uint32_t display_busy_cycles(void) { return 0; }
+DisplayRefill display_refill_health(void) { return {0, 0, 0}; }
 
 const bool display_row_map = false;   // the panel DMA reads strip rows as they are
 void display_push_strip_async(const uint16_t *buf, int y0, int rows, const int16_t *) {

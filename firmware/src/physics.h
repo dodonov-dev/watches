@@ -65,6 +65,12 @@ inline void boardParams(const Params &p, Params &out) {
     v *= PX_SCALE;
     if (f.px == 2) v = floorf(v + 0.5f);   // whole pixels stay on the grid (JS Math.round)
   }
+  // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
+  // move in (canvas rows minus its height), so the tubes stay at the face's edges.
+  if (PX_SCALE != (float)PANEL_H / DESIGN_H) {
+    const float room = DESIGN_H - p.tubeHeight, k = room > 1.0f ? (PANEL_H - out.tubeHeight) / room : 1.0f;
+    out.hoursY = floorf(p.hoursY * k + 0.5f); out.minutesY = floorf(p.minutesY * k + 0.5f);
+  }
 }
 
 float columnLen(float fillTarget, const Params &p);   // liquid column length, px

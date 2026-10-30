@@ -3,7 +3,7 @@
 
   python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tolerance 12] [presets/x.json ...]
 
-Board: --board / --res, else $LW_BOARD / $LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
+Board: --board / --res (320f: LCD_FILL), else $LW_BOARD / $LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
 params scaled by physics.h boardParams; the sim side is tools/render-ref.ts with LW_BOARD / LW_RES (params.ts
 boardParams). Presets default to presets/*.json and presets/physical/*.json (design px). Fizz off (random). Prints
 per preset the pixels off and those beyond the tolerance (RGB888 steps); exits 1 if any preset has one.
@@ -86,7 +86,7 @@ def main():
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *([f'-DBOARD_LCD316', f'-DRENDER_H={a.res}'] if lcd else []),
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *([f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)
@@ -113,7 +113,7 @@ def main():
             script += [f'P {k}={fmt(v)}' for k, v in params.items() if k != 'v']
             script += [f'S {i} {STATE[t]["fillTarget"]} {STATE[t]["light"]}' for i, t in enumerate(('hours', 'minutes'))] + ['R']
         out = subprocess.run([str(tmp / 'h')], input=('\n'.join(script) + '\n').encode(), stdout=subprocess.PIPE, check=True).stdout
-        W = int(a.res) * 820 // 320 if lcd else 536; H = int(a.res); n = W * H
+        W = int(a.res.rstrip("f")) * 820 // 320 if lcd else 536; H = int(a.res.rstrip("f")); n = W * H
         assert len(out) == len(jobs) * n * 2, f'harness wrote {len(out)} bytes for {len(jobs)} presets of {W}x{H}'
         exp = lambda c: ((c >> 11 & 31) << 3 | (c >> 11 & 31) >> 2, (c >> 5 & 63) << 2 | (c >> 5 & 63) >> 4, (c & 31) << 3 | (c & 31) >> 2)
         bad = 0

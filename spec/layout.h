@@ -1,13 +1,18 @@
 // Liquid Watch — single source of truth for panel layout.
 // Mirrored in spec/layout.ts. Landscape, origin top-left.
 // The face renders into a PANEL_W x PANEL_H canvas. Params and presets are in design px: the AMOLED's 536x240
-// canvas (DESIGN_H rows). A board with a taller canvas scales every px param by PX_SCALE (sim board.ts
-// boardParams, firmware main.cpp), so a preset keeps its proportions on every board.
+// canvas (DESIGN_H rows). Another board scales every px param by PX_SCALE (sim params.ts boardParams, firmware
+// physics.h): with the canvas height (a preset keeps its proportions), or on the LCD by default with the pitch (the
+// tubes keep their physical width, below).
 // Boards (-D in platformio.ini; LW_BOARD / LW_RES for the tools, ?board= / ?res= in the sim):
 //   default        Waveshare ESP32-S3-AMOLED-1.91: canvas = panel, 536x240, PX_SCALE 1
 //   BOARD_LCD316   Waveshare ESP32-S3-LCD-3.16, panel 820x320 (LCD_PANEL_W x LCD_PANEL_H): the canvas has the
 //                  panel's aspect, RENDER_H rows (default 320 = native; 240 / 256 / 288 render fewer pixels and
-//                  are upscaled to the panel on push, display_lcd316.cpp)
+//                  are upscaled to the panel on push, display_lcd316.cpp). LCD_FILL 0 (default): px params at the
+//                  AMOLED's physical size (a design px = 0.083 mm, the LCD's pitch 0.0912 mm: 0.910 panel px), the
+//                  tubes still the panel's full length, the rows they leave black between them; LCD_FILL 1: scaled
+//                  with the canvas height (4/3 at native), the tubes filling the face as on the AMOLED. The board tag
+//                  (`v`, sim ?res= / LW_RES) says which: lcd316@320 / lcd316@320f.
 #pragma once
 
 #define DESIGN_H           240   // canvas rows the params / presets are tuned on
@@ -24,17 +29,28 @@
 #endif
 #define PANEL_W            (RENDER_H * LCD_PANEL_W / LCD_PANEL_H)
 #define PANEL_H            RENDER_H
+#ifndef LCD_FILL
+#define LCD_FILL           0
+#endif
+#if LCD_FILL
+#define PX_SCALE           ((float)PANEL_H / DESIGN_H)
+#define PX_SCALED          (RENDER_H != DESIGN_H)
+#else
+#define PX_SCALE           ((float)(830 * RENDER_H) / (912 * LCD_PANEL_H))   // 0.083 / 0.0912 per panel px, exact ratio
+#define PX_SCALED          1
+#endif
 #else
 #define PANEL_W            536
 #define PANEL_H            240
+#define PX_SCALE           1.0f
+#define PX_SCALED          0
 #endif
-
-#define PX_SCALE           ((float)PANEL_H / DESIGN_H)   // canvas px per design px (1 on the AMOLED)
+// PX_SCALE: canvas px per design px (1 on the AMOLED); PX_SCALED: it is not 1 (the px params need scaling).
 #define TUBE_LENGTH_PX     PANEL_W   // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).
-#define TUBE_HEIGHT_MAX    ((DESIGN_TUBE_HEIGHT_MAX * PANEL_H + DESIGN_H - 1) / DESIGN_H)
-#define TUBE_HEIGHT_PX     (72 * PANEL_H / DESIGN_H)    // ≈ 6 mm on the AMOLED at 0.083 mm/px
+#define TUBE_HEIGHT_MAX    ((int)(DESIGN_TUBE_HEIGHT_MAX * PX_SCALE + 0.999f))
+#define TUBE_HEIGHT_PX     ((int)(72 * PX_SCALE))   // ≈ 6 mm at 0.083 mm per design px
 #define HOURS_TUBE_Y       0                            // along the top edge
 #define MINUTES_TUBE_Y     (PANEL_H - TUBE_HEIGHT_PX)   // along the bottom edge
 #define BRIDGE_Y0          TUBE_HEIGHT_PX               // bridge zone between the tubes must stay pure black

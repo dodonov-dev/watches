@@ -20,6 +20,21 @@ void display_push_rows(const uint16_t *fb, int y0, int y1);
 void display_next_strips(uint16_t *strip[2]);
 // CPU cycles spent so far feeding the panel from an ISR (LCD scan-line fill; 0 on the AMOLED), a wrapping counter.
 uint32_t display_busy_cycles(void);
+// Panel refill health (LCD framebuffer scan with bounce buffers; zeros elsewhere): refills of a bounce buffer that
+// finished after the DMA came back for it (the panel showed old lines: a twitch) and driver restarts after a missed
+// refill (a bad frame), both totals since boot; worst refill since the last call, in % of its deadline.
+struct DisplayRefill { uint32_t late, restarts, worstPct; };
+DisplayRefill display_refill_health(void);
+#ifdef PUSH_VERIFY
+// LCD framebuffer push check (-DPUSH_VERIFY, display_lcd316.cpp; slow): after every push each pixel it covers is
+// re-read and compared with the reference per-pixel formula. Totals since boot: pixels checked / wrong; of the
+// skipping strip pushes, 32-bit fbuf words covered / stored and cache-line segments covered / skipped as unchanged.
+struct PushVerify { uint32_t checked, bad, words, stored, segs, skipped; };
+PushVerify display_push_verify(void);
+#endif
+#ifdef PUSH_PROF
+void display_push_prof(uint32_t out[2][5], bool reset);   // -DPUSH_PROF (LCD): per strip slot pushes, cycles hashing / storing, changed segments, gather waits
+#endif
 void display_set_brightness(uint8_t v);   // 0..255 (AMOLED: cmd 0x51; LCD: backlight PWM)
 // RM67162 High Brightness Mode (SetHBMMode B0h, bit1 HBM_EN). On this module it is not a usable
 // brightness step: the image goes bright cyan and a lit face trips the brownout detector. Kept for

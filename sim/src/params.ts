@@ -1,6 +1,6 @@
 // All tunables live here. Colours are RGB888 hex strings but are quantised to RGB565 at render time.
 import { legacyTraceDrain } from './physics';
-import { PX_SCALE } from '../../spec/layout';
+import { DESIGN_H, PANEL_H, PX_SCALE } from '../../spec/layout';
 // Export/import as JSON from the control panel; the exported file is the contract for Phase 3 (spec/params.h).
 
 export interface Params {
@@ -1545,6 +1545,12 @@ export function boardParams(p: Params): Params {
   const o = { ...p };
   for (const k of PX_KEYS) o[k] = Math.fround(Math.fround(p[k]) * Math.fround(PX_SCALE));   // float32 product, as the firmware scales
   for (const k of PX_WHOLE_KEYS) o[k] = Math.round(o[k]);
+  // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
+  // move in (canvas rows minus its height), so the tubes stay at the face's edges (firmware physics.h, float32).
+  if (PX_SCALE !== PANEL_H / DESIGN_H) {
+    const f = Math.fround, room = f(DESIGN_H - f(p.tubeHeight)), k = room > 1 ? f(f(PANEL_H - o.tubeHeight) / room) : 1;
+    o.hoursY = Math.round(f(f(p.hoursY) * k)); o.minutesY = Math.round(f(f(p.minutesY) * k));
+  }
   return o;
 }
 

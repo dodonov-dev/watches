@@ -7,7 +7,8 @@
 Pins: optional preset (--preset: every key of the JSON the board knows, written with `p<name>=<v>`; `v` and
 unknown keys are skipped and listed once), clock fixed (`t`), demo frozen (`d0`), IMU influence off
 (`pinputGain=0`, unless --live-imu), waits for the physics to settle, then reads `f` once per 2 s window and
-reports the median fps / render ms / push-wait ms.
+reports the median fps / render ms / push-wait ms. LCD board: also the panel refill health over the base samples
+(`f` refill totals, display.h display_refill_health): late refills = twitches, restarts = bad frames; any -> TWITCH.
 --preset: a flash that changes PARAMS_SCHEMA_CRC resets NVS to presets/1.json, so benches across a Params
 change are only comparable with a pinned preset.
 IMU check: after pinning, `s` is read; along/across/gyro all exactly 0 = the "IMU dead after flash" signature.
@@ -42,17 +43,23 @@ def fmt(v):
 def same(a, b): return fmt(a).lower() == fmt(b).lower()
 
 LAST_F = ''   # the last raw `f` line of the base measurement: push, cores, frame-p95 for the log
+REFILLS = []  # (late, restarts, worst %) of each `f` of the last sample() call (LCD panel refill health; [] if absent)
 
 def sample(d, n, settle):
-    global LAST_F
+    global LAST_F, REFILLS
     time.sleep(settle)
-    rows = []
+    rows = []; REFILLS = []
     for _ in range(n):
         time.sleep(2.1)
-        r = d.talk('f')      # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"
-        t = r.split()
+        for _ in range(3):   # the serial bridge now and then returns an empty reply: ask again
+            r = d.talk('f')  # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"
+            t = r.split()
+            if len(t) > 6 and t[0] == 'fps': break
+        else: raise SystemExit(f'bench.py: no parsable `f` reply after 3 tries: {r!r}')
         rows.append((float(t[1]), float(t[3]), float(t[6])))
         LAST_F = r.strip()
+        m = re.search(r'refill late (\d+) restarts (\d+) worst (\d+)%', r)
+        if m: REFILLS.append(tuple(int(x) for x in m.groups()))
     med = lambda i: statistics.median(r[i] for r in rows)
     return med(0), med(1), med(2), rows
 
@@ -180,6 +187,9 @@ def main():
             fps, ren, wait, rows = sample(dev[0], a.samples, a.settle)
             base_f = LAST_F
             rr = {'fps': fps, 'render_ms': ren, 'wait_ms': wait, 'samples': rows, 'stages': {}}
+            if len(REFILLS) > 1:   # totals since boot: count what happened between the first and the last `f`
+                rr['refill'] = {'late': REFILLS[-1][0] - REFILLS[0][0], 'restarts': REFILLS[-1][1] - REFILLS[0][1],
+                                'worst_pct': max(x[2] for x in REFILLS[1:]), 'seconds': 2.1 * (len(REFILLS) - 1)}
             for k, v in stages:
                 if k not in cur or same(cur[k], v): continue
                 on = cur[k]
@@ -200,6 +210,13 @@ def main():
             print(f'{a.label + ": " if a.label else ""}fps {fps:.1f}  render {ren:.2f} ms  push-wait {wait:.2f} ms  '
                   f'(scene {a.scene}, median of {a.runs} runs x {a.samples}; render across runs {spread(rens)} ms)')
         print(f'{a.label + ": " if a.label else ""}last f: {base_f}')
+        refills = [r['refill'] for r in per_run if 'refill' in r]
+        if refills:
+            late, restarts = sum(r['late'] for r in refills), sum(r['restarts'] for r in refills)
+            worst, secs = max(r['worst_pct'] for r in refills), sum(r['seconds'] for r in refills)
+            result['refill'] = {'late': late, 'restarts': restarts, 'worst_pct': worst, 'seconds': secs}
+            print(f'{a.label + ": " if a.label else ""}panel refills: {"OK" if late + restarts == 0 else "TWITCH"}  '
+                  f'late {late}  restarts {restarts}  over {secs:.0f} s  (worst refill {worst}% of its deadline)')
         if stages:
             multi = a.runs > 1
             print(f'{"stage off":22} {"fps":>6} {"render":>8} {"cost ms":>8}' + (f' {"cost min–max":>13}' if multi else ''))
