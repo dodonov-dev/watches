@@ -45,7 +45,7 @@ void render_tube_profile_reset();
 void render_tube_verify(int k, uint32_t &n, uint32_t &bad);   // -DTUBE_VERIFY (LCD): k 0 residue zone px, 1 palette entries, since boot
 #endif
 #ifdef TILE_VERIFY
-void render_tile_verify(uint32_t &px, uint32_t &bad);   // -DTILE_VERIFY (LCD tiles): band-stage px of the tiles vs the strip path, since boot
+void render_tile_verify(uint32_t &px, uint32_t &bad);   // -DTILE_VERIFY (LCD tiles): the whole tiled render vs the strip path, px since boot
 #endif
 #ifdef TICK_PROF
 // -DTICK_PROF: tick counters of one tube accumulated since the last reset (TP_* order in render.cpp; cycles at 240 MHz).

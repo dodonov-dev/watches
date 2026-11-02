@@ -30,6 +30,9 @@ void tile_begin(int idx, uint16_t *strip, int rows);
 // the tube (the strip is allocated in whole tiles) take whatever the slot holds there; nothing reads them.
 void tile_put(int idx, int slot, uint16_t *dst, int rows);
 void tile_end(int idx);                                  // every put of tube idx has landed
+// render.cpp (step 9): true, once, when the last render into strip wrote it by the tile copies only (every mark drawn
+// in the tiles, no strip lens): the CPU holds none of its lines dirty, so a DMA read of it needs no writeback first.
+bool tile_strip_clean(const uint16_t *strip);
 // The push of tube idx's strip (display_lcd316.cpp, PUSH_GATHER) borrows the tube's slots and channel: each tube's push
 // runs on its own render core, after (hours) or before (minutes) its render, never during it. tile_scratch: the two
 // slots, TILE_SCRATCH_FREE bytes for the caller (the gather's descriptors live past them). A gather copies `rows`

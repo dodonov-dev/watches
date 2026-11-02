@@ -1,5 +1,7 @@
 # Kaizen — continuous-improvement backlog
 
+- AMOLED: QSPI pushes get no panel ack, so a dead/disconnected panel looks healthy (fps, `x`). Add a serial panel-ID read
+  (RDDID over QSPI) to tell no response from a controller that answers but shows nothing.
 - Host parity checks: sandboxed Node `spawnSync` can hang or report EPERM despite child output;
   the approved run outside the sandbox completes normally.
 
@@ -557,7 +559,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   scenes reach that path.
 
 ### Structural perf (next: 1-4 in order)
-1. Marks (ticks, digits), fizz, bubble, top into the tiles: they still run on the PSRAM strip through the cache after
+1. (Done: step 9, docs/lcd316-perf-plan.md Log.) Marks (ticks, digits), fizz, bubble, top into the tiles: they still run on the PSRAM strip through the cache after
    the tiles, on lines the tiles left cold (wet int digit px ~0.55 us on the hours core vs ~0.32 dry on core 1). Per
    tile: a facts pass first (band layer weights / strokes, wet share for every row), a row clip in drawLabels /
    drawTicks / drawBubble; then the strip is DMA-only (no writeback before the gather).
@@ -576,6 +578,16 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 6. `CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB` on the LCD: the 16 KB I-cache is shared by both render cores and the render
    code is several times that (2 KB of ticks into IRAM moved the pinned render ~2.5 ms). Costs 16 KB internal RAM; may
    replace part of the IRAM code.
+
+- Shelved fizz doubling (MAX_FIZZ 480) now needs MarkPlan's uint8 bubble indexes widened: `static_assert(MAX_FIZZ <= 255)`; the plan also doubles (160 B a bubble, PSRAM).
+- Step 9 follow-ups (marks in the tiles): the strip-lens case (digits printed on top + lens) still draws lens and
+  top digits on the strip after the tiles (and the push writes them back); a lens row map applied inside the push
+  plus top digits per tile would need the source rows' tiles first. AMOLED / -DTILE_OFF could run the marks per
+  8-row band too (cache-resident strip rows; exact, not measured). Bitmap-font digits re-test their column bitsets
+  per band (not benched). tile_end still waits for the last tile's copy at the end of each render (~0.3 ms on the
+  minutes core); only CPU readers (X, `x`, verify, strip lens, the push's per-pixel fallback) need it.
+  Plans give back ~2 ms of the hours core swinging: tick plan 0.8 (flash; try IRAM), fizz plan 0.75 (14 us a bubble:
+  160 B per bubble written to cold PSRAM lines; compact it), digit plan 0.45; the 3e facts run twice (+0.3 ms: `concave()`).
 
 ### Exact kernel levers (backlog, ~0.2-1 ms each)
 - Exact inline divide (div0.s / divn.s, like sqrtExact): buildPalette (~1.0 ms a tube per light change: cosf,
@@ -600,6 +612,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   IRAM 2.3 KB (~50-90 us a step), the 32 KB I-cache option (structural 6).
 
 ### Look options (each needs a board round)
+- Fizz pool doubled, shelved 2026-11-02 in `git stash` ("fizz pool doubled"): MAX_FIZZ/FIZZ_MAX 480, slider 240, `Tube::fizz` in PSRAM at boot. Flashed once on LCD: boots, heap 4.4 -> 14.4 KB; fps at 240/480 not measured, AMOLED not built. Reapply after step 9.
 - `fizzCount` is per tube: the LCD tube is 901 design px long at physical size (615 with LCD_FILL; 536 on the
   AMOLED), so bubbles are ~40 % sparser along it. User wants it scaled (separate chat).
 - Per-radius / subpixel-phase coverage sprites for the fizz: per-px work ~2-3x less; ~0.8 ms of ~1.2 pinned to gain,

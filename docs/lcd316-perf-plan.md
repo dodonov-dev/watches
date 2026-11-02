@@ -171,6 +171,40 @@ ticksH 3.0, fizz 2.7, traces 2.3, ticksM 0.5, edgeGlow 0.3; lens / glass / trans
 - 2026-10-27 (32 KB cache era): removing 3 of 4 digit divisions, IRAM hot loops, the glyph pool or the strip in
   internal RAM alone, an exact per-texel through-liquid memo (11 -> 10 ms for 1.2 MB PSRAM): ~0.
 
+## Step 9 brief: marks, fizz, bubble, top into the tiles (2026-10-30, KAIZEN "Structural perf" 1)
+Goal: no CPU access to the PSRAM strip in a tiled render. Today (step 7) only the base stages render in the 4-row
+internal-RAM tiles; after `tile_end` the rear ticks, rear digits, fizz, bubble, top ticks, lens and top digits read and
+write the strip through the data cache, on lines the tiles left cold: a wet int digit px costs ~0.55 us on the hours
+core vs ~0.32 dry (step 8), a tick row ~one PSRAM line fill (~1.2-1.5 us, ~0.4-0.5 ms a tube, step 4), the push writes
+the strip's dirty lines back first (C2M, 0.11-0.22 ms probed). Exact: no look change.
+- **Shape:** per tile, after its band stages and before `tile_put`, every later stage for the tile's rows only, in
+  today's order (rear ticks, rear digits, fizz, bubble, top ticks, top digits). Per pixel the stage order and the
+  bubble order stay the same, so the pixels are identical.
+- **Facts first:** what the marks read per row must exist before the band loop: wet share (`wetShare` / `wetRun`), label
+  layout (`layoutLabels`, `holdWhole` once a frame), mark bounds / band layer weights / strokes per row (bandFill /
+  bandBlick / bandRim, strokeR / L, boundLo / Hi: check which the band loop fills row by row), tick row facts
+  (DigitRow). Per-frame state (holdWhole, TickMemo, fizz FizzFrame) is set once, not per tile.
+- **Row clip:** drawTicks / drawLabels / drawBubble (discRow) / the bubble spans take a row range; the writes go to the
+  tile slot (the band stages point FB so the tile's rows land in the slot; `inStrip` still checks the whole strip, so a
+  write outside the tile would corrupt internal RAM: add a `-DTILE_CLIP_CHECK` build that traps any write outside the
+  slot and run it on the board). SIMD lanes (pieBlend): the 16-B blocks around a run, bounds = the slot.
+- **Per-tile setup cost:** per-glyph-row and per-bubble setup must not repeat per tile (step 3: per-glyph-row bookkeeping
+  ~1.5 ms a core was already a big share). Levers: disc setup once a frame per bubble into per-Tube scratch (MAX_FIZZ
+  entries, sized at boot, never file-static: both cores render), bubbles bucketed by first tile; glyph runs indexed by
+  row; tick facts already per row.
+- **Lens:** the user preset maps the lens in the push (`lensRows`). Where the strip lens is applied (`applyLens`: digits
+  printed on top + lens) rows read other rows: keep that case on today's post-tile path (exact), say so in the log.
+- **Then:** if nothing in a tiled render touches the strip with the CPU, drop the push's C2M writeback and check
+  `tile_begin`'s M2C drop is still needed; keep the `-DTILE_OFF` strip path working.
+- **Verify:** `-DTILE_VERIFY` today re-renders the band stages only: extend it to the whole render (the strip path into
+  `tileVerifyStrip`, compared after everything) and run it pinned and swinging.
+- **Lessons:** fewer PSRAM lines / bytes won, instruction cuts ~0 on PSRAM-bound stages; the S3 runs ~1.5-2 cycles an
+  instruction even cached; IRAM placement moves the whole render by up to ~2.5 ms between builds (16 KB I-cache shared by
+  both cores): compare stage costs within one build or by cycle counters, quote the A/B; see "Dead ends".
+- **Budgets:** free heap with BLE ~4.3 KB (do not spend it: new scratch to PSRAM at boot or inside the Tube; report),
+  hours worker stack free ~1.2 KB (no big locals in the per-tile loop), AMOLED RAM <= 88.4 KB (no tiles there: keep it
+  building and byte-identical).
+
 ## Log
 (each step appends: what changed, bench line before / after, stage table if taken, parity, look change yes / no)
 - **Step 1, balance the push (2026-10-28): 16.0 → 18.1 fps.** Staggered push (`main.cpp` renderBoth / renderWorker):
@@ -736,3 +770,65 @@ ticksH 3.0, fizz 2.7, traces 2.3, ticksM 0.5, edgeGlow 0.3; lens / glass / trans
   - Scratch (git-ignored `firmware/.pio/step8/`): `ref/` (step-7 sources, the `--reference`), `proto/` (the
     `-DDIGIT_AB` sources; `refAEs.cpp` / `ref17.cpp`, the final's references), `prof.py` (per-variant fixed scene +
     swing in one boot, `--state` dumps the pinned tilt), `look/` (host harness + PNG / GIF), logs.
+- **Step 9, marks into tiles (2026-11-02): same-session A/B alternating twice 46.1 → 52.2 fps pinned, 35.3 → 36.2
+  swinging the tilt.** Exact: no look change. The strip is DMA-only in a tiled render, except with the strip lens.
+  `render.cpp` (facts first, MarkPlan, bands), `tiles.h` / `display_lcd316.cpp` (`tile_strip_clean`), `render.h` (comment).
+  - **Facts first:** before the band loop, for all rows: 3e's per-frame terms and strokes / layer weights (`concave()`,
+    shared with the band's draw, which recomputes them: no internal RAM for a copy), mark bounds, wet share, label layout.
+  - **Plans:** `MarkPlan` per tube (PSRAM, render_init, worst case: ~57 KB on the wide LCD): tick segments
+    (+ per band the first / last walk step of a slanted segment), glyph plans (copies' columns, ramp columns and their row
+    range; bitmap passes too, columns as bitsets), bubble plans (DiscRow; per band the bubbles with a row in it, in slot
+    order: a counting sort). `holdWhole` once a frame there.
+  - **Bands:** `marks(r0, r1, topDigits)` after a tile's base stages, before `tile_put`: rear ticks, rear digits, fizz,
+    bubble, top ticks, top digits, each clipped to the rows. A mark op reads and writes only its pixel and the memos are
+    pure caches, so filtering each stage's ops by row keeps every pixel's ops in order. `rowLo / rowHi` (inStrip, hspan)
+    are the band's rows. A slanted tick walk resumes at a step from the same expressions it carries. Row facts per band
+    (the same total as per frame). Non-tiled builds call `marks(0, H, false)` after the band loop.
+  - **Strip lens** (`rc.lensOn` and no lens row map out, i.e. digits printed on top, or `X` / `x`, which pass no map):
+    lens and top digits stay after `tile_end`, on the strip (exact, rows read other rows); that render is not "clean".
+  - **Coherence:** `tile_strip_clean` skips the push's C2M when the last render wrote by DMA only. `tile_begin`'s M2C stays:
+    `X` / `x` / verify read strip lines by CPU, a strip-lens frame leaves them cached, DMA then writes behind them (~15 us).
+    `tile_end` stays too: same readers.
+  - Same session (flash, fixed scene `bench.py --runs 2`, then `swing.py` 40 s with `user-fav` pinned by volatile writes:
+    NVS held other params by then, see Not done; ref = 76a64b2 exported and built `LCD_FILL=1`). Round 1 / round 2:
+    | | 76a64b2 | step 9 |
+    |---|---|---|
+    | fps pinned | 46.1 / 46.1 | **52.3 / 52.1** |
+    | render ms | 20.98 / 21.01 | 18.40 / 18.45 |
+    | cores h / m ms (last `f`) | 16.28 / 13.35, 16.56 / 12.71 | 13.68 / 11.79, 13.52 / 11.94 |
+    | push ms (both strips) | 9.96 / 9.72 | 9.55 / 9.62 |
+    | phys steps | 1.09 | 0.95-0.96 |
+    | frame-p95 ms | 22 | 20 |
+    | swinging fps, median of 16 windows | 35.4 / 35.2 | **36.0 / 36.4** |
+    | swinging windows fps | 34.4-37.6 | 35.2-39.8 |
+    | swinging cores h / m (mean) | 20.18 / 17.82, 20.27 / 17.66 | 19.91 / 17.45, 19.71 / 17.45 |
+    | swinging push ms | 11.97 / 11.91 | 11.27 / 11.28 |
+    | swinging frame-p95 ms | 31 | 30-30.5 |
+    | refills (bench worst; swinging worst) | OK 10-11 %; 14-15 % | OK 4 %; 13 % |
+    | free heap with BLE / hours stack free | 4,080 / 1,256 B | 4,832-4,848 / 1,160 B |
+    An earlier pair of rounds with the clock free (bench did not run): 34.8 / 35.0 → 36.2 / 36.0 swinging. `e2e.sh --ref`:
+    46.1 → 52.0 pinned, `panel refills: OK`, parity `234 of 118080 (0.20%), >12/255 off: 0`.
+  - Why swinging gains less: the marks got cheaper, the plans give part back (`-DTUBE_PROF`, us a frame, swinging, hours;
+    ref → new): digits 5453 → 3892, fizz 3700 → 2761, ticks 1973 → 1825, tile 961 → 403 (put-wait 736 → 18), but
+    bounds 186 → 467 and labels + plans 50 → 2056 (a split build: tick plan 819, digit plan 449, fizz plan 751, layout
+    87). Minutes: digits 5359 → 4061, ticks 1669 → 1314, fizz 1166 → 980, tile 157 → 423 (end-wait 46 → 320: the last
+    copy lands after the marks now), labels + plans 14 → 955. Push store ~same; the push's gather wait moved between
+    the strips. Pinned steady state: the same split, with 18 bubbles.
+  - Exactness: `check_render_frames.py --reference <76a64b2> [--tiles | --big-fizz --tiles]`: `13136 complete render
+    strips ... are byte-identical; UBSan passed` (each); also `--tiles` with `-DTILE_CLIP_CHECK` on the host. Positive
+    controls (host): a slot one row short traps at once; no marks in one band fails at scene 1. `check_fizz_steps.py
+    --board lcd316`: `lcd316@320f tiles`, `... fma tiles`, `lcd316@320 tiles`, `... fma tiles`: `80 of 80 presets
+    identical`; AMOLED plain and `--fma` 80 of 80. `check_board_render.py --tiles`: per-preset output identical to before
+    (`--res 320f` 73 of 77, `--res 320` 77 of 77). Board, wide: `-DTILE_CLIP_CHECK` pinned + swinging on `user-fav`, top
+    and top + lens presets, no trap, `X` identical on all three; `-DTILE_VERIFY` (extended: the whole render, the strip path
+    into `tileVerifyStrip`) pinned, swinging, then top and top + lens swinging: `tile-verify bad 0 of 279023040 px`.
+    Final: `check_board_steps.py --compare` `identical: 350 of 350 frames compared (2 runs agree)` for `user-fav`, top
+    (`bubble`, `ticksOnTop`, `digitsOnTop`, lens 0) and top + lens (lens -0.2).
+  - Memory: lcd316 static RAM wide 131,620 B (+0 in the sections, alignment took the 16 B of Tube fields), narrow 121,700;
+    AMOLED 86,128 B (≤ 88,400); `.iram0.text` 144,407 → 143,851 B. PSRAM + ~57 KB a tube. Free heap +~760 B. Hours stack
+    −96 B. Builds pass: wide, narrow, `-DTILE_OFF`, `-DTUBE_BAND_INLINE`, `RENDER_H=240` / 288, `AB_COMPARE=256`, AMOLED,
+    all PROF + VERIFY flags together.
+  - Not done / doubtful: no board positive control of the extended TILE_VERIFY (host controls only). Narrow tubes
+    proven on the host only (as asked: bench only wide). Bitmap-font digits per band not benched. When the board came back
+    its NVS no longer held `user-fav` (18 keys differ, e.g. `liquid` #dc5cff, `fizzCount` 189): left as found.
+    KAIZEN: the plans' cost (structural follow-ups).

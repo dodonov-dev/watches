@@ -676,9 +676,10 @@ static void __attribute__((noinline)) turn_segs_gather(int t, uint16_t *line0, c
 #ifdef PUSH_VERIFY
   verifyWords[xPortGetCoreID()] += LCD_V_RES * (n >> 1);
 #endif
-  // The DMA reads PSRAM, not the cache: write back what the stages after the tiles drew (marks, fizz: ~0.1-0.2 ms),
-  // in pieces so interrupts are never off long on this core (the hours push shares core 0 with the refill ISR).
-  for (size_t o = 0, e = (size_t)rows * PANEL_W * 2; o < e; o += 16384)
+  // The DMA reads PSRAM, not the cache: write back what the CPU drew into the strip (since step 9 only the strip lens and
+  // the digits printed over it, run after the tiles; otherwise nothing: tile_strip_clean), in pieces so interrupts are
+  // never off long on this core (the hours push shares core 0 with the refill ISR).
+  if (!tile_strip_clean(src)) for (size_t o = 0, e = (size_t)rows * PANEL_W * 2; o < e; o += 16384)
     esp_cache_msync((uint8_t *)src + o, e - o < 16384 ? e - o : 16384, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
   uint8_t *const scr = tile_scratch(t);
   uint32_t *const unit[2] = {(uint32_t *)scr, (uint32_t *)(scr + TILE_GATHER_ROWS * GB_COLS * 2)};
