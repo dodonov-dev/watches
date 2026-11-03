@@ -667,6 +667,8 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   no longer build. A `--reference-tree DIR` (git archive of the old commit) would compare across API changes.
 - Host builds share one fizz RNG for both tubes (fizzRng per core, one core on the host): with fizz on, one tube's draws
   shift the other's. Board: per core = per tube. A per-tube RNG would make host checks per-tube exact.
+- bench.py leaves the board clock at its scene time (10:09:30 + run time; the LCD's RTC too): restore it at the end
+  (`T <epoch> <tz_min>`, as the sim's connect does).
 - e2e's parity right after a flash (liquid still settling) showed 230-510 px > 12/255 on the LCD; settled re-runs of the
   same builds 0. Parity could wait for the fills to settle (or snap them) before the `x` dump.
 - Mixed-width LCD builds: +688 B internal RAM (effM, second mask set) on ~4 KB free heap with BLE; the narrow tube's
