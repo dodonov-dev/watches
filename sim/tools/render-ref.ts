@@ -7,7 +7,7 @@
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
 import { renderFrame, fb, setSprite, setDigitHold } from '../src/render';
 import { newTube, type TubeState } from '../src/physics';
-import { boardParams } from '../src/params';
+import { tubeParams } from '../src/params';
 import { TUBE_LENGTH_PX } from '@spec/layout';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -38,6 +38,6 @@ trace(job.hours.trace, job.hours.traceWet, h); trace(job.minutes.trace, job.minu
 // the sprite digits' whole-px shift the board held (`DIGITS` line of the `x` dump; render.ts DigitHold): carried
 // across frames, so one dumped state alone would not give it
 if (Array.isArray(job.digitShift)) job.digitShift.forEach((d: number[], i: number) => setDigitHold(i, d[0], d[1]));
-renderFrame(h, m, boardParams(job.params));
+renderFrame(h, m, ...tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)
 fs.writeFileSync(process.argv[3], Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength));
 console.log('ok');

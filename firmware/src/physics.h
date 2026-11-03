@@ -2,20 +2,26 @@
 #pragma once
 #include "gen/params_gen.h"
 #include <math.h>
-#include "layout.h"   // TUBE_LENGTH_PX (trace bounds default below), PX_SCALE
+#include "layout.h"   // TUBE_LENGTH_PX (trace bounds default below), PANEL_H, DESIGN_H
 
 #define PHYS_HZ 50
 #define PHYS_DT (1.0f / PHYS_HZ)
 #define PLAY_STROKE_G 0.35f      // substantial filtered gravity excursion (~20° near horizontal)
 #define PLAY_REVERSAL_S 2.0f     // opposite strokes inside this window count as play
-#define FILL_SLOSH_MAX_PX (30.0f * PX_SCALE)   // structural caps — params only tighten, never widen (px: design px, scaled)
+// Structural caps — params only tighten, never widen. px caps and speeds are design px: a tube's canvas px = x its px
+// scale k (layout.h TUBE_PX_SCALE), the _AT(k) forms.
+#define FILL_SLOSH_MAX_DESIGN_PX 30.0f   // |fillPos| cap
+#define FILL_SLOSH_MAX_PX_AT(k) (FILL_SLOSH_MAX_DESIGN_PX * (k))
 #define ANGLE_HARD_MAX_DEG 20.0f
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
-#define CAP_DYN_MAX_PX (12.0f * PX_SCALE)      // |cap| cap: dynamic meniscus bulge / hollow
+#define CAP_DYN_MAX_DESIGN_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
+#define CAP_DYN_MAX_PX_AT(k) (CAP_DYN_MAX_DESIGN_PX * (k))
 #define PIN_RELAX_S 3.0f          // a held contact line creeps back to the static shape (wrist micro-motion), s
-#define FILM_FULL_PX_S (25.0f * PX_SCALE)      // edge speed at which the trailing wet film is fully drawn
-#define TRACE_DEPOSIT_MAX_PX (32.0f * PX_SCALE) // max px of newly exposed glass per tick that gets a fresh deposit
+#define FILM_FULL_DESIGN_PX_S 25.0f      // edge speed at which the trailing wet film is fully drawn
+#define FILM_FULL_PX_S_AT(k) (FILM_FULL_DESIGN_PX_S * (k))
+#define TRACE_DEPOSIT_MAX_DESIGN_PX 32.0f // max px of newly exposed glass per tick that gets a fresh deposit
+#define TRACE_DEPOSIT_MAX_PX_AT(k) (TRACE_DEPOSIT_MAX_DESIGN_PX * (k))
 #define TRACE_FULL 0xff00         // a film at FILM_ETA_MAX (8.8 fixed point)
 #define TRACE_MIN (2 << 8)        // dry residue below this is gone (buffer empties); also the thinnest deposit
 #define TRACE_DRAIN_MAX_PX_S 48.0f // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (canvas px, a stability bound: not scaled)
@@ -55,19 +61,20 @@ struct TubeState {
   bool playInit = false;
 };
 
-// Params as physics and render take them: p (design px, as presets, `p` writes and NVS hold them) with the
-// PARAM_FIELDS px fields scaled to this board's canvas, the whole-pixel ones rounded (sim params.ts boardParams).
-inline void boardParams(const Params &p, Params &out) {
+// Params as a tube's physics and render take them: p (design px, as presets, `p` writes and NVS hold them) with the
+// PARAM_FIELDS px fields scaled by the tube's px scale k (layout.h TUBE_PX_SCALE), the whole-pixel ones rounded (sim
+// params.ts boardParams).
+inline void boardParams(const Params &p, Params &out, float k) {
   out = p;
-  if (PX_SCALE == 1.0f) return;
+  if (k == 1.0f) return;
   for (const ParamField &f : PARAM_FIELDS) if (f.px) {
     float &v = *(float *)((uint8_t *)&out + f.off);
-    v *= PX_SCALE;
+    v *= k;
     if (f.px == 2) v = floorf(v + 0.5f);   // whole pixels stay on the grid (JS Math.round)
   }
   // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
   // move in (canvas rows minus its height), so the tubes stay at the face's edges.
-  if (PX_SCALE != (float)PANEL_H / DESIGN_H) {
+  if (k != (float)PANEL_H / DESIGN_H) {
     const float room = DESIGN_H - p.tubeHeight, k = room > 1.0f ? (PANEL_H - out.tubeHeight) / room : 1.0f;
     out.hoursY = floorf(p.hoursY * k + 0.5f); out.minutesY = floorf(p.minutesY * k + 0.5f);
   }
@@ -80,18 +87,20 @@ inline bool mirrored(const Params &p) { return p.remaining && !p.vertical; }
 uint16_t *traceBuf(int i);                            // static residue buffer of tube i
 bool physics_init();                                  // boot: the wet-film buffers in PSRAM (false = not allocated)
 uint16_t *traceWetBuf(int i);                         // wet-film buffer of tube i (nullptr before physics_init)
-// The film a line receding at `speed` px/s leaves, eta = h / R (Bretherton, capped at FILM_ETA_MAX). See sim filmEta.
-float filmEta(const Params &p, float speed = FILM_FULL_PX_S);
+// The film a line receding at `speed` px/s leaves, eta = h / R (Bretherton, capped at FILM_ETA_MAX); full = its tube's
+// FILM_FULL_PX_S_AT (speed = full: the fully drawn film). See sim filmEta.
+float filmEta(const Params &p, float speed, float full);
 
 float lightRest(float along, float across, const Params &p);
 // Bore radius, px in row-centre units: (H - 1)/2 less the glass wall band. See sim boreR.
 float boreR(const Params &p);
 // One meniscus end's wall-ring leads (px the ring leads the surface centre, R = boreR): adv / rec = at θA / θR
 // (adv <= rec), rest = from the hydrostatic head (len = column px, tilt = along follower into this end)
-// held within [adv, rec]. See sim contactLeads.
+// held within [adv, rec]; mmPerPx = the tube's (layout.h MM_PER_PX_AT). See sim contactLeads.
 struct ContactLeads { float R, rest, adv, rec; };
-ContactLeads contactLeads(const Params &p, float len, float tilt);
-void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt = PHYS_DT);
+ContactLeads contactLeads(const Params &p, float len, float tilt, float mmPerPx);
+// One physics step of a tube: k = its px scale (layout.h TUBE_PX_SCALE), p = its params (boardParams at k). See sim.
+void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, float k);
 // Shown fill from the clock's (0..1): a wrap (the clock falling back by over half the scale) retracts the column
 // over RETRACT_S instead of emptying it in one tick; snap (the clock was set) goes straight to it. See sim followClock.
 void followClock(TubeState &s, float clock, float dt = PHYS_DT, bool snap = false);

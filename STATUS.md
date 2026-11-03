@@ -1,6 +1,27 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-10-27 (LCD-3.16 full-screen canvas, board switch)_
+_Last update: 2026-11-03 (per-tube LCD widths, board selection fixes)_
+
+## Per-tube tube widths, board selection (2026-11-03)
+
+- LCD res tag = rows + tube widths, one name everywhere (`v`, sim `?res=`, `LW_RES`, `--res` of flash.sh / flash-win.sh /
+  e2e.sh / check_board_render.py / check_fizz_steps.py; tools/boardtag.py): `320` both narrow, `320f` both wide, `320fh`
+  hours wide, `320fm` minutes wide. Firmware: LCD_FILL (both), LCD_FILL_H / LCD_FILL_M (one tube).
+- Each tube runs on its own params (boardParams at TUBE_PX_SCALE(i)) and px caps (stepTube k, contactLeads mmPerPx,
+  filmEta full, FOAM_CATCH_AT); equal widths share one params struct and one fizz mask set (no RAM, same code).
+  Mixed widths: second params copy + mask set, +688 B internal; the wider tube keeps the internal mask pool.
+- Sim top bar: board, rows, hours width, minutes width (reloads; remembered, the LCD choice too while on the AMOLED);
+  connecting to a board with another tag says which settings to pick.
+- flash.sh / flash-win.sh print the tag they build; they and device.py refuse to guess with several boards attached
+  (Linux ttys and Windows COM ports together; LW_PORT), e2e.sh pins the port before any flash. e2e.sh checks the board's `v` after a flash (exit 4: the image did not take, or a --ref cannot build the
+  tag) and builds --ref commits through the old scripts' plain-rows LW_RES.
+- Proof (host): HEAD tree vs working tree, seq.h sequences over 80 presets/scenes: AMOLED, LCD 320, 320f, 240f tiles,
+  320f --fma identical. Mixed builds, fizz off: each tube identical to the uniform build of its width (320fh, 256fm).
+  Sim vs firmware: amoled191 74/77, 320 77/77, 320f 73/77 (as before), 320fh 76/77, 256fm 75/77 within 12/255.
+- Board (2026-11-03, user-fav pinned, fix-pose): X sequence identical to HEAD e9099b7 on the LCD (320f) and the AMOLED
+  (fizz off). fps: AMOLED 61.2 = HEAD 61.2; LCD 320f 51.6 (HEAD 49.1 in the same session, its minutes core had 7 foam
+  bubbles), 320fh 56.9, 320fm 58.3, 320 73.1. Parity settled: 320f 0 / 320fm 0 / 320fh 0 / AMOLED 0 px > 12/255.
+  Heap with BLE: 320f 3.8-4.5 KB, 320fh 3.0-3.8 KB, 320fm 3.2 KB (BLE connect not tested). LCD left on 320f.
 
 ## Board switch + full-screen LCD canvas (2026-10-27)
 
@@ -12,7 +33,8 @@ _Last update: 2026-10-27 (LCD-3.16 full-screen canvas, board switch)_
 - `spec/layout.h|ts`: PANEL_W × PANEL_H is the canvas the face renders. LCD: the panel's 41:16 aspect, RENDER_H rows,
   tubes full length (820 px native) along both long edges, upscaled nearest-neighbour to 820×320 in the push.
 - Params stay in design px (the AMOLED's 240-row canvas): presets, the panel, `p` writes, `p?`, NVS. `boardParams`
-  (sim params.ts, firmware physics.h) scales the 41 PX_KEYS by PX_SCALE = RENDER_H / 240 and rounds the 22 whole-pixel
+  (sim params.ts, firmware physics.h) scales the 41 PX_KEYS by the px scale (wide: RENDER_H / 240; narrow since 10-29:
+  the pitch ratio; per tube since 11-03) and rounds the 22 whole-pixel
   ones (positions, tick / bubble sizes, baselines, shadow offset); gen_params.py reads both lists from params.ts
   (`ParamField::px`). Named px caps (slosh, cap, film speed, deposit, foam catch, glyph pool) scale too; MM_PER_PX is
   0.083 / PX_SCALE (same bore in mm). Material layer, migration and legacyTraceDrain use the design constants.

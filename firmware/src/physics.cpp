@@ -23,9 +23,9 @@ bool physics_init() {
 }
 uint16_t *traceWetBuf(int i) { return g_traceWet[i & 1]; }
 
-float filmEta(const Params &p, float speed) {
+float filmEta(const Params &p, float speed, float full) {
   const float dyn = fmaxf(0, p.contactDyn) * (3.14159265f / 180.0f);
-  const float ca = dyn * dyn * dyn * (1.0f / (9 * FILM_LAMBDA)) * (speed / FILM_FULL_PX_S);
+  const float ca = dyn * dyn * dyn * (1.0f / (9 * FILM_LAMBDA)) * (speed / full);
   const float c = cbrtf(ca * ca);
   return fminf(FILM_ETA_MAX, 1.34f * c / (1 + 3.35f * c));
 }
@@ -100,18 +100,19 @@ float boreR(const Params &p) {
   return fmaxf(1, (H - 1) / 2.0f - fmaxf(0, p.glassWall));
 }
 
-ContactLeads contactLeads(const Params &p, float len, float tilt) {
+ContactLeads contactLeads(const Params &p, float len, float tilt, float mmPerPx) {
   const float R = boreR(p), rad = (float)M_PI / 180, PI = (float)M_PI;
   const float t0 = clampf(p.contactAngle, 0, 180) * rad, hy = fmaxf(0, p.contactHyst) * rad;
   auto lead = [R](float th) { return R * cosf(th) / (1 + sinf(th)); };
   // hydrostatic head, split between the two ends: dcos = R·L·sin(alpha) / (4 lc^2), all in mm
-  const float lc = fmaxf(0.1f, p.capLength), Rmm = R * MM_PER_PX;
-  const float cs = clampf(cosf(t0) - Rmm * fmaxf(0, len) * MM_PER_PX * tilt / (4 * lc * lc), -1, 1);
+  const float lc = fmaxf(0.1f, p.capLength), Rmm = R * mmPerPx;
+  const float cs = clampf(cosf(t0) - Rmm * fmaxf(0, len) * mmPerPx * tilt / (4 * lc * lc), -1, 1);
   const float adv = lead(fminf(PI, t0 + hy)), rec = lead(fmaxf(0, t0 - hy));
   return { R, clampf(R * cs / (1 + sqrtf(1 - cs * cs)), adv, rec), adv, rec };
 }
 
-void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt) {
+void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, float k) {
+  const float FILL_SLOSH_MAX_PX = FILL_SLOSH_MAX_PX_AT(k), CAP_DYN_MAX_PX = CAP_DYN_MAX_PX_AT(k), FILM_FULL_PX_S = FILM_FULL_PX_S_AT(k);
   const float along = dz(in.along, p.deadzone);
   const float across = dz(in.across, p.deadzone);
 
@@ -194,7 +195,7 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt) {
 
   // Wet film: fast attack while an edge recedes, slow drain.
   const float recede = mir ? 1 : -1;
-  auto filmT = [](float v) { return clampf(v / FILM_FULL_PX_S, 0, 1); };
+  auto filmT = [FILM_FULL_PX_S](float v) { return clampf(v / FILM_FULL_PX_S, 0, 1); };
   auto follow = [dt](float cur, float target) { return cur + (target - cur) * fminf(1, (target > cur ? 15 : 2) * dt); };
   s.filmFree = follow(s.filmFree, filmT(recede * edgeVel));
   s.filmHome = follow(s.filmHome, p.freeLiquid ? filmT(-recede * s.slugVel) : 0);
@@ -215,9 +216,9 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt) {
       // lay there, so a deposit too thin to count clears them (see sim)
       auto dep = [&](float a, float b) {
         if (b <= a) return;
-        int v = (int)jroundf(TRACE_FULL * filmEta(p, (b - a) / dt) / FILM_ETA_MAX);
+        int v = (int)jroundf(TRACE_FULL * filmEta(p, (b - a) / dt, FILM_FULL_PX_S) / FILM_ETA_MAX);
         if (v < TRACE_MIN) v = 0;
-        int lo = (int)fmaxf(0, jroundf(a)), hi = (int)fminf((float)TUBE_LENGTH_PX, jroundf(a + fminf(b - a, TRACE_DEPOSIT_MAX_PX)));
+        int lo = (int)fmaxf(0, jroundf(a)), hi = (int)fminf((float)TUBE_LENGTH_PX, jroundf(a + fminf(b - a, TRACE_DEPOSIT_MAX_PX_AT(k))));
         for (int x = lo; x < hi; x++) s.trace[x] = s.traceWet[x] = (uint16_t)v;
         if (v && hi > lo) { if (lo < s.traceLo) s.traceLo = (int16_t)lo; if (hi > s.traceHi) s.traceHi = (int16_t)hi; }
       };
@@ -291,7 +292,7 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt) {
   const float lenNow = columnLen(s.fillTarget, p), tiltFree = -recede * s.edgeLight;
   const float relax = 1 - fminf(1, dt / PIN_RELAX_S);
   auto seat = [&](float &held, float &lineV, float tilt, float out) {
-    const ContactLeads c = contactLeads(p, lenNow, tilt);
+    const ContactLeads c = contactLeads(p, lenNow, tilt, MM_PER_PX_AT(k));
     const float lo = c.rest - c.rec, hi = c.rest - c.adv;
     const float moved = clampf(held * relax, lo, hi) + out, pinned = clampf(moved, lo, hi);
     lineV += ((moved - pinned) / dt - lineV) * fminf(1, 2 * dt); held = pinned;

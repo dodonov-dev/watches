@@ -3,7 +3,8 @@
 
   python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tiles] [--tolerance 12] [presets/x.json ...]
 
-Board: --board / --res (320f: LCD_FILL), else $LW_BOARD / $LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
+Board: --board / --res (a res tag: rows + tube widths, 320 / 320f / 320fh / 320fm, tools/boardtag.py), else $LW_BOARD /
+$LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
 params scaled by physics.h boardParams; the sim side is tools/render-ref.ts with LW_BOARD / LW_RES (params.ts
 boardParams). Presets default to presets/*.json and presets/physical/*.json (design px). Fizz off (random). Prints
 per preset the pixels off and those beyond the tolerance (RGB888 steps); exits 1 if any preset has one.
@@ -13,6 +14,8 @@ does; without it the host takes the strip path.
 import argparse, glob, json, os, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
 from PIL import Image
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import boardtag
 
 ROOT = Path(__file__).resolve().parents[2]
 SIM = ROOT / 'sim'
@@ -42,7 +45,7 @@ static bool setParam(Params &p, const char *name, const char *val) {   // main.c
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
-  Params design = PRESET_DEFAULT, p; TubeState st[2]; uint32_t gen = 1;
+  Params design = PRESET_DEFAULT, p[2]; TubeState st[2]; uint32_t gen = 1;
   for (int i = 0; i < 2; i++) { st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); }
   char line[256];
   while (fgets(line, sizeof line, stdin)) {
@@ -50,13 +53,14 @@ int main() {
     if (line[0] == 'P') { char *eq = strchr(line + 2, '='); if (!eq) return 4; *eq = 0; if (!setParam(design, line + 2, eq + 1)) fprintf(stderr, "unknown param %s\n", line + 2); }
     else if (line[0] == 'S') { int i; float f, l; sscanf(line + 2, "%d %f %f", &i, &f, &l); st[i] = TubeState(); st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); st[i].fillTarget = f; st[i].light = l; }
     else if (line[0] == 'R') {
-      boardParams(design, p); gen++;
+      for (int i = 0; i < 2; i++) boardParams(design, p[i], TUBE_PX_SCALE(i));   // each tube at its own px scale
+      gen++;
       memset(canvas, 0, sizeof canvas);
-      const TubeLayout lay = tubeLayout(p);
+      const FaceLayout lay = faceLayout(p[0], p[1]);
       for (int i = 0; i < 2; i++) {
-        renderTube(i, st[i], p, gen, strip);
-        const int y0 = i ? lay.yM : lay.yH;
-        for (int k = 0; k < lay.H * PANEL_W; k++) canvas[y0 * PANEL_W + k] = __builtin_bswap16(strip[k]);
+        renderTube(i, st[i], p[i], gen, strip);
+        const int y0 = i ? lay.yM : lay.yH, rows = i ? lay.Hm : lay.Hh;
+        for (int k = 0; k < rows * PANEL_W; k++) canvas[y0 * PANEL_W + k] = __builtin_bswap16(strip[k]);
       }
       fwrite(canvas, sizeof canvas, 1, stdout); fflush(stdout);
       design = PRESET_DEFAULT;
@@ -81,6 +85,9 @@ def main():
     if a.board not in ('lcd316', 'amoled191'): sys.exit(f'check_board_render: unknown board {a.board}')
     lcd = a.board == 'lcd316'
     if not lcd: a.res = '240'
+    else:
+        try: rows = boardtag.parse_res(a.res)[0]
+        except ValueError as e: sys.exit(f'check_board_render: {e}')
     paths = a.presets or sorted(glob.glob(str(ROOT / 'presets/*.json')) + glob.glob(str(ROOT / 'presets/physical/*.json')))
     env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res)
     with tempfile.TemporaryDirectory(prefix='watches-board-') as tmp:
@@ -89,7 +96,7 @@ def main():
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *([f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []),
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res)] if lcd else []),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)
@@ -116,7 +123,7 @@ def main():
             script += [f'P {k}={fmt(v)}' for k, v in params.items() if k != 'v']
             script += [f'S {i} {STATE[t]["fillTarget"]} {STATE[t]["light"]}' for i, t in enumerate(('hours', 'minutes'))] + ['R']
         out = subprocess.run([str(tmp / 'h')], input=('\n'.join(script) + '\n').encode(), stdout=subprocess.PIPE, check=True).stdout
-        W = int(a.res.rstrip("f")) * 820 // 320 if lcd else 536; H = int(a.res.rstrip("f")); n = W * H
+        W = rows * 820 // 320 if lcd else 536; H = rows if lcd else 240; n = W * H
         assert len(out) == len(jobs) * n * 2, f'harness wrote {len(out)} bytes for {len(jobs)} presets of {W}x{H}'
         exp = lambda c: ((c >> 11 & 31) << 3 | (c >> 11 & 31) >> 2, (c >> 5 & 63) << 2 | (c >> 5 & 63) >> 4, (c & 31) << 3 | (c & 31) >> 2)
         bad = 0

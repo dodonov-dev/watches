@@ -1,18 +1,20 @@
 // Liquid Watch — single source of truth for panel layout.
 // Mirrored in spec/layout.ts. Landscape, origin top-left.
 // The face renders into a PANEL_W x PANEL_H canvas. Params and presets are in design px: the AMOLED's 536x240
-// canvas (DESIGN_H rows). Another board scales every px param by PX_SCALE (sim params.ts boardParams, firmware
-// physics.h): with the canvas height (a preset keeps its proportions), or on the LCD by default with the pitch (the
-// tubes keep their physical width, below).
+// canvas (DESIGN_H rows). Another board scales every px param by its tube's px scale (sim params.ts boardParams,
+// firmware physics.h): with the canvas height (a preset keeps its proportions), or on the LCD by default with the
+// pitch (the tube keeps its physical width, below). Each tube has its own scale (TUBE_PX_SCALE(i), 0 = hours).
 // Boards (-D in platformio.ini; LW_BOARD / LW_RES for the tools, ?board= / ?res= in the sim):
-//   default        Waveshare ESP32-S3-AMOLED-1.91: canvas = panel, 536x240, PX_SCALE 1
+//   default        Waveshare ESP32-S3-AMOLED-1.91: canvas = panel, 536x240, px scale 1
 //   BOARD_LCD316   Waveshare ESP32-S3-LCD-3.16, panel 820x320 (LCD_PANEL_W x LCD_PANEL_H): the canvas has the
 //                  panel's aspect, RENDER_H rows (default 320 = native; 240 / 256 / 288 render fewer pixels and
-//                  are upscaled to the panel on push, display_lcd316.cpp). LCD_FILL 0 (default): px params at the
-//                  AMOLED's physical size (a design px = 0.083 mm, the LCD's pitch 0.0912 mm: 0.910 panel px), the
-//                  tubes still the panel's full length, the rows they leave black between them; LCD_FILL 1: scaled
-//                  with the canvas height (4/3 at native), the tubes filling the face as on the AMOLED. The board tag
-//                  (`v`, sim ?res= / LW_RES) says which: lcd316@320 / lcd316@320f.
+//                  are upscaled to the panel on push, display_lcd316.cpp). Tube width per tube: narrow (LCD_FILL_x
+//                  0, the default) = px params at the AMOLED's physical size (a design px = 0.083 mm, the LCD's
+//                  pitch 0.0912 mm: 0.910 panel px), the tube still the panel's full length, the rows it leaves
+//                  black; wide (1) = scaled with the canvas height (4/3 at native), filling the face as on the
+//                  AMOLED. LCD_FILL sets both tubes, LCD_FILL_H / LCD_FILL_M one each. The board tag (`v`, sim
+//                  ?res= / LW_RES) says which: lcd316@320 (both narrow), @320f (both wide), @320fh (hours wide),
+//                  @320fm (minutes wide).
 #pragma once
 
 #define DESIGN_H           240   // canvas rows the params / presets are tuned on
@@ -42,25 +44,38 @@
 #ifndef LCD_FILL
 #define LCD_FILL           0
 #endif
-#if LCD_FILL
-#define PX_SCALE           ((float)PANEL_H / DESIGN_H)
-#define PX_SCALED          (RENDER_H != DESIGN_H)
-#else
-#define PX_SCALE           ((float)(830 * RENDER_H) / (912 * LCD_PANEL_H))   // 0.083 / 0.0912 per panel px, exact ratio
-#define PX_SCALED          1
+#ifndef LCD_FILL_H
+#define LCD_FILL_H         LCD_FILL   // hours tube wide
 #endif
+#ifndef LCD_FILL_M
+#define LCD_FILL_M         LCD_FILL   // minutes tube wide
+#endif
+#define PX_SCALE_WIDE      ((float)PANEL_H / DESIGN_H)
+#define PX_SCALE_NARROW    ((float)(830 * RENDER_H) / (912 * LCD_PANEL_H))   // 0.083 / 0.0912 per panel px, exact ratio
+#define PX_SCALE_H         (LCD_FILL_H ? PX_SCALE_WIDE : PX_SCALE_NARROW)
+#define PX_SCALE_M         (LCD_FILL_M ? PX_SCALE_WIDE : PX_SCALE_NARROW)
+#define PX_SCALED_H        (LCD_FILL_H ? RENDER_H != DESIGN_H : 1)
+#define PX_SCALED_M        (LCD_FILL_M ? RENDER_H != DESIGN_H : 1)
+#define PX_MIXED           (!LCD_FILL_H != !LCD_FILL_M)
 #else
 #define PANEL_W            536
 #define PANEL_H            240
-#define PX_SCALE           1.0f
-#define PX_SCALED          0
+#define PX_SCALE_H         1.0f
+#define PX_SCALE_M         1.0f
+#define PX_SCALED_H        0
+#define PX_SCALED_M        0
+#define PX_MIXED           0
 #endif
-// PX_SCALE: canvas px per design px (1 on the AMOLED); PX_SCALED: it is not 1 (the px params need scaling).
+// PX_SCALE_H / _M: canvas px per design px of the hours / minutes tube (1 on the AMOLED); PX_SCALED_x: it is not 1
+// (that tube's px params need scaling); PX_MIXED: the two differ (each tube runs on its own scaled params).
+#define PX_SCALED          (PX_SCALED_H || PX_SCALED_M)
+#define TUBE_PX_SCALE(i)   (PX_MIXED && (i) ? PX_SCALE_M : PX_SCALE_H)   // tube i (0 = hours); a constant unless PX_MIXED
+#define PX_SCALE_MAX       (PX_SCALE_H > PX_SCALE_M ? PX_SCALE_H : PX_SCALE_M)   // what buffers are sized for
 #define TUBE_LENGTH_PX     PANEL_W   // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).
-#define TUBE_HEIGHT_MAX    ((int)(DESIGN_TUBE_HEIGHT_MAX * PX_SCALE + 0.999f))
-#define TUBE_HEIGHT_PX     ((int)(72 * PX_SCALE))   // ≈ 6 mm at 0.083 mm per design px
+#define TUBE_HEIGHT_MAX    ((int)(DESIGN_TUBE_HEIGHT_MAX * PX_SCALE_MAX + 0.999f))
+#define TUBE_HEIGHT_PX     ((int)(72 * PX_SCALE_MAX))   // ≈ 6 mm at 0.083 mm per design px (the wider tube: test pattern)
 #define HOURS_TUBE_Y       0                            // along the top edge
 #define MINUTES_TUBE_Y     (PANEL_H - TUBE_HEIGHT_PX)   // along the bottom edge
 #define BRIDGE_Y0          TUBE_HEIGHT_PX               // bridge zone between the tubes must stay pure black
@@ -71,10 +86,10 @@
 #define LIQUID_HI_RGB888   0x9FE1CB
 #define BG_RGB888          0x000000
 
-// mm per canvas px for the physical meniscus (tube radius vs capillary length): the AMOLED's pitch per design
-// px, so a scaled bore stays the same bore in mm and the meniscus keeps its shape on every board.
+// mm per canvas px for the physical meniscus (tube radius vs capillary length) of a tube at px scale k: the AMOLED's
+// pitch per design px, so a scaled bore stays the same bore in mm and the meniscus keeps its shape on every board.
 #define DESIGN_MM_PER_PX   0.083f
-#define MM_PER_PX          (DESIGN_MM_PER_PX / PX_SCALE)
+#define MM_PER_PX_AT(k)    (DESIGN_MM_PER_PX / (k))
 
 #define RGB565(r,g,b)      ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 #define LIQUID_RGB565      RGB565(0x5D,0xCA,0xA5)   // 0x5E54

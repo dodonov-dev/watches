@@ -5,22 +5,32 @@
 #include "gen/params_gen.h"
 #include "physics.h"
 
-// Fizz animation state (sim: stepFizz), call at PHYS_HZ.
-void stepFizz(const Params &p, float dt, float along = 0, float across = 0, float agitation = 0);
+// Fizz animation state (sim: stepFizz), call at PHYS_HZ; each tube on its own params (pH hours, pM minutes: boardParams
+// at its px scale).
+void stepFizz(const Params &pH, const Params &pM, float dt, float along = 0, float across = 0, float agitation = 0);
 // One tube's share of stepFizz (idx 0 hours, 1 minutes): the tubes are independent, so they may step at once on two cores.
 void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation);
 // Largest fizz count requested past the fixed pool since boot (0 = everything fitted); main reports it.
 int fizzOverflow();
 // Bytes the fizz size params asked of the mask pool past its boot-time size (0: they fit); bubbles then draw analytically.
 int fizzMaskOverflow();
-// Before rendering both tubes at once (main renderBoth): builds the fizz masks for these params on this core, so neither
-// tube builds them while the other draws. Sequential callers may skip it.
-void render_fizz_prepare(const Params &p);
+// Before rendering both tubes at once (main renderBoth): builds the fizz masks for these params (each tube's) on this
+// core, so neither tube builds them while the other draws. Sequential callers may skip it.
+void render_fizz_prepare(const Params &pH, const Params &pM);
 // Live bubbles of tube idx; foam = how many of them are parked foam, slots = pool slots the per-step loops run over.
 int fizzCounts(int idx, int &foam, int &slots);
-// Tube geometry from params, clamped to the panel and the strip buffer (sim: tubeLayout).
-struct TubeLayout { int H, yH, yM; bool operator!=(const TubeLayout &o) const { return H != o.H || yH != o.yH || yM != o.yM; } };
+// Tube geometry from one tube's params, clamped to the panel and the strip buffer (H: that tube's rows; sim: tubeLayout).
+struct TubeLayout { int H, yH, yM; };
 TubeLayout tubeLayout(const Params &p);
+// Both tubes on the face, each from its own params: hours rows / top from pH, minutes from pM (sim: faceLayout).
+struct FaceLayout {
+  int Hh, Hm, yH, yM;
+  bool operator!=(const FaceLayout &o) const { return Hh != o.Hh || Hm != o.Hm || yH != o.yH || yM != o.yM; }
+};
+inline FaceLayout faceLayout(const Params &pH, const Params &pM) {
+  const TubeLayout h = tubeLayout(pH), m = &pM == &pH ? h : tubeLayout(pM);
+  return {h.H, m.H, h.yH, m.yM};
+}
 // Draw one tube (0 = hours, 1 = minutes) into `strip`: H x PANEL_W RGB565, byte-swapped,
 // representing panel rows yH.. / yM.. . Everything else on the panel stays as is.
 // Allocates the fixed render pools (once, at boot). False = PSRAM allocation failed.

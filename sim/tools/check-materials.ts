@@ -13,7 +13,7 @@ import { DEFAULT_PARAMS, PARAMS_VERSION } from '../src/params';
 import { BODY_ONLY, BODY_OVER_TOLERANCE, RIM_TOLERANCE, coherenceProblem, derive, deriveReport, ownershipIssues, q565, type DeriveProblem, type DeriveReport } from '../src/material/derive';
 import { PARAM_META } from '../src/params';
 import { buildPalette } from '../src/render';
-import { newTube, stepTube } from '../src/physics';
+import { PHYS_DT, newTube, stepTube } from '../src/physics';
 import { rgb565, rgb565to888 } from '../../spec/layout';
 import { MATERIAL_PRESETS, materialPresetFile, physicalPresetFile } from '../src/material/presets';
 import { compositeResidual, displayOffset, enc255, hexRgb, km, opacityOf, paletteChord, preImage, sampleRow, snapT, U_WALL, type KM } from '../src/material/optical';
@@ -627,7 +627,7 @@ for (const f of FIXTURES) {
   tube.fillTarget = 0.5;
   for (let i = 0; i < 250; i++) {
     const t = i / 50;
-    stepTube(tube, { along: 0.8 * Math.sin(2.1 * t), across: 0.5 * Math.cos(1.3 * t), gyroAlong: 60 * Math.sin(5 * t), gyroAcross: 120 * Math.cos(4 * t) }, r.params);
+    stepTube(tube, { along: 0.8 * Math.sin(2.1 * t), across: 0.5 * Math.cos(1.3 * t), gyroAlong: 60 * Math.sin(5 * t), gyroAcross: 120 * Math.cos(4 * t) }, r.params, PHYS_DT, 1);
   }
   for (const [k, v] of Object.entries(tube)) {
     if (typeof v === 'number' && !Number.isFinite(v)) bad.push(`${k} = ${v}`);

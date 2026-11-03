@@ -222,10 +222,10 @@ for (const remaining of [false, true]) {
   const changes = { remaining, surfaceBand: 0, lens: 0, traceAmount: 16 };
   const p = { ...trailingPreset, ...changes };
   const joined = render(`wet-junction-${remaining}`, changes, { filmHome: 1, filmFree: 1 }, trailingPreset, true);
-  const pal = R.buildPalette(p, 0);
+  const pal = R.buildPalette(p, 0), rest = R.capShape(p, 0, 0, 0, 0, 0, 0, 1);   // the static shape at px scale 1 (AMOLED)
   for (const row of [15, 25, 30, 40]) {
-    const left = Math.floor(R.edgeXL(row, 134, 0, p) - 0.5) + 1;
-    const right = Math.ceil(R.edgeX(row, 402, 0, p) - 0.5) - 1;
+    const left = Math.floor(R.edgeXL(row, 134, 0, p, rest) - 0.5) + 1;
+    const right = Math.ceil(R.edgeX(row, 402, 0, p, rest) - 0.5) - 1;
     for (const x of [left, right]) assert.equal(joined[row * 536 + (remaining ? 535 - x : x)], pal.rows[row],
       'liquid/wet-film junction must not leak white background through overlapping alpha ramps');
   }
@@ -237,12 +237,12 @@ for (const remaining of [false, true]) {
   const changes = { remaining, surfaceBand: 0, lens: 0 };
   const p = { ...trailingPreset, ...changes };
   const joined = render(`wet-junction-unsat-${remaining}`, changes, { filmHome: 1, filmFree: 1 }, trailingPreset, true);
-  const pal = R.buildPalette(p, 0);
+  const pal = R.buildPalette(p, 0), rest = R.capShape(p, 0, 0, 0, 0, 0, 0, 1);   // the static shape at px scale 1 (AMOLED)
   for (const row of [15, 25, 30, 40]) {
     const bk = rgb(pal.tubeBackRows[row]), at = (x) => joined[row * 536 + (remaining ? 535 - x : x)];
     const far = (x) => { const c = rgb(at(x)); return Math.abs(c[0] - bk[0]) + Math.abs(c[1] - bk[1]) + Math.abs(c[2] - bk[2]); };
-    const left = Math.floor(R.edgeXL(row, 134, 0, p) - 0.5) + 1;
-    const right = Math.ceil(R.edgeX(row, 402, 0, p) - 0.5) - 1;
+    const left = Math.floor(R.edgeXL(row, 134, 0, p, rest) - 0.5) + 1;
+    const right = Math.ceil(R.edgeX(row, 402, 0, p, rest) - 0.5) - 1;
     for (const [x, out] of [[left, -1], [right, 1]]) {
       let backing = far(x - 3 * out);
       for (let k = 3; k <= 8; k++) backing = Math.min(backing, far(x + k * out));
@@ -351,7 +351,7 @@ for (const [tag, mode] of [['land', {}], ['land-rem', { remaining: true }], ['ve
     const state = { fillTarget, slugPos, angle, acrossTilt: Math.sign(angle) * 0.5, cap: 3 };
     render(`skew-${tag}-${contactAngle}-${column}-${slugPos}-${angle}`, changes, state);
     const mir = mirrored(p), len = columnLen(fillTarget, p), xs = mir ? 536 - len - slugPos : slugPos, xe = xs + len, H = R.tubeLayout(p).H;
-    const cR = R.capShape(p, len, 0, state.acrossTilt, mir ? -3 : 3), cL = R.capShape(p, len, 0, state.acrossTilt, mir ? 3 : -3);
+    const cR = R.capShape(p, len, 0, state.acrossTilt, mir ? -3 : 3, 0, 0, 1), cL = R.capShape(p, len, 0, state.acrossTilt, mir ? 3 : -3, 0, 0, 1);
     const kR = R.capScale(len, cR), kL = R.capScale(len, cL), [tanR, tanL] = R.edgeSkews(angle, H, xe - xs, xs, cR, kR, cL, kL);
     const span = (ry) => R.edgeX(ry, xe, tanR, p, cR, kR) - R.edgeXL(ry, xs, tanL, p, cL, kL), where = JSON.stringify({ tag, ...state, contactAngle });
     assert.ok(tanR * angle >= 0 && tanL * angle <= 0 && (len < 60 || tanL === -tanR), `home end must lean the other way ${where}`);
@@ -370,7 +370,7 @@ for (const contactAngle of [140, 100, 30]) for (const len of [20, 40, 60]) for (
   for (const acrossTilt of [0.75, -0.75]) for (const angle of [4.125, -40]) for (const cap of [0, 6]) for (const slugPos of [4, 100]) {
     const changes = { contactAngle, contactHyst: 15 }, p = { ...base, ...changes }, H = R.tubeLayout(p).H;
     const state = { fillTarget: len / 536, slugPos, fillPos, edgeLight, acrossTilt, angle, cap }, xe = slugPos + len + fillPos;
-    const cR = R.capShape(p, len, edgeLight, acrossTilt, cap), cL = R.capShape(p, len, -edgeLight, acrossTilt, -cap);
+    const cR = R.capShape(p, len, edgeLight, acrossTilt, cap, 0, 0, 1), cL = R.capShape(p, len, -edgeLight, acrossTilt, -cap, 0, 0, 1);
     const kR = R.capScale(len, cR), kL = R.capScale(len, cL), [tanR, tanL] = R.edgeSkews(angle, H, xe - slugPos, slugPos, cR, kR, cL, kL);
     const tanA = Math.tan(angle * Math.PI / 180), off = Math.min(1, slugPos / 8);
     for (let ry = 0; ry < H; ry++) {

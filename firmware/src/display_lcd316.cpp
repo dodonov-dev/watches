@@ -211,7 +211,7 @@ static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int scanSrc = FRAME_SRC, readySrc = -1;
 static int backSet = 0;                       // the set display_next_strips handed out (task side)
 static uint8_t pushed = 0;                    // bit i: strip i of backSet pushed
-static int16_t pushY0[2] = {0, 0}, pushRows = 0;
+static int16_t pushY0[2] = {0, 0}, pushRows[2] = {0, 0};   // per strip: the tubes may differ in width
 static const int16_t *pushMap[2] = {nullptr, nullptr};   // their lens row maps
 static const uint16_t *frameSrc = nullptr;    // canvas behind srcs[FRAME_SRC]
 static volatile uint32_t fillCycles = 0;      // CPU cycles spent in the fill ISR (display_busy_cycles)
@@ -289,14 +289,14 @@ void display_next_strips(uint16_t *s[2]) {
 void display_push_strip_async(const uint16_t *buf, int y0, int rows, const int16_t *rowMap) {
   const int k = buf == strips[backSet][0] ? 0 : buf == strips[backSet][1] ? 1 : -1;
   if (k < 0) return;
-  pushY0[k] = (int16_t)y0; pushRows = (int16_t)rows; pushMap[k] = rowMap; pushed |= 1 << k;
+  pushY0[k] = (int16_t)y0; pushRows[k] = (int16_t)rows; pushMap[k] = rowMap; pushed |= 1 << k;
   if (pushed != 3) return;
   Src &s = srcs[backSet];   // neither scanned nor ready: the ISR does not read it
   for (int b = 0; b < LCD_H_RES; b++) {
     const int y = rowOf[b];
     s.row[b] = nullptr;
     for (int t = 0; t < 2; t++)
-      if (y >= pushY0[t] && y < pushY0[t] + pushRows)
+      if (y >= pushY0[t] && y < pushY0[t] + pushRows[t])
         s.row[b] = strips[backSet][t] + (size_t)(pushMap[t] ? pushMap[t][y - pushY0[t]] : y - pushY0[t]) * PANEL_W;
   }
   finishSrc(s);

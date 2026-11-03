@@ -20,6 +20,8 @@ current side renders through the tiled band loop (-DTILE_RENDER=1).
 import argparse, glob, json, os, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import boardtag
 
 ROOT = Path(__file__).resolve().parents[2]
 # Built-in scenes on PRESET_DEFAULT (no preset spring's slug slides it dry in the sequence): a spring at the home end
@@ -63,19 +65,19 @@ static bool setParam(Params &p, const char *name, const char *val) {   // main.c
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
-  Params design = PRESET_DEFAULT, p; TubeState h, m; uint32_t gen = 1;
+  Params design = PRESET_DEFAULT; TubeState h, m; uint32_t gen = 1;
   char line[256];
   while (fgets(line, sizeof line, stdin)) {
     line[strcspn(line, "\r\n")] = 0;
     char *eq = strchr(line, '='); if (!eq) return 4;
     *eq = 0; if (!setParam(design, line, eq + 1)) fprintf(stderr, "unknown param %s\n", line);
   }
-  boardParams(design, p);
+  Params pH, pM; boardParams(design, pH, TUBE_PX_SCALE(0)); boardParams(design, pM, TUBE_PX_SCALE(1));   // each tube at its px scale
   uint16_t *const s[2] = {strip[0], strip[1]};
-  const int words = tubeLayout(p).H * PANEL_W;
-  seqRun(h, m, p, gen, s, [&](int frame, uint16_t *const *st) {
+  const FaceLayout lay = faceLayout(pH, pM); const int wordsH = lay.Hh * PANEL_W, wordsM = lay.Hm * PANEL_W;
+  seqRun(h, m, pH, pM, gen, s, [&](int frame, uint16_t *const *st) {
     int fh, sh, fm, sm; const int lh = fizzCounts(0, fh, sh), lm = fizzCounts(1, fm, sm);
-    printf("SEQ %d %08x %08x fizz %d/%d %d/%d state %08x %08x\n", frame, seqHash(st[0], words), seqHash(st[1], words), lh, fh, lm, fm,
+    printf("SEQ %d %08x %08x fizz %d/%d %d/%d state %08x %08x\n", frame, seqHash(st[0], wordsH), seqHash(st[1], wordsM), lh, fh, lm, fm,
            fizzHash(0), fizzHash(1));
   });
   return 0;
@@ -98,7 +100,7 @@ def main():
     ap.add_argument('--reference', required=True, type=Path)
     ap.add_argument('--fma', action='store_true', help='-mfma -ffp-contract=fast on both sides (fused multiply-add like the board)')
     ap.add_argument('--board', default='amoled191', choices=('amoled191', 'lcd316'))
-    ap.add_argument('--res', default='320', help='lcd316 canvas rows (320f = LCD_FILL)')
+    ap.add_argument('--res', default='320', help='lcd316 res tag: rows + tube widths (320 / 320f / 320fh / 320fm, tools/boardtag.py)')
     ap.add_argument('--tiles', action='store_true', help='current side through the tiled band loop (-DTILE_RENDER=1)')
     ap.add_argument('--pixels-only', action='store_true', help='compare strips and counts, not the fizz state (struct Fizz changed on purpose)')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
@@ -121,7 +123,7 @@ def main():
                                           'inline uint32_t esp_random() { static uint32_t s = 721; s = s * 1664525u + 1013904223u; return s; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
         fp = ['-mfma', '-ffp-contract=fast'] if a.fma else ['-ffp-contract=off']
-        board = [f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []
+        board = ['-DBOARD_LCD316', *boardtag.res_flags(a.res)] if lcd else []
         sides = [('reference', reference), ('current', ROOT / 'firmware/src/render.cpp')]
         builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-fno-strict-aliasing', *fp, *board,   # fizzHash reads floats as uint16_t
                                     *(['-DTILE_RENDER=1'] if a.tiles and name == 'current' else []),

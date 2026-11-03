@@ -821,12 +821,12 @@ static const int SPRITE_FONT = NUM_FONTS;
 // heap traffic on param changes. Internal RAM cannot take it: the two DMA strips + BT controller leave
 // <60 KB there. GLYPH_POOL_PX is sized for the sliders' worst case (sim PARAM_META): 10 glyphs of at most
 // bw x bh = (GLYPH_EM_W x GLYPH_EM_H) * DIGIT_SCALE_MAX texels, each grown by DIGIT_SHADOW_OFFSET_MAX on the right and
-// below, two planes (behind air / behind liquid) when the shadow is baked in; scale and offset are design px, so a board's PX_SCALE grows both sides (rounded up).
+// below, two planes (behind air / behind liquid) when the shadow is baked in; scale and offset are design px, so the wider tube's px scale (PX_SCALE_MAX) grows both sides (rounded up).
 // A set that does not fit (values pushed past the sliders over serial) drops the glyphs past the budget
 // (visible, not silent).
 #define GLYPH_CEIL(v) ((int)(v) + ((float)(int)(v) < (v)))
-#define GLYPH_OFF_PX GLYPH_CEIL(DIGIT_SHADOW_OFFSET_MAX * PX_SCALE)
-#define GLYPH_POOL_PX (10 * 2 * (GLYPH_CEIL(GLYPH_EM_W * DIGIT_SCALE_MAX * PX_SCALE) + GLYPH_OFF_PX) * (GLYPH_CEIL(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE) + GLYPH_OFF_PX))
+#define GLYPH_OFF_PX GLYPH_CEIL(DIGIT_SHADOW_OFFSET_MAX * PX_SCALE_MAX)
+#define GLYPH_POOL_PX (10 * 2 * (GLYPH_CEIL(GLYPH_EM_W * DIGIT_SCALE_MAX * PX_SCALE_MAX) + GLYPH_OFF_PX) * (GLYPH_CEIL(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE_MAX) + GLYPH_OFF_PX))
 #define GLYPH_POOL_CAPS MALLOC_CAP_SPIRAM
 // w x h texels (body plus the baked shadow margin); `adv` is the body width the layout advances by.
 // Vertical watch (ScaledSet::rot): the planes are stored as the panel shows them — the glyph turned a quarter
@@ -841,7 +841,7 @@ struct ScaledGlyph { int w, h, adv; uint16_t *c, *cw; uint8_t *a, *aw; const uin
 // (or wider than 255 columns) over serial draws without spans (full rows), never past the table.
 #define GLYPH_BH_CAP 96   // tallest glyph drawn, rows (Labels::rows); the slider's worst case fits, more over serial is cut
 #define GLYPH_SPAN_ROWS 128
-static_assert(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE <= GLYPH_BH_CAP && GLYPH_BH_CAP + GLYPH_OFF_PX <= GLYPH_SPAN_ROWS, "glyph caps vs the sliders");
+static_assert(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE_MAX <= GLYPH_BH_CAP && GLYPH_BH_CAP + GLYPH_OFF_PX <= GLYPH_SPAN_ROWS, "glyph caps vs the sliders");
 #define GLYPH_SPAN_BYTES (10 * 2 * GLYPH_SPAN_ROWS * 2)
 struct ScaledSet {
   int sheet = -1, bw = 0, bh = 0; float brightness = -1, tintAmt = -1, tone = 0; uint32_t tint = 0;
@@ -1033,7 +1033,7 @@ struct Fizz { float x, y, v, life, z; };   // z: depth in the bore (0 front wall
 #define FOAM_POP_T 0.3f
 #define FOAM_SLIDE 0.5f
 #define FOAM_FOLLOW 6.0f
-#define FOAM_CATCH (2.0f * PX_SCALE)
+#define FOAM_CATCH_AT(i) (2.0f * TUBE_PX_SCALE(i))   // 2 design px at tube i's px scale (sim foamCatch)
 #define FOAM_VEIL 0.7f
 #define BLICK_H 0.18f   // surface blick tent half-height / tube height (sim BLICK_H)
 #define FOAM_RELAX 3   // packing sweeps per step
@@ -2694,7 +2694,7 @@ struct alignas(64) BubblePlan {
 // and |dy| in steps of 1 / FIZZ_MDY px (a row's distance from the centre, squashed, rounded to one), each |dy| row with
 // its widest covered step. A class bubble's row takes its coverage by index; the core and the pinpoint stay per bubble
 // (they follow the light), decided per row by their chords. In one pool per tube (PSRAM, render_init: small enough to
-// stay in the cache), shared by both tubes (fizzMasks): internal RAM while they fit FIZZ_MASK_INTL (user-fav and most
+// stay in the cache), shared by both tubes (fizzMasks; one set per tube when their widths differ): internal RAM while they fit FIZZ_MASK_INTL (user-fav and most
 // presets: a PSRAM table misses the cache the bands share, ~1 us a bubble row), else a PSRAM pool sized at boot for the
 // sliders' largest bubbles; params past those draw every bubble analytically (fizzMaskOverflow).
 struct FizzClass {
@@ -3119,6 +3119,7 @@ FIZZ_IRAM static bool touchesFoam(const Tube &t, const FoamWork &w, const Fizz &
 // inside the home edge (the side the flow comes from). See sim stepFizz respawn.
 static void __attribute__((noinline)) fizzRespawnX(const Tube &t, const Params &p, Fizz &f, int at) {   // births / respawns: rare, flash
   const float r = fizzR(p, f.v);
+  const float FOAM_CATCH = FOAM_CATCH_AT(t.idx);
   const float lo = -discFit(t.fizzSurfL, t.H, f.y, r, -1) + FOAM_CATCH, hi = discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH;
   f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + frand() * (hi - lo) : at > 0 ? lo : hi;
 }
@@ -3130,6 +3131,7 @@ static void __attribute__((noinline)) springSpawn(const Tube &t, const Params &p
   f.v = fizzV(); f.z = fizzZ(); f.life = 0;
   const float r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = t.H - lo;
   f.y = hi <= lo ? t.H / 2.0f : clampf(lo + p.fizzSourceY * (hi - lo) + (2 * frand() - 1) * s, lo, hi);
+  const float FOAM_CATCH = FOAM_CATCH_AT(t.idx);
   const float xl = -discFit(t.fizzSurfL, t.H, f.y, r, -1) + FOAM_CATCH, xh = discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH;
   f.x = xh <= xl ? (xl + xh) / 2 : clampf(xl + p.fizzSourceX * (xh - xl) - t.fizzShift + (2 * frand() - 1) * s, xl, xh);
 }
@@ -3305,6 +3307,7 @@ FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, flo
   const float letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
   {
     Tube &t = tubes[idx & 1]; const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
+    const float FOAM_CATCH = FOAM_CATCH_AT(idx & 1);
     if (len <= 0) return;   // no liquid drawn yet: no surfaces
     FZ_T0(sp0);
     // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
@@ -3435,8 +3438,8 @@ FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, flo
   }
   FS_ADD(FS_CYC, st0);
 }
-void stepFizz(const Params &p, float dt, float along, float across, float agitation) {
-  stepFizzTube(0, p, dt, along, across, agitation); stepFizzTube(1, p, dt, along, across, agitation);
+void stepFizz(const Params &pH, const Params &pM, float dt, float along, float across, float agitation) {
+  stepFizzTube(0, pH, dt, along, across, agitation); stepFizzTube(1, pM, dt, along, across, agitation);
 }
 
 // Magnification for a bubble of radius r at float row y: mean of the row table over the rows the
@@ -3511,13 +3514,13 @@ static float lensRow(float d, const Params &p) {
 // (sim capScale).
 #define MENISCUS_SAG_K 1.0f
 CapShape Tube::capShape(const Params &p, float len, float tilt, float side, float cap, float pin, float lineV) const {
-  const ContactLeads cl = contactLeads(p, len, tilt);
+  const ContactLeads cl = contactLeads(p, len, tilt, MM_PER_PX_AT(TUBE_PX_SCALE(idx)));
   const float R = cl.R, rad = (float)M_PI / 180, PI = (float)M_PI;
   // the held ring's lead inside the band, back to its angle (lead = R·tan(pi/4 - theta/2))
   float th = PI / 2 - 2 * atanf(clampf(cl.rest - pin, cl.adv, cl.rec) / R);
-  float dyn = fmx(0, p.contactDyn) * rad, g = dyn * dyn * dyn / FILM_FULL_PX_S;
+  float dyn = fmx(0, p.contactDyn) * rad, g = dyn * dyn * dyn / FILM_FULL_PX_S_AT(TUBE_PX_SCALE(idx));
   th = cbrtf(clampf(th * th * th + g * lineV, 0, PI * PI * PI));
-  float lc = fmx(0.1f, p.capLength), Rmm = R * MM_PER_PX;
+  float lc = fmx(0.1f, p.capLength), Rmm = R * MM_PER_PX_AT(TUBE_PX_SCALE(idx));
   CapShape c;
   c.cosT = cosf(th);
   float sinT = sinf(th);
@@ -3716,7 +3719,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     invN = N > 0 ? 1.0f / N : 0.0f; invBW = 1.0f / (softW > 1 ? softW : 1);
     // film thickness per edge (eta * follower) and its visibility, fading out with the follower from 0.2 to
     // the 0.02 gate (see sim: a tangent row sees a vanishing film at full chord)
-    const float eta = filmEta(p); etaR = bandR ? eta * s.filmFree : 0.0f; etaL = bandL ? eta * s.filmHome : 0.0f;
+    const float filmFull = FILM_FULL_PX_S_AT(TUBE_PX_SCALE(idx)), eta = filmEta(p, filmFull, filmFull); etaR = bandR ? eta * s.filmFree : 0.0f; etaL = bandL ? eta * s.filmHome : 0.0f;
     visR = bandR ? ease((0.2f - s.filmFree) * (1.0f / 0.18f)) : 0.0f; visL = bandL ? ease((0.2f - s.filmHome) * (1.0f / 0.18f)) : 0.0f;
     // Columns that may receive residue or band: the occupied residue range (physics keeps
     // [traceLo, traceHi) tight) mirrored into the render frame, plus each band's reach over all rows.
@@ -3777,8 +3780,9 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     // its film — liquid colour, no shoulder or rim; instantaneous edge speed, so both are back once the
     // line stops (see sim)
     const float recede = mir ? 1 : -1;
-    pullR = clampf(2 * recede * (s.fillVel + s.slugVel) / FILM_FULL_PX_S, 0, 1);
-    pullL = p.freeLiquid ? clampf(-2 * recede * s.slugVel / FILM_FULL_PX_S, 0, 1) : 0.0f;
+    const float filmFull = FILM_FULL_PX_S_AT(TUBE_PX_SCALE(idx));
+    pullR = clampf(2 * recede * (s.fillVel + s.slugVel) / filmFull, 0, 1);
+    pullL = p.freeLiquid ? clampf(-2 * recede * s.slugVel / filmFull, 0, 1) : 0.0f;
     veilA = FOAM_VEIL * strokeA * fill;
     const float yc = (H - 1) / 2.0f;
     blickY = yc - yc * sinf(s.light * (float)M_PI / 180); blickInvH = 1 / fmx(2, BLICK_H * H);
@@ -4404,6 +4408,9 @@ static void buildFizzClasses(FizzLook &fl, const Params &p) {
 // takes them only while they match its params, and one that finds the other building draws analytically that frame
 // (the two cores render at once; both tubes have the same params, so neither is drawing from them then).
 // ready: release / acquire, so a tube that sees them ready for its params sees every byte of them.
+// Tubes of different widths (PX_MIXED) have different bubble sizes: each its own set. The internal pool stays one
+// FIZZ_MASK_INTL (the LCD has ~4 KB internal heap left with BLE): the wider tube's set (the slower tube) takes it,
+// the other one masks from its PSRAM pool only.
 #ifndef MALLOC_CAP_INTERNAL   // host builds
 #define MALLOC_CAP_INTERNAL 0
 #define MALLOC_CAP_8BIT 0
@@ -4413,13 +4420,16 @@ static void buildFizzClasses(FizzLook &fl, const Params &p) {
 #else
 #define FIZZ_MASK_INTL 0      // the AMOLED keeps its internal RAM
 #endif
-static struct {
+#define FIZZ_MASK_SETS (PX_MIXED ? 2 : 1)
+struct FizzMaskSet {
   std::atomic<bool> ready{false}, building{false};
   float key[2] = {0, 0};                      // fizzSize, fizzSizeVar they are built for
-  uint8_t *intl = nullptr, *ps = nullptr;     // the internal pool (FIZZ_MASK_INTL), the PSRAM one (fizzMaskWorst), render_init
-  int psCap = 0;
+  uint8_t *intl = nullptr, *ps = nullptr;     // the internal pool (intlCap), the PSRAM one (fizzMaskWorst), render_init
+  int intlCap = 0, psCap = 0;
   const uint8_t *pool = nullptr;              // the pool they are in
-} fizzMasks;
+};
+static FizzMaskSet fizzMasks[FIZZ_MASK_SETS];
+static FizzMaskSet &maskSet(int idx) { return fizzMasks[FIZZ_MASK_SETS > 1 ? idx & 1 : 0]; }   // the set tube idx masks from
 static void writeFizzMasks(const FizzLook &fl, uint8_t *pool) {
   for (int k = 0; k < FIZZ_SIZES; k++) {
       const FizzClass &c = fl.k[k];
@@ -4437,9 +4447,9 @@ static void writeFizzMasks(const FizzLook &fl, uint8_t *pool) {
       }
   }
 }
-// This frame's masks for a tube (planFizz, before its bubbles are planned).
-static void takeFizzMasks(FizzLook &fl, const Params &p) {
-  const bool intl = fl.need <= FIZZ_MASK_INTL && fizzMasks.intl, fits = fl.sane && (intl || fl.need <= fizzMasks.psCap);
+// This frame's masks for a tube (planFizz, before its bubbles are planned), from its set.
+static void takeFizzMasks(FizzMaskSet &fizzMasks, FizzLook &fl, const Params &p) {
+  const bool intl = fl.need <= fizzMasks.intlCap && fizzMasks.intl, fits = fl.sane && (intl || fl.need <= fizzMasks.psCap);
   if (!fits) { atomicMax(fizzMaskPeak, fl.sane ? fl.need : INT_MAX); fl.masks = false; return; }
   auto match = [&]() { return fizzMasks.ready.load(std::memory_order_acquire) && fizzMasks.key[0] == p.fizzSize && fizzMasks.key[1] == p.fizzSizeVar; };
   bool idle = false;
@@ -4457,17 +4467,20 @@ static void takeFizzMasks(FizzLook &fl, const Params &p) {
 }
 // The live loop renders both tubes at once: it prepares the masks here first, on one core (main renderBoth), so no
 // tube builds them while the other draws; sequential callers (host checks, `X`) may skip it (planFizz builds them).
-void render_fizz_prepare(const Params &p) {
-  if (!p.fizz) return;
-  FizzLook &fl = *tubes[0].look;
-  if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
-  takeFizzMasks(fl, p);
+void render_fizz_prepare(const Params &pH, const Params &pM) {
+  for (int i = 0; i < FIZZ_MASK_SETS; i++) {   // one set: the hours tube's look builds the shared masks
+    const Params &p = i ? pM : pH;
+    if (!p.fizz) continue;
+    FizzLook &fl = *tubes[i].look;
+    if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
+    takeFizzMasks(fizzMasks[i], fl, p);
+  }
 }
 // The mask pool's bytes for the sliders' largest bubbles (fizzSize 16 design px, fizzSizeVar 0..1): per class the
 // bigger of its sizes at spread 0 and 1 (a class's radius is linear in the spread and its mask grows with the radius),
 // so no slider setting needs more (render_init). +0.5 px: the board's px scaling may round.
 static int fizzMaskWorst() {
-  const float size = 16 * PX_SCALE + 0.5f; int worst = 0;
+  const float size = 16 * PX_SCALE_MAX + 0.5f; int worst = 0;
   for (int k = 0; k < FIZZ_SIZES; k++) {
     int xw, dl, most = 0;
     for (int e = 0; e <= 1; e++) { const int b = fizzMaskGeom(size / 2 * (1 + (0.5f + (k + 0.5f) * (1.0f / FIZZ_SIZES) - 1) * e), xw, dl); if (b > most) most = b; }
@@ -4653,7 +4666,7 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
   fzVeilA = ff.veilA; fzPullR = ff.pullR; fzPullL = ff.pullL; fzBlickK = p.fizzBlick; fzXsI = ff.xsI; fzL = ff.L; fzMir = ff.mir;
   FizzLook &fl = *look;
   if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
-  takeFizzMasks(fl, p);
+  takeFizzMasks(maskSet(idx), fl, p);
   for (int l = 0; l < FIZZ_DEPTHS; l++) {   // a depth level's colours: as planBubble / bubbleRows mixed them per bubble (sim cRimD / cBlickD)
     const float z = (l + 0.5f) * (1.0f / FIZZ_DEPTHS), depthK = 1 - p.fizzDepth * z * (1 - p.liquidTransparency);   // fizzZ's values
     const int depthT = depthK < 1 ? (int)(depthK * 256 + 0.5f) : 256;
@@ -4697,13 +4710,20 @@ void Tube::fizzBand(int r0, int r1) {
 
 bool render_init() {
   fizzSeed();
-  fizzMasks.psCap = fizzMaskWorst();   // the sliders' largest bubbles (~55 KB on the LCD)
-  fizzMasks.ps = (uint8_t *)heap_caps_malloc(fizzMasks.psCap, MALLOC_CAP_SPIRAM);
-  if (FIZZ_MASK_INTL) fizzMasks.intl = (uint8_t *)heap_caps_malloc(FIZZ_MASK_INTL, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  bool masksOk = true;
+  for (int i = 0; i < FIZZ_MASK_SETS; i++) {
+    FizzMaskSet &m = fizzMasks[i];
+    m.psCap = fizzMaskWorst();   // the sliders' largest bubbles (~55 KB on the LCD)
+    m.ps = (uint8_t *)heap_caps_malloc(m.psCap, MALLOC_CAP_SPIRAM);
+    m.intlCap = FIZZ_MASK_SETS == 1 || TUBE_PX_SCALE(i) == PX_SCALE_MAX ? FIZZ_MASK_INTL : 0;   // mixed widths: the wider tube's
+    if (m.intlCap) m.intl = (uint8_t *)heap_caps_malloc(m.intlCap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    masksOk = masksOk && m.ps && (!m.intlCap || m.intl);
+  }
   EXP565 = (uint32_t *)heap_caps_malloc(512 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   buildLuts();
-  bool ok = EXP565 != nullptr && fizzMasks.ps && (!FIZZ_MASK_INTL || fizzMasks.intl);
+  bool ok = EXP565 != nullptr && masksOk;
   for (int i = 0; i < 2; i++) {
+    tubes[i].idx = i;   // the tube's px scale (TUBE_PX_SCALE) before its first render: stepFizzTube reads it
     tubes[i].set.poolC = (uint16_t *)heap_caps_malloc(GLYPH_POOL_PX * 2, GLYPH_POOL_CAPS);
     tubes[i].set.poolA = (uint8_t *)heap_caps_malloc(GLYPH_POOL_PX, GLYPH_POOL_CAPS);
     tubes[i].set.poolS = (uint8_t *)heap_caps_malloc(GLYPH_SPAN_BYTES, MALLOC_CAP_SPIRAM);

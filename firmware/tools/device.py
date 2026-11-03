@@ -8,12 +8,14 @@
     d.set('inputGain', 0)        # volatile `p~` write (never autosaved); `p` on firmware without `p~`
 
 CLI:  tools/device.py [--port P] CMD [CMD ...]     e.g. tools/device.py f s 'p?'
+      tools/device.py --find-port                  the port the tools would use (flash.sh, e2e.sh); exit 1 if none / several
 
 On WSL the board normally stays on the Windows side (Web Serial in the browser keeps working, see
 flash-win.sh); we then run this very file under python.exe as a persistent bridge (--bridge) talking
 a line protocol over its stdin/stdout. The port is opened with DTR/RTS low so the ESP32-S3 USB-JTAG
 does not reset the board (both lines held high; pyserial's default clears DTR before RTS = reset). Port detection: $LW_PORT, /dev/ttyACM0 if present, else the first
-Espressif (VID 303A) COM port on Windows.
+Espressif (VID 303A) COM port on Windows; with several attached (either side, together), LW_PORT is required
+(both boards share the USB IDs: "the first" would be any of them).
 """
 import argparse, glob, json, os, subprocess, sys, time
 
@@ -25,13 +27,14 @@ def is_wsl():
 def find_port():
     p = os.environ.get('LW_PORT')
     if p: return p
-    acm = sorted(glob.glob('/dev/ttyACM*'))
-    if acm: return acm[0]
-    if is_wsl():
-        ps = ("(Get-PnpDevice -Class Ports -PresentOnly | Where-Object InstanceId -like 'USB\\VID_303A*' "
-              "| Select-Object -First 1).FriendlyName -replace '.*\\((COM\\d+)\\).*','$1'")
-        out = subprocess.run(['powershell.exe', '-NoProfile', '-c', ps], capture_output=True, text=True).stdout.strip()
-        if out.startswith('COM'): return out
+    found = sorted(glob.glob('/dev/ttyACM*'))   # attached to Linux (usbipd)
+    if is_wsl():                                # and the Windows side's Espressif ports
+        ps = ("Get-PnpDevice -Class Ports -PresentOnly | Where-Object InstanceId -like 'USB\\VID_303A*' "
+              "| ForEach-Object { $_.FriendlyName -replace '.*\\((COM\\d+)\\).*','$1' }")
+        out = subprocess.run(['powershell.exe', '-NoProfile', '-c', ps], capture_output=True, text=True).stdout.split()
+        found += [c for c in out if c.startswith('COM')]
+    if len(found) > 1: raise SystemExit(f'several boards attached ({" ".join(found)}): set LW_PORT')
+    if found: return found[0]
     raise SystemExit('no board found: attach it (usbipd) or set LW_PORT=COMx')
 
 def open_serial(port):
@@ -159,6 +162,8 @@ def _bridge(port):
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[1] == '--bridge':
         _bridge(sys.argv[2]); sys.exit(0)
+    if sys.argv[1:] == ['--find-port']:
+        print(find_port()); sys.exit(0)
     ap = argparse.ArgumentParser(); ap.add_argument('--port'); ap.add_argument('--end', default='\n')
     ap.add_argument('--timeout', type=float, default=10); ap.add_argument('cmd', nargs='+')
     a = ap.parse_args()

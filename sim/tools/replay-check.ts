@@ -10,13 +10,15 @@
 //       && node /tmp/replay-check/tools/replay-check.js
 // (compiled outside sim/ so package.json "type":"module" doesn't bite the CJS output)
 import {
-  ANGLE_HARD_MAX_DEG, ANGLE_VERTICAL_MAX_DEG, CAP_DYN_MAX_PX, FILL_SLOSH_MAX_PX, FILM_FULL_PX_S, GravityNorm, ImuFilter, PHYS_DT,
+  ANGLE_HARD_MAX_DEG, ANGLE_VERTICAL_MAX_DEG, capDynMaxPx, fillSloshMaxPx, filmFullPxS, GravityNorm, ImuFilter, PHYS_DT,
   columnLen, contactLeads, drainTrace, mirrored, newTube, stepTube, type TiltInput,
 } from '../src/physics';
 import { DEFAULT_PARAMS, PRESETS, migrateParams, presetParams } from '../src/params';
 
-// Constants copied from spec/layout.ts + render.ts edgeX so this file needs no '@spec' alias.
-const TUBE_LENGTH_PX = 536, TUBE_HEIGHT_PX = 72;
+// Constants copied from spec/layout.ts + render.ts edgeX so this file needs no '@spec' alias. The AMOLED (npm run
+// check:imu sets LW_BOARD=amoled191): px scale K = 1.
+const TUBE_LENGTH_PX = 536, TUBE_HEIGHT_PX = 72, K = 1;
+const FILL_SLOSH_MAX_PX = fillSloshMaxPx(K), CAP_DYN_MAX_PX = capDynMaxPx(K), FILM_FULL_PX_S = filmFullPxS(K);
 // axis map (spec/layout.ts): along = -ay, across = -ax, gyroAcross = gx
 const mapSample = (s: number[], d: number): TiltInput =>
   ({ along: -s[1] / d, across: -s[0] / d, gyroAlong: s[4], gyroAcross: s[3] });
@@ -98,7 +100,7 @@ for (const [name, samples] of scenarios) {
     const inp = filt.step(mapSample(s, d), p);
     maxIn = Math.max(maxIn, Math.abs(inp.along), Math.abs(inp.across));
     for (const tube of tubes) {
-      stepTube(tube, inp, p);
+      stepTube(tube, inp, p, PHYS_DT, K);
       if (!(isFinite(tube.fillPos) && isFinite(tube.angle) && isFinite(tube.light) && isFinite(tube.edgeLight)
         && isFinite(tube.cap) && isFinite(tube.filmFree) && isFinite(tube.slugPos) && isFinite(tube.reading)
         && isFinite(tube.pinFree) && isFinite(tube.pinHome) && isFinite(tube.lineVFree) && isFinite(tube.lineVHome)))
@@ -143,7 +145,7 @@ for (const [name, samples] of scenarios) {
     // velocity switch flipped it across the band (~9 px here) within two ticks; a line creeping at its
     // θA edge under tremor (Cox–Voinov, honey-grade contactDyn 90) moves it < 0.1 px per tick
     const lead = (): number => {
-      const c = contactLeads(pl, columnLen(tube.fillTarget, pl), tube.edgeLight), R = c.R;
+      const c = contactLeads(pl, columnLen(tube.fillTarget, pl), tube.edgeLight, MM_PER_PX), R = c.R;
       const g = (contactDyn * Math.PI / 180) ** 3 / FILM_FULL_PX_S;
       const th0 = Math.PI / 2 - 2 * Math.atan(Math.max(c.adv, Math.min(c.rec, c.rest - tube.pinFree)) / R);
       const th = Math.cbrt(Math.max(0, Math.min(Math.PI ** 3, th0 ** 3 + g * tube.lineVFree)));
@@ -151,7 +153,7 @@ for (const [name, samples] of scenarios) {
     };
     let maxV = 0, maxStep = 0, prev = NaN;
     samples.forEach((s, i) => {
-      stepTube(tube, filt.step(mapSample(s, norm.update(Math.hypot(s[0], s[1], s[2]))), pl), pl);
+      stepTube(tube, filt.step(mapSample(s, norm.update(Math.hypot(s[0], s[1], s[2]))), pl), pl, PHYS_DT, K);
       maxV = Math.max(maxV, Math.abs(tube.lineVFree), Math.abs(tube.lineVHome));
       const h = lead();
       if (i > 50) maxStep = Math.max(maxStep, Math.abs(h - prev));
@@ -174,7 +176,7 @@ for (const [name, samples] of scenarios) {
     let bad = false;
     for (const s of samples) {
       const inp = filt.step(mapSample(s, norm.update(Math.hypot(s[0], s[1], s[2]))), pf);
-      stepTube(tube, inp, pf);
+      stepTube(tube, inp, pf, PHYS_DT, K);
       const travel = TUBE_LENGTH_PX - columnLen(tube.fillTarget, pf);
       if (!(isFinite(tube.slugPos) && tube.slugPos >= 0 && tube.slugPos <= travel + 1e-6)) { bad = true; break; }
     }
@@ -189,7 +191,7 @@ for (const [name, samples] of scenarios) {
     const filt = new ImuFilter();
     const step = (along: number, across: number, n: number) => {
       for (let i = 0; i < n; i++) {
-        stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp);
+        stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp, PHYS_DT, K);
         if (!Number.isFinite(tube.slugPos) || tube.slugPos < 0 || tube.slugPos > travel + 1e-6)
           throw new Error(`automatic liquid escaped: ${tube.slugPos}, travel ${travel}`);
       }
@@ -216,7 +218,7 @@ for (const [name, samples] of scenarios) {
     const tube = newTube(); tube.fillTarget = 0.3;
     const travel = TUBE_LENGTH_PX - columnLen(0.3, pp), filt = new ImuFilter();
     const tag = `vertical (free=${freeLiquid}, remaining=${remaining}, viscous=${viscous})`;
-    const step = (along: number, across: number, n: number) => { for (let i = 0; i < n; i++) stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp); };
+    const step = (along: number, across: number, n: number) => { for (let i = 0; i < n; i++) stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp, PHYS_DT, K); };
     const still = () => Math.abs(tube.slugPos) < 0.01 && tube.slugVel === 0 && tube.filmHome < 0.01 && Math.abs(tube.fillPos) < 0.01;
     step(-1, 0, 500);
     if (tube.reading < 0.99 || !still() || Math.abs(tube.angle) > 0.5 || Math.abs(tube.edgeLight) > 0.01)
@@ -257,7 +259,7 @@ for (const [name, samples] of scenarios) {
       const g = Math.sin(degrees * Math.PI / 180);
       const raw = { along: axis === 'across' ? 0 : g / (axis === 'diagonal' ? Math.SQRT2 : 1),
         across: axis === 'along' ? 0 : g / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0 };
-      for (let i = 0; i < 250; i++) stepTube(tube, filt.step(raw, pp), pp);
+      for (let i = 0; i < 250; i++) stepTube(tube, filt.step(raw, pp), pp, PHYS_DT, K);
       if (tube.reading > prev + 1e-6) fail('automatic liquid: release is not monotonic');
       if (degrees <= 20 && tube.reading < 0.999) fail('automatic liquid: gentle tilt released');
       if (degrees === 35 && Math.abs(tube.reading - 0.5) > 0.001) fail('automatic liquid: midpoint depends on axis/gain');
@@ -276,7 +278,7 @@ for (const [name, samples] of scenarios) {
     const parks = pp.freeHomeK > 0;
     tube.slugPos = home + away * Math.min(200, travel);
     const along = (parks ? 0.2 : -0.9) * away * pp.inputGain, n = parks ? 250 : 500;
-    for (let i = 0; i < n; i++) stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp);
+    for (let i = 0; i < n; i++) stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
     if (!(Math.abs(tube.slugPos - home) <= 0.1) || !(Math.abs(tube.slugVel) <= 0.1))
       fail(`${e.id}: ${parks ? 'reading did not settle' : 'free slug did not come to rest at home'} (${tube.slugPos} @ ${tube.slugVel}, home ${home})`);
   }
@@ -285,7 +287,7 @@ for (const [name, samples] of scenarios) {
     fail('automatic liquid: legacy gesture settings did not migrate');
   for (const [start, end] of [[50, 20], [90, 90], [0, 0]]) {
     const pp = { ...pf, readTiltStart: start, readTiltEnd: end }, tube = newTube();
-    for (let i = 0; i < 100; i++) stepTube(tube, { along: 0.7, across: 0.7, gyroAlong: 0, gyroAcross: 0 }, pp);
+    for (let i = 0; i < 100; i++) stepTube(tube, { along: 0.7, across: 0.7, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
     if (!Number.isFinite(tube.reading) || tube.reading < 0 || tube.reading > 1) fail('automatic liquid: invalid band produced invalid state');
   }
   console.log('ok  automatic liquid: material presets, legacy settings and overlapping thresholds');
@@ -302,7 +304,7 @@ for (const axis of ['along', 'across', 'diagonal']) for (const inputGain of [0.1
       position = from + (target - from) * (i + 1) / n;
       const raw = { along: axis === 'across' ? 0 : position / (axis === 'diagonal' ? Math.SQRT2 : 1),
         across: axis === 'along' ? 0 : position / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0 };
-      stepTube(tube, filter.step(raw, pp), pp);
+      stepTube(tube, filter.step(raw, pp), pp, PHYS_DT, K);
       if (!Number.isFinite(tube.slugPos) || tube.slugPos < 0 || tube.slugPos > TUBE_LENGTH_PX - columnLen(tube.fillTarget, pp) + 1e-6)
         fail('play: slug escaped');
     }
@@ -358,7 +360,7 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
   const sum = (t: { trace: Uint16Array }): number => t.trace.reduce((a, v) => a + v, 0);
   const centroid = (t: { trace: Uint16Array }): number => { let m = 0, x = 0; t.trace.forEach((v, i) => { m += v; x += v * i; }); return m ? x / m : 0; };
   const run = (tube: ReturnType<typeof newTube>, pp: typeof DEFAULT_PARAMS, along: number, seconds: number, fillRate = 0): void => {
-    for (let i = 0; i < seconds * 50; i++) { tube.fillTarget += fillRate * PHYS_DT; stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp); }
+    for (let i = 0; i < seconds * 50; i++) { tube.fillTarget += fillRate * PHYS_DT; stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K); }
   };
   // a line receding at U px/s for 0.4 s from 0.8 full: the densest deposit it laid
   const deposit = (contactDyn: number, U: number): number => {
@@ -413,7 +415,7 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
     const pp = res({ freeLiquid: true, contactDyn: 8, traceDrain: 2377, traceDry: 1.7, traceStain: 1, freeGain: 840, freeDamp: 7, freeHomeK: 150 });
     const tube = newTube(); tube.fillTarget = 0.4;
     const pose = (along: number, across: number, seconds: number): void => {
-      for (let i = 0; i < seconds * 50; i++) stepTube(tube, { along, across, gyroAlong: 0, gyroAcross: 0 }, pp);
+      for (let i = 0; i < seconds * 50; i++) stepTube(tube, { along, across, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
     };
     pose(-1, 0, 2); pose(0.7, 0.7, 2.5);   // mid-slide (terminal ~84 px/s, ~320 px of travel)
     // the trail from where the slide started (x = 0) to the line, in 10 px bins: densest in the last one

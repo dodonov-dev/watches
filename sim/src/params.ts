@@ -1,6 +1,6 @@
 // All tunables live here. Colours are RGB888 hex strings but are quantised to RGB565 at render time.
 import { legacyTraceDrain } from './physics';
-import { DESIGN_H, PANEL_H, PX_SCALE, DESIGN_TUBE_HEIGHT_MAX, FIZZ_COUNT_MAX, DIGIT_SCALE_MAX, DIGIT_SHADOW_OFFSET_MAX, MARK_CONTRAST_MAX } from '../../spec/layout';
+import { DESIGN_H, PANEL_H, TUBE_PX_SCALE, DESIGN_TUBE_HEIGHT_MAX, FIZZ_COUNT_MAX, DIGIT_SCALE_MAX, DIGIT_SHADOW_OFFSET_MAX, MARK_CONTRAST_MAX } from '../../spec/layout';
 // Export/import as JSON from the control panel; the exported file is the contract for Phase 3 (spec/params.h).
 
 export interface Params {
@@ -1538,20 +1538,26 @@ export const PX_WHOLE_KEYS: readonly (typeof PX_KEYS)[number][] = [
   'tickMinorHeightM', 'tickMajorHeightM', 'tickMinorWidthM', 'tickMajorWidthM', 'digitShadowOffset', 'digitBottomMin', 'digitBottom',
 ];
 
-/** The params the renderer and physics run on: `p` (design px) with every PX_KEYS field scaled by the board's
- *  PX_SCALE, PX_WHOLE_KEYS rounded. The AMOLED (scale 1) gets `p` itself. Mirrored by firmware main.cpp. */
-export function boardParams(p: Params): Params {
-  if (PX_SCALE === 1) return p;
+/** The params the renderer and physics of a tube run on: `p` (design px) with every PX_KEYS field scaled by that tube's
+ *  px scale (spec/layout TUBE_PX_SCALE), PX_WHOLE_KEYS rounded. Scale 1 (the AMOLED) gets `p` itself. Mirrored by
+ *  firmware physics.h boardParams. */
+export function boardParams(p: Params, scale: number): Params {
+  if (scale === 1) return p;
   const o = { ...p };
-  for (const k of PX_KEYS) o[k] = Math.fround(Math.fround(p[k]) * Math.fround(PX_SCALE));   // float32 product, as the firmware scales
+  for (const k of PX_KEYS) o[k] = Math.fround(Math.fround(p[k]) * Math.fround(scale));   // float32 product, as the firmware scales
   for (const k of PX_WHOLE_KEYS) o[k] = Math.round(o[k]);
   // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
   // move in (canvas rows minus its height), so the tubes stay at the face's edges (firmware physics.h, float32).
-  if (PX_SCALE !== PANEL_H / DESIGN_H) {
+  if (scale !== PANEL_H / DESIGN_H) {
     const f = Math.fround, room = f(DESIGN_H - f(p.tubeHeight)), k = room > 1 ? f(f(PANEL_H - o.tubeHeight) / room) : 1;
     o.hoursY = Math.round(f(f(p.hoursY) * k)); o.minutesY = Math.round(f(f(p.minutesY) * k));
   }
   return o;
+}
+/** Both tubes' params [hours, minutes] (boardParams at each tube's scale); one object when the scales are equal. */
+export function tubeParams(p: Params): readonly [Params, Params] {
+  const h = boardParams(p, TUBE_PX_SCALE[0]);
+  return [h, TUBE_PX_SCALE[1] === TUBE_PX_SCALE[0] ? h : boardParams(p, TUBE_PX_SCALE[1])];
 }
 
 /** Map keys from older exports (shared tick settings, digitScale, digitFontBig) onto the current schema. */

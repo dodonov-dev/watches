@@ -658,3 +658,16 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   would group same-class bubbles (mask cache locality).
 - A NaN fizz param (e.g. `p~fizzSizeVar=nan`) crashes the render in foamFront (clampf keeps NaN, then an int index),
   also at a3ad26c; setParam could reject non-finite floats.
+
+## Board switch / per-tube widths (2026-11-03)
+- AB_COMPARE builds fail since e9099b7: render.cpp's `#include <atomic>` lands inside `namespace ab` (render_ab.cpp).
+  Include <atomic> in render_ab.cpp before the namespace.
+- check_render_frames / check_fizz_steps take a reference render.cpp only, built against the current headers and
+  physics.cpp: references from before the per-tube API (stepTube k, contactLeads mmPerPx, filmEta full, stepFizz pH/pM)
+  no longer build. A `--reference-tree DIR` (git archive of the old commit) would compare across API changes.
+- Host builds share one fizz RNG for both tubes (fizzRng per core, one core on the host): with fizz on, one tube's draws
+  shift the other's. Board: per core = per tube. A per-tube RNG would make host checks per-tube exact.
+- e2e's parity right after a flash (liquid still settling) showed 230-510 px > 12/255 on the LCD; settled re-runs of the
+  same builds 0. Parity could wait for the fills to settle (or snap them) before the `x` dump.
+- Mixed-width LCD builds: +688 B internal RAM (effM, second mask set) on ~4 KB free heap with BLE; the narrow tube's
+  fizz masks are PSRAM-only. Measure heap / BLE / fps on the board before relying on a mixed build.

@@ -7,8 +7,14 @@
 #define BOARD_STR(x)  BOARD_STR_(x)
 #ifdef BOARD_LCD316
 #define BOARD_NAME   "lcd316"
-#if LCD_FILL
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "f"   // board + canvas rows (+ f: LCD_FILL), as the sim names it (spec/layout.ts BOARD_TAG)
+// Board + canvas rows + tube widths, as the sim names it (spec/layout.ts BOARD_TAG / resTag): no suffix both narrow,
+// f both wide, fh the hours tube wide, fm the minutes tube wide (layout.h LCD_FILL_H / LCD_FILL_M).
+#if LCD_FILL_H && LCD_FILL_M
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "f"
+#elif LCD_FILL_H
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "fh"
+#elif LCD_FILL_M
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "fm"
 #else
 #define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H)
 #endif

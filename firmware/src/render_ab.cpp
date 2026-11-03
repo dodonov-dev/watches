@@ -27,9 +27,9 @@ namespace ab {
 
 namespace abcmp {
 static ab::TubeState tube;          // the comparison minutes tube
-static Params eff;                  // the design params scaled to this canvas
+static Params eff;                  // the design params scaled to this canvas (its minutes tube's px scale)
 static uint32_t effGen = 0;
-static void scaled(const Params &design, uint32_t gen) { if (gen != effGen) { ab::boardParams(design, eff); effGen = gen; } }
+static void scaled(const Params &design, uint32_t gen) { if (gen != effGen) { ab::boardParams(design, eff, TUBE_PX_SCALE(1)); effGen = gen; } }
 
 bool init() {
   if (!ab::render_init() || !ab::physics_init()) return false;
@@ -43,8 +43,8 @@ void step(float along, float across, float gyroAlong, float gyroAcross, float fi
   scaled(design, gen);
   const ab::TiltInput t = {along, across, gyroAlong, gyroAcross};
   tube.fillTarget = fillTarget;   // the native minutes tube's shown fill (a share, the same on every canvas)
-  ab::stepTube(tube, t, eff, dt);
-  ab::stepFizz(eff, dt, along, across, tube.agitation);
+  ab::stepTube(tube, t, eff, dt, TUBE_PX_SCALE(1));
+  ab::stepFizz(eff, eff, dt, along, across, tube.agitation);
 }
 void render(uint16_t *strip, const Params &design, uint32_t gen, const int16_t **lensRows) {
   scaled(design, gen);

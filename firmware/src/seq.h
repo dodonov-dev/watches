@@ -40,7 +40,8 @@ inline uint32_t seqHash(const uint16_t *strip, int words) {
 
 // Runs the sequence from a fixed start (both TubeStates and their residue buffers cleared, fills snapped to
 // 10:09:30). emit(frame, strips) after each frame's two renders (strips[0] hours, strips[1] minutes).
-template <class Emit> void seqRun(TubeState &h, TubeState &m, const Params &p, uint32_t &gen, uint16_t *const strips[2], Emit emit) {
+// pH / pM: each tube's params (boardParams at its px scale).
+template <class Emit> void seqRun(TubeState &h, TubeState &m, const Params &pH, const Params &pM, uint32_t &gen, uint16_t *const strips[2], Emit emit) {
   TubeState *const tube[2] = {&h, &m};
   for (int i = 0; i < 2; i++) {
     TubeState &s = *tube[i];
@@ -54,11 +55,11 @@ template <class Emit> void seqRun(TubeState &h, TubeState &m, const Params &p, u
   gen++;   // the render's caches key on it
   for (int step = 0; step < SEQ_STEPS; step++) {
     followClock(h, SEQ_HOURS_FILL); followClock(m, SEQ_MINUTES_FILL);
-    const TiltInput in = filter.step(seqTilt(step), p);
-    stepTube(h, in, p); stepTube(m, in, p);
-    stepFizz(p, PHYS_DT, in.along, in.across, h.agitation);
+    const TiltInput in = filter.step(seqTilt(step), pH);
+    stepTube(h, in, pH, PHYS_DT, TUBE_PX_SCALE(0)); stepTube(m, in, pM, PHYS_DT, TUBE_PX_SCALE(1));
+    stepFizz(pH, pM, PHYS_DT, in.along, in.across, h.agitation);
     if ((step + 1) % SEQ_FRAME_EVERY) continue;
-    renderTube(0, h, p, gen, strips[0]); renderTube(1, m, p, gen, strips[1]);
+    renderTube(0, h, pH, gen, strips[0]); renderTube(1, m, pM, gen, strips[1]);
     emit((step + 1) / SEQ_FRAME_EVERY - 1, strips);
   }
 }

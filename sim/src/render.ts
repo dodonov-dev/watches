@@ -3,11 +3,11 @@
 // a few filled ellipses/dots. Mirrored 1:1 by firmware/src/render.cpp.
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
-  rgb565, rgb565to888, MM_PER_PX, PX_SCALE,
+  rgb565, rgb565to888, mmPerPxAt, TUBE_PX_SCALE,
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H,
 } from '@spec/layout';
 import type { Params } from './params';
-import { boreR, columnLen, contactLeads, filmEta, mirrored, FILM_ETA_MAX, FILM_FULL_PX_S, TRACE_FULL, type TubeState } from './physics';
+import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
 const lensScratch = new Uint16Array(PANEL_W * TUBE_HEIGHT_MAX);
@@ -33,11 +33,17 @@ function blend565(a: number, b: number, t: number): number {
 }
 
 export interface TubeLayout { H: number; yH: number; yM: number; }
-/** Tube geometry from params, clamped to the panel and the strip buffer. */
+/** Tube geometry from one tube's params, clamped to the panel and the strip buffer (H: that tube's rows). */
 export function tubeLayout(p: Params): TubeLayout {
   const H = Math.max(4, Math.min(TUBE_HEIGHT_MAX, Math.round(p.tubeHeight)));
   const y = (v: number) => Math.max(0, Math.min(PANEL_H - H, Math.round(v)));
   return { H, yH: y(p.hoursY), yM: y(p.minutesY) };
+}
+export interface FaceLayout { Hh: number; Hm: number; yH: number; yM: number; }
+/** Both tubes on the face, each from its own params (rows and top: hours from `pH`, minutes from `pM`). */
+export function faceLayout(pH: Params, pM: Params): FaceLayout {
+  const h = tubeLayout(pH), m = pM === pH ? h : tubeLayout(pM);
+  return { Hh: h.H, Hm: m.H, yH: h.yH, yM: m.yM };
 }
 
 export interface Palette {
@@ -935,7 +941,8 @@ const fizzExposed = [0, 0];
 // caught (or recycled, at a surface foam can't form on), and how much of a concave surface band veils the
 // foam behind it at the profile (the liquid wedge climbing the front glass, thinning to nothing at the ring).
 // FOAM_RELAX: packing sweeps per step.
-const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_SCALE, FOAM_VEIL = 0.7, FOAM_RELAX = 3;
+const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_VEIL = 0.7, FOAM_RELAX = 3;
+const foamCatch = (i: number): number => 2 * TUBE_PX_SCALE[i];   // 2 design px at tube i's px scale
 // A spring is fixed in the tube (mirrored in firmware): `fizzSourceX` of the column as it sits at home. While the
 // liquid covers it, it takes every birth, whatever the tilt; a free slug sliding off it leaves it dry, and every
 // birth goes scattered. Covered again, it takes its births back over SPRING_BACK s (a share ramping to 0), so a
@@ -1008,8 +1015,8 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
 /** Spring (`fizzSource` 1): a new size and depth, born at the spring — `fizzSourceY` across the bore (whole
  *  disc inside), `fizzSourceX` along that row's liquid (between the surfaces, as a respawn) as it sits at home,
  *  so `shift` px back in a slug that slid away — each axis jittered by up to ±`fizzSourceSpread` px, kept in
- *  the liquid. */
-function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: Float32Array, shift: number): void {
+ *  the liquid. `FOAM_CATCH`: the tube's foamCatch. */
+function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: Float32Array, shift: number, FOAM_CATCH: number): void {
   f.v = fizzV(); f.z = fizzZ(); f.life = 0;
   const r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = H - lo;
   f.y = hi <= lo ? H / 2 : Math.max(lo, Math.min(hi, lo + p.fizzSourceY * (hi - lo) + (2 * Math.random() - 1) * s));
@@ -1026,7 +1033,11 @@ function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: F
  *  A spring (`fizzSource` 1) takes every birth instead, at its cadence (springClock), so the bubbles rise as a
  *  stream; a bubble leaving or popping frees its slot. A slug sliding off the spring leaves it dry, and its births
  *  go scattered instead (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). */
-export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation = 0): void {
+export function stepFizz(pH: Params, pM: Params, dt: number, along = 0, across = 0, agitation = 0): void {
+  stepFizzTube(0, pH, dt, along, across, agitation); stepFizzTube(1, pM, dt, along, across, agitation);
+}
+/** stepFizz of tube i (0 = hours) on its own params (boardParams at its px scale). */
+export function stepFizzTube(i: number, p: Params, dt: number, along: number, across: number, agitation: number): void {
   if (mirrored(p)) along = -along; // fizz lives in the mirrored liquid frame (see drawTube)
   const speed = p.fizzSpeed * (1 + 3 * agitation);
   const up = Math.sqrt(Math.max(0, 1 - along * along - across * across));
@@ -1038,109 +1049,108 @@ export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation
   const H = tubeLayout(p).H, spring = p.fizzSource === 1, wall = fizzWall(p);
   const hold = spring && p.fizzFoamLife > 0 && vy !== 0;   // the bore wall the rise points at holds the stream
   const letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
-  for (let i = 0; i < 2; i++) {
-    const len = fizzLen[i], surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i];
-    if (surf.length !== H || len <= 0) continue;   // no surfaces for this height yet (drawTube publishes them)
-    // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
-    // the slug slides it past its home surface.
-    const sr = fizzR(p, 1), slo = fizzWall(p) + sr, sy = H - slo <= slo ? H / 2 : slo + p.fizzSourceY * (H - 2 * slo);
-    const sxl = spring ? -discFit(surfL, H, sy, sr, -1) + FOAM_CATCH : 0, sxh = spring ? discFit(surf, H, sy, sr, 1) - FOAM_CATCH : 0;
-    const sx = sxl + p.fizzSourceX * Math.max(0, sxh - sxl) - fizzShift[i];
-    if (spring) springScatter[i] = sx <= -foamFront(surfL, H, sy, -1) ? 1 : Math.max(0, springScatter[i] - dt / SPRING_BACK);
-    const dir = exposed & 1 ? 1 : exposed & 2 ? -1 : 0;   // +x = the time edge
-    const vx = vxTilt + speed * up * p.fizzEdgeRise * dir;
-    // The surface the rise heads for, if exposed and foam is on: +1 time edge, -1 home edge, 0 none; a spring's
-    // foam also parks against a closed end (glass).
-    const side = p.fizzFoamLife <= 0 ? 0 : vx > 0 && (spring || exposed & 1) ? 1 : vx < 0 && (spring || exposed & 2) ? -1 : 0;
-    const glass = side !== 0 && !(exposed & (side > 0 ? 1 : 2));
-    // Respawn at a random x in the liquid of the new row, or just inside the edge the flow comes from.
-    const respawn = (f: Fizz, at: number): void => {
-      const r = fizzR(p, f.v), lo = -discFit(surfL, H, f.y, r, -1) + FOAM_CATCH, hi = discFit(surf, H, f.y, r, 1) - FOAM_CATCH;
-      f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + Math.random() * (hi - lo) : at > 0 ? lo : hi;
-    };
-    // Scattered birth: a new size and depth anywhere in the liquid.
-    const scatter = (f: Fizz): void => { f.life = 0; f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, -1); f.z = fizzZ(); };
-    // A spring's bubble leaving or popping: its slot goes idle until the cadence fills it.
-    const free = (f: Fizz): void => { f.v = 0; f.life = 0; };
-    // On the bore wall the rise points at (row wallY: the disc touching the glass), held by it.
-    const wallY = (g: Fizz): number => vy < 0 ? wall + fizzR(p, g.v) : H - wall - fizzR(p, g.v);
-    const held = (g: Fizz): boolean => g.v !== 0 && g.life === 0 && Math.abs(g.y - wallY(g)) < 1e-3;
-    for (const f of fizz[i]) {
-      if (f.v === 0) { if (!spring) scatter(f); continue; }   // idle: the spring's cadence fills it below
-      if (f.life !== 0) {
-        const was = f.life > 0 ? 1 : -1;
-        if (was !== side) {   // the surface tilted away: the foam releases into the flow, from where it is drawn
-          f.x = was * Math.min(was * f.x, foamFront(was > 0 ? surf : surfL, H, f.y, was));
-          f.life = 0;
-        }
-        else {
-          const left = Math.abs(f.life) - dt * (1 + 3 * agitation);   // shaking pops the foam
-          if (left > 0) f.life = side * left;
-          else if (spring) free(f);
-          else scatter(f);
-          continue;
-        }
+  const FOAM_CATCH = foamCatch(i);
+  const len = fizzLen[i], surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i];
+  if (surf.length !== H || len <= 0) return;   // no surfaces for this height yet (drawTube publishes them)
+  // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
+  // the slug slides it past its home surface.
+  const sr = fizzR(p, 1), slo = fizzWall(p) + sr, sy = H - slo <= slo ? H / 2 : slo + p.fizzSourceY * (H - 2 * slo);
+  const sxl = spring ? -discFit(surfL, H, sy, sr, -1) + FOAM_CATCH : 0, sxh = spring ? discFit(surf, H, sy, sr, 1) - FOAM_CATCH : 0;
+  const sx = sxl + p.fizzSourceX * Math.max(0, sxh - sxl) - fizzShift[i];
+  if (spring) springScatter[i] = sx <= -foamFront(surfL, H, sy, -1) ? 1 : Math.max(0, springScatter[i] - dt / SPRING_BACK);
+  const dir = exposed & 1 ? 1 : exposed & 2 ? -1 : 0;   // +x = the time edge
+  const vx = vxTilt + speed * up * p.fizzEdgeRise * dir;
+  // The surface the rise heads for, if exposed and foam is on: +1 time edge, -1 home edge, 0 none; a spring's
+  // foam also parks against a closed end (glass).
+  const side = p.fizzFoamLife <= 0 ? 0 : vx > 0 && (spring || exposed & 1) ? 1 : vx < 0 && (spring || exposed & 2) ? -1 : 0;
+  const glass = side !== 0 && !(exposed & (side > 0 ? 1 : 2));
+  // Respawn at a random x in the liquid of the new row, or just inside the edge the flow comes from.
+  const respawn = (f: Fizz, at: number): void => {
+    const r = fizzR(p, f.v), lo = -discFit(surfL, H, f.y, r, -1) + FOAM_CATCH, hi = discFit(surf, H, f.y, r, 1) - FOAM_CATCH;
+    f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + Math.random() * (hi - lo) : at > 0 ? lo : hi;
+  };
+  // Scattered birth: a new size and depth anywhere in the liquid.
+  const scatter = (f: Fizz): void => { f.life = 0; f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, -1); f.z = fizzZ(); };
+  // A spring's bubble leaving or popping: its slot goes idle until the cadence fills it.
+  const free = (f: Fizz): void => { f.v = 0; f.life = 0; };
+  // On the bore wall the rise points at (row wallY: the disc touching the glass), held by it.
+  const wallY = (g: Fizz): number => vy < 0 ? wall + fizzR(p, g.v) : H - wall - fizzR(p, g.v);
+  const held = (g: Fizz): boolean => g.v !== 0 && g.life === 0 && Math.abs(g.y - wallY(g)) < 1e-3;
+  for (const f of fizz[i]) {
+    if (f.v === 0) { if (!spring) scatter(f); continue; }   // idle: the spring's cadence fills it below
+    if (f.life !== 0) {
+      const was = f.life > 0 ? 1 : -1;
+      if (was !== side) {   // the surface tilted away: the foam releases into the flow, from where it is drawn
+        f.x = was * Math.min(was * f.x, foamFront(was > 0 ? surf : surfL, H, f.y, was));
+        f.life = 0;
       }
-      const r = fizzR(p, f.v), wlo = wall + r, whi = H - wlo, grip = hold && whi > wlo;
-      if (grip && held(f) && Math.random() >= letGo) f.x += vx * dt;   // held by the glass: slides along it
       else {
-        const inBore = f.y > wlo && f.y < whi;   // not one letting go, already on the glass row
-        f.y += vy * f.v * dt;
-        f.x += vx * f.v * dt;
-        if (grip && inBore && (vy < 0 ? f.y < wlo : f.y > whi)) {   // carried into the glass: held, or coalesces into a held bubble
-          f.y = vy < 0 ? wlo : whi;
-          let merge = false;
-          for (const g of fizz[i]) {
-            if (g === f || !held(g)) continue;
-            const m = r + fizzR(p, g.v) + 0.5, dx = g.x - f.x, dy = g.y - f.y;
-            if (dx * dx + dy * dy < m * m) { merge = true; break; }
-          }
-          if (merge) { free(f); continue; }
-        }
-      }
-      // Vertical exit: once fully behind the wall band, respawn fully behind the opposite one and rise out of it.
-      const hide = fizzHideY(p, f.v);
-      if (f.y < hide || f.y >= H - hide) {
-        if (spring) free(f);
-        else { f.v = fizzV(); const h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; respawn(f, -1); f.z = fizzZ(); }
+        const left = Math.abs(f.life) - dt * (1 + 3 * agitation);   // shaking pops the foam
+        if (left > 0) f.life = side * left;
+        else if (spring) free(f);
+        else scatter(f);
         continue;
       }
-      // The flow carrying its rim within FOAM_CATCH of a surface (the whole disc, so big bubbles never poke
-      // through), or into the foam already there (it joins at the back, not rising through it): at the
-      // surface the rise heads for it parks for a random life around fizzFoamLife and glides onto it
-      // (settleFoam); anywhere else it is recycled at the side the flow comes from. A bubble the flow does
-      // not carry into a surface only rides it, centre held inside — released foam, one moving along a
-      // curved meniscus — and floats half out like the foam until it drifts back in.
-      const outR = vx > 0 && f.x > discFit(surf, H, f.y, r, 1) - FOAM_CATCH, outL = vx < 0 && -f.x > discFit(surfL, H, f.y, r, -1) - FOAM_CATCH;
-      if ((side > 0 && outR) || (side < 0 && outL) || (side !== 0 && touchesFoam(fizz[i], f, r, p, side))) f.life = side * p.fizzFoamLife * (0.5 + Math.random());
-      else if ((outR || outL) && spring) free(f);
-      else if (outR || outL) { f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, vx < 0 ? 0 : 1); f.z = fizzZ(); }
-      else f.x = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
     }
-    if (spring) {
-      // Cadence: fizzSourceRate bubbles/s (shaking nucleates up to twice as many), each into an idle slot (the
-      // first, else a new one); idle slots at the end are dropped, so the loops stay as short as the bubbles
-      // in flight. The tube holds at most its fizzCount share (fizzWant, foam included): at it a birth waits for
-      // a bubble to leave, keeping one birth of credit and no more, so a stream the tilt keeps in the liquid (a
-      // drift that stalls or keeps reversing) thins out instead of filling the pool, and no burst follows.
-      // Bubbles already over a count that dropped (a shorter column) live on.
-      const arr = fizz[i];
-      const cap = fizzWant(p, len, agitation);   // <= FIZZ_POOL
-      let live = 0;
-      for (const f of arr) if (f.v !== 0) live++;
-      springClock[i] += Math.max(0, p.fizzSourceRate) * (1 + (agitation < 0.05 ? 0 : agitation)) * dt;
-      let slot = 0;
-      while (springClock[i] >= 1) {
-        if (live >= cap) { springClock[i] = 1; break; }
-        while (slot < arr.length && arr[slot].v !== 0) slot++;
-        if (slot === arr.length) arr.push({ x: 0, y: 0, v: 0, life: 0, z: 0 });
-        if (springBirth(i)) springSpawn(arr[slot], p, H, surf, surfL, fizzShift[i]); else scatter(arr[slot]);
-        springClock[i] -= 1; live++;
+    const r = fizzR(p, f.v), wlo = wall + r, whi = H - wlo, grip = hold && whi > wlo;
+    if (grip && held(f) && Math.random() >= letGo) f.x += vx * dt;   // held by the glass: slides along it
+    else {
+      const inBore = f.y > wlo && f.y < whi;   // not one letting go, already on the glass row
+      f.y += vy * f.v * dt;
+      f.x += vx * f.v * dt;
+      if (grip && inBore && (vy < 0 ? f.y < wlo : f.y > whi)) {   // carried into the glass: held, or coalesces into a held bubble
+        f.y = vy < 0 ? wlo : whi;
+        let merge = false;
+        for (const g of fizz[i]) {
+          if (g === f || !held(g)) continue;
+          const m = r + fizzR(p, g.v) + 0.5, dx = g.x - f.x, dy = g.y - f.y;
+          if (dx * dx + dy * dy < m * m) { merge = true; break; }
+        }
+        if (merge) { free(f); continue; }
       }
-      while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
     }
-    if (side !== 0) settleFoam(fizz[i], p, H, speed, side > 0 ? surf : surfL, side, dt, glass ? vy : NaN);
+    // Vertical exit: once fully behind the wall band, respawn fully behind the opposite one and rise out of it.
+    const hide = fizzHideY(p, f.v);
+    if (f.y < hide || f.y >= H - hide) {
+      if (spring) free(f);
+      else { f.v = fizzV(); const h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; respawn(f, -1); f.z = fizzZ(); }
+      continue;
+    }
+    // The flow carrying its rim within FOAM_CATCH of a surface (the whole disc, so big bubbles never poke
+    // through), or into the foam already there (it joins at the back, not rising through it): at the
+    // surface the rise heads for it parks for a random life around fizzFoamLife and glides onto it
+    // (settleFoam); anywhere else it is recycled at the side the flow comes from. A bubble the flow does
+    // not carry into a surface only rides it, centre held inside — released foam, one moving along a
+    // curved meniscus — and floats half out like the foam until it drifts back in.
+    const outR = vx > 0 && f.x > discFit(surf, H, f.y, r, 1) - FOAM_CATCH, outL = vx < 0 && -f.x > discFit(surfL, H, f.y, r, -1) - FOAM_CATCH;
+    if ((side > 0 && outR) || (side < 0 && outL) || (side !== 0 && touchesFoam(fizz[i], f, r, p, side))) f.life = side * p.fizzFoamLife * (0.5 + Math.random());
+    else if ((outR || outL) && spring) free(f);
+    else if (outR || outL) { f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, vx < 0 ? 0 : 1); f.z = fizzZ(); }
+    else f.x = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
   }
+  if (spring) {
+    // Cadence: fizzSourceRate bubbles/s (shaking nucleates up to twice as many), each into an idle slot (the
+    // first, else a new one); idle slots at the end are dropped, so the loops stay as short as the bubbles
+    // in flight. The tube holds at most its fizzCount share (fizzWant, foam included): at it a birth waits for
+    // a bubble to leave, keeping one birth of credit and no more, so a stream the tilt keeps in the liquid (a
+    // drift that stalls or keeps reversing) thins out instead of filling the pool, and no burst follows.
+    // Bubbles already over a count that dropped (a shorter column) live on.
+    const arr = fizz[i];
+    const cap = fizzWant(p, len, agitation);   // <= FIZZ_POOL
+    let live = 0;
+    for (const f of arr) if (f.v !== 0) live++;
+    springClock[i] += Math.max(0, p.fizzSourceRate) * (1 + (agitation < 0.05 ? 0 : agitation)) * dt;
+    let slot = 0;
+    while (springClock[i] >= 1) {
+      if (live >= cap) { springClock[i] = 1; break; }
+      while (slot < arr.length && arr[slot].v !== 0) slot++;
+      if (slot === arr.length) arr.push({ x: 0, y: 0, v: 0, life: 0, z: 0 });
+      if (springBirth(i)) springSpawn(arr[slot], p, H, surf, surfL, fizzShift[i], FOAM_CATCH); else scatter(arr[slot]);
+      springClock[i] -= 1; live++;
+    }
+    while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
+  }
+  if (side !== 0) settleFoam(fizz[i], p, H, speed, side > 0 ? surf : surfL, side, dt, glass ? vy : NaN);
 }
 /** Furthest centre (in u = side · x) a bubble of radius r at row y can take with its whole disc inside the
  *  surface `surf` (liquid frame): the tightest row of the disc. */
@@ -1263,15 +1273,15 @@ export interface CapShape { cosT: number; h: number; asym: number; cap: number }
 /** `len` = column length px, `tilt` = along follower into this end (TubeState.edgeLight, edge's
  *  own sense), `side` = across follower, `pin` = px of surface-centre travel against the held ring and
  *  `lineV` = dragged line speed outward (advancing > 0), px/s (TubeState.pin* / lineV*). */
-export function capShape(p: Params, len = 0, tilt = 0, side = 0, cap = 0, pin = 0, lineV = 0): CapShape {
-  const c = contactLeads(p, len, tilt), R = c.R, rad = Math.PI / 180;
+export function capShape(p: Params, len: number, tilt: number, side: number, cap: number, pin: number, lineV: number, k: number): CapShape {
+  const c = contactLeads(p, len, tilt, mmPerPxAt(k)), R = c.R, rad = Math.PI / 180;
   // the held ring's lead inside the hysteresis band, back to its angle (lead = R·tan(π/4 − θ/2))
   let th = Math.PI / 2 - 2 * Math.atan(Math.max(c.adv, Math.min(c.rec, c.rest - pin)) / R);
-  const dyn = Math.max(0, p.contactDyn) * rad, g = dyn * dyn * dyn / FILM_FULL_PX_S;   // Cox–Voinov
+  const dyn = Math.max(0, p.contactDyn) * rad, g = dyn * dyn * dyn / filmFullPxS(k);   // Cox–Voinov
   th = Math.cbrt(Math.max(0, Math.min(Math.PI ** 3, th * th * th + g * lineV)));
   const cosT = Math.cos(th), sinT = Math.sin(th);
   // Sag: side > 0 (top up) moves the bottom (d = +1) contact line out, whether the cap is concave or convex
-  const lc = Math.max(0.1, p.capLength), Rmm = R * MM_PER_PX;
+  const lc = Math.max(0.1, p.capLength), Rmm = R * mmPerPxAt(k);
   const asym = MENISCUS_SAG_K * (Rmm / lc) ** 2 * side * Math.sign(cosT);
   return { cosT, h: R * cosT / (1 + sinT), asym, cap };
 }
@@ -1328,14 +1338,14 @@ export function edgeSkews(angleDeg: number, H: number, gap: number, xs: number, 
 }
 /** Fill-edge x for tube-row `ry` (0..H-1), given edge centre `xe`, in-plane skew `tanA` (px per row,
  *  edgeSkews) and this end's cap. */
-export function edgeX(ry: number, xe: number, tanA: number, p: Params, c = capShape(p), k = 1): number {
+export function edgeX(ry: number, xe: number, tanA: number, p: Params, c: CapShape, k = 1): number {
   const yc = (tubeLayout(p).H - 1) / 2;
   return xe + tanA * (ry - yc) + k * edgeCap(ry, p, c);
 }
 /** Home-end edge of a free slug whose centre sits at `xs`: the mirror image of edgeX (its cap takes
  *  the mirrored forcing, the centre leads in -x; `tanA` = the home end's own skew, edgeSkews). Flattens
  *  onto the end cap over the last 8 px. */
-export function edgeXL(ry: number, xs: number, tanA: number, p: Params, c = capShape(p), k = 1): number {
+export function edgeXL(ry: number, xs: number, tanA: number, p: Params, c: CapShape, k = 1): number {
   const yc = (tubeLayout(p).H - 1) / 2;
   return xs + Math.min(1, xs / 8) * (tanA * (ry - yc) - k * edgeCap(ry, p, c));
 }
@@ -1416,8 +1426,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const xsI = Math.round(xs);
   // Per-end meniscus: the home end takes the mirrored forcing; the pinned-line state is already in each
   // end's own outward sense (physics), so the mirror leaves it alone.
-  const capR = capShape(p, len, s.edgeLight, s.acrossTilt, s.cap, s.pinFree, s.lineVFree);
-  const capL = capShape(p, len, -s.edgeLight, s.acrossTilt, -s.cap, s.pinHome, s.lineVHome);
+  const capR = capShape(p, len, s.edgeLight, s.acrossTilt, s.cap, s.pinFree, s.lineVFree, TUBE_PX_SCALE[idx]);
+  const capL = capShape(p, len, -s.edgeLight, s.acrossTilt, -s.cap, s.pinHome, s.lineVHome, TUBE_PX_SCALE[idx]);
   const capK = capScale(len, capR), capKL = capScale(len, capL);
   const [tanR, tanL] = edgeSkews(s.angle, H, xe - xs, xs, capR, capK, capL, capKL);
   const hasLiquid = xe - xs >= 0.5;   // an empty column draws nothing, not even an anti-aliased sliver
@@ -1460,7 +1470,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // Film thickness per edge (η·follower: it thins as the follower drains). Its visibility also fades
     // out with the follower from 0.2 down to the 0.02 gate (the film breaks up as it dries): a tangent row
     // sees even a vanishing film at full chord, so thickness alone would pop it off at the gate.
-    const eta = filmEta(p), etaR = bandR ? eta * s.filmFree : 0, etaL = bandL ? eta * s.filmHome : 0;
+    const filmFull = filmFullPxS(TUBE_PX_SCALE[idx]), eta = filmEta(p, filmFull, filmFull), etaR = bandR ? eta * s.filmFree : 0, etaL = bandL ? eta * s.filmHome : 0;
     const visR = bandR ? ease((0.2 - s.filmFree) / 0.18) : 0, visL = bandL ? ease((0.2 - s.filmHome) / 0.18) : 0;
     // Columns that may receive residue or band: the occupied residue range (physics keeps
     // [traceLo, traceHi) tight) mirrored into the render frame, plus each band's reach over all rows.
@@ -1790,7 +1800,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // limb-dark shoulder, no rim — so the band takes the liquid's own colour and runs out into the
     // trail along the dish. Instantaneous edge speed, not the draining film: once the line stops the
     // angle is back and so are shoulder and rim — nothing fades in afterwards. 0..1 per edge.
-    const recede = mir ? 1 : -1, sat = (v: number): number => Math.max(0, Math.min(1, 2 * v / FILM_FULL_PX_S));
+    const recede = mir ? 1 : -1, sat = (v: number): number => Math.max(0, Math.min(1, 2 * v / filmFullPxS(TUBE_PX_SCALE[idx])));
     pullR = sat(recede * (s.fillVel + s.slugVel)); pullL = p.freeLiquid ? sat(-recede * s.slugVel) : 0;
     // Interior opacity of the dish (surfaceFill): the rim and the blick keep their own opacity, so at 0 the
     // surface is drawn by its rim alone. The blick is the room light reflected in the dish: a tent of rows
@@ -2119,13 +2129,14 @@ function applyLens(y0: number, H: number, p: Params, smooth: boolean): void {
 }
 
 /** Full frame. Bridge zone and margins stay black (we never draw there). */
-export function renderFrame(hours: TubeState, minutes: TubeState, p: Params, lensEffect = true, lensSmooth = false): void {
+/** The face: each tube on its own params (`pH` / `pM`: boardParams at its px scale, params.ts tubeParams). */
+export function renderFrame(hours: TubeState, minutes: TubeState, pH: Params, pM: Params, lensEffect = true, lensSmooth = false): void {
   fb.fill(0);
-  const palH = buildPalette(p, hours.light);
-  const palM = hours.light === minutes.light ? palH : buildPalette(p, minutes.light);
-  const lay = tubeLayout(p);
-  drawTube(0, lay.yH, hours, p, palH, 12, lensEffect, lensSmooth);
-  drawTube(1, lay.yM, minutes, p, palM, 60, lensEffect, lensSmooth);
+  const palH = buildPalette(pH, hours.light);
+  const palM = pM === pH && hours.light === minutes.light ? palH : buildPalette(pM, minutes.light);
+  const lay = faceLayout(pH, pM);
+  drawTube(0, lay.yH, hours, pH, palH, 12, lensEffect, lensSmooth);
+  drawTube(1, lay.yM, minutes, pM, palM, 60, lensEffect, lensSmooth);
 }
 
 /** Blit RGB565 framebuffer to a canvas ImageData (exact 565 expansion). */

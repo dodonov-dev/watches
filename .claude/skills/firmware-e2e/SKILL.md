@@ -18,13 +18,16 @@ tools/e2e.sh --ref HEAD~1 --preset ../presets/cola.json --runs 3 --stage fizz=0
                                                      # A/B: flash+bench HEAD~1 (temp worktree, no parity), then this tree
 LW_PORT=COM11 tools/e2e.sh --env lcd316              # ESP32-S3-LCD-3.16 board (default env: amoled191); LW_PORT picks the board when both are attached
 LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 240    # LCD canvas 615x240 upscaled to 820x320 (RENDER_H 240/256/288/320; default 320 = native)
+LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 320f   # res tag = rows + tube widths: 320 narrow, 320f both wide, 320fh / 320fm hours / minutes wide
 tools/e2e.sh --env lcd316 --define STRIPS_INTERNAL=1 # any -D for the build, also put in the label
 ```
-Board selection everywhere (flash.sh, flash-win.sh, e2e.sh): `--env` / `--res`, else `$LW_BOARD` / `$LW_RES`, else
-amoled191. `export LW_BOARD=lcd316 LW_PORT=COM11` once per shell makes every tool target the LCD. The board says what it
-runs: `tools/device.py v` → `board lcd316@320 canvas 820x320 panel 820x320` (old firmware: `error unknown command`);
+Board selection everywhere (flash.sh, flash-win.sh, e2e.sh): `--env` / `--res TAG`, else `$LW_BOARD` / `$LW_RES`, else
+amoled191 (tags: tools/boardtag.py; the old `--define LCD_FILL=1` still works). `export LW_BOARD=lcd316 LW_RES=320f
+LW_PORT=COM11` once per shell makes every tool target the wide LCD. The scripts print the tag they build and refuse to guess the port
+with several boards attached (LW_PORT); e2e.sh exits 4 when the board's `v` after a flash is not the built tag. The board says what it
+runs: `tools/device.py v` → `board lcd316@320f canvas 820x320 panel 820x320` (old firmware: `error unknown command`);
 compare-device.py renders the sim at that canvas by itself (`LAYOUT` line of the `x` dump).
-Host parity without the board, every preset, any canvas: `python3 tools/check_board_render.py --res 320` (lcd316;
+Host parity without the board, every preset, any canvas: `python3 tools/check_board_render.py --res 320f` (lcd316;
 `--board amoled191` too). 22 presets are beyond 12/255 on a few px on the AMOLED as well (pre-existing, KAIZEN).
 Env lcd316 builds with recompiled Arduino libs (64 KB data cache, platformio.ini `custom_sdkconfig`) from its own
 packages dir `~/.platformio/packages-lcd316`: flash.sh / flash-win.sh set `PLATFORMIO_PACKAGES_DIR` (tools/pkgdir.sh;

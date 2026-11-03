@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Flash from WSL through Windows' esptool: the board stays on the Windows side (Web Serial in the
 # browser keeps working), no usbipd attach/detach. Needs once: python.exe -m pip install esptool
-# Usage: tools/flash-win.sh [--full] [--env NAME] [--res N] [COMx]   (port: COMx, else $LW_PORT if COMx, else the first Espressif port)
+# Usage: tools/flash-win.sh [--full] [--env NAME] [--res N] [COMx]   (port: COMx, else $LW_PORT if COMx, else the one
+# Espressif port; several attached: refused, name one — both boards share the USB IDs)
 # Default: flash the application only, preserving NVS. --full flashes the factory image (bootloader + partition
 # table too: needed once on a board that came with other firmware). --env: platformio.ini env, else $LW_BOARD,
-# else amoled191. --res: lcd316 canvas rows (RENDER_H), else $LW_RES, else 320 = native.
+# else amoled191. --res: lcd316 res tag (rows + tube widths, flash.sh / tools/boardtag.py), else $LW_RES, else 320.
+# Prints the board tag it builds (`v` reports the same).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 FULL=0
@@ -20,11 +22,18 @@ while [ $# -gt 0 ]; do
     esac; shift
 done
 case "${LW_PORT:-}" in COM*) PORT="${PORT:-$LW_PORT}" ;; esac
-PORT="${PORT:-$(powershell.exe -NoProfile -c "(Get-PnpDevice -Class Ports -PresentOnly | Where-Object InstanceId -like 'USB\VID_303A*' | Select-Object -First 1).FriendlyName -replace '.*\((COM\d+)\).*','\$1'" | tr -d '\r')}"
+if [ -z "$PORT" ]; then
+    PORTS="$(powershell.exe -NoProfile -c "Get-PnpDevice -Class Ports -PresentOnly | Where-Object InstanceId -like 'USB\VID_303A*' | ForEach-Object { \$_.FriendlyName -replace '.*\((COM\d+)\).*','\$1' }" | tr -d '\r' | grep '^COM' || true)"
+    [ "$(printf '%s\n' "$PORTS" | grep -c '^COM')" -le 1 ] || { echo "several boards attached ($(echo $PORTS)): name one (COMx or LW_PORT)"; exit 1; }
+    PORT="$PORTS"
+fi
 [ -n "$PORT" ] || { echo "no Espressif COM port found"; exit 1; }
 [ "$ENV" = lcd316 ] || RES=""
+FLAGS="${PLATFORMIO_BUILD_FLAGS:-}"
+if [ "$ENV" = lcd316 ]; then FLAGS="$FLAGS $(python3 tools/boardtag.py flags "$RES")"; fi
 . tools/pkgdir.sh
-PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:-}${RES:+ -DRENDER_H=$RES}" ~/.platformio/penv/bin/pio run -s -e "$ENV"
+echo "flash-win.sh: building $(python3 tools/boardtag.py tag "$ENV" $FLAGS), flashing $PORT"
+PLATFORMIO_BUILD_FLAGS="$FLAGS" ~/.platformio/penv/bin/pio run -s -e "$ENV"
 if [ "$FULL" -eq 1 ]; then
     OFFSET=0x0
     IMAGE=.pio/build/$ENV/firmware.factory.bin

@@ -1,6 +1,6 @@
 // Leather cuff + acrylic vial overlay. Cuff/gloss and lens smoothing are view-only.
 import { PANEL_W } from '@spec/layout';
-import type { TubeLayout } from './render';
+import type { FaceLayout } from './render';
 
 export interface OverlayOpts {
   enabled: boolean;
@@ -34,14 +34,14 @@ export function buildOverlayDom(root: HTMLElement): { leather: HTMLElement; slot
   return { leather, slots, vials };
 }
 
-export function applyOverlay(dom: { leather: HTMLElement; slots: HTMLElement; vials: HTMLElement[] }, o: OverlayOpts, lay: TubeLayout): void {
+export function applyOverlay(dom: { leather: HTMLElement; slots: HTMLElement; vials: HTMLElement[] }, o: OverlayOpts, lay: FaceLayout): void {
   dom.leather.style.display = o.enabled ? 'block' : 'none';
   dom.slots.style.display = o.enabled ? 'block' : 'none';
   dom.leather.dataset.leather = o.leather;
-  const w = PANEL_W - 2 * o.slotInset, h = lay.H + 2 * o.slotPad;
+  const w = PANEL_W - 2 * o.slotInset, h = [lay.Hh + 2 * o.slotPad, lay.Hm + 2 * o.slotPad];   // per tube (widths may differ)
   // Punch the two slots out of the leather with a CSS mask (exclude composite).
-  const holes = [lay.yH, lay.yM].map((y0) =>
-    `linear-gradient(#000 0 0) ${o.slotInset + LEATHER_PAD_X}px ${y0 - o.slotPad + LEATHER_PAD_Y}px / ${w}px ${h}px no-repeat`);
+  const holes = [lay.yH, lay.yM].map((y0, i) =>
+    `linear-gradient(#000 0 0) ${o.slotInset + LEATHER_PAD_X}px ${y0 - o.slotPad + LEATHER_PAD_Y}px / ${w}px ${h[i]}px no-repeat`);
   const mask = `linear-gradient(#000 0 0), ${holes.join(', ')}`;
   dom.leather.style.setProperty('-webkit-mask', mask);
   dom.leather.style.setProperty('-webkit-mask-composite', 'xor');
@@ -51,7 +51,7 @@ export function applyOverlay(dom: { leather: HTMLElement; slots: HTMLElement; vi
     slot.style.top = `${i ? lay.yM : lay.yH}px`;
     slot.style.left = `${o.slotInset}px`;
     slot.style.width = `${w}px`;
-    slot.style.height = `${h}px`;
+    slot.style.height = `${h[i]}px`;
     slot.style.marginTop = `${-o.slotPad}px`;
     (slot.firstElementChild as HTMLElement).style.opacity = String(o.gloss);
   });

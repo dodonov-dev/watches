@@ -1,8 +1,8 @@
 import './style.css';
-import { BOARD_TAG, LCD_RES, PANEL_W, PANEL_H, switchBoard, type Board } from '@spec/layout';
-import { GAS_MODELS, PRESETS, boardParams, gasParams, presetParams, type Params } from './params';
+import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_PX_SCALE, parseRes, resTag, switchBoard, type Board } from '@spec/layout';
+import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
 import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
-import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, tubeLayout } from './render';
+import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
 import { buildPanel } from './ui';
@@ -34,8 +34,14 @@ let inputSource: 'manual' | 'device' | 'serial' = 'manual'; // not persisted: de
 let demoClock = Date.now();
 let clockSet = false;   // the user set the clock: the fill jumps there instead of retracting (followClock)
 
-/** Canvas layout of the current params (design px scaled to the board, see boardParams). */
-const layoutNow = () => tubeLayout(boardParams(params));
+/** Canvas layout of the current params (design px scaled to each tube's px scale, see params.ts tubeParams). */
+const layoutNow = () => faceLayout(...tubeParams(params));
+/** A board tag in words, for the sim's board controls (`lcd316@320fh` → `lcd316, rows 320, hours wide, minutes narrow`). */
+function boardWords(tag: string): string {
+  const [b, r] = tag.split('@'), lcd = r === undefined ? null : parseRes(r);
+  return lcd ? `${b}, rows ${lcd.rows}, hours ${lcd.wide[0] ? 'wide' : 'narrow'}, minutes ${lcd.wide[1] ? 'wide' : 'narrow'}` : b;
+}
+const lcdStart = parseRes(LAST_LCD_RES) ?? { rows: 320, wide: [false, false] };
 
 // ---------- DOM ----------
 const app = document.getElementById('app')!;
@@ -43,7 +49,11 @@ app.innerHTML = `
 <header>
   <h1>Liquid Watch — sim</h1>
   <div class="top">
-    <label title="Board the sim renders for (canvas size; params stay in design px and are scaled to it). Reloads the page.">board <select id="board">${['amoled191', ...LCD_RES.map((r) => `lcd316@${r}`)].map((b) => `<option${b === BOARD_TAG ? ' selected' : ''}>${b}</option>`).join('')}</select></label>
+    <label title="Board the sim renders for (canvas size; params stay in design px and are scaled to it). Reloads the page.">board <select id="board">${['amoled191', 'lcd316'].map((b) => `<option${b === BOARD ? ' selected' : ''}>${b}</option>`).join('')}</select></label>
+    <span id="lcdopts" style="display: ${BOARD === 'lcd316' ? 'contents' : 'none'}">
+      <label title="LCD canvas rows (RENDER_H): fewer render faster and are upscaled to the 320-row panel. Reloads the page.">rows <select id="lcdrows">${LCD_RES.map((r) => `<option${r === lcdStart.rows ? ' selected' : ''}>${r}</option>`).join('')}</select></label>
+      ${(['hours', 'minutes'] as const).map((t, i) => `<label title="${t} tube width: narrow = the AMOLED's physical size, wide = scaled with the canvas height (fills the face as on the AMOLED). Firmware LCD_FILL_${'HM'[i]}. Reloads the page.">${t} <select id="width${'hm'[i]}"><option value="0"${lcdStart.wide[i] ? '' : ' selected'}>narrow</option><option value="1"${lcdStart.wide[i] ? ' selected' : ''}>wide</option></select></label>`).join('')}
+    </span>
     <label>scale <select id="scale"><option value="0.33">0.33 (≈ real size @96 dpi)</option><option value="0.5" selected>0.5</option><option value="0.75">0.75</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label><input type="checkbox" id="ovl" checked> leather cuff</label>
     <label>leather <select id="leather"><option>brown</option><option>black</option><option>none</option></select></label>
@@ -139,7 +149,13 @@ const setScale = () => {
   drawGrid();
 };
 setScale();
-$('board').oninput = (e) => { const [b, r] = (e.target as HTMLSelectElement).value.split('@'); save(); switchBoard(b as Board, r ? +r : undefined); };
+// Board controls: any change reloads the sim on that board (spec/layout switchBoard); rows and widths are the LCD's.
+const boardPicked = (): void => {
+  const b = $<HTMLSelectElement>('board').value as Board;
+  const wide = [$<HTMLSelectElement>('widthh').value === '1', $<HTMLSelectElement>('widthm').value === '1'] as const;
+  save(); switchBoard(b, resTag(+$<HTMLSelectElement>('lcdrows').value, wide));
+};
+for (const id of ['board', 'lcdrows', 'widthh', 'widthm']) $(id).oninput = boardPicked;
 $('scale').oninput = (e) => { scale = +(e.target as HTMLSelectElement).value; setScale(); };
 $('ovl').oninput = (e) => { overlay.enabled = (e.target as HTMLInputElement).checked; applyOverlay(ovlDom, overlay, layoutNow()); setScale(); };
 $('leather').oninput = (e) => { overlay.leather = (e.target as HTMLSelectElement).value as any; applyOverlay(ovlDom, overlay, layoutNow()); };
@@ -270,7 +286,7 @@ $('serialbtn').onclick = async () => {
   await transport.waitReady();  // port open may have reset the board: wait out its boot
   await pushTime();
   const board = await transport.getBoard();   // the canvas the board renders must be the sim's for parity / pushes to look alike
-  if (board && board !== BOARD_TAG) $('serialst').textContent = `connected — the board runs ${board}, the sim ${BOARD_TAG}: pick ${board} under "board"`;
+  if (board && board !== BOARD_TAG) $('serialst').textContent = `connected — the board runs ${board}, the sim ${BOARD_TAG}: set ${boardWords(board)}`;
   await serial.setStream(true);
   srcRadio('serial').checked = true; inputSource = 'serial';
 };
@@ -375,7 +391,8 @@ const materialUi = buildMaterialPanel($('panel'), matState, {
 panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
 
 // URL params, applied on top of the restored session — for reproducible states / screenshots:
-//   ?board=lcd316&res=320 (canvas of another board, read by spec/layout.ts at load; remembered)
+//   ?board=lcd316&res=320 (canvas of another board, read by spec/layout.ts at load; remembered; res tag 320 / 320f /
+//   320fh / 320fm = tube widths narrow / both wide / hours wide / minutes wide)
 //   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09 &demo=120 &settle=1
 //   &along=0.3 &across=0 &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1
 //   &p.<paramKey>=<value>   e.g. &p.liquid=%2339ff14&p.bubble=0
@@ -434,9 +451,9 @@ function drawGrid() {
   g.clearRect(0, 0, PANEL_W, PANEL_H);
   if (!showGrid) return;
   g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 1 / Math.min(1, scale); g.setLineDash([4, 4]);
-  const { H, yH, yM } = layoutNow();
-  for (const y of [yH, yH + H, yM, yM + H]) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(PANEL_W, y + 0.5); g.stroke(); }
-  const b0 = Math.min(yH, yM) + H, b1 = Math.max(yH, yM);
+  const { Hh, Hm, yH, yM } = layoutNow();
+  for (const y of [yH, yH + Hh, yM, yM + Hm]) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(PANEL_W, y + 0.5); g.stroke(); }
+  const b0 = yH <= yM ? yH + Hh : yM + Hm, b1 = Math.max(yH, yM);
   g.fillStyle = 'rgba(255,0,0,0.25)'; g.fillRect(0, b0, PANEL_W, b1 - b0);
   g.fillStyle = '#fff'; g.font = '10px monospace';
   g.fillText(`hours y=${yH}`, 4, yH + 10); g.fillText(`minutes y=${yM}`, 4, yM + 10); g.fillText('bridge (must stay black)', 4, b0 + 14);
@@ -499,8 +516,8 @@ function physics(dt: number) {
   }
   if (kick !== 0) { raw.gyroAcross += kick; kick *= Math.exp(-dt / 0.06); if (Math.abs(kick) < 5) kick = 0; }
   if (wristT > 0) { wristT -= dt; raw.gyroAlong += 250 * Math.sin((wristT / 0.5) * Math.PI); }
-  const pb = boardParams(params);   // the physics runs in canvas px
-  Object.assign(input, imuFilter.step(raw, pb, dt));
+  const [pH, pM] = tubeParams(params);   // the physics runs in canvas px, each tube at its own px scale
+  Object.assign(input, imuFilter.step(raw, pH, dt));
   scopePush(raw, input);
   if (timeMode === 'demo') demoClock += dt * 1000 * demoSpeed;
   const f = fillLevels(currentDate());
@@ -508,16 +525,16 @@ function physics(dt: number) {
   followClock(hours, f.hours, dt, clockSet);
   followClock(minutes, sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes, dt, clockSet);
   clockSet = false;
-  stepTube(hours, input, pb, dt);
-  stepTube(minutes, input, pb, dt);
-  stepFizz(pb, dt, input.along, input.across, hours.agitation);
+  stepTube(hours, input, pH, dt, TUBE_PX_SCALE[0]);
+  stepTube(minutes, input, pM, dt, TUBE_PX_SCALE[1]);
+  stepFizz(pH, pM, dt, input.along, input.across, hours.agitation);
 }
 function frame(now: number) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
   if (!paused) { acc += dt; while (acc >= PHYS_DT) { physics(PHYS_DT); acc -= PHYS_DT; } }
   if (params.vertical !== shownVertical) setScale();
-  renderFrame(hours, minutes, boardParams(params), true, overlay.lensSmooth);
+  renderFrame(hours, minutes, ...tubeParams(params), true, overlay.lensSmooth);
   blit(img); fullctx.putImageData(img, 0, 0);
   fbctx.imageSmoothingEnabled = scale < 1; fbctx.drawImage(fullc, 0, 0);
   drawScope();

@@ -26,12 +26,18 @@ SHEETS = [
 def talk(s, cmd, end=b'\n', timeout=10, ok=None):
     return s.talk(cmd, end.decode(), timeout, ok)
 
+def layout(line):
+    """`LAYOUT W H Hh yH yM [Hm]` -> (W, H, (Hh, Hm), (yH, yM)): the canvas, each tube's rows and top (firmware before
+    per-tube widths has no Hm: both tubes Hh rows)."""
+    v = list(map(int, line.split()[1:]))
+    return v[0], v[1], (v[2], v[5] if len(v) > 5 else v[2]), (v[3], v[4])
+
 def whole(dump):
     """All strip rows of the `x` dump arrived (the Windows bridge now and then drops part of a reply)."""
-    lay = [l.split() for l in dump.splitlines() if l.startswith('LAYOUT')]
+    lay = [l for l in dump.splitlines() if l.startswith('LAYOUT')]
     if not lay: return 'END' in dump   # firmware before LAYOUT: checked by the assert below
-    w, th = int(lay[0][1]), int(lay[0][3])
-    return sum(1 for l in dump.splitlines() if len(l.strip()) == w * 4) == 2 * th
+    w, _, th, _ = layout(lay[0])
+    return sum(1 for l in dump.splitlines() if len(l.strip()) == w * 4) == sum(th)
 
 def to_img(px):  # list of (W*H) 565 ints -> RGB image, exact 565 expansion
     im = Image.new('RGB', (W, H)); d = []
@@ -53,17 +59,17 @@ def main():
     if fizz_was: s.set('fizz', 1)
     lines = [l.strip() for l in dump.splitlines() if l.strip()]
     lay = [l for l in lines if l.startswith('LAYOUT')]
-    if lay: W, H, TH, yh, ym = map(int, lay[0].split()[1:6]); Y0 = (yh, ym)
+    if lay: W, H, TH, Y0 = layout(lay[0])
     else:   # firmware before LAYOUT: the AMOLED canvas, rows from the params
-        TH = max(4, min(120, round(params['tubeHeight'])))
-        Y0 = tuple(max(0, min(H - TH, round(params[k]))) for k in ('hoursY', 'minutesY'))
+        th = max(4, min(120, round(params['tubeHeight']))); TH = (th, th)
+        Y0 = tuple(max(0, min(H - th, round(params[k]))) for k in ('hoursY', 'minutesY'))
     st = [l for l in lines if l.startswith('STATE')][0].split()[1:]
     rows = [l for l in lines if len(l) == W * 4]
-    assert len(rows) == 2 * TH, f'got {len(rows)} rows'
+    assert len(rows) == sum(TH), f'got {len(rows)} rows, expected {TH[0]} + {TH[1]}'
     dev = [0] * (W * H)
     for t in range(2):
-        for y in range(TH):
-            r = rows[t * TH + y]
+        for y in range(TH[t]):
+            r = rows[t * TH[0] + y]
             dev[(Y0[t] + y) * W:(Y0[t] + y + 1) * W] = [int(r[i:i + 4], 16) for i in range(0, W * 4, 4)]
     f = list(map(float, st))
     key = ['fillTarget', 'fillPos', 'angle', 'light', 'edgeLight', 'agitation', 'acrossTilt', 'cap', 'filmFree', 'filmHome', 'slugPos', 'reading',
@@ -110,8 +116,8 @@ def main():
         dd.append((255, 255, 0) if e > 12 else (90, 0, 0))
     diff.putdata(dd); diff.save(os.path.join(a.out, 'diff.png'))
     print(f'state hours={hours} minutes={minutes}' + (f' digitShift={job["digitShift"]}' if 'digitShift' in job else ''))
-    print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}), tubes {TH} px at y {Y0[0]} / {Y0[1]}')
-    print(f'mismatched pixels: {n} of {2 * W * TH} ({100 * n / (2 * W * TH):.2f}%), >12/255 off: {big}')
+    print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}), tubes {TH[0]} / {TH[1]} px at y {Y0[0]} / {Y0[1]}')
+    print(f'mismatched pixels: {n} of {W * sum(TH)} ({100 * n / (W * sum(TH)):.2f}%), >12/255 off: {big}')
     print('wrote', a.out)
 
 if __name__ == '__main__': main()

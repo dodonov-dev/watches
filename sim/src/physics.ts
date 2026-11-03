@@ -1,7 +1,7 @@
 // Fixed-timestep (50 Hz) liquid dynamics — two spring-dampers per tube.
 // Mirrors what the firmware will run. No rendering here.
 import type { Params } from './params';
-import { DESIGN_MM_PER_PX, DESIGN_TUBE_HEIGHT_MAX, MM_PER_PX, PX_SCALE, TUBE_HEIGHT_MAX, TUBE_LENGTH_PX } from '../../spec/layout';
+import { DESIGN_MM_PER_PX, DESIGN_TUBE_HEIGHT_MAX, mmPerPxAt, TUBE_HEIGHT_MAX, TUBE_LENGTH_PX } from '../../spec/layout';
 
 export const PHYS_HZ = 50;
 export const PHYS_DT = 1 / PHYS_HZ;
@@ -20,15 +20,19 @@ export interface TiltInput {
 // shaking may only nudge the fill edge and shift the light, never relocate the column.
 // These are hard caps applied on top of whatever the params say, so no gain/filter tuning
 // can ever make the liquid run off the end of the tube. Ported to firmware as-is.
-export const FILL_SLOSH_MAX_PX = 30 * PX_SCALE;  // |fillPos| cap (px caps and speeds: 30 design px, scaled to the canvas)
+// px caps and speeds are design px: a tube's canvas px = × its px scale k (spec/layout TUBE_PX_SCALE).
+export const FILL_SLOSH_MAX_DESIGN_PX = 30;   // |fillPos| cap
+export const fillSloshMaxPx = (k: number): number => FILL_SLOSH_MAX_DESIGN_PX * k;
 export const ANGLE_HARD_MAX_DEG = 20; // |angle| cap (params.angleMax tightens it, never widens)
 export const ANGLE_VERTICAL_MAX_DEG = 45; // |angle| cap of a vertical watch, whose upper surface stays level against the tilted tube
 export const LIGHT_MAX_DEG = 85;      // |light| cap
-export const CAP_DYN_MAX_PX = 12 * PX_SCALE;     // |cap| cap: dynamic meniscus bulge / hollow
+export const CAP_DYN_MAX_DESIGN_PX = 12;     // |cap| cap: dynamic meniscus bulge / hollow
+export const capDynMaxPx = (k: number): number => CAP_DYN_MAX_DESIGN_PX * k;
 export const PIN_RELAX_S = 3;         // a held contact line creeps back to the static shape (wrist micro-motion), s
 export const FILM_FULL_DESIGN_PX_S = 25;   // edge speed (design px/s) at which the trailing wet film is fully drawn
-export const FILM_FULL_PX_S = FILM_FULL_DESIGN_PX_S * PX_SCALE;   // the same in canvas px/s
-export const TRACE_DEPOSIT_MAX_PX = 32 * PX_SCALE; // max px of newly exposed glass per tick that gets a fresh deposit
+export const filmFullPxS = (k: number): number => FILM_FULL_DESIGN_PX_S * k;   // the same in canvas px/s
+export const TRACE_DEPOSIT_MAX_DESIGN_PX = 32; // max px of newly exposed glass per tick that gets a fresh deposit
+export const traceDepositMaxPx = (k: number): number => TRACE_DEPOSIT_MAX_DESIGN_PX * k;
 export const TRACE_FULL = 0xff00;      // a film at FILM_ETA_MAX (8.8 fixed point)
 export const TRACE_MIN = 2 << 8;       // dry residue below this is gone (buffer empties); also the thinnest deposit
 export const TRACE_DRAIN_MAX_PX_S = 48; // cap of a film's drain speed: TRACE_DRAIN_STEPS upwind steps a tick stay stable (3·c·dt/steps < 1); canvas px, not scaled (a stability bound)
@@ -37,17 +41,18 @@ export const RETRACT_S = 2;            // a full tube empties over this long whe
 
 // The film a receding line leaves on the bore wall, h = η·R: Bretherton's tube law with the finite-Ca
 // correction, η = 1.34 Ca^⅔ / (1 + 3.35 Ca^⅔), capped at FILM_ETA_MAX (thin-film limit). Ca is the one
-// capShape's Cox–Voinov term is calibrated with (θ³ = θ₀³ − G·v ⇒ Ca ≈ θ_dyn³ / 9Λ at FILM_FULL_PX_S;
+// capShape's Cox–Voinov term is calibrated with (θ³ = θ₀³ − G·v ⇒ Ca ≈ θ_dyn³ / 9Λ at filmFullPxS;
 // material/derive.ts inverts the same law for contactDyn), scaled by the line's speed. A watery line leaves
 // microns, thicker the faster it goes (∝ U^⅔); a syrup coats the bore whatever the speed.
 export const FILM_LAMBDA = 9.2, FILM_ETA_MAX = 0.1;
-export function filmEta(p: Params, speed = FILM_FULL_PX_S): number {
-  const dyn = Math.max(0, p.contactDyn) * Math.PI / 180, ca = dyn * dyn * dyn / (9 * FILM_LAMBDA) * (speed / FILM_FULL_PX_S);
+// speed: the line's px/s; full: filmFullPxS of its tube (speed = full: the fully drawn film).
+export function filmEta(p: Params, speed: number, full: number): number {
+  const dyn = Math.max(0, p.contactDyn) * Math.PI / 180, ca = dyn * dyn * dyn / (9 * FILM_LAMBDA) * (speed / full);
   const c = Math.cbrt(ca * ca);
   return Math.min(FILM_ETA_MAX, 1.34 * c / (1 + 3.35 * c));
 }
 /** traceDrain from the render params alone (presets without a material; migration to Params v27): ρg/μ from
- *  the capillary length (γ/ρg = lc²) and the Ca contactDyn is calibrated with (μ = Ca·γ/U at FILM_FULL_PX_S),
+ *  the capillary length (γ/ρg = lc²) and the Ca contactDyn is calibrated with (μ = Ca·γ/U at filmFullPxS),
  *  v = ρg·h²/3μ = U·h²/(3·Ca·lc²) for h = FILM_ETA_MAX·R, in px/s. contactDyn tops out at 90°, so a syrup comes
  *  out faster than its material would make it (the material layer derives it from ρ and μ instead).
  *  `p` and the result are in design px (a preset's own units, whatever the board). */
@@ -186,14 +191,14 @@ export function boreR(p: Params): number {
  *  see render.ts capShape): `adv` / `rec` = at the advancing / receding contact angle (adv <= rec),
  *  `rest` = where the hydrostatic head along the slug puts it (`len` = column px, `tilt` = along follower
  *  into this end), held within [adv, rec] — the pressure's static shape, no history. A line with `pin` px
- *  of centre travel against it shows clamp(rest − pin, adv, rec). */
-export function contactLeads(p: Params, len: number, tilt: number): { R: number; rest: number; adv: number; rec: number } {
+ *  of centre travel against it shows clamp(rest − pin, adv, rec). `mmPerPx`: the tube's (spec/layout mmPerPxAt). */
+export function contactLeads(p: Params, len: number, tilt: number, mmPerPx: number): { R: number; rest: number; adv: number; rec: number } {
   const R = boreR(p), rad = Math.PI / 180;
   const t0 = Math.max(0, Math.min(180, p.contactAngle)) * rad, hy = Math.max(0, p.contactHyst) * rad;
   const lead = (th: number): number => R * Math.cos(th) / (1 + Math.sin(th));
   // hydrostatic head, split between the two ends: Δcos θ = R·L·sin α / (4 lc²), all in mm
-  const lc = Math.max(0.1, p.capLength), Rmm = R * MM_PER_PX;
-  const cs = Math.max(-1, Math.min(1, Math.cos(t0) - Rmm * Math.max(0, len) * MM_PER_PX * tilt / (4 * lc * lc)));
+  const lc = Math.max(0.1, p.capLength), Rmm = R * mmPerPx;
+  const cs = Math.max(-1, Math.min(1, Math.cos(t0) - Rmm * Math.max(0, len) * mmPerPx * tilt / (4 * lc * lc)));
   const adv = lead(Math.min(Math.PI, t0 + hy)), rec = lead(Math.max(0, t0 - hy));
   return { R, rest: Math.max(adv, Math.min(rec, R * cs / (1 + Math.sqrt(1 - cs * cs)))), adv, rec };
 }
@@ -215,7 +220,9 @@ function dz(v: number, d: number): number {
   return Math.abs(v) < d ? 0 : v - Math.sign(v) * d;
 }
 
-export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt = PHYS_DT): void {
+/** One physics step of a tube; `k`: its px scale (spec/layout TUBE_PX_SCALE), `p` its params (boardParams at k). */
+export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt: number, k: number): void {
+  const FILL_SLOSH_MAX_PX = fillSloshMaxPx(k), CAP_DYN_MAX_PX = capDynMaxPx(k), FILM_FULL_PX_S = filmFullPxS(k);
   const along = dz(inp.along, p.deadzone);
   const across = dz(inp.across, p.deadzone);
 
@@ -332,9 +339,9 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt = PHYS_DT):
       // the liquid, which dissolved whatever lay there: a deposit too thin to count clears them.
       const dep = (a: number, b: number): void => {
         if (b <= a) return;
-        let v = Math.round(TRACE_FULL * filmEta(p, (b - a) / dt) / FILM_ETA_MAX);
+        let v = Math.round(TRACE_FULL * filmEta(p, (b - a) / dt, FILM_FULL_PX_S) / FILM_ETA_MAX);
         if (v < TRACE_MIN) v = 0;
-        const lo = Math.max(0, Math.round(a)), hi = Math.min(TUBE_LENGTH_PX, Math.round(a + Math.min(b - a, TRACE_DEPOSIT_MAX_PX)));
+        const lo = Math.max(0, Math.round(a)), hi = Math.min(TUBE_LENGTH_PX, Math.round(a + Math.min(b - a, traceDepositMaxPx(k))));
         for (let x = lo; x < hi; x++) s.trace[x] = s.traceWet[x] = v;
         if (v && hi > lo) { if (lo < s.traceLo) s.traceLo = lo; if (hi > s.traceHi) s.traceHi = hi; }
       };
@@ -419,7 +426,7 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt = PHYS_DT):
   const lenNow = columnLen(s.fillTarget, p), tiltFree = -recede * s.edgeLight;
   const relax = 1 - Math.min(1, dt / PIN_RELAX_S);
   const seat = (held: number, lineV: number, tilt: number, out: number): [number, number] => {
-    const c = contactLeads(p, lenNow, tilt), lo = c.rest - c.rec, hi = c.rest - c.adv;
+    const c = contactLeads(p, lenNow, tilt, mmPerPxAt(k)), lo = c.rest - c.rec, hi = c.rest - c.adv;
     const moved = Math.max(lo, Math.min(hi, held * relax)) + out, pinned = Math.max(lo, Math.min(hi, moved));
     return [pinned, lineV + ((moved - pinned) / dt - lineV) * Math.min(1, 2 * dt)];
   };
