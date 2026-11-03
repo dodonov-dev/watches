@@ -138,20 +138,23 @@ def main():
                 r = subprocess.run([str(tmp / name)], input=script.encode(), capture_output=True)
                 if r.returncode: return path, f'{name} exited {r.returncode}: {r.stderr.decode()[-300:]}', None
                 outs.append(r.stdout.decode())
-            return path, None, (first_diff(*outs), outs[1].count('\n'), outs[1])
+            return path, None, (first_diff(*outs), outs[1].count('\n'), outs)
         bad = 0
         with ThreadPoolExecutor(a.j) as ex:
             for path, err, res in ex.map(run, jobs):
                 name = path if path.startswith('scene: ') else os.path.relpath(path, ROOT)
                 if err: bad += 1; print(f'{name:40s} ERROR {err}'); continue
-                diff, frames, out = res
+                diff, frames, outs = res
                 if diff: bad += 1; print(f'{name:40s} DIFFERS\n  reference {diff[0]}\n  current   {diff[1]}')
                 else: print(f'{name:40s} {frames} frames identical')
-                if a.v:
-                    rows = [l.split()[5:7] for l in out.splitlines()]   # 'live/foam' per tube
-                    most = [max(int(r[t].split('/')[0]) for r in rows) for t in (0, 1)]
-                    foam = [max(int(r[t].split('/')[1]) for r in rows) for t in (0, 1)]
-                    print(f'  fizz live max h {most[0]} m {most[1]}, foam max h {foam[0]} m {foam[1]}, end {" ".join(rows[-1])}')
+                if a.v:   # both sides' populations when they differ (a rewrite that is not exact must keep them close)
+                    for side, out in zip(('reference', 'current') if diff else ('',), outs[::-1][:1] if not diff else outs):
+                        rows = [l.split()[5:7] for l in out.splitlines()]   # 'live/foam' per tube
+                        most = [max(int(r[t].split('/')[0]) for r in rows) for t in (0, 1)]
+                        foam = [max(int(r[t].split('/')[1]) for r in rows) for t in (0, 1)]
+                        mean = [sum(int(r[t].split('/')[1]) for r in rows) / len(rows) for t in (0, 1)]
+                        print(f'  {side + " " if side else ""}fizz live max h {most[0]} m {most[1]}, foam max h {foam[0]} m {foam[1]}'
+                              f' mean h {mean[0]:.1f} m {mean[1]:.1f}, end {" ".join(rows[-1])}')
         tag = f'{a.board}{"@" + a.res if lcd else ""}{" fma" if a.fma else ""}{" tiles" if a.tiles else ""}'
         print(f'{tag}: {len(jobs) - bad} of {len(jobs)} presets identical over the sequence')
         sys.exit(1 if bad else 0)

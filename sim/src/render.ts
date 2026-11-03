@@ -980,12 +980,18 @@ function ensureFizz(i: number, p: Params, len: number, agitation = 0): void {
   const want = fizzWant(p, len, agitation);
   const H = tubeLayout(p).H;
   while (arr.length < want) {
-    const v = 0.5 + Math.random(); arr.push({ x: Math.random() * len, y: fizzSpawnY(p, H, v), v, life: 0, z: Math.random() });
+    const v = fizzV(); arr.push({ x: Math.random() * len, y: fizzSpawnY(p, H, v), v, life: 0, z: fizzZ() });
   }
   if (arr.length > want) arr.length = want;
 }
 /** Bubble radius px for size factor `v`. */
 const fizzR = (p: Params, v: number): number => p.fizzSize / 2 * (1 + (v - 1) * p.fizzSizeVar);
+/** Size classes and depth levels (mirrored in firmware): a bubble's size factor `v` (0.5..1.5) and depth `z` (0..1)
+ *  take FIZZ_SIZES / FIZZ_DEPTHS evenly spaced values, one draw each, so the firmware's renderer shares a class's disc
+ *  set-up and coverage table and a level's colours. */
+const FIZZ_SIZES = 12, FIZZ_DEPTHS = 4;
+const fizzV = (): number => 0.5 + (Math.floor(Math.random() * FIZZ_SIZES) + 0.5) / FIZZ_SIZES;
+const fizzZ = (): number => (Math.floor(Math.random() * FIZZ_DEPTHS) + 0.5) / FIZZ_DEPTHS;
 /** Glass wall band px per side (see buildPalette `wallU`); 0 when the band is off. */
 const fizzWall = (p: Params): number => p.glassWall > 0 ? Math.max(1, p.glassWall) : 0;
 /** Row where a bubble of size `v` is fully behind the wall band (respawn/turnaround bound); the old
@@ -1004,7 +1010,7 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
  *  so `shift` px back in a slug that slid away — each axis jittered by up to ±`fizzSourceSpread` px, kept in
  *  the liquid. */
 function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: Float32Array, shift: number): void {
-  f.v = 0.5 + Math.random(); f.z = Math.random(); f.life = 0;
+  f.v = fizzV(); f.z = fizzZ(); f.life = 0;
   const r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = H - lo;
   f.y = hi <= lo ? H / 2 : Math.max(lo, Math.min(hi, lo + p.fizzSourceY * (hi - lo) + (2 * Math.random() - 1) * s));
   const xl = -discFit(surfL, H, f.y, r, -1) + FOAM_CATCH, xh = discFit(surf, H, f.y, r, 1) - FOAM_CATCH;
@@ -1053,7 +1059,7 @@ export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation
       f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + Math.random() * (hi - lo) : at > 0 ? lo : hi;
     };
     // Scattered birth: a new size and depth anywhere in the liquid.
-    const scatter = (f: Fizz): void => { f.life = 0; f.v = 0.5 + Math.random(); f.y = fizzSpawnY(p, H, f.v); respawn(f, -1); f.z = Math.random(); };
+    const scatter = (f: Fizz): void => { f.life = 0; f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, -1); f.z = fizzZ(); };
     // A spring's bubble leaving or popping: its slot goes idle until the cadence fills it.
     const free = (f: Fizz): void => { f.v = 0; f.life = 0; };
     // On the bore wall the rise points at (row wallY: the disc touching the glass), held by it.
@@ -1096,7 +1102,7 @@ export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation
       const hide = fizzHideY(p, f.v);
       if (f.y < hide || f.y >= H - hide) {
         if (spring) free(f);
-        else { f.v = 0.5 + Math.random(); const h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; respawn(f, -1); f.z = Math.random(); }
+        else { f.v = fizzV(); const h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; respawn(f, -1); f.z = fizzZ(); }
         continue;
       }
       // The flow carrying its rim within FOAM_CATCH of a surface (the whole disc, so big bubbles never poke
@@ -1108,7 +1114,7 @@ export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation
       const outR = vx > 0 && f.x > discFit(surf, H, f.y, r, 1) - FOAM_CATCH, outL = vx < 0 && -f.x > discFit(surfL, H, f.y, r, -1) - FOAM_CATCH;
       if ((side > 0 && outR) || (side < 0 && outL) || (side !== 0 && touchesFoam(fizz[i], f, r, p, side))) f.life = side * p.fizzFoamLife * (0.5 + Math.random());
       else if ((outR || outL) && spring) free(f);
-      else if (outR || outL) { f.v = 0.5 + Math.random(); f.y = fizzSpawnY(p, H, f.v); respawn(f, vx < 0 ? 0 : 1); f.z = Math.random(); }
+      else if (outR || outL) { f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); respawn(f, vx < 0 ? 0 : 1); f.z = fizzZ(); }
       else f.x = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
     }
     if (spring) {

@@ -1,4 +1,5 @@
 #include <climits>
+#include <atomic>
 #include "render.h"
 #include "gen/sprites_gen.h"
 #include "layout.h"
@@ -403,10 +404,14 @@ struct DiscRow {
   uint32_t *prof;                               // the tube's fizzProf (FZC: FIZZ_PROF=2 pixel classes)
 #endif
 };
+#define FIZZ_SIZES 12   // size classes, depth levels: see fizzV / fizzZ
+#define FIZZ_DEPTHS 4
+#define FIZZ_MQ 4       // the masks' |dx| steps a px (4: maskRows shifts by 2), |dy| steps a px: see FizzClass
+#define FIZZ_MDY 8
 // Veil of one disc pixel by the pixel's footprint over each surface band [profile, profile +- width]: continuous
 // as the edge moves. Out of the pixel loop (noinline) so its nine floats are not live there; a division per
 // veiled pixel only (bubbles touching a band). Multiplies cov in the sim's order, so the result is bit-identical.
-FIZZ_IRAM static float __attribute__((noinline)) discVeil(int ix, const DiscRow &d, float cov) {   // returns the veiled cov, sim order
+static float __attribute__((noinline)) discVeil(int ix, const DiscRow &d, float cov) {   // returns the veiled cov, sim order
   if (ix + 1 > d.sR && d.bR > 0) { const float a1 = fmn(ix + 1, d.sR + d.bR), a0 = fmx(ix, d.sR);
     if (a1 > a0) { const float q = ((a0 + a1) / 2 - d.sR) / d.bR; cov *= 1 - d.veilA * (a1 - a0) * (1 - q) * (1 - d.pullR * q); } }
   if (ix < d.sL && d.bL > 0) { const float a1 = fmn(ix + 1, d.sL), a0 = fmx(ix, d.sL - d.bL);
@@ -437,7 +442,7 @@ static inline uint16_t blend565L(uint16_t a, const RimLanes &B, int T) {   // ==
 // minus the certainly-core pixels that write nothing (no tint, out of the pinpoint's reach), each pixel then taking
 // the exact tests it took before. Output-neutral: every pixel left out reached `continue` without a write.
 template <bool BLICK>
-FIZZ_IRAM static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
+static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
   const float fx = d.fx, dy = d.dy, dy2 = dy * dy, r = d.r, in2 = d.in2, out2 = d.out2, offX = d.offX, offY = d.offY, wallT = d.wallT;
   if (dy2 >= out2) return;   // every d2 = dx² + dy2 >= dy2 >= out2: nothing on this row
   const float bdy = BLICK ? dy - d.bY : 0, bRem = BLICK ? d.bOut2 - bdy * bdy : 0;   // pinpoint reach left for dx² on this row
@@ -520,6 +525,77 @@ FIZZ_IRAM static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa,
 }
 static inline void discRow(uint16_t *row, int ixa, int ixb, const DiscRow &d) {
   if (d.blick) discRowT<true>(row, ixa, ixb, d); else discRowT<false>(row, ixa, ixb, d);
+}
+// A size-class bubble's row by its mask (FizzLook): what maskRow / maskPx read, on maskRows' stack.
+struct MaskRowK {
+  const uint8_t *m;          // the mask's |dy| row: coverage 0..255 of tube column ix at m[|FIZZ_MQ ix + base|]
+  int base;
+  int W256, tint256;         // the row's wall transmission and the core's dark tint, x 256
+  int c0, c1;                // the core: [c0, c1], see-through (empty: c0 > c1)
+  int x0, step;              // panel x = x0 + step * ix
+  RimLanes rim;
+};
+static inline int maskT(int t8, int W256) { return ((t8 + (t8 >> 7)) * W256 + 128) >> 8; }   // 0..255 coverage x wall: blend565's T
+// Columns [a, b] of a class bubble's row outside the pinpoint's reach: the ring blended toward the rim by its coverage,
+// the core left as it is or tinted.
+FIZZ_IRAM static void __attribute__((noinline)) maskRow(uint16_t *row, int a, int b, const MaskRowK &k) {
+  const uint8_t *const m = k.m; const int W = k.W256, step = k.step, base = k.base; const RimLanes rim = k.rim;
+  auto ring = [&](int ia, int ib) {
+    uint16_t *px = row + k.x0 + step * ia;
+    for (int ix = ia, v = FIZZ_MQ * ia + base; ix <= ib; ix++, px += step, v += FIZZ_MQ) {
+      const int t8 = m[v < 0 ? -v : v];
+      if (!t8) continue;
+      const int T = maskT(t8, W);
+      *px = __builtin_bswap16(T >= 256 ? rim.c : blend565L(__builtin_bswap16(*px), rim, T));
+    }
+  };
+  const int c0 = k.c0 > a ? k.c0 : a, c1 = k.c1 < b ? k.c1 : b;
+  if (c0 > c1) { ring(a, b); return; }
+  ring(a, c0 - 1);
+  if (k.tint256 > 0) {   // see-through interior: the dark tint over the liquid as is
+    uint16_t *px = row + k.x0 + step * c0;
+    for (int ix = c0, v = FIZZ_MQ * c0 + base; ix <= c1; ix++, px += step, v += FIZZ_MQ) {
+      const int t8 = m[v < 0 ? -v : v];
+      if (t8) *px = __builtin_bswap16(blend565T(__builtin_bswap16(*px), 0, (maskT(t8, W) * k.tint256 + 128) >> 8));
+    }
+  }
+  ring(c1 + 1, b);
+}
+// Columns [a, b] a surface band veils or the pinpoint can reach: discRowT's per-pixel veil (on the mask's coverage),
+// pinpoint and one write.
+struct MaskPxK {
+  float fx, bX, bdy2, bRem, bIn2, rbOut, blickK, tintA;   // pinpoint (bRem <= 0: out of reach)
+  float sR, sL, bR, bL, veilA, pullR, pullL; int veilLo, veilHi;   // the veil (discVeil)
+  uint16_t cRim, cBlick;
+};
+FIZZ_IRAM static void __attribute__((noinline)) maskPx(uint16_t *row, int a, int b, const MaskRowK &k, const MaskPxK &q) {
+  for (int ix = a; ix <= b; ix++) {
+    const int v = FIZZ_MQ * ix + k.base, t8 = k.m[v < 0 ? -v : v];
+    if (!t8) continue;
+    const int T0 = maskT(t8, k.W256);
+    if (T0 <= 0) continue;
+    float cov = T0 * (1.0f / 256);
+    if (ix >= q.veilLo || ix < q.veilHi) {   // discVeil: the pixel's footprint over each surface band
+      if (ix + 1 > q.sR && q.bR > 0) { const float a1 = fmn(ix + 1, q.sR + q.bR), a0 = fmx(ix, q.sR);
+        if (a1 > a0) { const float u = ((a0 + a1) / 2 - q.sR) / q.bR; cov *= 1 - q.veilA * (a1 - a0) * (1 - u) * (1 - q.pullR * u); } }
+      if (ix < q.sL && q.bL > 0) { const float a1 = fmn(ix + 1, q.sL), a0 = fmx(ix, q.sL - q.bL);
+        if (a1 > a0) { const float u = (q.sL - (a0 + a1) / 2) / q.bL; cov *= 1 - q.veilA * (a1 - a0) * (1 - u) * (1 - q.pullL * u); } }
+      if (cov <= 0) continue;
+    }
+    float g = 0;
+    if (q.bRem > 0) {
+      const float bdx = ix + 0.5f - q.fx - q.bX, bdx2 = bdx * bdx;
+      if (bdx2 < q.bRem) { const float db2 = bdx2 + q.bdy2; g = q.blickK * (db2 <= q.bIn2 ? 1.0f : clampf(q.rbOut - sqrtApprox(db2), 0, 1)); }
+    }
+    uint16_t *px = row + (k.x0 + k.step * ix);
+    if (ix >= k.c0 && ix <= k.c1) {   // see-through interior (sim): the pinpoint or the dark tint, one write
+      if (g > 0) { const float w = g + q.tintA * (1 - g); rowPxa(px, 0, q.tintA > 0 ? blend565(0, q.cBlick, g / w) : q.cBlick, cov * w); }
+      else if (q.tintA > 0) rowPxa(px, 0, 0, cov * q.tintA);
+      continue;
+    }
+    if (g > 0) rowPxa(px, 0, blend565(q.cRim, q.cBlick, g), cov);   // ring, pinpoint mixed in 888 before the one blend
+    else rowPxa(px, 0, q.cRim, cov);
+  }
 }
 // Step 3e concave surface band over [xa, xb): pixel-footprint stroke from the inner shoulder to the outer
 // colour at interior opacity `fill` (surfaceFill), thinned by the receding pull, the blick (`blickK`: this
@@ -944,7 +1020,8 @@ struct Warp {
 // ---------------------------------------------------------------------------------------------
 // Bubbles per tube: FIZZ_POOL (layout.h). A count pushed past the sliders over serial (or a spring needing more) is
 // capped and reported (fizzOverflow), not silently dropped.
-static int fizzOverflowPeak = 0;   // largest count requested past FIZZ_POOL (0 = everything fitted), see fizzOverflow()
+static std::atomic<int> fizzOverflowPeak{0};   // largest count requested past FIZZ_POOL (0 = everything fitted), see fizzOverflow(); both cores step
+static inline void atomicMax(std::atomic<int> &a, int v) { int c = a.load(std::memory_order_relaxed); while (v > c && !a.compare_exchange_weak(c, v, std::memory_order_relaxed)) {} }
 // px in the liquid frame; v = size/speed factor, 0 = an idle slot (a spring's pool: not drawn, not moved);
 // life != 0 = parked under a surface, |life| s left before it pops: > 0 under the time edge, < 0 under the home
 // edge of a free slug.
@@ -1113,10 +1190,15 @@ struct Tube {
   float fizzShift = 0;                                        // px the liquid frame sits off its home (a free slug that slid away; 0 pinned), set by drawTube
   float springScatter = 0;                                    // share of spring births born scattered instead (0 = all at the spring), advanced by stepFizz
   float springClock = 0;                                      // bubbles the spring may release now (its cadence accrued)
+  struct FoamWork *foam = nullptr;                            // stepFizz / settleFoam work space (sweep order kept between steps, grid), PSRAM, render_init
+  struct FizzLook *look = nullptr;                            // the fizz's size classes and depth-level colours (planFizz), PSRAM, render_init
   uint16_t traceA[TUBE_LENGTH_PX];                            // dried-trace residue depth per column, 1/256 with headroom (traceAmount > 1)
   uint16_t traceRaw[TUBE_LENGTH_PX];                          // render-frame residue copy, input to the taper blur
   uint16_t *traceLut = nullptr;                               // traceFillRow's per-row colour table, TRACE_LUT entries (one per tube: both cores render), PSRAM, render_init
   MarkPlan *plan = nullptr;                                   // the marks' per-frame plans (step 9), PSRAM, render_init
+  // The fizz's per-frame constants (planFizz, read per bubble row): surface band veil opacity, receding pulls,
+  // fizzBlick, the mirrored liquid frame's x map; per row the veil bounds (DiscRow veilLo / veilHi).
+  float fzVeilA = 0, fzPullR = 0, fzPullL = 0, fzBlickK = 0; int fzXsI = 0, fzL = 0; bool fzMir = false;   // per row: FizzLook veilLo / veilHi
   // Panel rows [rowLo, rowHi) the pixel helpers may touch (inStrip, hspan): the strip, or the band being drawn (step 9:
   // the marks run band by band, each stage clipped to the band's rows; on the tiled LCD the band is a tile slot).
   int rowLo = 0, rowHi = 0;
@@ -1171,7 +1253,10 @@ struct Tube {
   void planFizz(const Params &p, const FizzFrame &ff);
   void fizzBand(int r0, int r1);
   void planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b);
-  void bubbleRows(struct BubblePlan &b, int r0, int r1);
+  void bubbleRows(const struct BubblePlan &b, int r0, int r1);
+  void discOf(const struct BubblePlan &b, DiscRow &d) const;
+  inline void discRowOf(const struct BubblePlan &b, DiscRow &d, int iy, float wallT, float dy);
+  void maskRows(const struct BubblePlan &b, int iy0, int iy1);
   void ensureFizz(const Params &p, float len, float agitation);
   inline float fizzSquashRow(const Params &p, int y) const;
   void lensMagRows(const Params &p, float *rows) const;
@@ -2591,8 +2676,42 @@ TICK_IRAM static void __attribute__((noinline)) tickSegment(const TickRows &k, c
 #define MARK_BANDS ((TUBE_HEIGHT_MAX + TUBE_BAND - 1) / TUBE_BAND)
 static_assert(TUBE_HEIGHT_MAX <= 127 && FIZZ_POOL * MARK_BANDS <= 32767, "MarkPlan indexes rows by int8, band lists by int16");
 struct TickSeg { float dx, dy; int16_t x0, w, outer, inner; uint8_t ink; };
-// A bubble's disc set-up (drawTube step 5): its DiscRow without the per-row fields, which bubbleRows fills per row.
-struct BubblePlan { DiscRow d; float y, m, pop, depthK; int16_t ixa, ixb, iyA, iyB; };
+// A bubble's disc set-up (drawTube step 5), one 64-B cache line: what planBubble computes per bubble. bubbleRows
+// derives the rest of its DiscRow per band (the same expressions as before, so the same values), on its stack, and
+// fills the per-row fields there (the plan stays in PSRAM, written once a frame).
+struct alignas(64) BubblePlan {
+  float fx, r, offX, offY, bX, bY, tintA, y, m, pop;
+  int16_t ixa, ixb, iyA, iyB;
+  uint16_t cBlick; bool blick; int8_t cls; uint8_t lvl; int16_t qt;   // size class (-1: none, a popping bubble swells), depth level; masked: x = qt / FIZZ_MQ
+};
+// The fizz look of one tube (PSRAM, render_init): per size class (FIZZ_SIZES, v = 0.5 + (k + 0.5) / FIZZ_SIZES) the disc
+// set-up a bubble of that size takes (planBubble / bubbleRows took it per bubble) and its AA ring's coverage by d2,
+// rebuilt when the size or shading params change; per depth level (z = (l + 0.5) / FIZZ_DEPTHS) the colours a bubble
+// mixes toward the body per row, every frame (planFizz).
+// Its masks: per class one quadrant of the disc's coverage 0..255 as discRowT computes it per pixel (outside out2: 0,
+// inside in2: 255, between: the AA ring min(1, r + 0.5 - sqrt(d2))), by |dx| in steps of 1 / FIZZ_MQ px (a class
+// bubble's x is rounded to them, so a pixel's |dx| is one: |FIZZ_MQ ix + FIZZ_MQ / 2 - qt| steps for x = qt / FIZZ_MQ)
+// and |dy| in steps of 1 / FIZZ_MDY px (a row's distance from the centre, squashed, rounded to one), each |dy| row with
+// its widest covered step. A class bubble's row takes its coverage by index; the core and the pinpoint stay per bubble
+// (they follow the light), decided per row by their chords. In one pool per tube (PSRAM, render_init: small enough to
+// stay in the cache), shared by both tubes (fizzMasks): internal RAM while they fit FIZZ_MASK_INTL (user-fav and most
+// presets: a PSRAM table misses the cache the bands share, ~1 us a bubble row), else a PSRAM pool sized at boot for the
+// sliders' largest bubbles; params past those draw every bubble analytically (fizzMaskOverflow).
+struct FizzClass {
+  float r, in2, out2, kc, core2Lo, core2Hi, off, bk, rbOut, bIn2, bOut2;
+  bool core, blick;
+  int xw, dyl, maskOff;   // mask: dyl |dy| rows of xw |dx| steps at pool + maskOff, then dyl bytes: each row's widest step (255: none)
+};
+struct FizzLook {
+  float key[4]; bool valid, masks;   // fizzSize, fizzSizeVar, fizzShadeOff, fizzBlick the classes were built for; masks fit
+  FizzClass k[FIZZ_SIZES];
+  const uint8_t *mask; int need;      // this frame's masks (fizzMasks, shared); bytes the classes' masks take
+  bool sane;                         // every class a real disc (masks can be built)
+  float tintA[FIZZ_DEPTHS];
+  uint16_t cRim[FIZZ_DEPTHS][TUBE_HEIGHT_MAX], cBlick[FIZZ_DEPTHS][TUBE_HEIGHT_MAX];   // rim per row; pinpoint by the centre row
+  int16_t veilLo[TUBE_HEIGHT_MAX], veilHi[TUBE_HEIGHT_MAX];   // per row: DiscRow veilLo / veilHi (no band: never)
+};
+static_assert(sizeof(BubblePlan) == 64, "one cache line a bubble");
 struct MarkPlan {
   // the tick layer (one a frame: ticksOnTop picks rear or top)
   bool tickOn, tickGeneric, tickDepth, tickEmboss; int tickEmbT; float tickEmb; TickInk ink[2];
@@ -2842,20 +2961,28 @@ static void fizzSeed() {}
 static bool fizzReseed(uint32_t) { return false; }
 #endif
 #ifdef FIZZ_PROF
-static uint32_t fizzStepProf[FS_N];   // stepFizz counters (core 1 only: the spring preset never draws frand in the render)
+static uint32_t fizzStepProfCore[2][FS_N], fizzStepProf[FS_N];   // stepFizz counters per core (each tube steps on its render's core), summed when read
+#define FS_P (fizzStepProfCore[esp_cpu_get_core_id() & 1])
 static inline float frand() {
   const uint32_t c0 = esp_cpu_get_cycle_count(), v = fizzDraw();
-  fizzStepProf[FS_CYC_RAND] += esp_cpu_get_cycle_count() - c0; fizzStepProf[FS_RANDS]++;
+  FS_P[FS_CYC_RAND] += esp_cpu_get_cycle_count() - c0; FS_P[FS_RANDS]++;
   return (v >> 8) / 16777216.0f;
 }
-#define FS_ADD(i, v) FZ_ADD(fizzStepProf, i, v)
-#define FS_CNT(i, n) (fizzStepProf[i] += (n))
+#define FS_ADD(i, v) FZ_ADD(FS_P, i, v)
+#define FS_CNT(i, n) (FS_P[i] += (n))
 #else
 static inline float frand() { return (fizzDraw() >> 8) / 16777216.0f; }
 #define FS_ADD(i, v) ((void)0)
 #define FS_CNT(i, n) ((void)0)
 #endif
 static inline float fizzR(const Params &p, float v) { return p.fizzSize / 2 * (1 + (v - 1) * p.fizzSizeVar); }
+// Size classes and depth levels (fizz perf, 2026-11-03): a bubble's size factor v and depth z take FIZZ_SIZES /
+// FIZZ_DEPTHS values, one draw each as before, so the render shares a class's disc set-up and coverage table and a
+// level's colours (planFizz). See sim fizzV / fizzZ.
+static inline float fizzV() { return 0.5f + ((int)(frand() * FIZZ_SIZES) + 0.5f) * (1.0f / FIZZ_SIZES); }
+static inline float fizzZ() { return ((int)(frand() * FIZZ_DEPTHS) + 0.5f) * (1.0f / FIZZ_DEPTHS); }
+static inline int fizzClass(float v) { const int k = (int)((v - 0.5f) * FIZZ_SIZES); return k < 0 ? 0 : k >= FIZZ_SIZES ? FIZZ_SIZES - 1 : k; }
+static inline int fizzLevel(float z) { const int l = (int)(z * FIZZ_DEPTHS); return l < 0 ? 0 : l >= FIZZ_DEPTHS ? FIZZ_DEPTHS - 1 : l; }
 static inline float fizzWall(const Params &p) { return p.glassWall > 0 ? fmx(1, p.glassWall) : 0; }   // band px per side (buildPalette wallU)
 // Row where a bubble of size v is fully behind the wall band (respawn/turnaround bound); 3 px without a band.
 static inline float fizzHideY(const Params &p, float v) { float w = fizzWall(p); return w > 0 ? fmx(0, w - fizzR(p, v)) : 3; }
@@ -2868,22 +2995,26 @@ FIZZ_IRAM static float foamFront(const float *surf, int H, float y, int side) {
 }
 // Furthest centre (in u = side * x) a bubble of radius r at row y can take with its whole disc inside the
 // surface `surf` (liquid frame): the tightest row of the disc. See sim discFit.
+// Rows whose term provably exceeds the term of the row nearest y (B) cannot be the minimum: they skip their root
+// (side * surf - B > root, checked by squares with an absolute margin far above float rounding). The minimum over the
+// rows left is the minimum over all of them, bit for bit (a skipped term is strictly greater than one that is kept).
+FIZZ_IRAM static float discFitRows(const float *surf, int a, int b, float y, float r, int side) {
+  const int ic = (int)clampf(jround(y), (float)a, (float)b);
+  const float dyc = ic - y, B = side * surf[ic] - sqrtExact(fmx(0, r * r - dyc * dyc));
+  float u = INFINITY;
+  for (int iy = a; iy <= b; iy++) {
+    const float dy = iy - y, rem = fmx(0, r * r - dy * dy);   // as the all-rows loop wrote it (the board fuses one product)
+    if (iy != ic) { const float e = side * surf[iy] - B - 1e-3f; if (e > 0 && e * e > rem * 1.00001f) continue; }
+    u = fmn(u, side * surf[iy] - sqrtExact(rem));
+  }
+  return u;
+}
 FIZZ_IRAM static float discFit(const float *surf, int H, float y, float r, int side) {
-#ifdef FIZZ_PROF
   FZ_T0(c0);
   const int a = (int)fmx(0, fceil(y - r)), b = (int)fmn(H - 1, ffloor(y + r));
-  float u;
-  if (a > b) u = foamFront(surf, H, y, side) - r;
-  else { u = INFINITY; for (int iy = a; iy <= b; iy++) { const float dy = iy - y; u = fmn(u, side * surf[iy] - sqrtExact(fmx(0, r * r - dy * dy))); } }
+  const float u = a > b ? foamFront(surf, H, y, side) - r : discFitRows(surf, a, b, y, r, side);
   FS_ADD(FS_CYC_FIT, c0); FS_CNT(FS_FITS, 1); FS_CNT(FS_FIT_ROWS, b >= a ? b - a + 1 : 0);
   return u;
-#else
-  const int a = (int)fmx(0, fceil(y - r)), b = (int)fmn(H - 1, ffloor(y + r));
-  if (a > b) return foamFront(surf, H, y, side) - r;
-  float u = INFINITY;
-  for (int iy = a; iy <= b; iy++) { const float dy = iy - y; u = fmn(u, side * surf[iy] - sqrtExact(fmx(0, r * r - dy * dy))); }
-  return u;
-#endif
 }
 // A lower bound of discFit without its roots: every row's root is at most r (rounded up to r1 here), so each row's
 // term side * surf - root is at least side * surf - r1 (rounding is monotone), and so is their minimum. Lets stepFizz
@@ -2896,18 +3027,92 @@ static inline float discFitLow(const float *surf, int H, float y, float r, int s
   for (int iy = a; iy <= b; iy++) u = fmn(u, side * surf[iy] - r1);
   return u;
 }
+// The foam's work space, one per tube (PSRAM, render_init): the parked bubbles (settleFoam) or touchesFoam's candidates
+// (stepFizz) as a slot list with each one's fizzR, in a grid over (u = side * x, y) so a pair test only visits bubbles
+// within reach: the foam lines the surface front across the whole bore and packs back from it in layers, and the free
+// bubbles fill the tube behind it. The grid holds each slot at the (u, y) it had when it was built (u0, y0); `drift`
+// bounds how far any has moved since, so a query widened by it still finds every bubble a pair test could accept: what
+// it leaves out is farther than the contact distance m on one axis alone, where every test it would have taken fails.
+// Each pass visits what it did before, in the same order: the results are bit-identical to the all-pairs scans.
+// `order` (the packing sweep order) is kept from step to step: it is re-sorted, not rebuilt from slot order.
+#define FOAM_CELLS 1024   // grid cells (u x y) at most: the u cells widen past it
+#define FOAM_BRUTE 8      // up to this many bubbles a grid costs more than it saves: every pass scans them all
+struct FoamWork {
+  int16_t order[FIZZ_POOL]; int nOrder;       // the packing sweep order (parked, front first), kept between steps
+  int16_t list[FIZZ_POOL]; int nList;         // settleFoam: the parked in slot order; stepFizz: touchesFoam's candidates
+  int16_t pos[FIZZ_POOL];                     // slot -> its index in order (packing sweep)
+  int16_t next[FIZZ_POOL], head[FOAM_CELLS];  // the grid: per cell (row-major, nu a row) a linked list of slots, -1 ends
+  uint32_t mark[(FIZZ_POOL + 31) / 32];       // one bubble's gathered partners: their sweep indices as bits
+  uint8_t inOrder[FIZZ_POOL];                 // slot kept in order from the last step (settleFoam, cleared after use)
+  float R[FIZZ_POOL];                         // fizzR per slot of list: only bounds the reach (rMax); the tests call fizzR,
+                                              // whose products fuse into their sums on the board as before
+  float u0[FIZZ_POOL], y0[FIZZ_POOL];         // the slot's (u, y) at the grid's build
+  float uLo, invCu, invCy, cell;              // grid origin in u, 1 / cell size in u and y, cell size in y
+  float uMin, uMax, drift, rMax;              // u extent of everything in it; bound on |u - u0|, |y - y0| (a bubble moving
+                                              // farther is moved to its new cell); largest R
+  int nu, ny, side; bool moved;               // nu 0: no grid (few bubbles); a bubble changed cells (a gather made before is stale)
+};
+// The cell of u / y, clamped to the grid (monotone in u / y; NaN: cell 0, no float-to-int conversion of it).
+static inline int foamCell(float t, int n) { return t >= 0 ? (t < n - 1 ? (int)t : n - 1) : 0; }
+static inline int foamCu(const FoamWork &w, float u) { return foamCell((u - w.uLo) * w.invCu, w.nu); }
+static inline int foamCy(const FoamWork &w, float y) { return foamCell(y * w.invCy, w.ny); }
+static inline void foamAdd(FoamWork &w, int s, float u, float y) {   // into the grid (nu > 0)
+  w.u0[s] = u; w.y0[s] = y; const int c = foamCy(w, y) * w.nu + foamCu(w, u); w.next[s] = w.head[c]; w.head[c] = (int16_t)s;
+}
+// A grid over list[0, nList) at its current (u, y) (R set), or none for a few bubbles. Cells: the largest R + 0.5 high,
+// so a contact reach spans about five; as wide, or wider when the foam is long.
+static void foamGridBuild(FoamWork &w, const Fizz *fz, int H, int side, bool moving) {
+  w.side = side; w.drift = 0; w.rMax = 0; w.uMin = INFINITY; w.uMax = -INFINITY; w.moved = false;
+  for (int i = 0; i < w.nList; i++) { const int s = w.list[i]; const float u = side * fz[s].x; w.rMax = fmx(w.rMax, w.R[s]); w.uMin = fmn(w.uMin, u); w.uMax = fmx(w.uMax, u); }
+  if (w.nList <= FOAM_BRUTE) { w.nu = 0; return; }
+  w.cell = fmx(1, w.rMax + 0.5f); w.invCy = 1 / w.cell; w.drift = moving ? 0.5f * w.cell : 0;
+  w.ny = (int)(H * w.invCy) + 2; if (w.ny > FOAM_CELLS / 4) w.ny = FOAM_CELLS / 4;
+  const float span = w.uMax - w.uMin;
+  if (!(span < 65536)) { w.nu = 0; return; }   // NaN or an absurd spread: every pass scans them all (the same answers)
+  int nu = (int)(span * w.invCy) + 2;
+  if (nu * w.ny > FOAM_CELLS) { nu = FOAM_CELLS / w.ny; w.invCu = (nu - 1) / (span + 1); } else w.invCu = w.invCy;
+  w.nu = nu; w.uLo = w.uMin;
+  for (int c = 0; c < nu * w.ny; c++) w.head[c] = -1;
+  for (int i = w.nList - 1; i >= 0; i--) { const int s = w.list[i]; foamAdd(w, s, side * fz[s].x, fz[s].y); }
+}
+// Bubble s moved to (u, y) (settleFoam) past the drift bound from where the grid holds it: to its cell there.
+static void __attribute__((noinline)) foamMove(FoamWork &w, int s, float u, float y) {
+  int16_t *link = &w.head[foamCy(w, w.y0[s]) * w.nu + foamCu(w, w.u0[s])];
+  while (*link != s) link = &w.next[*link];
+  *link = w.next[s];
+  foamAdd(w, s, u, y); w.moved = true;
+}
+// The grid cells within reach of (u, y): every bubble a contact test with one of radius r there can accept.
+struct FoamRange { int u0, u1, y0, y1; };
+static inline FoamRange foamRange(const FoamWork &w, float u, float y, float r) {
+  const float reach = r + w.rMax + 0.5f + w.drift + 0.01f;   // >= any pair's m plus the drift, with a margin over rounding
+  return {foamCu(w, u - reach), foamCu(w, u + reach), foamCy(w, y - reach), foamCy(w, y + reach)};
+}
 // A free bubble f (radius r) touching foam parked on `side` — not foam on the other edge, nor foam this tick is
 // still to release (its life still carries the old side).
-// Scans `cand` (n slots): every slot that is foam on `side` now is in it (stepFizz keeps it), others are skipped by
-// the same test as before. The answer is an OR over that set, so the order of the scan does not matter.
-FIZZ_IRAM static bool touchesFoam(const Tube &t, const Fizz &f, float r, const Params &p, int side, const int16_t *cand, int n) {
-  FS_CNT(FS_TOUCHES, 1); FS_CNT(FS_TOUCH_SCAN, n);
-  for (int c = 0; c < n; c++) {
-    const Fizz &g = t.fizz[cand[c]];
-    if (g.life * side <= 0) continue;
-    const float m = r + fizzR(p, g.v) + 0.5f, dx = g.x - f.x, dy = g.y - f.y;
-    if (fabsf(dx) < m && fabsf(dy) < m && dx * dx + dy * dy < m * m) return true;
+// Scans the candidates (stepFizz keeps them in the foam work space: every slot that is foam on `side` now, where it
+// parked, which no foam leaves before settleFoam), only the cells within reach and nothing when the bubble is farther
+// than any contact from all of them in u; others are skipped by the same test as before. The answer is an OR over that
+// set, so the order of the scan does not matter.
+FIZZ_IRAM static bool touchesFoam(const Tube &t, const FoamWork &w, const Fizz &f, float r, const Params &p, int side) {
+  FS_CNT(FS_TOUCHES, 1);
+  const float uq = side * f.x, reach = r + w.rMax + 0.5f + 0.01f;   // >= any candidate's m, with a margin far above float rounding
+  if (uq + reach < w.uMin || uq - reach > w.uMax) return false;    // |dx| > m from all of them
+  auto hit = [&](int j) {
+    const Fizz &g = t.fizz[j];
+    if (g.life * side <= 0) return false;
+    const float m = r + fizzR(p, g.v) + 0.5f, dx = g.x - f.x, dy = g.y - f.y;   // fizzR here, not R: the same fused ops as before
+    return fabsf(dx) < m && fabsf(dy) < m && dx * dx + dy * dy < m * m;
+  };
+  if (w.nu == 0) {
+    FS_CNT(FS_TOUCH_SCAN, w.nList);
+    for (int c = 0; c < w.nList; c++) if (hit(w.list[c])) return true;
+    return false;
   }
+  const FoamRange q = foamRange(w, uq, f.y, r);
+  for (int cy = q.y0; cy <= q.y1; cy++)
+    for (int cu = q.u0; cu <= q.u1; cu++)
+      for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) { FS_CNT(FS_TOUCH_SCAN, 1); if (hit(j)) return true; }
   return false;
 }
 // Respawn x in the liquid of the bubble's (new) row: at < 0 random, 0 just inside the time edge, > 0 just
@@ -2922,7 +3127,7 @@ static void __attribute__((noinline)) fizzRespawnX(const Tube &t, const Params &
 // fizzShift px back in a slug that slid away — each axis jittered by up to ±fizzSourceSpread px, kept in the
 // liquid. See sim springSpawn.
 static void __attribute__((noinline)) springSpawn(const Tube &t, const Params &p, Fizz &f) {
-  f.v = 0.5f + frand(); f.z = frand(); f.life = 0;
+  f.v = fizzV(); f.z = fizzZ(); f.life = 0;
   const float r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = t.H - lo;
   f.y = hi <= lo ? t.H / 2.0f : clampf(lo + p.fizzSourceY * (hi - lo) + (2 * frand() - 1) * s, lo, hi);
   const float xl = -discFit(t.fizzSurfL, t.H, f.y, r, -1) + FOAM_CATCH, xh = discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH;
@@ -2930,7 +3135,7 @@ static void __attribute__((noinline)) springSpawn(const Tube &t, const Params &p
 }
 // Scattered birth: a new size and depth anywhere in the liquid. See sim stepFizz scatter.
 static void __attribute__((noinline)) fizzScatter(const Tube &t, const Params &p, Fizz &f) {
-  f.life = 0; f.v = 0.5f + frand(); f.y = fizzSpawnY(p, t.H, f.v); fizzRespawnX(t, p, f, -1); f.z = frand();
+  f.life = 0; f.v = fizzV(); f.y = fizzSpawnY(p, t.H, f.v); fizzRespawnX(t, p, f, -1); f.z = fizzZ();
 }
 // A spring's bubble leaving or popping: its slot goes idle until the cadence fills it.
 static inline void fizzFree(Fizz &f) { f.v = 0; f.life = 0; }
@@ -2940,7 +3145,7 @@ static inline bool springBirth(const Tube &t) { return t.springScatter <= 0 || f
 // is capped and reported (fizzOverflow). See sim fizzWant.
 static int fizzWant(const Params &p, float len, float agitation) {
   int want = (int)ffloor(p.fizzCount * (len / L) * (1 + (agitation < 0.05f ? 0 : agitation))); if (want < 0) want = 0;
-  if (want > FIZZ_POOL) { if (want > fizzOverflowPeak) fizzOverflowPeak = want; want = FIZZ_POOL; }
+  if (want > FIZZ_POOL) { atomicMax(fizzOverflowPeak, want); want = FIZZ_POOL; }
   return want;
 }
 // A spring fills its pool at its cadence instead, up to the same count (stepFizz).
@@ -2948,7 +3153,7 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
   fizzLen = len;
   if (p.fizzSource == 1) return;
   const int want = fizzWant(p, len, agitation);
-  while (fizzN < want) { float v = 0.5f + frand(); fizz[fizzN++] = { frand() * len, fizzSpawnY(p, H, v), v, 0, frand() }; }
+  while (fizzN < want) { float v = fizzV(); fizz[fizzN++] = { frand() * len, fizzSpawnY(p, H, v), v, 0, fizzZ() }; }
   fizzN = want;
 }
 // Parked bubbles: sit centred on the surface front — foam floats half out of the liquid — lagging behind an
@@ -2957,21 +3162,25 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // meniscus from its front backward. Against a closed end (glass: glassVy = the across rise px/s) the whole disc
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
-static int16_t foamOrder[FIZZ_POOL];   // the packing sweep order (parked, front first); one tube at a time
 FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
+  FoamWork &w = *t.foam; Fizz *const fz = t.fizz;
   auto front = [&](float y, float r) { return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side); };
-  auto place = [&](Fizz &f, float u, float y) {   // in the bore and not past the front of its row
-    const float r = fizzR(p, f.v), lo = wall + r, hi = H - lo;
+  auto place = [&](int s, float u, float y) {   // in the bore and not past the front of its row
+    Fizz &f = fz[s]; const float r = fizzR(p, f.v), lo = wall + r, hi = H - lo;
     f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi);
-    f.x = side * fmn(u, front(f.y, r));
+    const float un = fmn(u, front(f.y, r));   // its new u (side * x: side is +-1)
+    f.x = side * un;
+    const float d = fmx(fabsf(un - w.u0[s]), fabsf(f.y - w.y0[s])); if (d > w.drift && w.nu) foamMove(w, s, un, f.y);
   };
   // The parked bubbles, in slot order (none parks or leaves in here): the slide pass and the packing sweep run over them.
   int n = 0;
-  for (int i = 0; i < t.fizzN; i++) if (t.fizz[i].life != 0) foamOrder[n++] = (int16_t)i;
+  for (int i = 0; i < t.fizzN; i++) if (fz[i].life != 0) { w.list[n++] = (int16_t)i; w.R[i] = fizzR(p, fz[i].v); }
+  w.nList = n;
+  foamGridBuild(w, fz, H, side, true);
   for (int a = 0; a < n; a++) {
-    const int i = foamOrder[a];
-    Fizz &f = t.fizz[i];
+    const int i = w.list[a];
+    Fizz &f = fz[i];
     const float r = fizzR(p, f.v);
     const int fy = (int)clampf(jround(f.y), 0, H - 1);
     const float tu = front(f.y, r);
@@ -2979,37 +3188,88 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu;   // buoyancy: no faster than the rise
     const float slope = side * (surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0]) / 2;   // px per row
     float slide = glass ? glassVy * dt : FOAM_SLIDE * speed * clampf(2 * slope, -1, 1) * dt;
-    for (int b = 0; b < n; b++) {   // touching a neighbour on the slide side: line up along the surface
-      const int j = foamOrder[b]; const Fizz &g = t.fizz[j];
-      if (j == i || slide * (g.y - f.y) <= 0) continue;
+    // Touching a neighbour on the slide side: line up along the surface. Slide 0 skips every neighbour anyway.
+    auto touch = [&](int j) {
+      const Fizz &g = fz[j];
+      if (j == i || slide * (g.y - f.y) <= 0) return false;
       const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dy = g.y - f.y;
-      if (du * du + dy * dy < m * m) { slide = 0; break; }
+      return du * du + dy * dy < m * m;
+    };
+    if (slide != 0) {
+      if (w.nu == 0) { for (int b = 0; b < n; b++) if (touch(w.list[b])) { slide = 0; break; } }
+      else {
+        const FoamRange q = foamRange(w, u, f.y, r);
+        for (int cy = q.y0; cy <= q.y1 && slide != 0; cy++)
+          for (int cu = q.u0; cu <= q.u1 && slide != 0; cu++)
+            for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) if (touch(j)) { slide = 0; break; }
+      }
     }
-    place(f, u, f.y + slide);
+    place(i, u, f.y + slide);
   }
+  // The sweep order: last step's, those still parked, then the newly parked in slot order. The first sort orders it
+  // by u, front first, ties by slot: what a stable sort of slot order gives (the sim's), from a nearly sorted start.
+  {
+    int m = 0;
+    for (int a = 0; a < w.nOrder; a++) { const int s = w.order[a]; if (s < t.fizzN && fz[s].life != 0 && !w.inOrder[s]) { w.inOrder[s] = 1; w.order[m++] = (int16_t)s; } }
+    for (int a = 0; a < n; a++) { const int s = w.list[a]; if (!w.inOrder[s]) w.order[m++] = (int16_t)s; else w.inOrder[s] = 0; }
+    w.nOrder = m;   // == n
+  }
+  int16_t *const order = w.order;
+  uint32_t *const mark = w.mark;
   // Pack: pairwise relaxation swept front to back; an overlapping pair is pushed apart, clamped to the bore
   // and the front, and whatever overlap the clamps leave the rear one takes by stepping back. See sim.
   for (int it = 0; it < FOAM_RELAX; it++) {
-    for (int a = 1; a < n; a++) {   // insertion sort: nearly sorted from the last step
-      const int16_t k = foamOrder[a]; const float uk = side * t.fizz[k].x; int b = a - 1;
-      while (b >= 0 && side * t.fizz[foamOrder[b]].x < uk) { foamOrder[b + 1] = foamOrder[b]; b--; }
-      foamOrder[b + 1] = k;
+    for (int a = 1; a < n; a++) {   // insertion sort: nearly sorted (the last sweep's order; the first: the last step's)
+      const int16_t k = order[a]; const float uk = side * fz[k].x; int b = a - 1;
+      if (it == 0) while (b >= 0 && (side * fz[order[b]].x < uk || (side * fz[order[b]].x == uk && order[b] > k))) { order[b + 1] = order[b]; b--; }
+      else while (b >= 0 && side * fz[order[b]].x < uk) { order[b + 1] = order[b]; b--; }
+      order[b + 1] = k;
     }
+    for (int a = 0; a < n; a++) w.pos[order[a]] = (int16_t)a;
     for (int a = 0; a < n; a++) {
-      Fizz &f = t.fizz[foamOrder[a]]; const float rf = fizzR(p, f.v);
-      for (int b = a + 1; b < n; b++) {
-        Fizz &g = t.fizz[foamOrder[b]];
+      const int fi = order[a]; Fizz &f = fz[fi]; const float rf = fizzR(p, f.v);
+      // a's partners later in the sweep, visited in sweep order: all of them, or those in the cells within reach (as
+      // bits of mark), gathered again past `after` whenever a move widens the reach or the grid is rebuilt.
+      FoamRange q{0, -1, 0, -1}; int qb = a;   // the gather's cells; the partner visited last
+      auto gather = [&](int after) {
+        const int w0 = (after + 1) >> 5, w1 = (n - 1) >> 5;
+        for (int k = w0; k <= w1; k++) mark[k] = 0;
+        if (w.nu == 0) {
+          for (int k = w0; k <= w1; k++) mark[k] = ~0u;
+        } else {
+          q = foamRange(w, side * f.x, f.y, rf);
+          for (int cy = q.y0; cy <= q.y1; cy++)
+            for (int cu = q.u0; cu <= q.u1; cu++)
+              for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) { const int b = w.pos[j]; if (b > after) mark[b >> 5] |= 1u << (b & 31); }
+        }
+        if (w0 <= w1) mark[w0] &= ~0u << ((after + 1) & 31);   // only past `after`
+        if (((n - 1) & 31) != 31 && w0 <= w1) mark[w1] &= ~(~0u << (((n - 1) & 31) + 1));   // not past the last
+      };
+      gather(a);
+      for (;;) {
+        // the next partner past qb: the lowest set bit at or after qb + 1
+        int k = (qb + 1) >> 5; if (k > (n - 1) >> 5) break;
+        uint32_t bits = mark[k] & (~0u << ((qb + 1) & 31));
+        while (!bits && ++k <= (n - 1) >> 5) bits = mark[k];
+        if (!bits) break;
+        qb = (k << 5) + __builtin_ctz(bits);
+        const int gs = order[qb]; Fizz &g = fz[gs];
         const float m = rf + fizzR(p, g.v) + 0.5f;
         float du = side * (g.x - f.x), dy = g.y - f.y;
         if (fabsf(du) >= m || fabsf(dy) >= m || du * du + dy * dy >= m * m) continue;
-        const float d = sqrtExact(du * du + dy * dy), k = (m - d) / 2;
+        const float d = sqrtExact(du * du + dy * dy), kk = (m - d) / 2;
         const float nu = d > 1e-4f ? du / d : -1, ny = d > 1e-4f ? dy / d : 0;   // coincident: g (later in the sweep) steps back
-        place(f, side * f.x - k * nu, f.y - k * ny);
-        place(g, side * g.x + k * nu, g.y + k * ny);
+        place(fi, side * f.x - kk * nu, f.y - kk * ny);
+        place(gs, side * g.x + kk * nu, g.y + kk * ny);
         du = side * (g.x - f.x); dy = g.y - f.y;
-        if (du * du + dy * dy >= m * m) continue;
-        Fizz &front = du > 0 ? g : f, &rear = du > 0 ? f : g;
-        place(rear, side * front.x - sqrtExact(fmx(0, m * m - dy * dy)), rear.y);
+        if (du * du + dy * dy < m * m) {
+          const bool gFront = du > 0; const int rs = gFront ? fi : gs; const Fizz &fr = gFront ? g : f;
+          place(rs, side * fr.x - sqrtExact(fmx(0, m * m - dy * dy)), fz[rs].y);
+        }
+        if (w.nu) {   // moves: a bubble that changed cells, or a's wider reach, may bring partners the gather left out
+          const FoamRange c = foamRange(w, side * f.x, f.y, rf);
+          if (w.moved || c.u0 < q.u0 || c.u1 > q.u1 || c.y0 < q.y0 || c.y1 > q.y1) { w.moved = false; gather(qb); }
+        }
       }
     }
   }
@@ -3021,15 +3281,17 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
 // takes every birth instead, at its cadence (springClock), so the bubbles rise as a stream; a bubble leaving or
 // popping frees its slot. A slug sliding off the spring leaves it dry, and its births go scattered instead
 // (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). See sim stepFizz.
-int fizzOverflow() { return fizzOverflowPeak; }
+int fizzOverflow() { return fizzOverflowPeak.load(std::memory_order_relaxed); }
 int fizzCounts(int idx, int &foam, int &slots) {
   const Tube &t = tubes[idx & 1]; int live = 0; foam = 0; slots = t.fizzN;
   for (int i = 0; i < t.fizzN; i++) { if (t.fizz[i].v != 0) live++; if (t.fizz[i].life != 0) foam++; }
   return live;
 }
 
-FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, float agitation) {
-  FZ_T0(st0); FS_CNT(FS_STEPS, 1);
+// One tube's step (idx): each tube steps only its own state, so the two may step at once on two cores (main: each on
+// the core that renders it); stepFizz steps both, one after the other.
+FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation) {
+  FZ_T0(st0); if (idx == 1) FS_CNT(FS_STEPS, 1);   // a step: both tubes
   if (mirrored(p)) along = -along;   // fizz lives in the mirrored liquid frame (see drawTube)
   const float speed = p.fizzSpeed * (1 + 3 * agitation);
   const float up = sqrtExact(fmx(0.0f, 1 - along * along - across * across));
@@ -3041,9 +3303,9 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
   const bool spring = p.fizzSource == 1; const float wall = fizzWall(p);
   const bool hold = spring && p.fizzFoamLife > 0 && vy != 0;   // the bore wall the rise points at holds the stream
   const float letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
-  for (int i = 0; i < 2; i++) {
-    Tube &t = tubes[i]; const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
-    if (len <= 0) continue;   // no liquid drawn yet: no surfaces
+  {
+    Tube &t = tubes[idx & 1]; const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
+    if (len <= 0) return;   // no liquid drawn yet: no surfaces
     FZ_T0(sp0);
     // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
     // the slug slides it past its home surface.
@@ -3061,10 +3323,19 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
     auto wallY = [&](const Fizz &g) { return vy < 0 ? wall + fizzR(p, g.v) : H - wall - fizzR(p, g.v); };
     auto held = [&](const Fizz &g) { return g.v != 0 && g.life == 0 && fabsf(g.y - wallY(g)) < 1e-3f; };
     FS_ADD(FS_CYC_SPRINGPT, sp0); FS_CNT(FS_SLOTS, t.fizzN);
-    // touchesFoam's candidates (in foamOrder, free until settleFoam below): the foam on `side` now, plus every bubble
-    // that parks during the loop (only bubble k changes in step k; foam does not move before settleFoam).
-    int nFoam = 0;
-    if (side != 0) for (int j = 0; j < t.fizzN; j++) if (t.fizz[j].life * side > 0) foamOrder[nFoam++] = (int16_t)j;
+    // touchesFoam's candidates (the foam work space, free until settleFoam below): the foam on `side` now, plus every
+    // bubble that parks during the loop (only bubble k changes in step k; foam does not move before settleFoam).
+    FoamWork &w = *t.foam;
+    w.nList = 0;
+    if (side != 0) {
+      for (int j = 0; j < t.fizzN; j++) if (t.fizz[j].life * side > 0) { w.list[w.nList++] = (int16_t)j; w.R[j] = fizzR(p, t.fizz[j].v); }
+    }
+    foamGridBuild(w, t.fizz, H, side, false);   // side 0: empty (no candidates, no touchesFoam); the candidates stay put
+    auto parked = [&](int k, float r) {   // bubble k (radius r) parked: a candidate from now on
+      const float u = side * t.fizz[k].x;
+      w.R[k] = r; w.rMax = fmx(w.rMax, r); w.uMin = fmn(w.uMin, u); w.uMax = fmx(w.uMax, u);
+      if (w.nu == 0) w.list[w.nList++] = (int16_t)k; else foamAdd(w, k, u, t.fizz[k].y);
+    };
     FZ_T0(lp0);
     for (int k = 0; k < t.fizzN; k++) {
       Fizz &f = t.fizz[k];
@@ -3111,7 +3382,7 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
       const float hide = fizzHideY(p, f.v);
       if (f.y < hide || f.y >= H - hide) {
         if (spring) fizzFree(f);
-        else { f.v = 0.5f + frand(); const float h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; fizzRespawnX(t, p, f, -1); f.z = frand(); }
+        else { f.v = fizzV(); const float h = fizzHideY(p, f.v); f.y = vy <= 0 ? H - h : h; fizzRespawnX(t, p, f, -1); f.z = fizzZ(); }
         continue;
       }
       // The flow carrying its rim within FOAM_CATCH of a surface (the whole disc, so big bubbles never poke
@@ -3122,16 +3393,16 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
                  outL = vx < 0 && -f.x > discFitLow(t.fizzSurfL, H, f.y, r, -1) - FOAM_CATCH && -f.x > discFit(t.fizzSurfL, H, f.y, r, -1) - FOAM_CATCH;
 #ifdef FIZZ_PROF
       FZ_T0(tf0);
-      const bool touch = (side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, f, r, p, side, foamOrder, nFoam));
+      const bool touch = (side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, w, f, r, p, side));
       FS_ADD(FS_CYC_TOUCH, tf0);
-      if (touch) { f.life = side * p.fizzFoamLife * (0.5f + frand()); foamOrder[nFoam++] = (int16_t)k; }
+      if (touch) { f.life = side * p.fizzFoamLife * (0.5f + frand()); parked(k, r); }
 #else
-      if ((side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, f, r, p, side, foamOrder, nFoam))) {
-        f.life = side * p.fizzFoamLife * (0.5f + frand()); foamOrder[nFoam++] = (int16_t)k;   // parked: a candidate from now on
+      if ((side > 0 && outR) || (side < 0 && outL) || (side != 0 && touchesFoam(t, w, f, r, p, side))) {
+        f.life = side * p.fizzFoamLife * (0.5f + frand()); parked(k, r);
       }
 #endif
       else if ((outR || outL) && spring) fizzFree(f);
-      else if (outR || outL) { f.v = 0.5f + frand(); f.y = fizzSpawnY(p, H, f.v); fizzRespawnX(t, p, f, vx < 0 ? 0 : 1); f.z = frand(); }
+      else if (outR || outL) { f.v = fizzV(); f.y = fizzSpawnY(p, H, f.v); fizzRespawnX(t, p, f, vx < 0 ? 0 : 1); f.z = fizzZ(); }
       else f.x = fmx(-foamFront(t.fizzSurfL, H, f.y, -1), fmn(foamFront(t.fizzSurf, H, f.y, 1), f.x));
     }
     FS_ADD(FS_CYC_LOOP, lp0);
@@ -3163,6 +3434,9 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
     FS_ADD(FS_CYC_SETTLE, se0);
   }
   FS_ADD(FS_CYC, st0);
+}
+void stepFizz(const Params &p, float dt, float along, float across, float agitation) {
+  stepFizzTube(0, p, dt, along, across, agitation); stepFizzTube(1, p, dt, along, across, agitation);
 }
 
 // Magnification for a bubble of radius r at float row y: mean of the row table over the rows the
@@ -4096,80 +4370,304 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   if (lensOut) *lensRowsOut = rc.lensOn ? rc.lensSrc : nullptr;   // the push applies it
 }
 
+// A class's mask geometry for a radius r (dyl |dy| rows of xw |dx| steps, plus a byte a row): its bytes.
+static inline int fizzMaskGeom(float r, int &xw, int &dyl) {
+  const float rOut = r + 0.5f; xw = (int)(rOut * FIZZ_MQ) + 2; dyl = (int)(rOut * FIZZ_MDY) + 2;
+  return dyl * (xw + 1);
+}
+static std::atomic<int> fizzMaskPeak{0};   // bytes a size push asked for past the pool (0: none; INT_MAX: radii no mask can hold), reported by main
+int fizzMaskOverflow() { return fizzMaskPeak.load(std::memory_order_relaxed); }
+static void buildFizzClasses(FizzLook &fl, const Params &p) {
+  int need = 0; bool sane = true;   // every class a real disc (fizzSizeVar past 2 would make the small ones negative)
+  fl.masks = false;
+  for (int k = 0; k < FIZZ_SIZES; k++) {
+    FizzClass &c = fl.k[k];
+    const float r = fizzR(p, 0.5f + (k + 0.5f) * (1.0f / FIZZ_SIZES)), rIn = r - 0.5f, rOut = r + 0.5f, kc = r - 1;   // fizzV's values
+    c.r = r; c.kc = kc;
+    c.in2 = rIn >= 1 ? rIn * rIn * (1 - 1e-4f) : -1; c.out2 = rOut * rOut * (1 + 1e-4f);
+    c.core = r >= 1.5f && kc > 0; c.core2Lo = kc * kc * (1 - 1e-4f); c.core2Hi = kc * kc * (1 + 1e-4f);
+    c.off = fmn(r * p.fizzShadeOff, r - 1);   // core shift, centre kept in the disc (sim)
+    c.blick = r >= 2.5f && p.fizzBlick > 0;
+    const float rb = fmx(0.6f, r * 0.25f), rbIn = rb - 0.5f;
+    c.bk = 0.4f * (r - 1); c.rbOut = rb + 0.5f; c.bIn2 = rbIn * rbIn * (1 - 1e-4f); c.bOut2 = c.rbOut * c.rbOut * (1 + 1e-4f);
+    // A mask holds 0 < r < 62 (a row's widest |dx| step is a byte); past that (sizes pushed beyond the sliders) no
+    // size arithmetic is done and every bubble draws analytically.
+    const bool ok = r > 0 && r < 62;
+    sane = sane && ok;
+    c.maskOff = need;
+    if (ok) need += fizzMaskGeom(r, c.xw, c.dyl); else c.xw = c.dyl = 0;
+  }
+  fl.need = need; fl.sane = sane;
+  fl.key[0] = p.fizzSize; fl.key[1] = p.fizzSizeVar; fl.key[2] = p.fizzShadeOff; fl.key[3] = p.fizzBlick; fl.valid = true;
+}
+// The masks both tubes share: the first tube to find them stale for its size params (re)builds them (planFizz); a tube
+// takes them only while they match its params, and one that finds the other building draws analytically that frame
+// (the two cores render at once; both tubes have the same params, so neither is drawing from them then).
+// ready: release / acquire, so a tube that sees them ready for its params sees every byte of them.
+#ifndef MALLOC_CAP_INTERNAL   // host builds
+#define MALLOC_CAP_INTERNAL 0
+#define MALLOC_CAP_8BIT 0
+#endif
+#ifdef BOARD_LCD316
+#define FIZZ_MASK_INTL 8192   // internal RAM: user-fav needs 8123 B, the median preset ~2 KB
+#else
+#define FIZZ_MASK_INTL 0      // the AMOLED keeps its internal RAM
+#endif
+static struct {
+  std::atomic<bool> ready{false}, building{false};
+  float key[2] = {0, 0};                      // fizzSize, fizzSizeVar they are built for
+  uint8_t *intl = nullptr, *ps = nullptr;     // the internal pool (FIZZ_MASK_INTL), the PSRAM one (fizzMaskWorst), render_init
+  int psCap = 0;
+  const uint8_t *pool = nullptr;              // the pool they are in
+} fizzMasks;
+static void writeFizzMasks(const FizzLook &fl, uint8_t *pool) {
+  for (int k = 0; k < FIZZ_SIZES; k++) {
+      const FizzClass &c = fl.k[k];
+      uint8_t *const m = pool + c.maskOff, *const wide = m + c.dyl * c.xw;
+      for (int dq = 0; dq < c.dyl; dq++) {
+        const float dy = dq * (1.0f / FIZZ_MDY); int xm = 255;
+        for (int i = 0; i < c.xw; i++) {
+          const float dx = i * (1.0f / FIZZ_MQ), d2 = dx * dx + dy * dy;
+          const float cov = d2 >= c.out2 ? 0 : d2 <= c.in2 ? 1 : clampf(c.r + 0.5f - sqrtExact(d2), 0, 1);
+          const int t8 = (int)(cov * 255 + 0.5f);
+          m[dq * c.xw + i] = (uint8_t)t8;
+          if (t8) xm = i;
+        }
+        wide[dq] = (uint8_t)xm;
+      }
+  }
+}
+// This frame's masks for a tube (planFizz, before its bubbles are planned).
+static void takeFizzMasks(FizzLook &fl, const Params &p) {
+  const bool intl = fl.need <= FIZZ_MASK_INTL && fizzMasks.intl, fits = fl.sane && (intl || fl.need <= fizzMasks.psCap);
+  if (!fits) { atomicMax(fizzMaskPeak, fl.sane ? fl.need : INT_MAX); fl.masks = false; return; }
+  auto match = [&]() { return fizzMasks.ready.load(std::memory_order_acquire) && fizzMasks.key[0] == p.fizzSize && fizzMasks.key[1] == p.fizzSizeVar; };
+  bool idle = false;
+  if (!match() && fizzMasks.building.compare_exchange_strong(idle, true, std::memory_order_acquire)) {
+    if (!match()) {   // still stale (the other tube may have built them meanwhile)
+      fizzMasks.ready.store(false, std::memory_order_release);
+      uint8_t *const pool = intl ? fizzMasks.intl : fizzMasks.ps;
+      writeFizzMasks(fl, pool);
+      fizzMasks.pool = pool; fizzMasks.key[0] = p.fizzSize; fizzMasks.key[1] = p.fizzSizeVar;
+      fizzMasks.ready.store(true, std::memory_order_release);
+    }
+    fizzMasks.building.store(false, std::memory_order_release);
+  }
+  fl.masks = match(); fl.mask = fl.masks ? fizzMasks.pool : nullptr;
+}
+// The live loop renders both tubes at once: it prepares the masks here first, on one core (main renderBoth), so no
+// tube builds them while the other draws; sequential callers (host checks, `X`) may skip it (planFizz builds them).
+void render_fizz_prepare(const Params &p) {
+  if (!p.fizz) return;
+  FizzLook &fl = *tubes[0].look;
+  if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
+  takeFizzMasks(fl, p);
+}
+// The mask pool's bytes for the sliders' largest bubbles (fizzSize 16 design px, fizzSizeVar 0..1): per class the
+// bigger of its sizes at spread 0 and 1 (a class's radius is linear in the spread and its mask grows with the radius),
+// so no slider setting needs more (render_init). +0.5 px: the board's px scaling may round.
+static int fizzMaskWorst() {
+  const float size = 16 * PX_SCALE + 0.5f; int worst = 0;
+  for (int k = 0; k < FIZZ_SIZES; k++) {
+    int xw, dl, most = 0;
+    for (int e = 0; e <= 1; e++) { const int b = fizzMaskGeom(size / 2 * (1 + (0.5f + (k + 0.5f) * (1.0f / FIZZ_SIZES) - 1) * e), xw, dl); if (b > most) most = b; }
+    worst += most;
+  }
+  return worst;
+}
 // Step 5, one bubble (drawTube): its disc setup (planBubble, once a frame), then its rows (bubbleRows, discRow; step 9:
 // band by band). Out of drawTube (noinline, in IRAM on the LCD): inside it the setup spilled and its code competed for
 // the instruction cache with the other core's render.
 FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b) {
   const float *mag = ff.mag; const float yHi = ff.yHi, invHalfH = ff.invHalfH, lxSign = ff.lxSign;
   const float lxS = -0.7f;   // light from screen-left (a constant, as it was in drawTube: lxS * lxS folds)
+  const FizzLook &fl = *look;
   FZ_T0(fb0);
   int fy = (int)clampf(jround(f.y), 0, H - 1);
   // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface pushes
   // them back here): whatever touches a surface floats at most half out of it, like the foam.
   const float fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
-  // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface.
+  // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface (no size class then).
   const float pop = f.life != 0 && fabsf(f.life) < FOAM_POP_T ? fabsf(f.life) / FOAM_POP_T : 1;
-  const float r = fizzR(p, f.v) * (1 + 0.6f * (1 - pop));
-  // Seen through liquid in proportion to its depth: a deeper bubble fades toward the liquid (see sim).
-  const float depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency);   // rim/pinpoint: colour mix toward the body (sim cRimD / cBlickD); interior tint: alpha scale
-  const float m = fizzMag(mag, H, f.y, r), ry = r / m, off = fmn(r * p.fizzShadeOff, r - 1);   // core shift, centre kept in the disc (sim)
+  const int cls = fizzClass(f.v), lvl = fizzLevel(f.z);
+  const FizzClass &c = fl.k[cls];
+  const float r = pop < 1 ? fizzR(p, f.v) * (1 + 0.6f * (1 - pop)) : c.r;
+  const float m = fizzMag(mag, H, f.y, r), ry = r / m, off = pop < 1 ? fmn(r * p.fizzShadeOff, r - 1) : c.off;   // core shift, centre kept in the disc (sim)
   // Light direction in unsquashed disc space (liquid frame): x fixed toward screen-left, y toward the highlight row.
   const float ly = clampf((yHi - f.y) * invHalfH, -1, 1), nrm = rsqrtApprox(lxS * lxS + ly * ly);   // sim: exact 1/sqrt; <= 2.1e-7 rel.
   const float dirX = lxSign * lxS * nrm, dirY = ly * nrm;
-  const float rIn = r - 0.5f, rOut = r + 0.5f, kc = r - 1;   // ring 1 px at its thinnest; the offset only shifts the core
-  DiscRow &d = b.d;
-  d.fx = fx; d.r = r; d.offX = -dirX * off; d.offY = -dirY * off; d.kc = kc;   // dark core shifted away from the light
-  // Specular pinpoint on the lit side (r >= 2.5, fizzBlick > 0).
-  d.blick = r >= 2.5f && p.fizzBlick > 0;
-  if (d.blick) {
-    const float bk = 0.4f * (r - 1), rb = fmx(0.6f, r * 0.25f), rbIn = rb - 0.5f;
-    d.blickK = p.fizzBlick; d.bX = dirX * bk; d.bY = dirY * bk; d.rbOut = rb + 0.5f;
-    d.bIn2 = rbIn * rbIn * (1 - 1e-4f); d.bOut2 = d.rbOut * d.rbOut * (1 + 1e-4f); d.cBlick = depthK < 1 ? blend565(pal.rows[fy], ff.blickC, depthK) : ff.blickC;   // specular, depth-tinted (sim cBlickD)
-  } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; d.cBlick = 0; }
-  d.in2 = rIn >= 1 ? rIn * rIn * (1 - 1e-4f) : -1; d.out2 = rOut * rOut * (1 + 1e-4f);
-  d.core = r >= 1.5f && kc > 0; d.core2Lo = kc * kc * (1 - 1e-4f); d.core2Hi = kc * kc * (1 + 1e-4f);
-  d.veilA = ff.veilA; d.pullR = ff.pullR; d.pullL = ff.pullL;
-  d.mirror = ff.mir; d.xsI = ff.xsI; d.L = ff.L; d.tintA = p.bubbleDark * depthK;   // sim tintA
-  b.ixa = (int16_t)(int)ffloor(fx - r - 1); b.ixb = (int16_t)(int)fceil(fx + r);
+  b.fx = fx; b.r = r; b.offX = -dirX * off; b.offY = -dirY * off;   // dark core shifted away from the light
+  // Specular pinpoint on the lit side (r >= 2.5, fizzBlick > 0), depth-tinted (sim cBlickD).
+  b.blick = pop < 1 ? r >= 2.5f && p.fizzBlick > 0 : c.blick;
+  if (b.blick) { const float bk = pop < 1 ? 0.4f * (r - 1) : c.bk; b.bX = dirX * bk; b.bY = dirY * bk; b.cBlick = fl.cBlick[lvl][fy]; }
+  else { b.bX = b.bY = 0; b.cBlick = 0; }
+  b.tintA = fl.tintA[lvl];   // sim tintA
+  b.cls = (int8_t)(pop < 1 ? -1 : cls); b.lvl = (uint8_t)lvl;
+  if (b.cls >= 0 && fl.masks) {   // by its mask: x rounded to the mask's steps
+    const int qt = (int)ffloor(fx * FIZZ_MQ + 0.5f);
+    b.qt = (int16_t)qt; b.fx = qt * (1.0f / FIZZ_MQ);
+  } else b.qt = 0;
+  b.ixa = (int16_t)(int)ffloor(b.fx - r - 1); b.ixb = (int16_t)(int)fceil(b.fx + r);
   b.iyA = (int16_t)(int)ffloor(f.y - ry - 1); b.iyB = (int16_t)(int)fceil(f.y + ry);
-  b.y = f.y; b.m = m; b.pop = pop; b.depthK = depthK;
+  b.y = f.y; b.m = m; b.pop = pop;
 #ifdef FIZZ_PROF
-  d.prof = fizzProf; fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
+  fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
 #endif
 }
-// A planned bubble's rows in [r0, r1) (its DiscRow takes each row's fields in place: the plan is this tube's).
-FIZZ_IRAM void __attribute__((noinline)) Tube::bubbleRows(BubblePlan &b, int r0, int r1) {
-  DiscRow &d = b.d;
+// A planned bubble's rows in [r0, r1): its DiscRow on the stack, the disc set-up derived from the plan as planBubble
+// derived it before (the same expressions, so the same values), then each row's fields.
+// A planned bubble's disc set-up, every DiscRow field but the per-row ones: the size class's, or (popping) derived from
+// its own radius as planBubble derived it before (the same expressions, so the same values).
+void Tube::discOf(const BubblePlan &b, DiscRow &d) const {
+  d.fx = b.fx; d.offX = b.offX; d.offY = b.offY;
+  d.blick = b.blick;
+  if (b.cls >= 0) {
+    const FizzClass &c = look->k[b.cls];
+    d.r = c.r; d.kc = c.kc; d.in2 = c.in2; d.out2 = c.out2; d.core = c.core; d.core2Lo = c.core2Lo; d.core2Hi = c.core2Hi;
+    d.rbOut = c.rbOut; d.bIn2 = c.bIn2; d.bOut2 = c.bOut2;
+  } else {
+    const float r = b.r, rIn = r - 0.5f, rOut = r + 0.5f, kc = r - 1;   // ring 1 px at its thinnest; the offset only shifts the core
+    const float rb = fmx(0.6f, r * 0.25f), rbIn = rb - 0.5f;
+    d.r = r; d.kc = kc;
+    d.in2 = rIn >= 1 ? rIn * rIn * (1 - 1e-4f) : -1; d.out2 = rOut * rOut * (1 + 1e-4f);
+    d.core = r >= 1.5f && kc > 0; d.core2Lo = kc * kc * (1 - 1e-4f); d.core2Hi = kc * kc * (1 + 1e-4f);
+    d.rbOut = rb + 0.5f; d.bIn2 = rbIn * rbIn * (1 - 1e-4f); d.bOut2 = d.rbOut * d.rbOut * (1 + 1e-4f);
+  }
+  if (b.blick) { d.blickK = fzBlickK; d.bX = b.bX; d.bY = b.bY; } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; }
+  d.cBlick = b.cBlick;
+  d.veilA = fzVeilA; d.pullR = fzPullR; d.pullL = fzPullL;
+  d.mirror = fzMir; d.xsI = fzXsI; d.L = fzL; d.tintA = b.tintA;
+#ifdef FIZZ_PROF
+  d.prof = const_cast<uint32_t *>(fizzProf);
+#endif
+}
+// One row of a planned bubble, analytic (discRowT): its DiscRow d with this row's fields filled in.
+inline void Tube::discRowOf(const BubblePlan &b, DiscRow &d, int iy, float wallT, float dy) {
+  d.wallT = wallT; d.dy = dy;
+  // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
+  // profile and gone at the band's outer rim.
+  d.sR = fizzSurf[iy]; d.sL = fizzSurfL[iy]; d.bR = strokeR[iy]; d.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
+  d.veilLo = look->veilLo[iy]; d.veilHi = look->veilHi[iy];
+  d.cRim = look->cRim[b.lvl][iy];
+  TCLIP(FB + iy * PANEL_W, PANEL_W);
+  discRow(FB + iy * PANEL_W, b.ixa, b.ixb, d);
+}
+// A planned bubble's rows in [r0, r1). A size class's (masks built) by its mask: the coverage by index, the core and the
+// pinpoint by their chords on each row, analytic (discRowT) on a row a surface band veils; a popping one analytic.
+FIZZ_IRAM void __attribute__((noinline)) Tube::bubbleRows(const BubblePlan &b, int r0, int r1) {
+  FZ_T0(fp0);
   const int iy0 = b.iyA > r0 ? b.iyA : r0, iy1 = b.iyB < r1 - 1 ? b.iyB : r1 - 1;
+  DiscRow d;
+  if (b.cls >= 0 && look->masks) { maskRows(b, iy0, iy1); return; }
+  {
+    discOf(b, d);
+    FZ_ADD(fizzProf, FZ_CYC_SETUP, fp0);
+    for (int iy = iy0; iy <= iy1; iy++) {
+      if (iy < 0 || iy >= H) continue;
+      const float wallT = pal.dryT[iy] / 256.0f * b.pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
+      if (wallT <= 0) continue;
+      const float dy = (iy + 0.5f - b.y) * b.m;
+      if (dy * dy >= d.out2) continue;     // the disc misses this row (discRowT would return at once)
+      FZ_T0(fr1);
+      discRowOf(b, d, iy, wallT, dy);
+      FZ_ADD(fizzProf, FZ_CYC_DISC, fr1);
+#ifdef FIZZ_PROF
+      fizzProf[FZ_ROWS]++;
+#endif
+    }
+  }
+}
+static inline int ifloor(float x) { const int i = (int)x; return i - (x < i); }   // floor for |x| < 2^31
+static inline int iceil(float x) { const int i = (int)x; return i + (x > i); }
+// A size-class bubble's rows [iy0, iy1] by its mask (masks built): the coverage by index, the core and the pinpoint
+// by their chords on each row; a row a surface band veils analytic (discRowT). Out of bubbleRows so that its few live
+// values stay in registers.
+FIZZ_IRAM void __attribute__((noinline)) Tube::maskRows(const BubblePlan &b, int iy0, int iy1) {
+  FZ_T0(fp0);
+  const FizzClass &c = look->k[b.cls];
+  const uint8_t *const mk = look->mask + c.maskOff, *const wide = mk + c.dyl * c.xw;
+  const int xw = c.dyl > 0 ? c.xw : 0, dyl = c.dyl, qt = b.qt;   // the bubble's x = qt / FIZZ_MQ (planBubble)
+  MaskRowK k; k.base = FIZZ_MQ / 2 - qt;
+  k.tint256 = (int)(b.tintA * 256 + 0.5f); k.x0 = fzMir ? fzL - 1 - fzXsI : fzXsI; k.step = fzMir ? -1 : 1;
+  const int pLo = fzMir ? k.x0 - (PANEL_W - 1) : -k.x0, pHi = fzMir ? k.x0 : PANEL_W - 1 - k.x0;   // the tube columns on the panel
+  const uint16_t *const cRim = look->cRim[b.lvl];
+  const int16_t *const vLo = look->veilLo, *const vHi = look->veilHi;
+  const float cxc = b.fx + b.offX - 0.5f, kc2 = c.kc * c.kc, m = b.m, offY = b.offY;   // the core's centre column, its radius squared
+  const bool core = c.core, blick = b.blick;
+  if (iy0 < 0) iy0 = 0; if (iy1 > H - 1) iy1 = H - 1;
+  FZ_ADD(fizzProf, FZ_CYC_SETUP, fp0);
   for (int iy = iy0; iy <= iy1; iy++) {
     FZ_T0(fr0);
-    if (iy < 0 || iy >= H) continue;
-    d.wallT = pal.dryT[iy] / 256.0f * b.pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
-    if (d.wallT <= 0) continue;
-    d.dy = (iy + 0.5f - b.y) * b.m;
-    if (d.dy * d.dy >= d.out2) continue;     // the disc misses this row (discRowT would return at once)
-    // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
-    // profile and gone at the band's outer rim.
-    d.sR = fizzSurf[iy]; d.sL = fizzSurfL[iy]; d.bR = strokeR[iy]; d.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
-    d.veilLo = d.bR > 0 ? (int)ffloor(d.sR) : INT_MAX; d.veilHi = d.bL > 0 ? (int)fceil(d.sL) : INT_MIN;   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL)
-    d.cRim = b.depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], b.depthK) : pal.bubbleRimRows[iy];
+    const float dy = (iy + 0.5f - b.y) * m;   // per row, not stepped: the tiled bands start anywhere
+    const int W = pal.dryT[iy];   // the wall's transmission x 256 (bubbles live in the bore)
+    if (W <= 0) continue;
+    const int dq = (int)(fabsf(dy) * FIZZ_MDY + 0.5f);
+    if (dq >= dyl) continue;
+    const int xm = wide[dq];
+    if (xm == 255) continue;   // nothing covered on this row
+    // the columns with |FIZZ_MQ ix + base| <= xm
+    int a = (qt - FIZZ_MQ / 2 - xm + FIZZ_MQ - 1) >> 2, e = (qt - FIZZ_MQ / 2 + xm) >> 2;
+    static_assert(FIZZ_MQ == 4, "the shifts divide by FIZZ_MQ");
+    if (a < pLo) a = pLo; if (e > pHi) e = pHi;
+    if (a > e) continue;   // nothing covered (or off the panel)
 #ifdef FIZZ_PROF
-    FZ_ADD(fizzProf, FZ_CYC_ROWPREP, fr0); fizzProf[FZ_ROWS]++;
+    fizzProf[FZ_ROWS]++;
+#endif
+    uint16_t *const row = FB + iy * PANEL_W;
+    TCLIP(row, PANEL_W);
+    k.m = mk + dq * xw; k.W256 = W; k.rim = rimLanes(cRim[iy]);
+    k.c0 = 1; k.c1 = 0;
+    if (core) { const float cy = dy - offY, rem = kc2 - cy * cy; if (rem > 0) { const float hw = sqrtApprox(rem); k.c0 = ifloor(cxc - hw) + 1; k.c1 = iceil(cxc + hw) - 1; } }
+    // Unveiled columns [lo, hi] (a surface band veils ix >= veilLo and ix < veilHi), the pinpoint's reach [p0, p1]
+    // within them: maskRow; everything else maskPx.
+    const int veilLo = vLo[iy], veilHi = vHi[iy];
+    const int lo = a > veilHi ? a : veilHi, hi = e < veilLo - 1 ? e : veilLo - 1;
+    int p0 = 1, p1 = 0; float bdy2 = 0, bRem = 0;
+    if (blick) {
+      const float bdy = dy - b.bY; bdy2 = bdy * bdy; bRem = c.bOut2 - bdy2;
+      if (bRem > 0) { const float bw = sqrtApprox(bRem) + 0.01f; p0 = ifloor(b.fx + b.bX - bw - 0.5f); p1 = iceil(b.fx + b.bX + bw - 0.5f); }
+      else bRem = 0;
+    }
+    if (p0 <= p1) { if (p0 < lo) p0 = lo; if (p1 > hi) p1 = hi; if (p0 > p1) { p0 = 1; p1 = 0; } }   // its part in [lo, hi]
+    const bool pin = p0 <= p1;
+    FZ_ADD(fizzProf, FZ_CYC_ROWPREP, fr0);
     FZ_T0(fr1);
-#endif
-    TCLIP(FB + iy * PANEL_W, PANEL_W);
-    discRow(FB + iy * PANEL_W, b.ixa, b.ixb, d);
-#ifdef FIZZ_PROF
+    if (!pin && lo == a && hi == e) maskRow(row, a, e, k);   // the common row: nothing veiled, out of the pinpoint's reach
+    else {
+      MaskPxK q{b.fx, b.bX, bdy2, bRem, c.bIn2, c.rbOut, fzBlickK, b.tintA,
+                fizzSurf[iy], fizzSurfL[iy], strokeR[iy], strokeL[iy], fzVeilA, fzPullR, fzPullL, veilLo, veilHi, cRim[iy], b.cBlick};
+      if (lo > hi) maskPx(row, a, e, k, q);
+      else {
+        if (a < lo) maskPx(row, a, lo - 1, k, q);
+        if (!pin) maskRow(row, lo, hi, k);
+        else { if (lo < p0) maskRow(row, lo, p0 - 1, k); maskPx(row, p0, p1, k, q); if (p1 < hi) maskRow(row, p1 + 1, hi, k); }
+        if (hi < e) maskPx(row, hi + 1, e, k, q);
+      }
+    }
     FZ_ADD(fizzProf, FZ_CYC_DISC, fr1);
-#if FIZZ_PROF == 3
-    FZ_T0(fr2); discRow(FB + iy * PANEL_W, b.ixa, b.ixb, d); FZ_ADD(fizzProf, FZ_CYC_REDRAW, fr2);   // cache probe: blends twice
-#endif
-#endif
   }
 }
 // The frame's bubbles, planned in slot order (idle slots: v 0), and (tiled) each band's list of them.
 void Tube::planFizz(const Params &p, const FizzFrame &ff) {
   MarkPlan &mp = *plan;
+  fzVeilA = ff.veilA; fzPullR = ff.pullR; fzPullL = ff.pullL; fzBlickK = p.fizzBlick; fzXsI = ff.xsI; fzL = ff.L; fzMir = ff.mir;
+  FizzLook &fl = *look;
+  if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
+  takeFizzMasks(fl, p);
+  for (int l = 0; l < FIZZ_DEPTHS; l++) {   // a depth level's colours: as planBubble / bubbleRows mixed them per bubble (sim cRimD / cBlickD)
+    const float z = (l + 0.5f) * (1.0f / FIZZ_DEPTHS), depthK = 1 - p.fizzDepth * z * (1 - p.liquidTransparency);   // fizzZ's values
+    const int depthT = depthK < 1 ? (int)(depthK * 256 + 0.5f) : 256;
+    fl.tintA[l] = p.bubbleDark * depthK;
+    for (int iy = 0; iy < H; iy++) {
+      fl.cRim[l][iy] = blend565T(pal.rows[iy], pal.bubbleRimRows[iy], depthT);
+      fl.cBlick[l][iy] = depthK < 1 ? blend565(pal.rows[iy], ff.blickC, depthK) : ff.blickC;
+    }
+  }
+  for (int iy = 0; iy < H; iy++) {   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL); no band: never (|ix| < PANEL_W)
+    const float lo = ffloor(fizzSurf[iy]), hi = fceil(fizzSurfL[iy]);   // clamped to int16: the same answers for |ix| < PANEL_W
+    look->veilLo[iy] = strokeR[iy] > 0 ? (int16_t)(int)clampf(lo, -32767, 32767) : INT16_MAX;
+    look->veilHi[iy] = strokeL[iy] > 0 ? (int16_t)(int)clampf(hi, -32767, 32767) : INT16_MIN;
+  }
   mp.nBub = 0;
   for (int k = 0; k < fizzN; k++) if (fizz[k].v != 0) planBubble(fizz[k], p, ff, mp.bub[mp.nBub++]);
 #if TILE_RENDER
@@ -4199,9 +4697,12 @@ void Tube::fizzBand(int r0, int r1) {
 
 bool render_init() {
   fizzSeed();
+  fizzMasks.psCap = fizzMaskWorst();   // the sliders' largest bubbles (~55 KB on the LCD)
+  fizzMasks.ps = (uint8_t *)heap_caps_malloc(fizzMasks.psCap, MALLOC_CAP_SPIRAM);
+  if (FIZZ_MASK_INTL) fizzMasks.intl = (uint8_t *)heap_caps_malloc(FIZZ_MASK_INTL, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   EXP565 = (uint32_t *)heap_caps_malloc(512 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   buildLuts();
-  bool ok = EXP565 != nullptr;
+  bool ok = EXP565 != nullptr && fizzMasks.ps && (!FIZZ_MASK_INTL || fizzMasks.intl);
   for (int i = 0; i < 2; i++) {
     tubes[i].set.poolC = (uint16_t *)heap_caps_malloc(GLYPH_POOL_PX * 2, GLYPH_POOL_CAPS);
     tubes[i].set.poolA = (uint8_t *)heap_caps_malloc(GLYPH_POOL_PX, GLYPH_POOL_CAPS);
@@ -4212,8 +4713,20 @@ bool render_init() {
     tubes[i].traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     tubes[i].fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
     tubes[i].palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
-    tubes[i].plan = (MarkPlan *)heap_caps_malloc(sizeof(MarkPlan), MALLOC_CAP_SPIRAM);   // step 9 (~57 KB on the LCD)
+    {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)
+      const uintptr_t raw = (uintptr_t)heap_caps_malloc(sizeof(MarkPlan) + 63, MALLOC_CAP_SPIRAM);
+      tubes[i].plan = raw ? (MarkPlan *)((raw + 63) & ~(uintptr_t)63) : nullptr;
+    }
     ok = ok && tubes[i].plan;
+    tubes[i].look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
+    if (tubes[i].look) {
+      FizzLook &fl = *tubes[i].look;
+      fl.valid = fl.masks = false; fl.mask = nullptr;
+    }
+    ok = ok && tubes[i].look;
+    tubes[i].foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB
+    if (tubes[i].foam) memset(tubes[i].foam, 0, sizeof(FoamWork));
+    ok = ok && tubes[i].foam;
 #ifdef BOARD_LCD316
     tubes[i].glowT = (EffectTable *)heap_caps_malloc(2 * sizeof(EffectTable), MALLOC_CAP_SPIRAM);
     if (tubes[i].glowT) for (int k = 0; k < 2; k++) tubes[i].glowT[k].valid = false;
@@ -4370,8 +4883,8 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
 
 #ifdef FIZZ_PROF
 const uint32_t *render_fizz_profile(int idx) { return tubes[idx].fizzProf; }
-const uint32_t *render_fizz_step_profile() { return fizzStepProf; }
-void render_fizz_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].fizzProf, 0, sizeof(tubes[i].fizzProf)); memset(fizzStepProf, 0, sizeof(fizzStepProf)); }
+const uint32_t *render_fizz_step_profile() { for (int i = 0; i < FS_N; i++) fizzStepProf[i] = fizzStepProfCore[0][i] + fizzStepProfCore[1][i]; return fizzStepProf; }
+void render_fizz_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].fizzProf, 0, sizeof(tubes[i].fizzProf)); memset(fizzStepProfCore, 0, sizeof(fizzStepProfCore)); }
 #endif
 #ifdef TUBE_PROF
 const uint32_t *render_tube_profile(int idx) { return tubes[idx].tubeProf; }
@@ -4388,7 +4901,7 @@ bool tile_strip_clean(const uint16_t *strip) {
 }
 #endif
 bool render_seq_reset(uint32_t seed) {
-  for (Tube &t : tubes) { t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; }
+  for (Tube &t : tubes) { t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; if (t.foam) t.foam->nOrder = 0; }
   return fizzReseed(seed);
 }
 void render_digit_shift(int idx, int &dx, int &dy) { const Labels &lb = tubes[idx & 1].labels; dx = lb.wholeDx; dy = lb.wholeDy; }

@@ -68,6 +68,10 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
   - Dead IMU: `s` reading along/across/gyro exactly 0 after the pins = IMU dead after flash. bench.py reboots
     (`r`), re-applies the pins and re-checks once; still dead → exit 3 (e2e.sh exits 3 too).
     `--allow-dead-imu` skips the reboot and marks the header `IMU dead` (for -DNO_IMU builds).
+- `tools/fizz_bench.py [--counts 120,240,480] [--no-swing] [--no-spring] [--prof] [--flash BIN]` — fizz load on a full
+  tube (user-fav pinned volatile, 11:59:30 frozen): per count a pinned and a swinging line, then a spring at rate 20;
+  `--prof` adds the -DFIZZ_PROF lines; `--flash` writes a saved firmware.bin first (A/B builds alternately in one
+  session). Restores params, releases `g`, sets the real clock.
 - `tools/check_render_frames.py --reference OLD_render.cpp [--no-fizz] [--list-diffs]` — host-only (no board):
   every scene of the current render.cpp vs a saved copy. `--list-diffs` lists the differing scenes per group and
   whether all had fizz on (a fizz-only change: all on, and `--no-fizz` byte-identical).

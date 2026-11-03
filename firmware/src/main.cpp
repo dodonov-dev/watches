@@ -253,6 +253,26 @@ static DisplayLayout shownLayout = {0, 0, 0};
 #endif
 static TaskHandle_t workerTask = nullptr, loopTask = nullptr;
 static uint32_t workerUs = 0, workerPushUs = 0;   // last hours render / push time, written by the worker
+// The frame's fizz steps (liquid_tick records each step's inputs): each tube's run on the core that renders it, right
+// before its render, so the two tubes step at once instead of one after the other on core 1 while core 0 waits. A tube
+// steps only its own state (stepFizzTube), and its steps follow every stepTube of the frame as before (they read
+// nothing stepTube writes but the agitation, recorded per step). The A/B face renders the minutes tube twice: it keeps
+// stepFizz in the step loop. The X sequence (seq.h) keeps stepFizz too.
+#ifndef AB_COMPARE
+#define FIZZ_SPLIT 1
+#else
+#define FIZZ_SPLIT 0
+#endif
+struct FizzStepIn { float along, across, agitation; };
+static FizzStepIn fizzIn[5]; static int fizzInN = 0;   // this frame's steps (<= 5)
+static uint32_t workerFizzUs[5];                        // the hours tube's fizz steps, each, written by the worker
+static void runFizzSteps(int idx, uint32_t *us) {
+  for (int s = 0; s < fizzInN; s++) {
+    const uint32_t t0 = micros();
+    stepFizzTube(idx, eff, PHYS_DT, fizzIn[s].along, fizzIn[s].across, fizzIn[s].agitation);
+    us[s] = micros() - t0;
+  }
+}
 static uint32_t workerStackFree = 0;       // high-water mark (bytes on ESP-IDF), for `s`
 static int hoursY0 = 0, tubeRows = 0;      // where this frame's hours strip goes (set by loop() before the worker starts)
 // Staggered push: strip[1] holds a rendered minutes frame not pushed yet, for rows [minutesY0, +tubeRows) through
@@ -261,6 +281,7 @@ static bool minutesPending = false; static int minutesY0 = 0;
 static void renderWorker(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (FIZZ_SPLIT) runFizzSteps(0, workerFizzUs);
     uint32_t t0 = micros();
     renderOneTube(0, strip[0]);
     uint32_t t1 = micros();
@@ -290,6 +311,7 @@ static void renderBoth() {
   uint32_t t1 = micros();
   display_next_strips(strip);
   hoursY0 = lay.yH; tubeRows = lay.H;
+  render_fizz_prepare(eff);                     // the fizz masks, here on core 1: neither tube builds them while the other draws
   xTaskNotifyGive(workerTask);                  // hours → core 0
   display_wait_all();                           // minutes strip free (overlaps the hours render)
   uint32_t t2 = micros();
@@ -299,10 +321,15 @@ static void renderBoth() {
       const uint32_t t = micros(); pushUs += t - t2; t2 = t;
     }
   }
+  uint32_t fz1[5];
+  if (FIZZ_SPLIT) runFizzSteps(1, fz1);   // the minutes tube's fizz steps, next to the hours tube's on core 0
+  t2 = micros();
   renderOneTube(1, strip[1]);
   uint32_t t3 = micros();
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);      // hours done (STAGGER_PUSH: and pushed)
   uint32_t t4 = micros();
+  if (FIZZ_SPLIT)   // the `f` fizz step: both tubes' cost a step, as when one core stepped both
+    for (int s = 0; s < fizzInN; s++) { const uint32_t fz = workerFizzUs[s] + fz1[s]; fizzStepUs += fz; if (fz > fizzStepMaxUs) fizzStepMaxUs = fz; }
   if (STAGGER_PUSH) {
     pushUs += workerPushUs;
     minutesPending = true; minutesY0 = lay.yM;
@@ -481,7 +508,8 @@ static void liquid_tick() {
     stepTube(tubeH, in, eff);
     stepTube(tubeM, in, eff);
     const uint32_t p1 = micros();
-    stepFizz(eff, PHYS_DT, in.along, in.across, tubeH.agitation);
+    if (FIZZ_SPLIT) fizzIn[steps - 1] = {in.along, in.across, tubeH.agitation};
+    else stepFizz(eff, PHYS_DT, in.along, in.across, tubeH.agitation);
 #ifdef AB_COMPARE
     abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
 #endif
@@ -489,11 +517,19 @@ static void liquid_tick() {
     tubeStepUs += p1 - p0; fizzStepUs += fz; physSteps++;
     if (fz > fizzStepMaxUs) fizzStepMaxUs = fz;
   }
+  fizzInN = steps;   // renderBoth steps the fizz (FIZZ_SPLIT)
   renderBoth();
+  fizzInN = 0;
   frames++;
   {   // fizz asked past its fixed pool (params pushed past the sliders): say so once per new peak
     static int reported = 0; const int over = fizzOverflow();
     if (over > reported) { reported = over; out.printf("error fizz pool: %d bubbles requested, fixed pool holds fewer (capped)\n", over); }
+  }
+  {   // fizz size params past the sliders: the masks do not fit their pool, bubbles draw analytically (slower)
+    static int reported = 0; const int over = fizzMaskOverflow();
+    if (over > reported) { reported = over;
+      if (over == INT_MAX) out.println("error fizz masks: bubble sizes past what a mask holds (analytic)");
+      else out.printf("error fizz masks: %d bytes asked, the pool holds fewer (analytic)\n", over); }
   }
   if (millis() - fpsT0 >= 2000) {
     fps = frames * 1000.0f / (millis() - fpsT0);

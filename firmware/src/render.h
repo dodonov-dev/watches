@@ -7,8 +7,15 @@
 
 // Fizz animation state (sim: stepFizz), call at PHYS_HZ.
 void stepFizz(const Params &p, float dt, float along = 0, float across = 0, float agitation = 0);
+// One tube's share of stepFizz (idx 0 hours, 1 minutes): the tubes are independent, so they may step at once on two cores.
+void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation);
 // Largest fizz count requested past the fixed pool since boot (0 = everything fitted); main reports it.
 int fizzOverflow();
+// Bytes the fizz size params asked of the mask pool past its boot-time size (0: they fit); bubbles then draw analytically.
+int fizzMaskOverflow();
+// Before rendering both tubes at once (main renderBoth): builds the fizz masks for these params on this core, so neither
+// tube builds them while the other draws. Sequential callers may skip it.
+void render_fizz_prepare(const Params &p);
 // Live bubbles of tube idx; foam = how many of them are parked foam, slots = pool slots the per-step loops run over.
 int fizzCounts(int idx, int &foam, int &slots);
 // Tube geometry from params, clamped to the panel and the strip buffer (sim: tubeLayout).

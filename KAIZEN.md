@@ -635,3 +635,26 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - The skipping push is native-only (1:1, USB_LEFT 1): scaled canvases (RENDER_H < 320), USB_LEFT 0 and the A/B face keep
   the per-pixel loop.
 - AMOLED keeps esp_random for the fizz draws (8 B static RAM for the per-core xorshift); ~16 B left under its 88.4 KB bar.
+
+## Fizz perf (2026-11-03, docs/fizz-perf-handoff.md Log)
+- Free heap with BLE now ~4.5 KB (was 14.7): the shared fizz masks take 8 KB internal (FIZZ_MASK_INTL), IRAM kernels
+  ~1.3 KB more. BLE connect at this heap untested (Windows python has no `bleak`). Room: FIZZ_MASK_INTL 4 KB keeps
+  presets up to fizzSize ~4 internal; maskPx (1.5 KB) or settleFoam (3.3 KB) to flash.
+- User accepts less fizz size variety: fewer size classes (e.g. 6) roughly halve the 8 KB internal mask pool (heap for
+  BLE); no fps change (per-bubble cost is per bubble, not per class). Sim fizzV mirrors FIZZ_SIZES.
+- Spring at glass (fizzSourceRate 20, ~120 parked a tube): settleFoam still ~6 ms a step (grid reach + regathers in
+  dense foam). Next: cells of rMax/2, a gather that keeps its bits across small moves, or settle every other step.
+- planBubble ~10 us a bubble (4 divisions, 2 foamFront calls, the plan line): a per-class fizzMag by row, cached while
+  the lens table is unchanged, would drop most of it. A Newton reciprocal was slower than the S3's division (measured).
+- Host `--fma` and the board fuse a * b + c by basic block: a branch added inside an inlined helper (settleFoam place)
+  moves one fusion and states diverge by 1 ULP. Exact rewrites that add control flow there cannot stay board-exact.
+- check_fizz_steps `--tiles` builds only the current side tiled: a strip/tile mismatch reads as a diff against the
+  reference. Compare `--tiles` against a copy of the current file to tell them apart (found the stepped-dy bug).
+- fizz_bench's spring row runs after the 480 rows: the slot high-water mark and the parked count depend on them (spring
+  live 55..133 in one session). Run `--counts 240` alone for a stable spring number.
+- sim settleFoam's "insertion sort: nearly sorted from the last step" is false in the sim (it sorts slot order each
+  step); harmless, the firmware now keeps the order.
+- Draw order is still slot order, not by depth (old note above); with depth levels a 4-bucket sort is cheap now and
+  would group same-class bubbles (mask cache locality).
+- A NaN fizz param (e.g. `p~fizzSizeVar=nan`) crashes the render in foamFront (clampf keeps NaN, then an int index),
+  also at a3ad26c; setParam could reject non-finite floats.
