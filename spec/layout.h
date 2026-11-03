@@ -18,6 +18,16 @@
 #define DESIGN_H           240   // canvas rows the params / presets are tuned on
 #define DESIGN_TUBE_HEIGHT_MAX 80   // largest tubeHeight a preset may ask for, design px
 
+// Slider limits (sim PARAM_META reads them) that the firmware's fixed buffers are sized from. Values pushed past a
+// slider over serial are capped and reported, never written past a buffer.
+#define FIZZ_COUNT_MAX     240   // fizzCount: bubbles in a full tube
+#define FIZZ_POOL          (2 * FIZZ_COUNT_MAX)   // bubbles per tube: full agitation (<= 1) doubles fizzCount
+#define DIGIT_SCALE_MAX    6     // digitScaleX / Y (and Min): design px per em cell
+#define DIGIT_SHADOW_OFFSET_MAX 4   // digitShadowOffset, design px
+#define GLYPH_EM_W         5     // the nominal em of the sprite fonts, cells (same as the bitmap fonts: a scale means the same)
+#define GLYPH_EM_H         7
+#define MARK_CONTRAST_MAX  120   // markContrast
+
 #ifdef BOARD_LCD316
 #define LCD_PANEL_W        820   // along the tubes (the LCD's 820 scan lines)
 #define LCD_PANEL_H        320   // across them (its 320-px lines)

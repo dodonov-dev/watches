@@ -2,6 +2,7 @@
 // "Acceptance rules"). Pure: no DOM, no Node — used by the sim and by tools/check-presets.ts,
 // tools/check-materials.ts. Every returned string is one violated rule; [] means coherent.
 import type { Material, Params } from '../params';
+import { MARK_CONTRAST_MAX } from '../../../spec/layout';
 
 export type Range = [number, number];
 export const VISC: Record<Material['viscosity'], Record<string, Range>> = {
@@ -14,9 +15,9 @@ export const VISC: Record<Material['viscosity'], Record<string, Range>> = {
 };
 
 /** Ceiling of a rear mark's legibility floor per unit of liquidTransparency: `markContrast` fakes what the
- *  liquid lets through, so it may claim at most this × T (the slider's whole range, 120, at T = 1; ≤ 14 for
+ *  liquid lets through, so it may claim at most this × T (the slider's whole range at T = 1; ≤ 14 for
  *  an opaque liquid, where rear marks show only dimly). */
-export const MARK_CONTRAST_PER_T = 120;
+export const MARK_CONTRAST_PER_T = MARK_CONTRAST_MAX;
 
 export const hex = (s: string): [number, number, number] => [parseInt(s.slice(1, 3), 16), parseInt(s.slice(3, 5), 16), parseInt(s.slice(5, 7), 16)];
 export const luma = (s: string): number => { const [r, g, b] = hex(s); return 0.299 * r + 0.587 * g + 0.114 * b; };

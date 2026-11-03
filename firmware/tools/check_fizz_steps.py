@@ -123,7 +123,7 @@ def main():
         fp = ['-mfma', '-ffp-contract=fast'] if a.fma else ['-ffp-contract=off']
         board = [f'-DBOARD_LCD316', f'-DRENDER_H={a.res.rstrip("f")}', f'-DLCD_FILL={int(a.res.endswith("f"))}'] if lcd else []
         sides = [('reference', reference), ('current', ROOT / 'firmware/src/render.cpp')]
-        builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', *fp, *board,
+        builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-fno-strict-aliasing', *fp, *board,   # fizzHash reads floats as uint16_t
                                     *(['-DTILE_RENDER=1'] if a.tiles and name == 'current' else []),
                                     *(['-DPIXELS_ONLY'] if a.pixels_only else []), f'-DRENDER_SRC="{src}"',
                                     '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),

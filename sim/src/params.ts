@@ -1,6 +1,6 @@
 // All tunables live here. Colours are RGB888 hex strings but are quantised to RGB565 at render time.
 import { legacyTraceDrain } from './physics';
-import { DESIGN_H, PANEL_H, PX_SCALE } from '../../spec/layout';
+import { DESIGN_H, PANEL_H, PX_SCALE, DESIGN_TUBE_HEIGHT_MAX, FIZZ_COUNT_MAX, DIGIT_SCALE_MAX, DIGIT_SHADOW_OFFSET_MAX, MARK_CONTRAST_MAX } from '../../spec/layout';
 // Export/import as JSON from the control panel; the exported file is the contract for Phase 3 (spec/params.h).
 
 export interface Params {
@@ -1644,7 +1644,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   tickBright: { help: 'Per-layer trim on top of brightness: tick ladder only.', group: 'Colour', label: '· ticks trim', min: 0, max: 2, step: 0.01 },
   digitBright: { help: 'Per-layer trim on top of brightness: digit labels only.', group: 'Colour', label: '· digits trim', min: 0, max: 2, step: 0.01 },
   ambientLight: { help: 'Liquid colours brighter than the diffuse body (highlight band, edge glow, front brightening, fizz rims) desaturate toward neutral grey of the same luma — reflections of white room light instead of the liquid glowing in its own colour. 0 = self-lit (fluorescent) look, 1 = fully ambient-lit. Scaled down by liquidTransparency: a transparent liquid keeps its tint (its bright areas are transmitted, coloured light).', group: 'Colour', label: 'ambient light', min: 0, max: 1, step: 0.01 },
-  tubeHeight: { help: 'Across-tube size, px.', group: 'Layout', label: 'tube height', min: 16, max: 80, step: 1 },
+  tubeHeight: { help: 'Across-tube size, px.', group: 'Layout', label: 'tube height', min: 16, max: DESIGN_TUBE_HEIGHT_MAX, step: 1 },
   hoursY: { help: 'Top row of the hours tube, px.', group: 'Layout', label: 'hours tube y', min: 0, max: 224, step: 1 },
   minutesY: { help: 'Top row of the minutes tube, px.', group: 'Layout', label: 'minutes tube y', min: 0, max: 224, step: 1 },
   remaining: { help: 'On: liquid sits at the right end and drains as time passes. Off: fills from the left.', group: 'Shape', label: 'liquid = remaining' },
@@ -1691,7 +1691,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   bubbleRollGain: { help: 'Bubble rise toward the high wall per g of across-tilt. 1 = follows the wall.', group: 'Bubble', label: 'bubble rise vs across tilt', min: 0, max: 2, step: 0.05 },
   bubbleTiltGain: { help: 'Bubble slides toward the high end per g of along-tilt, px.', group: 'Bubble', label: 'bubble slides to high end px/g', min: 0, max: 80, step: 1 },
   fizz: { help: 'Small drifting bubbles.', group: 'Bubble' },
-  fizzCount: { help: 'Number of fizz bubbles in a full tube. For a spring it is the most the tube holds: the rate sets how many are in flight, and at this count the spring waits for a bubble to leave.', group: 'Bubble', label: 'fizz count (full tube)', min: 0, max: 120, step: 1 },
+  fizzCount: { help: 'Number of fizz bubbles in a full tube. For a spring it is the most the tube holds: the rate sets how many are in flight, and at this count the spring waits for a bubble to leave.', group: 'Bubble', label: 'fizz count (full tube)', min: 0, max: FIZZ_COUNT_MAX, step: 1 },
   fizzSize: { help: 'Fizz bubble size, px.', group: 'Bubble', min: 1, max: 16, step: 0.5 },
   fizzSizeVar: { help: 'Per-bubble size spread. 0 = all equal; 1 = 0.5x..1.5x. Bigger bubbles rise faster.', group: 'Bubble', label: 'fizz size spread', min: 0, max: 1, step: 0.05 },
   fizzShadeOff: { help: 'Shift of the see-through interior away from the light (direction from the highlight angle, magnitude here), as a fraction of radius, at most radius − 1. The ring is 1 px at its thinnest; the shift thickens it on the lit side and can open it on the shaded side (a lit crescent).', group: 'Bubble', label: 'fizz shade offset', min: 0, max: 1, step: 0.05 },
@@ -1735,7 +1735,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   tickMajorColorM: { help: 'Major tick colour.', group: 'Ticks · minutes', label: 'major colour' },
   tickPosM: { help: 'Tube edge used by the minutes ladder.', group: 'Ticks · minutes', label: 'edge', min: 0, max: 2, step: 1, options: ['top', 'bottom', 'both'] },
   liquidTransparency: { help: 'How much of ticks/digits shows through the liquid. 0 = opaque liquid.', group: 'Shape', min: 0, max: 1, step: 0.01 },
-  markContrast: { help: 'Min luma difference a tick/digit keeps from the liquid behind it. 0 = off. Material mode: at most 120 × the liquid transparency (the floor may fake only what the liquid lets through); a clear liquid needs 16 or more.', group: 'Shape', label: 'mark contrast in liquid', min: 0, max: 120, step: 2 },
+  markContrast: { help: 'Min luma difference a tick/digit keeps from the liquid behind it. 0 = off. Material mode: at most 120 × the liquid transparency (the floor may fake only what the liquid lets through); a clear liquid needs 16 or more.', group: 'Shape', label: 'mark contrast in liquid', min: 0, max: MARK_CONTRAST_MAX, step: 2 },
   // digits — shared
   digits: { help: 'Show numeric labels along the bottom of the tube.', group: 'Digits', label: 'show digits' },
   digitFont: {
@@ -1754,7 +1754,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   digitShadow: { help: 'Darker copy offset down-right (emboss), so glyphs read as physical pieces on the glass.', group: 'Digits', label: 'emboss shadow' },
   digitShadowColor: { help: 'Emboss shadow colour.', group: 'Digits', label: 'shadow colour' },
   digitShadowStrength: { help: 'Shadow opacity. 0 = invisible.', group: 'Digits', label: 'shadow strength', min: 0, max: 1, step: 0.05 },
-  digitShadowOffset: { help: 'Shadow offset in pixels, down-right.', group: 'Digits', label: 'shadow offset', min: 1, max: 4, step: 1 },
+  digitShadowOffset: { help: 'Shadow offset in pixels, down-right.', group: 'Digits', label: 'shadow offset', min: 1, max: DIGIT_SHADOW_OFFSET_MAX, step: 1 },
   digitsOnTop: { help: 'Printed on the glass, opaque and excluded from the whole-tube lens. Off: behind the liquid, seen through it and depth-warped.', group: 'Digits', label: 'print on top of liquid' },
   bottomLens: { help: 'Depth warp for digits behind the liquid.', group: 'Digits', label: 'rear lens', min: 0, max: 1, step: 0.05 },
   digitDryLens: { help: 'Depth warp for rear digits where the tube is empty, chosen per pixel column. Negative stretches the edges instead of magnifying the middle.', group: 'Digits', label: 'rear lens behind air', min: -1, max: 1, step: 0.05 },
@@ -1764,16 +1764,16 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   digitHourStep: { help: 'Label every N hours.', group: 'Digits · hours', label: 'label every N h', min: 1, max: 6, step: 1 },
   digitsLastOnlyH: { help: 'Show only the last passed hour.', group: 'Digits · hours', label: 'last passed only' },
   digitHourStart: { help: 'First labelled hour; 0 = same as step. Step 2 + start 1 = odd hours.', group: 'Digits · hours', label: 'first label h', min: 0, max: 11, step: 1 },
-  digitScaleX: { help: 'Hours tube horizontal scale (nearest-neighbour).', group: 'Digits · hours', label: 'scale X', min: 0.5, max: 6, step: 0.25 },
-  digitScaleY: { help: 'Hours tube vertical scale. Keep below X to counter the vial vertical stretch.', group: 'Digits · hours', label: 'scale Y', min: 0.5, max: 6, step: 0.25 },
+  digitScaleX: { help: 'Hours tube horizontal scale (nearest-neighbour).', group: 'Digits · hours', label: 'scale X', min: 0.5, max: DIGIT_SCALE_MAX, step: 0.25 },
+  digitScaleY: { help: 'Hours tube vertical scale. Keep below X to counter the vial vertical stretch.', group: 'Digits · hours', label: 'scale Y', min: 0.5, max: DIGIT_SCALE_MAX, step: 0.25 },
   digitBottom: { help: 'Hours tube: px from the tube bottom edge to the digit baseline.', group: 'Digits · hours', label: 'baseline from bottom', min: 0, max: 40, step: 1 },
   // digits — minutes tube
   digitMinuteStep: { help: 'Label every N minutes.', group: 'Digits · minutes', label: 'label every N min', min: 5, max: 30, step: 5 },
   digitsLastOnlyM: { help: 'Show only the last passed multiple of the step.', group: 'Digits · minutes', label: 'last passed only' },
   digitMinuteStart: { help: 'First labelled minute; 0 = same as step.', group: 'Digits · minutes', label: 'first label min', min: 0, max: 55, step: 5 },
   digitsLeadingZero: { help: 'Minutes as 05, 10 instead of 5, 10.', group: 'Digits · minutes', label: 'leading zero (05)' },
-  digitScaleXMin: { help: 'Minutes tube horizontal scale.', group: 'Digits · minutes', label: 'scale X', min: 0.5, max: 6, step: 0.25 },
-  digitScaleYMin: { help: 'Minutes tube vertical scale.', group: 'Digits · minutes', label: 'scale Y', min: 0.5, max: 6, step: 0.25 },
+  digitScaleXMin: { help: 'Minutes tube horizontal scale.', group: 'Digits · minutes', label: 'scale X', min: 0.5, max: DIGIT_SCALE_MAX, step: 0.25 },
+  digitScaleYMin: { help: 'Minutes tube vertical scale.', group: 'Digits · minutes', label: 'scale Y', min: 0.5, max: DIGIT_SCALE_MAX, step: 0.25 },
   digitBottomMin: { help: 'Minutes tube: px from the tube bottom edge to the digit baseline.', group: 'Digits · minutes', label: 'baseline from bottom', min: 0, max: 40, step: 1 },
   freeLiquid: { help: 'Automatically holds the time at gentle tilt and releases the liquid as tilt increases. Deliberate back-and-forth tilts keep it free for the play hold, even through the viewing angle. Turn off to keep the column pinned.', group: 'Free liquid', label: 'tilt-controlled flow' },
   freeGain: { help: 'Slug acceleration per g of along-tilt, px/s².', group: 'Free liquid', label: 'gravity px/s²/g', min: 0, max: 2000, step: 10 },

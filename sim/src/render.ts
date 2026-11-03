@@ -4,6 +4,7 @@
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
   rgb565, rgb565to888, MM_PER_PX, PX_SCALE,
+  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, mirrored, FILM_ETA_MAX, FILM_FULL_PX_S, TRACE_FULL, type TubeState } from './physics';
@@ -579,8 +580,8 @@ function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number,
   // Vertical watch: the glyph's width lies across the tube and its height along it, so the scales swap roles
   // (X stays the along-tube one, Y the one the vial stretches).
   const V = p.vertical, kw = V ? ky : kx;
-  const bw = Math.max(1, Math.round((useSprite ? 5 : font.w) * kw));
-  const bh = Math.max(1, Math.round((useSprite ? 7 : font.h) * (V ? kx : ky)));
+  const bw = Math.max(1, Math.round((useSprite ? GLYPH_EM_W : font.w) * kw));
+  const bh = Math.max(1, Math.round((useSprite ? GLYPH_EM_H : font.h) * (V ? kx : ky)));
   const shadowA = Math.max(0, Math.min(1, p.digitShadowStrength)), shadowOff = Math.max(1, Math.round(p.digitShadowOffset));
   const shadow = p.digitShadow && shadowA > 0 ? q(scale(hexToRgb(p.digitShadowColor), p.brightness * p.digitBright)) : -1;
   // Sprite glyphs carry the shadow baked in (one draw pass); bitmap glyphs still draw it as a second pass.
@@ -914,11 +915,9 @@ function drawTicks(y0: number, p: Params, ticksN: number, wetRows: Int16Array, d
  *  wall, 1 = back wall), drawn at spawn and every recycle (never on a move, park or release). */
 export interface Fizz { x: number; y: number; v: number; life: number; z: number; }
 export const fizz: Fizz[][] = [[], []];
-// Bubbles per tube (firmware MAX_FIZZ): the sliders' worst case, fizzCount 120 doubled by full agitation.
-// A count pushed past the sliders is capped and reported, not silently dropped.
-const FIZZ_MAX = 240;
+// Bubbles per tube: FIZZ_POOL (spec/layout). A count pushed past the sliders is capped and reported, not silently dropped.
 let fizzOverflowPeak = 0;
-const foamOrder = new Int16Array(FIZZ_MAX);   // settleFoam's sweep order (parked, front first)
+const foamOrder = new Int16Array(FIZZ_POOL);   // settleFoam's sweep order (parked, front first)
 const fizzLen = [0, 0];   // liquid length px per tube, set by drawTube
 /** Per tube, set by drawTube: the surface front per row in the liquid frame — the profile (edges − xs,
  *  edgesL − xs), which is also the inner rim of a concave surface band: foam floats on the liquid there,
@@ -967,9 +966,9 @@ const BLICK_H = 0.18;
  *  fixed pool it is capped and reported. */
 function fizzWant(p: Params, len: number, agitation: number): number {
   let want = Math.max(0, Math.floor(p.fizzCount * (len / TUBE_LENGTH_PX) * (1 + (agitation < 0.05 ? 0 : agitation))));
-  if (want > FIZZ_MAX) {
-    if (want > fizzOverflowPeak) { fizzOverflowPeak = want; console.warn(`fizz pool: ${want} bubbles requested, ${FIZZ_MAX} fit`); }
-    want = FIZZ_MAX;
+  if (want > FIZZ_POOL) {
+    if (want > fizzOverflowPeak) { fizzOverflowPeak = want; console.warn(`fizz pool: ${want} bubbles requested, ${FIZZ_POOL} fit`); }
+    want = FIZZ_POOL;
   }
   return want;
 }
@@ -1120,7 +1119,7 @@ export function stepFizz(p: Params, dt: number, along = 0, across = 0, agitation
       // drift that stalls or keeps reversing) thins out instead of filling the pool, and no burst follows.
       // Bubbles already over a count that dropped (a shorter column) live on.
       const arr = fizz[i];
-      const cap = fizzWant(p, len, agitation);   // <= FIZZ_MAX
+      const cap = fizzWant(p, len, agitation);   // <= FIZZ_POOL
       let live = 0;
       for (const f of arr) if (f.v !== 0) live++;
       springClock[i] += Math.max(0, p.fizzSourceRate) * (1 + (agitation < 0.05 ? 0 : agitation)) * dt;

@@ -744,13 +744,13 @@ static const int SPRITE_FONT = NUM_FONTS;
 // Fixed pool per tube (3 B/px), allocated once at boot (render_init) in PSRAM: deterministic footprint, no
 // heap traffic on param changes. Internal RAM cannot take it: the two DMA strips + BT controller leave
 // <60 KB there. GLYPH_POOL_PX is sized for the sliders' worst case (sim PARAM_META): 10 glyphs of at most
-// bw x bh = (5 * 6) x (7 * 6) texels, each grown by the largest shadow offset (4) on the right and below,
-// two planes (behind air / behind liquid) when the shadow is baked in — 31280 texels, ~92 KB per tube on the
-// AMOLED; scale and offset are design px, so a board's PX_SCALE grows both sides (rounded up).
+// bw x bh = (GLYPH_EM_W x GLYPH_EM_H) * DIGIT_SCALE_MAX texels, each grown by DIGIT_SHADOW_OFFSET_MAX on the right and
+// below, two planes (behind air / behind liquid) when the shadow is baked in; scale and offset are design px, so a board's PX_SCALE grows both sides (rounded up).
 // A set that does not fit (values pushed past the sliders over serial) drops the glyphs past the budget
 // (visible, not silent).
 #define GLYPH_CEIL(v) ((int)(v) + ((float)(int)(v) < (v)))
-#define GLYPH_POOL_PX (10 * 2 * (GLYPH_CEIL(5 * 6 * PX_SCALE) + GLYPH_CEIL(4 * PX_SCALE)) * (GLYPH_CEIL(7 * 6 * PX_SCALE) + GLYPH_CEIL(4 * PX_SCALE)))
+#define GLYPH_OFF_PX GLYPH_CEIL(DIGIT_SHADOW_OFFSET_MAX * PX_SCALE)
+#define GLYPH_POOL_PX (10 * 2 * (GLYPH_CEIL(GLYPH_EM_W * DIGIT_SCALE_MAX * PX_SCALE) + GLYPH_OFF_PX) * (GLYPH_CEIL(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE) + GLYPH_OFF_PX))
 #define GLYPH_POOL_CAPS MALLOC_CAP_SPIRAM
 // w x h texels (body plus the baked shadow margin); `adv` is the body width the layout advances by.
 // Vertical watch (ScaledSet::rot): the planes are stored as the panel shows them — the glyph turned a quarter
@@ -761,9 +761,11 @@ static const int SPRITE_FONT = NUM_FONTS;
 // compositor skips the transparent margins; nullptr when the glyph is taller than the span table.
 struct ScaledGlyph { int w, h, adv; uint16_t *c, *cw; uint8_t *a, *aw; const uint8_t *span[2]; };
 // Span table per tube (boot-time, PSRAM like the pool): 10 glyphs x 2 planes x GLYPH_SPAN_ROWS rows x 2 B.
-// GLYPH_SPAN_ROWS covers the bh cap (96) plus the largest slider shadow offset (4 design px, 5 at PX_SCALE 4/3); a glyph pushed taller
+// GLYPH_SPAN_ROWS covers GLYPH_BH_CAP plus the largest slider shadow offset; a glyph pushed taller
 // (or wider than 255 columns) over serial draws without spans (full rows), never past the table.
+#define GLYPH_BH_CAP 96   // tallest glyph drawn, rows (Labels::rows); the slider's worst case fits, more over serial is cut
 #define GLYPH_SPAN_ROWS 128
+static_assert(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE <= GLYPH_BH_CAP && GLYPH_BH_CAP + GLYPH_OFF_PX <= GLYPH_SPAN_ROWS, "glyph caps vs the sliders");
 #define GLYPH_SPAN_BYTES (10 * 2 * GLYPH_SPAN_ROWS * 2)
 struct ScaledSet {
   int sheet = -1, bw = 0, bh = 0; float brightness = -1, tintAmt = -1, tone = 0; uint32_t tint = 0;
@@ -842,10 +844,11 @@ struct Mark {
   static inline uint32_t recipOf(int d) { return d > 0 ? 0xFFFFFFFFu / (uint32_t)d + 1 : 0; }
 };
 
+#define LABELS_MAX 12   // a tube's labels: 12 h at step 1, 60 min at step 5 (the sliders' smallest); more over serial is cut
 struct Label { int x0, y; char text[3]; int len; int adv[2]; };   // y: panel row of the first glyph's top
 struct Labels {
-  Label list[12]; int n; int bw, bh, ry0, ry1, yTop; ScaledGlyph *sprite; const Font *font; int gap;
-  uint16_t rows[96]; int16_t sourceRows[TUBE_HEIGHT_MAX]; int shadow, shadowT, shadowOff;   // shadow colour (-1 = none), opacity 1/256, px offset
+  Label list[LABELS_MAX]; int n; int bw, bh, ry0, ry1, yTop; ScaledGlyph *sprite; const Font *font; int gap;
+  uint16_t rows[GLYPH_BH_CAP]; int16_t sourceRows[TUBE_HEIGHT_MAX]; int shadow, shadowT, shadowOff;   // shadow colour (-1 = none), opacity 1/256, px offset
   int16_t drySourceRows[TUBE_HEIGHT_MAX]; int dryRy0, dryRy1;   // rear digits behind air (digitDryLens)
   // Vertical watch: glyphs turned to read upright, a label's digits advance across the tube (panel y) from
   // Label::y, Label::x0 is where the glyph body starts along it; bw x bh stay the glyph as read (sim Labels).
@@ -939,11 +942,9 @@ struct Warp {
 // ---------------------------------------------------------------------------------------------
 // per-tube render context
 // ---------------------------------------------------------------------------------------------
-// Bubbles per tube (sim FIZZ_MAX): the sliders' worst case, fizzCount 120 doubled by full agitation (<= 1). A
-// count pushed past the sliders over serial (or a spring needing more) is capped and reported (fizzOverflow), not
-// silently dropped.
-#define MAX_FIZZ 240
-static int fizzOverflowPeak = 0;   // largest count requested past MAX_FIZZ (0 = everything fitted), see fizzOverflow()
+// Bubbles per tube: FIZZ_POOL (layout.h). A count pushed past the sliders over serial (or a spring needing more) is
+// capped and reported (fizzOverflow), not silently dropped.
+static int fizzOverflowPeak = 0;   // largest count requested past FIZZ_POOL (0 = everything fitted), see fizzOverflow()
 // px in the liquid frame; v = size/speed factor, 0 = an idle slot (a spring's pool: not drawn, not moved);
 // life != 0 = parked under a surface, |life| s left before it pops: > 0 under the time edge, < 0 under the home
 // edge of a free slug.
@@ -1106,7 +1107,7 @@ struct Tube {
   float strokeR[TUBE_HEIGHT_MAX], strokeL[TUBE_HEIGHT_MAX];   // outward extent of the concave surface stroke per edge (sim strokeR/L)
   float bandFill[2][TUBE_HEIGHT_MAX], bandBlick[2][TUBE_HEIGHT_MAX], bandRim[2][TUBE_HEIGHT_MAX];   // its layer weights per row, 0 = time edge, 1 = home: rear-mark compositor (sim BandInfo)
   uint16_t backR[TUBE_HEIGHT_MAX], backL[TUBE_HEIGHT_MAX];    // local backing past each edge before body/glow: convex nose (sim backR/L)
-  Fizz fizz[MAX_FIZZ]; int fizzN = 0; float fizzLen = 0;      // liquid length px, set by drawTube
+  Fizz *fizz = nullptr; int fizzN = 0; float fizzLen = 0;     // fizz: FIZZ_POOL slots, PSRAM, render_init; fizzLen: liquid length px, set by drawTube
   float fizzSurf[TUBE_HEIGHT_MAX], fizzSurfL[TUBE_HEIGHT_MAX]; // liquid-frame surface front per row (profile = edges - xs, the inner rim of a surface band), time / home edge, set by drawTube: where foam parks
   uint8_t fizzExposed = 0;                                    // bit 1 = time edge short of the far end, bit 2 = home edge of a free slug off the near end
   float fizzShift = 0;                                        // px the liquid frame sits off its home (a free slug that slid away; 0 pinned), set by drawTube
@@ -1652,9 +1653,9 @@ bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float
   const Font *font = &FONTS[idx < 0 ? 0 : idx >= NUM_FONTS ? NUM_FONTS - 1 : idx];
   // Vertical watch: the glyph's width lies across the tube and its height along it, so the scales swap roles.
   const bool V = p.vertical; const float kw = V ? ky : kx;
-  int bw = (int)fmx(1, jround((useSprite ? 5 : font->w) * kw));
-  int bh = (int)fmx(1, jround((useSprite ? 7 : font->h) * (V ? kx : ky)));
-  if (bh > 96) bh = 96;
+  int bw = (int)fmx(1, jround((useSprite ? GLYPH_EM_W : font->w) * kw));
+  int bh = (int)fmx(1, jround((useSprite ? GLYPH_EM_H : font->h) * (V ? kx : ky)));
+  if (bh > GLYPH_BH_CAP) bh = GLYPH_BH_CAP;
   float shadowA = clampf(p.digitShadowStrength, 0, 1); int shadowOff = (int)fmx(1, jround(p.digitShadowOffset));
   int shadow = p.digitShadow && shadowA > 0 ? q(scale(hexToRgb(p.digitShadowColor), p.brightness * p.digitBright)) : -1;
   // Sprite glyphs carry the shadow baked in (one draw pass); bitmap glyphs still draw it as a second pass.
@@ -1670,7 +1671,7 @@ bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float
   lb.n = 0;
   const bool flip = V && p.remaining;   // vertical + remaining: the scale runs from the top (right) end
   int yMin = yBase + 1, yMax = yBase;   // vertical: the labels' extent across the tube
-  for (int i = first; i <= last && lb.n < 12; i += every) {
+  for (int i = first; i <= last && lb.n < LABELS_MAX; i += every) {
     Label &l = lb.list[lb.n++];
     if (minutes && p.digitsLeadingZero) { l.text[0] = '0' + i / 10; l.text[1] = '0' + i % 10; l.len = 2; }
     else if (i >= 10) { l.text[0] = '0' + i / 10; l.text[1] = '0' + i % 10; l.len = 2; }
@@ -2586,9 +2587,9 @@ TICK_IRAM static void __attribute__((noinline)) tickSegment(const TickRows &k, c
 // the tube's MarkPlan (PSRAM, render_init; sized for the worst case), so no set-up repeats per band. Non-tiled builds
 // (AMOLED, -DTILE_OFF) draw every stage once over the whole tube [0, H), after the band loop, as before.
 #define MAX_TICK_SEGS 118    // a layer: < 60 ticks (step >= 1, i < ticksN <= 60) x 2 segments
-#define MAX_GLYPH_PLANS 48   // 12 labels x 2 digits x 2 passes (a bitmap glyph with its shadow copy)
+#define MAX_GLYPH_PLANS (LABELS_MAX * 2 * 2)   // labels x 2 digits x 2 passes (a bitmap glyph with its shadow copy)
 #define MARK_BANDS ((TUBE_HEIGHT_MAX + TUBE_BAND - 1) / TUBE_BAND)
-static_assert(TUBE_HEIGHT_MAX <= 127 && MAX_FIZZ <= 255, "MarkPlan indexes rows by int8, bubbles by uint8");
+static_assert(TUBE_HEIGHT_MAX <= 127 && FIZZ_POOL * MARK_BANDS <= 32767, "MarkPlan indexes rows by int8, band lists by int16");
 struct TickSeg { float dx, dy; int16_t x0, w, outer, inner; uint8_t ink; };
 // A bubble's disc set-up (drawTube step 5): its DiscRow without the per-row fields, which bubbleRows fills per row.
 struct BubblePlan { DiscRow d; float y, m, pop, depthK; int16_t ixa, ixb, iyA, iyB; };
@@ -2602,9 +2603,9 @@ struct MarkPlan {
   // the digit layer (one a frame: digitsOnTop picks it); rows [labelR0, labelR1] hold all it draws
   int nGlyph, labelR0, labelR1; GlyphPlan glyph[MAX_GLYPH_PLANS];
   // fizz
-  int nBub; BubblePlan bub[MAX_FIZZ];
+  int nBub; BubblePlan bub[FIZZ_POOL];
 #if TILE_RENDER
-  int16_t bandStart[MARK_BANDS + 1]; uint8_t bandBub[MAX_FIZZ * MARK_BANDS];   // per band: the bubbles with a row in it, in plan order
+  int16_t bandStart[MARK_BANDS + 1]; uint16_t bandBub[FIZZ_POOL * MARK_BANDS];   // per band: the bubbles with a row in it, in plan order
 #endif
 };
 // The tick layer's plan (sim drawTicks). wetRows/dryRows: source-row tables behind liquid vs behind air, blended by a
@@ -2939,7 +2940,7 @@ static inline bool springBirth(const Tube &t) { return t.springScatter <= 0 || f
 // is capped and reported (fizzOverflow). See sim fizzWant.
 static int fizzWant(const Params &p, float len, float agitation) {
   int want = (int)ffloor(p.fizzCount * (len / L) * (1 + (agitation < 0.05f ? 0 : agitation))); if (want < 0) want = 0;
-  if (want > MAX_FIZZ) { if (want > fizzOverflowPeak) fizzOverflowPeak = want; want = MAX_FIZZ; }
+  if (want > FIZZ_POOL) { if (want > fizzOverflowPeak) fizzOverflowPeak = want; want = FIZZ_POOL; }
   return want;
 }
 // A spring fills its pool at its cadence instead, up to the same count (stepFizz).
@@ -2956,7 +2957,7 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // meniscus from its front backward. Against a closed end (glass: glassVy = the across rise px/s) the whole disc
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
-static int16_t foamOrder[MAX_FIZZ];   // the packing sweep order (parked, front first); one tube at a time
+static int16_t foamOrder[FIZZ_POOL];   // the packing sweep order (parked, front first); one tube at a time
 FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
   auto front = [&](float y, float r) { return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side); };
@@ -3142,7 +3143,7 @@ FIZZ_IRAM void stepFizz(const Params &p, float dt, float along, float across, fl
       // leave, keeping one birth of credit and no more, so a stream the tilt keeps in the liquid (a drift that
       // stalls or keeps reversing) thins out instead of filling the pool, and no burst follows. Bubbles already
       // over a count that dropped (a shorter column) live on. See sim.
-      const int cap = fizzWant(p, len, agitation);   // <= MAX_FIZZ: a slot is always there below it
+      const int cap = fizzWant(p, len, agitation);   // <= FIZZ_POOL: a slot is always there below it
       int live = 0;
       for (int k = 0; k < t.fizzN; k++) if (t.fizz[k].v != 0) live++;
       t.springClock += fmx(0, p.fizzSourceRate) * (1 + (agitation < 0.05f ? 0 : agitation)) * dt;
@@ -4183,7 +4184,7 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
   for (int b = 0; b < nb; b++) start[b + 1] += start[b];
   int16_t at[MARK_BANDS];
   for (int b = 0; b < nb; b++) at[b] = start[b];
-  for (int i = 0; i < mp.nBub; i++) { int b0, b1; bands(mp.bub[i], b0, b1); for (int b = b0; b <= b1; b++) mp.bandBub[at[b]++] = (uint8_t)i; }
+  for (int i = 0; i < mp.nBub; i++) { int b0, b1; bands(mp.bub[i], b0, b1); for (int b = b0; b <= b1; b++) mp.bandBub[at[b]++] = (uint16_t)i; }
 #endif
 }
 // The planned bubbles over tube rows [r0, r1): a band's list, or all of them over the whole tube.
@@ -4209,6 +4210,7 @@ bool render_init() {
     tubes[i].wetRun = (int16_t *)heap_caps_malloc((PANEL_W + 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     tubes[i].digitOff = (float *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
     tubes[i].traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    tubes[i].fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
     tubes[i].palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
     tubes[i].plan = (MarkPlan *)heap_caps_malloc(sizeof(MarkPlan), MALLOC_CAP_SPIRAM);   // step 9 (~57 KB on the LCD)
     ok = ok && tubes[i].plan;
@@ -4234,7 +4236,7 @@ bool render_init() {
     ok = ok && tubes[i].traceStreakTab;
     if (uint8_t *rows = (uint8_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(DigitRow) + 63, MALLOC_CAP_SPIRAM))   // one row per cache line
       tubes[i].digitRows = (DigitRow *)(((uintptr_t)rows + 63) & ~(uintptr_t)63);
-    ok = ok && tubes[i].set.poolC && tubes[i].set.poolA && tubes[i].set.poolS && tubes[i].wetShare && tubes[i].wetRun && tubes[i].digitOff
+    ok = ok && tubes[i].fizz && tubes[i].set.poolC && tubes[i].set.poolA && tubes[i].set.poolS && tubes[i].wetShare && tubes[i].wetRun && tubes[i].digitOff
          && tubes[i].digitRows && tubes[i].traceLut && tubes[i].palCache && tubes[i].traceMemo;
   }
   FILM_PHI = (uint16_t *)heap_caps_malloc(257 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);

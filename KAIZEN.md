@@ -579,7 +579,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
    code is several times that (2 KB of ticks into IRAM moved the pinned render ~2.5 ms). Costs 16 KB internal RAM; may
    replace part of the IRAM code.
 
-- Shelved fizz doubling (MAX_FIZZ 480) now needs MarkPlan's uint8 bubble indexes widened: `static_assert(MAX_FIZZ <= 255)`; the plan also doubles (160 B a bubble, PSRAM).
 - Step 9 follow-ups (marks in the tiles): the strip-lens case (digits printed on top + lens) still draws lens and
   top digits on the strip after the tiles (and the push writes them back); a lens row map applied inside the push
   plus top digits per tile would need the source rows' tiles first. AMOLED / -DTILE_OFF could run the marks per
@@ -612,7 +611,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   IRAM 2.3 KB (~50-90 us a step), the 32 KB I-cache option (structural 6).
 
 ### Look options (each needs a board round)
-- Fizz pool doubled, shelved 2026-11-02 in `git stash` ("fizz pool doubled"): MAX_FIZZ/FIZZ_MAX 480, slider 240, `Tube::fizz` in PSRAM at boot. Flashed once on LCD: boots, heap 4.4 -> 14.4 KB; fps at 240/480 not measured, AMOLED not built. Reapply after step 9.
+- Fizz reuse levers (user idea, code read 2026-11-02, none measured). Steps: settleFoam's sort starts from slot order every step though its comment says "nearly sorted from the last step" (keep the order between steps); neighbour list reused between sweeps and steps (foam barely moves); catch-up steps in a frame see the same fizzSurf (spring point, discFit once a frame, or one summed step); per-slot radius instead of fizzR per pair. Render, exact: per-row table instead of copying sR / sL / bR / bL / veil / wallT per bubble row; light direction per row. Render, needs a look check: size classes + depth levels sharing disc set-up and coverage sprites. Render is linear at ~85 us a bubble (hours core); not bit-exact on the board (fused math), sim mirrors.
+- Fizz pool 480 (FIZZ_COUNT_MAX 240, layout.h): pool now in PSRAM; fused math rounds differently than the array (x86 `--fma`: pixels 46 of 80 same over 350 frames, ULP only). Full tube, scattered, wide LCD, pinned / swinging: 120 bubbles 33.9 / 35.9 fps, 240 18.1 / 25.4, 480 5.4 / 11.7. The fizz step grows faster than the count (pinned 2.05 -> 6.39 -> 25.2 ms a step, catch-up steps 1.5 -> 2.8 -> 5): the foam packing is the first lever before 240 is usable at a full tube. Spring at 480 not measured (hours pool stayed at 33 slots, not understood).
+- Sim has no LABELS_MAX / GLYPH_BH_CAP cap (firmware cuts past the sliders): parity only over serial-pushed values. coherence / derive `trapped` fizz count stay 120: a material law, not the slider.
 - `fizzCount` is per tube: the LCD tube is 901 design px long at physical size (615 with LCD_FILL; 536 on the
   AMOLED), so bubbles are ~40 % sparser along it. User wants it scaled (separate chat).
 - Per-radius / subpixel-phase coverage sprites for the fizz: per-px work ~2-3x less; ~0.8 ms of ~1.2 pinned to gain,

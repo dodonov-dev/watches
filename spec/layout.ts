@@ -42,6 +42,16 @@ if ((globalThis as any).location?.search !== undefined) (globalThis as any).loca
 export const DESIGN_H = 240;               // canvas rows the params / presets are tuned on
 export const DESIGN_TUBE_HEIGHT_MAX = 80;  // largest tubeHeight a preset may ask for, design px
 
+// Slider limits (PARAM_META reads them) that the firmware's fixed buffers are sized from. Values pushed past a
+// slider over serial are capped and reported, never written past a buffer.
+export const FIZZ_COUNT_MAX = 240;   // fizzCount: bubbles in a full tube
+export const FIZZ_POOL = 2 * FIZZ_COUNT_MAX;   // bubbles per tube: full agitation (<= 1) doubles fizzCount
+export const DIGIT_SCALE_MAX = 6;    // digitScaleX / Y (and Min): design px per em cell
+export const DIGIT_SHADOW_OFFSET_MAX = 4;   // digitShadowOffset, design px
+export const GLYPH_EM_W = 5;         // the nominal em of the sprite fonts, cells (same as the bitmap fonts: a scale means the same)
+export const GLYPH_EM_H = 7;
+export const MARK_CONTRAST_MAX = 120;   // markContrast
+
 export const LCD_PANEL_W = 820, LCD_PANEL_H = 320;
 export const PANEL_W = BOARD === 'lcd316' ? chosen.res * LCD_PANEL_W / LCD_PANEL_H : 536;
 export const PANEL_H = BOARD === 'lcd316' ? chosen.res : 240;
