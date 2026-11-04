@@ -1,21 +1,25 @@
 // Face layout (render.ts faceLayout; firmware render.h mirrors it): for every board, LCD res tag and tube count the
 // sim takes, every preset and a tubeHeight / row sweep, the tubes lie in face order (hours, minutes, seconds), do not
 // overlap and stay inside the canvas; a two-tube face keeps each tube at its own params' row (as before the seconds
-// tube); a three-tube face keeps the rows boardParams capped (TUBE3_HEIGHT_MAX).
+// tube); a three-tube face keeps the rows boardParams capped (tube3HeightAt) and fits the canvas. Tube widths: every
+// narrow / wide combination, plus mm faces (MM_TAGS).
 // Run: npm run check:layout (the parent spawns one child per configuration: spec/layout reads LW_* at import).
 const { execFileSync } = require('child_process'); declare const process: any; declare function require(m: string): any;
 declare const __filename: string;
-import { BOARD_TAG, PANEL_H, TUBE_COUNT, TUBE3_HEIGHT_MAX, LCD_RES, resTag } from '@spec/layout';
+import { BOARD_TAG, PANEL_H, TUBE_COUNT, TUBE_PX_SCALE, LCD_RES, NARROW_MM, resTag, tube3HeightAt } from '@spec/layout';
 import { DEFAULT_PARAMS, PRESETS, presetParams, tubeParams, type Params } from '../src/params';
 import { faceLayout, tubeLayout, tubeRows } from '../src/render';
 
+// mm faces (layout.h LCD_MM_x): the widest and narrowest, equal mm, mm next to wide / narrow.
+const MM_TAGS: Record<number, string[]> = { 2: ['10-6', '10-10', '3-f', '7.5-f'], 3: ['10-8-6', '9-7-5', '10-10-10', '3-3-3', 'f-7-5', '10-f-10', '6-6-9.5'] };
 if (!process.env.LW_CHILD) {
   const runs: Record<string, string>[] = [];
   for (const tubes of ['2', '3']) {
     runs.push({ LW_BOARD: 'amoled191', LW_TUBES: tubes });
     const n = +tubes;
     for (const rows of LCD_RES) for (let bits = 0; bits < 1 << n; bits++)
-      runs.push({ LW_BOARD: 'lcd316', LW_RES: resTag(rows, [...Array(n)].map((_, i) => !!(bits & (1 << i)))), LW_TUBES: tubes });
+      runs.push({ LW_BOARD: 'lcd316', LW_RES: resTag(rows, [...Array(n)].map((_, i) => bits & (1 << i) ? 'f' : NARROW_MM)), LW_TUBES: tubes });
+    for (const rows of [240, 320]) for (const w of MM_TAGS[n]) runs.push({ LW_BOARD: 'lcd316', LW_RES: `${rows}w${w}`, LW_TUBES: tubes });
   }
   let bad = 0;
   for (const env of runs) {
@@ -36,8 +40,9 @@ for (const [name, p] of cases) {
   rows.forEach((r, i) => {
     if (r.H !== tubeLayout(ps[i]).H) err(`tube ${i} rows ${r.H}, its params ${tubeLayout(ps[i]).H}`);
     if (r.y < 0 || r.y + r.H > PANEL_H) err(`tube ${i} off the canvas`);
-    if (TUBE_COUNT === 3 && r.H > TUBE3_HEIGHT_MAX) err(`tube ${i} taller than a third`);
+    if (TUBE_COUNT === 3 && r.H > tube3HeightAt(TUBE_PX_SCALE[i])) err(`tube ${i} taller than its share ${tube3HeightAt(TUBE_PX_SCALE[i])}`);
   });
+  if (rows.reduce((a, r) => a + r.H, 0) > PANEL_H) err('tubes taller than the canvas');
   if (TUBE_COUNT === 2) { if (lay.yH !== tubeLayout(ps[0]).yH || lay.yM !== tubeLayout(ps[1]).yM) err('two-tube rows moved'); }
   else for (let i = 1; i < 3; i++) if (rows[i].y < rows[i - 1].y + rows[i - 1].H) err(`tube ${i} overlaps tube ${i - 1}`);
 }

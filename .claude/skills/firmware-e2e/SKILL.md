@@ -20,6 +20,7 @@ LW_PORT=COM11 tools/e2e.sh --env lcd316              # ESP32-S3-LCD-3.16 board (
 LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 240    # LCD canvas 615x240 upscaled to 820x320 (RENDER_H 240/256/288/320; default 320 = native)
 LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 320f   # res tag = rows + tube widths: 320 narrow, 320f both wide, 320fh / 320fm hours / minutes wide
 LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 320fh --tubes 3   # + the seconds tube (-DTUBE_COUNT=3, tag lcd316@320fh+t3); 3-tube tags also fs / fhm / fhs / fms
+LW_PORT=COM11 tools/e2e.sh --env lcd316 --res 320w10-8-6 --tubes 3   # tube widths in mm, one per tube (-DLCD_MM_H=10 ...; f = wide, 6 = narrow; 3 to 10)
 tools/e2e.sh --env lcd316 --define STRIPS_INTERNAL=1 # any -D for the build, also put in the label
 ```
 Board selection everywhere (flash.sh, flash-win.sh, e2e.sh): `--env` / `--res TAG` / `--tubes N`, else `$LW_BOARD` / `$LW_RES` / `$LW_TUBES`, else

@@ -14,7 +14,7 @@
 #define BOARD_NAME   "lcd316"
 // Board + canvas rows + tube widths, as the sim names it (spec/layout.ts BOARD_TAG / resTag): no suffix all narrow,
 // f all wide, else f + the wide tubes' letters in h / m / s order: fh the hours tube wide, fm the minutes tube wide; three
-// tubes also fs, fhm, fhs, fms (layout.h LCD_FILL_H / LCD_FILL_M / LCD_FILL_S).
+// tubes also fs, fhm, fhs, fms (layout.h LCD_FILL_H / LCD_FILL_M / LCD_FILL_S); a tube in mm: w10-8-6 (below).
 #if TUBE_COUNT == 3
 #define BOARD_WIDE_ALL_ (LCD_FILL_H && LCD_FILL_M && LCD_FILL_S)
 #define BOARD_WIDE_ANY_ (LCD_FILL_H || LCD_FILL_M || LCD_FILL_S)
@@ -38,7 +38,47 @@
 #else
 #define BOARD_WIDE_M_ ""
 #endif
-#if BOARD_WIDE_ALL_
+// A tube in mm (layout.h LCD_MM_x): w + one width per tube, `-` between: the flag's mm as written, f wide, 6 narrow
+// (tools/boardtag.py never writes a 6 or a 6-only tag: those are the letter forms).
+#if defined(LCD_MM_H) || defined(LCD_MM_M) || (TUBE_COUNT == 3 && defined(LCD_MM_S))
+#define BOARD_MM_ 1
+#else
+#define BOARD_MM_ 0
+#endif
+#if BOARD_MM_
+#define BOARD_MM_OK_(mm) ((float)(mm) >= 3 && (float)(mm) <= 10 && (float)(mm) != 6)
+#ifdef LCD_MM_H
+#define BOARD_W_H_ BOARD_STR(LCD_MM_H)
+static_assert(BOARD_MM_OK_(LCD_MM_H), "LCD_MM_H: 3 to 10 mm, not 6 (narrow: leave it out)");
+#elif LCD_FILL_H
+#define BOARD_W_H_ "f"
+#else
+#define BOARD_W_H_ "6"
+#endif
+#ifdef LCD_MM_M
+#define BOARD_W_M_ BOARD_STR(LCD_MM_M)
+static_assert(BOARD_MM_OK_(LCD_MM_M), "LCD_MM_M: 3 to 10 mm, not 6 (narrow: leave it out)");
+#elif LCD_FILL_M
+#define BOARD_W_M_ "f"
+#else
+#define BOARD_W_M_ "6"
+#endif
+#if TUBE_COUNT == 3
+#ifdef LCD_MM_S
+#define BOARD_W_S_ "-" BOARD_STR(LCD_MM_S)
+static_assert(BOARD_MM_OK_(LCD_MM_S), "LCD_MM_S: 3 to 10 mm, not 6 (narrow: leave it out)");
+#elif LCD_FILL_S
+#define BOARD_W_S_ "-f"
+#else
+#define BOARD_W_S_ "-6"
+#endif
+#else
+#define BOARD_W_S_ ""
+#endif
+#endif
+#if BOARD_MM_
+#define BOARD_WIDE_  "w" BOARD_W_H_ "-" BOARD_W_M_ BOARD_W_S_
+#elif BOARD_WIDE_ALL_
 #define BOARD_WIDE_  "f"
 #elif BOARD_WIDE_ANY_
 #define BOARD_WIDE_  "f" BOARD_WIDE_H_ BOARD_WIDE_M_ BOARD_WIDE_S_

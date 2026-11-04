@@ -692,3 +692,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - LCD 320fh+t3 (38.7 fps): core 1 is the bottleneck (pushes minutes + seconds, renders both: ~26 ms) while core 0 idles
   ~7 ms after hours. Pushing seconds from core 0 (gather lane by pushing core, a second seconds strip so core 1 can render
   the next one meanwhile, +177 KB PSRAM) would split ~22 / ~22 ms (~44 fps). Hours render rose 12.9 -> 14.5 ms (PSRAM traffic).
+
+## Tube widths in mm (2026-11-04)
+- Host parity at exactly 9.0 mm (k 1.36513, hours 320w9-7-5 / 320w9-6): seltzer 7 px > 12/255 (worst 83) in one meniscus
+  stroke column at the bore's top / bottom rows; 8.9 / 9.1 / 10 are clean. A sim/firmware edge-rounding coincidence at
+  that scale, not the 3-tube logic.
+- Width cap 10 mm comes from MarkPlan's int8 rows (TUBE_HEIGHT_MAX <= 127; 10.4 mm max at 320 rows). Wider: int16 rows.
+- Three-tube TUBE_HEIGHT_MAX is still sized for tubeHeight 80 at the widest tube even where its share cap is lower.
+- Two pio builds of lcd316 at once (two worktrees) break each other in packages-lcd316 (CMake: no such file 'LICENSE').

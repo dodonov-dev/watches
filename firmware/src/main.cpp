@@ -94,26 +94,15 @@ static Params effH = PRESET_DEFAULT;
 #else
 static Params &effH = params;
 #endif
-// Three tubes: a tube whose width another has shares that one's struct (two widths at most: one copy more at most).
+// A tube whose px scale an earlier tube has shares that one's struct: one copy per width (float compares, so constexpr:
+// the unused copies are never referenced and dropped).
+constexpr bool EFF_M_OWN = PX_SCALE_M != PX_SCALE_H;
+static Params effMOwn = PRESET_DEFAULT;
+static Params &effM = EFF_M_OWN ? effMOwn : effH;
 #if TUBE_COUNT == 3
-#define EFF_M_OWN (PX_MIXED && !LCD_FILL_M != !LCD_FILL_H)
-#define EFF_S_OWN (PX_MIXED && !LCD_FILL_S != !LCD_FILL_H && !LCD_FILL_S != !LCD_FILL_M)
-#else
-#define EFF_M_OWN PX_MIXED
-#endif
-#if EFF_M_OWN
-static Params effM = PRESET_DEFAULT;
-#else
-static Params &effM = effH;
-#endif
-#if TUBE_COUNT == 3
-#if EFF_S_OWN
-static Params effS = PRESET_DEFAULT;
-#elif PX_MIXED && !LCD_FILL_S == !LCD_FILL_M
-static Params &effS = effM;
-#else
-static Params &effS = effH;
-#endif
+constexpr bool EFF_S_OWN = PX_SCALE_S != PX_SCALE_H && PX_SCALE_S != PX_SCALE_M;
+static Params effSOwn = PRESET_DEFAULT;
+static Params &effS = EFF_S_OWN ? effSOwn : PX_SCALE_S == PX_SCALE_M ? effM : effH;
 static Params &effOf(int idx) { return idx == 0 ? effH : idx == 1 ? effM : effS; }
 #else
 static Params &effOf(int idx) { return idx ? effM : effH; }
@@ -124,11 +113,9 @@ static void paramsChanged() {
 #if PX_SCALED
   boardParams(params, effH, PX_SCALE_H, PX_SCALE_FIZZ);
 #endif
-#if EFF_M_OWN
-  boardParams(params, effM, PX_SCALE_M, PX_SCALE_FIZZ);
-#endif
-#if TUBE_COUNT == 3 && EFF_S_OWN
-  boardParams(params, effS, PX_SCALE_S, PX_SCALE_FIZZ);
+  if constexpr (EFF_M_OWN) boardParams(params, effMOwn, PX_SCALE_M, PX_SCALE_FIZZ);
+#if TUBE_COUNT == 3
+  if constexpr (EFF_S_OWN) boardParams(params, effSOwn, PX_SCALE_S, PX_SCALE_FIZZ);
 #endif
   paramsGen++;
 }

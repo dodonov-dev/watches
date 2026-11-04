@@ -1,5 +1,5 @@
 import './style.css';
-import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, parseBoardTag, parseRes, resTag, switchBoard, type Board } from '@spec/layout';
+import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
 import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
@@ -39,14 +39,24 @@ let clockSet = false;   // the user set the clock: the fill jumps there instead 
 const layoutNow = () => faceLayout(tubeParams(params));
 const TUBE_NAMES = ['hours', 'minutes', 'seconds'] as const;
 /** A board tag in words, for the sim's board controls (`lcd316@320fh` → `lcd316, rows 320, hours wide, minutes narrow`;
- *  `+t3` → `…, 3 tubes`). */
+ *  `lcd316@320w10-8-6+t3` → `…, hours 10 mm, minutes 8 mm, seconds narrow, 3 tubes`). */
 function boardWords(tag: string): string {
   const t = parseBoardTag(tag), lcd = t?.res ? parseRes(t.res, t.tubes) : null;
   if (!t) return tag;
-  return (lcd ? `${t.board}, rows ${lcd.rows}, ${lcd.wide.map((w, i) => `${TUBE_NAMES[i]} ${w ? 'wide' : 'narrow'}`).join(', ')}` : t.board)
+  return (lcd ? `${t.board}, rows ${lcd.rows}, ${lcd.widths.map((w, i) => `${TUBE_NAMES[i]} ${widthWords(w)}`).join(', ')}` : t.board)
     + `, ${t.tubes} tubes`;
 }
-const lcdStart = parseRes(LAST_LCD_RES, 3) ?? { rows: 320, wide: [false, false, false] };
+// The width controls start from the last LCD tag (two-tube mm tags: seconds narrow).
+const lcdStart = ((r) => r && { rows: r.rows, widths: [...r.widths, NARROW_MM, NARROW_MM].slice(0, 3) })(parseRes(LAST_LCD_RES, 3) ?? parseRes(LAST_LCD_RES, 2))
+  ?? { rows: 320, widths: [NARROW_MM, NARROW_MM, NARROW_MM] };
+/** The widths the width selects offer, narrow to wide by size (wide ≈ 8.8 mm at any rows), plus a tag's own. */
+const WIDTH_CHOICES = (w: TubeWidth): TubeWidth[] => {
+  const mm: TubeWidth[] = [];
+  for (let x = 4; x <= TUBE_MM_MAX; x += 0.5) mm.push(x);
+  if (w !== 'f' && !mm.includes(w)) mm.push(w);
+  const at = (v: TubeWidth): number => v === 'f' ? 8.79 : v;
+  return [...mm, 'f' as TubeWidth].sort((a, b) => at(a) - at(b));
+};
 
 // ---------- DOM ----------
 const app = document.getElementById('app')!;
@@ -58,7 +68,7 @@ app.innerHTML = `
     <label title="Tubes on the face: 2 = hours, minutes; 3 = hours, minutes, seconds (seconds at the bottom, minutes in the middle; seconds draws with the minutes ticks and digits). Firmware TUBE_COUNT. Reloads the page.">tubes <select id="tubes">${TUBE_COUNTS.map((n) => `<option${n === TUBE_COUNT ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <span id="lcdopts" style="display: ${BOARD === 'lcd316' ? 'contents' : 'none'}">
       <label title="LCD canvas rows (RENDER_H): fewer render faster and are upscaled to the 320-row panel. Reloads the page.">rows <select id="lcdrows">${LCD_RES.map((r) => `<option${r === lcdStart.rows ? ' selected' : ''}>${r}</option>`).join('')}</select></label>
-      ${TUBE_NAMES.slice(0, TUBE_COUNT).map((t, i) => `<label title="${t} tube width: narrow = the AMOLED's physical size, wide = scaled with the canvas height (fills the face as on the AMOLED). Firmware LCD_FILL_${'HMS'[i]}. Reloads the page.">${t} <select id="width${'hms'[i]}"><option value="0"${lcdStart.wide[i] ? '' : ' selected'}>narrow</option><option value="1"${lcdStart.wide[i] ? ' selected' : ''}>wide</option></select></label>`).join('')}
+      ${TUBE_NAMES.slice(0, TUBE_COUNT).map((t, i) => `<label title="${t} tube width: narrow (6 mm) = the AMOLED's physical size, wide = scaled with the canvas height (fills the face as on the AMOLED, ≈ 8.8 mm), mm = the presets' 6 mm tube (tubeHeight 72) drawn that wide, other tubes in proportion. Firmware LCD_FILL_${'HMS'[i]} / LCD_MM_${'HMS'[i]}. Reloads the page.">${t} <select id="width${'hms'[i]}">${WIDTH_CHOICES(lcdStart.widths[i]).map((w) => `<option value="${w}"${w === lcdStart.widths[i] ? ' selected' : ''}>${w === 'f' ? 'wide' : w === NARROW_MM ? '6 narrow' : w}</option>`).join('')}</select></label>`).join('')}
     </span>
     <label>scale <select id="scale"><option value="0.33">0.33 (≈ real size @96 dpi)</option><option value="0.5" selected>0.5</option><option value="0.75">0.75</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label><input type="checkbox" id="ovl" checked> leather cuff</label>
@@ -158,8 +168,9 @@ setScale();
 // Board controls: any change reloads the sim on that board (spec/layout switchBoard); rows and widths are the LCD's.
 const boardPicked = (): void => {
   const b = $<HTMLSelectElement>('board').value as Board;
-  const n = +$<HTMLSelectElement>('tubes').value, wide = [...'hms'.slice(0, n)].map((c) => $<HTMLSelectElement>(`width${c}`)?.value === '1');
-  save(); switchBoard(b, resTag(+$<HTMLSelectElement>('lcdrows').value, wide), n);
+  const n = +$<HTMLSelectElement>('tubes').value;
+  const widths = [...'hms'.slice(0, n)].map((c, i): TubeWidth => { const v = $<HTMLSelectElement>(`width${c}`)?.value ?? String(lcdStart.widths[i]); return v === 'f' ? 'f' : +v; });
+  save(); switchBoard(b, resTag(+$<HTMLSelectElement>('lcdrows').value, widths), n);
 };
 for (const id of ['board', 'tubes', 'lcdrows', ...[...'hms'.slice(0, TUBE_COUNT)].map((c) => `width${c}`)]) $(id).oninput = boardPicked;
 $('scale').oninput = (e) => { scale = +(e.target as HTMLSelectElement).value; setScale(); };
@@ -401,7 +412,8 @@ panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
 
 // URL params, applied on top of the restored session — for reproducible states / screenshots:
 //   ?board=lcd316&res=320 (canvas of another board, read by spec/layout.ts at load; remembered; res tag 320 / 320f /
-//   320fh / 320fm = tube widths narrow / both wide / hours wide / minutes wide; three tubes also 320fs / fhm / fhs / fms)
+//   320fh / 320fm = tube widths narrow / both wide / hours wide / minutes wide; three tubes also 320fs / fhm / fhs / fms;
+//   mm per tube: 320w10-8-6, f = wide)
 //   &tubes=3 (+ the seconds tube; remembered)
 //   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09[:30] &demo=120 &settle=1
 //   &along=0.3 &across=0 &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1

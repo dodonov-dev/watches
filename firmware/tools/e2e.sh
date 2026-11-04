@@ -5,7 +5,8 @@
 #                [--env NAME] [--res N] [--tubes 2|3]
 # --env NAME = platformio.ini env to build and flash (else $LW_BOARD, else amoled191; lcd316 for the ESP32-S3-LCD-3.16);
 #   --res TAG = the lcd316's res tag: canvas rows (RENDER_H 240 / 256 / 288 / 320) + tube widths (nothing narrow, f both
-#   wide, fh / fm hours / minutes wide, three tubes also fs / fhm / fhs / fms; tools/boardtag.py), else $LW_RES, else
+#   wide, fh / fm hours / minutes wide, three tubes also fs / fhm / fhs / fms; mm per tube w10-8-6, f = wide, 6 = narrow;
+#   tools/boardtag.py), else $LW_RES, else
 #   320 = native, narrow. --tubes N = 2 / 3 (+ the seconds tube, -DTUBE_COUNT=3), else $LW_TUBES, else 2. Parity renders the
 #   sim at whatever the board reports (`v`). --define NAME=V adds -DNAME=V to the build (e.g. STRIPS_INTERNAL=1,
 #   display_lcd316.cpp) and to the label. After a flash the board's `v` must report the tag of what was built (else

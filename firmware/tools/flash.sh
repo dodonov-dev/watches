@@ -4,7 +4,8 @@
 # Usage: tools/flash.sh [--env NAME] [--res N] [--tubes 2|3] [args for pio upload / flash-win.sh]
 # Board: --env NAME, else $LW_BOARD, else amoled191 (platformio.ini env). lcd316 res tag (tools/boardtag.py): --res
 # TAG, else $LW_RES, else 320 = native rows, both tubes narrow; TAG = rows 240 / 256 / 288 / 320 + nothing (narrow) /
-# f (all wide) / fh / fm (hours / minutes wide), three tubes also fs / fhm / fhs / fms, e.g. 320f. Tubes: --tubes N, else
+# f (all wide) / fh / fm (hours / minutes wide), three tubes also fs / fhm / fhs / fms, e.g. 320f; mm per tube w10-8-6
+# (3 to 10, f = wide, 6 = narrow). Tubes: --tubes N, else
 # $LW_TUBES, else 2 (3 = + the seconds tube, -DTUBE_COUNT=3). Prints the board tag it builds (`v` reports the same).
 # $LW_PORT picks the board as in device.py: COMx = Windows side, else a Linux tty (e.g. /dev/ttyACM1). With several
 # boards attached it is required (refused otherwise): they share the USB IDs, nothing tells which one is "first".

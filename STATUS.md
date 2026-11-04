@@ -1,6 +1,26 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-04 (seconds tube, compile-time; LCD board-checked)_
+_Last update: 2026-11-04 (LCD tube widths in mm)_
+
+## LCD tube widths in mm (2026-11-04)
+
+- Any width per tube: `LCD_MM_H` / `LCD_MM_M` / `LCD_MM_S` (3 to 10 mm, one decimal; overrides LCD_FILL_x) = px params at
+  mm / 6 of the AMOLED's physical size: the presets' 6 mm tube (tubeHeight 72) drawn that wide, other tubes in
+  proportion (user-fav, tubeHeight 54: x 0.75). 6 = narrow, wide ≈ 8.8. Res tag `w` + one width per tube, `-` between,
+  `f` = wide: `320w10-8-6`, `320wf-7-5`, `320w7-6` (only when a tube is neither narrow nor wide; old tags unchanged).
+  Same tag in `v`, sim `?res=`, LW_RES, `--res`; sim width selects 4..10 mm by 0.5 + wide.
+- One params copy per distinct width (main.cpp, constexpr: three widths = two copies more). Three-tube height cap: a
+  third of the canvas at equal widths, else each tube's share by scale (tube3HeightAt / TUBE3_HEIGHT_AT: the three always
+  fit); before, every tube at a third (changes only a wide tube at 320 rows with tubeHeight 80: 107 rows, was 106).
+- Proof: every layout constant of every old tag (AMOLED, LCD 240-320 x all letter tags, 2 / 3 tubes) identical to
+  1944878 except the mixed 3-tube caps. check:layout 72 configs ok (mm faces included). Host sim vs firmware:
+  320w10-8-6+t3 75/77, 320w9-7-5+t3 72/77 (17/255 stacked-blend px; seltzer at exactly 9.0 mm: one stroke column, KAIZEN).
+- Static internal RAM (pio): 320fh+t3 122676 B (= 1944878), 320w9-7-5+t3 123940 (+1264: third params copy 692 + Tube rows
+  107 -> 110), 320w10-8-6+t3 126308 (+3632: rows -> 122). Two-tube builds identical to 1944878 (320fh 122452 B, AMOLED 76256).
+- Board (COM11, user-fav pinned, fix-pose): 10-8-6 **34.0 fps** (render 28.6 ms, cores h 17.0 / m 20.7, seconds 9.6, push
+  13.9, p95 31), heap with BLE **96-216 B**; 9-7-5 **38.4 fps** (render 25.3, cores h 15.3 / m 18.1, seconds 8.3, push
+  12.6, p95 27), heap 1984 B. Parity settled 0 px > 12/255 both. BLE connect not tested (10-8-6 has no heap left for it).
+  LCD left on lcd316@320w10-8-6+t3 for the user's look; visual check pending.
 
 ## Seconds tube (2026-11-04, uncommitted)
 
