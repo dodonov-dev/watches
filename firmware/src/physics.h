@@ -62,16 +62,18 @@ struct TubeState {
 };
 
 // Params as a tube's physics and render take them: p (design px, as presets, `p` writes and NVS hold them) with the
-// PARAM_FIELDS px fields scaled by the tube's px scale k (layout.h TUBE_PX_SCALE), the whole-pixel ones rounded (sim
-// params.ts boardParams).
-inline void boardParams(const Params &p, Params &out, float k) {
+// PARAM_FIELDS px fields scaled by the tube's px scale k (layout.h TUBE_PX_SCALE), the whole-pixel ones rounded, the
+// liquid's (px 3: the fizz) by the liquid's scale kf (PX_SCALE_FIZZ); a tube narrower than kf holds fewer bubbles,
+// fizzCount x (k / kf)^2 (its share of the volume). See sim params.ts boardParams.
+inline void boardParams(const Params &p, Params &out, float k, float kf) {
   out = p;
-  if (k == 1.0f) return;
+  if (k == 1.0f && kf == 1.0f) return;
   for (const ParamField &f : PARAM_FIELDS) if (f.px) {
     float &v = *(float *)((uint8_t *)&out + f.off);
-    v *= k;
+    v *= f.px == 3 ? kf : k;
     if (f.px == 2) v = floorf(v + 0.5f);   // whole pixels stay on the grid (JS Math.round)
   }
+  if (k != kf) { const float r = k / kf, q = r * r; out.fizzCount = floorf(p.fizzCount * q + 0.5f); }
   // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
   // move in (canvas rows minus its height), so the tubes stay at the face's edges.
   if (k != (float)PANEL_H / DESIGN_H) {

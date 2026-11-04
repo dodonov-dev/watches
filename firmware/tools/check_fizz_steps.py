@@ -72,7 +72,7 @@ int main() {
     char *eq = strchr(line, '='); if (!eq) return 4;
     *eq = 0; if (!setParam(design, line, eq + 1)) fprintf(stderr, "unknown param %s\n", line);
   }
-  Params pH, pM; boardParams(design, pH, TUBE_PX_SCALE(0)); boardParams(design, pM, TUBE_PX_SCALE(1));   // each tube at its px scale
+  Params pH, pM; boardParams(design, pH, TUBE_PX_SCALE(0), PX_SCALE_FIZZ); boardParams(design, pM, TUBE_PX_SCALE(1), PX_SCALE_FIZZ);   // each tube at its px scale
   uint16_t *const s[2] = {strip[0], strip[1]};
   const FaceLayout lay = faceLayout(pH, pM); const int wordsH = lay.Hh * PANEL_W, wordsM = lay.Hm * PANEL_W;
   seqRun(h, m, pH, pM, gen, s, [&](int frame, uint16_t *const *st) {

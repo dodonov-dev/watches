@@ -8,8 +8,12 @@ _Last update: 2026-11-03 (per-tube LCD widths, board selection fixes)_
   e2e.sh / check_board_render.py / check_fizz_steps.py; tools/boardtag.py): `320` both narrow, `320f` both wide, `320fh`
   hours wide, `320fm` minutes wide. Firmware: LCD_FILL (both), LCD_FILL_H / LCD_FILL_M (one tube).
 - Each tube runs on its own params (boardParams at TUBE_PX_SCALE(i)) and px caps (stepTube k, contactLeads mmPerPx,
-  filmEta full, FOAM_CATCH_AT); equal widths share one params struct and one fizz mask set (no RAM, same code).
-  Mixed widths: second params copy + mask set, +688 B internal; the wider tube keeps the internal mask pool.
+  filmEta full); equal widths share one params struct (no RAM, same code). Mixed widths: second params copy, +688 B.
+- The fizz is the liquid's, not the tube's: bubble size, rise speed and spring spread (FIZZ_PX_KEYS, px code 3) use the
+  wider tube's scale in both tubes (PX_SCALE_FIZZ), and a narrower tube holds fewer bubbles by volume, fizzCount x
+  (k / kf)^2 (user-fav 320fh: 120 / 56). Both tubes share one fizz mask pool again. Equal widths unchanged.
+  Board 320fh (user-fav, pinned): 57.5 fps, parity 0 px > 12/255 (right after the flash and settled), heap 3.2-3.9 KB.
+  A spring's cadence (fizzSourceRate) is the nucleation site's and stays; only its population cap follows the volume.
 - Sim top bar: board, rows, hours width, minutes width (reloads; remembered, the LCD choice too while on the AMOLED);
   connecting to a board with another tag says which settings to pick.
 - flash.sh / flash-win.sh print the tag they build; they and device.py refuse to guess with several boards attached

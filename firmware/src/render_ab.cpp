@@ -29,7 +29,7 @@ namespace abcmp {
 static ab::TubeState tube;          // the comparison minutes tube
 static Params eff;                  // the design params scaled to this canvas (its minutes tube's px scale)
 static uint32_t effGen = 0;
-static void scaled(const Params &design, uint32_t gen) { if (gen != effGen) { ab::boardParams(design, eff, TUBE_PX_SCALE(1)); effGen = gen; } }
+static void scaled(const Params &design, uint32_t gen) { if (gen != effGen) { ab::boardParams(design, eff, TUBE_PX_SCALE(1), PX_SCALE_FIZZ); effGen = gen; } }
 
 bool init() {
   if (!ab::render_init() || !ab::physics_init()) return false;

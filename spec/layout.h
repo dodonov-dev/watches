@@ -71,6 +71,9 @@
 #define PX_SCALED          (PX_SCALED_H || PX_SCALED_M)
 #define TUBE_PX_SCALE(i)   (PX_MIXED && (i) ? PX_SCALE_M : PX_SCALE_H)   // tube i (0 = hours); a constant unless PX_MIXED
 #define PX_SCALE_MAX       (PX_SCALE_H > PX_SCALE_M ? PX_SCALE_H : PX_SCALE_M)   // what buffers are sized for
+// The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so both tubes draw
+// it at the wider tube's scale (sim params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²).
+#define PX_SCALE_FIZZ      PX_SCALE_MAX
 #define TUBE_LENGTH_PX     PANEL_W   // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).

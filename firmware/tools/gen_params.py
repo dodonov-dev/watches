@@ -47,18 +47,18 @@ FIELDS = [
 CTYPE = {'int': 'int', 'float': 'float', 'bool': 'bool', 'rgb': 'uint32_t'}
 
 def px_keys():
-    """sim/src/params.ts PX_KEYS / PX_WHOLE_KEYS: {name: 1 scaled to the board's canvas, 2 scaled and rounded}
-    (sim boardParams, firmware main.cpp paramsChanged)."""
+    """sim/src/params.ts PX_KEYS / PX_WHOLE_KEYS / FIZZ_PX_KEYS: {name: 1 scaled by the tube's px scale, 2 scaled and
+    rounded, 3 scaled by the liquid's px scale} (sim boardParams, firmware physics.h boardParams)."""
     src = open(os.path.join(ROOT, 'sim', 'src', 'params.ts')).read()
     def names(const):
         m = re.search(r'export const %s\b[^=]*= \[(.*?)\]' % const, src, re.S)
         if not m: sys.exit('gen_params: %s not found in sim/src/params.ts' % const)
         return re.findall(r"'(\w+)'", m.group(1))
-    keys, whole = names('PX_KEYS'), names('PX_WHOLE_KEYS')
+    keys, whole, fizz = names('PX_KEYS'), names('PX_WHOLE_KEYS'), names('FIZZ_PX_KEYS')
     types = dict(FIELDS)
-    bad = [k for k in keys if types.get(k) != 'float'] + [k for k in whole if k not in keys]
-    if bad: sys.exit('gen_params: PX_KEYS must be float fields, PX_WHOLE_KEYS a subset: %s' % bad)
-    return {k: 2 if k in whole else 1 for k in keys}
+    bad = [k for k in keys if types.get(k) != 'float'] + [k for k in whole + fizz if k not in keys] + [k for k in fizz if k in whole]
+    if bad: sys.exit('gen_params: PX_KEYS must be float fields, PX_WHOLE_KEYS / FIZZ_PX_KEYS disjoint subsets: %s' % bad)
+    return {k: 2 if k in whole else 3 if k in fizz else 1 for k in keys}
 
 def cval(t, v):
     if t == 'rgb': return '0x%06X' % int(v.lstrip('#'), 16)
@@ -77,7 +77,8 @@ def gen_params(presets):
     o += ['};', '', '#define PARAMS_NUM_FIELDS %d' % len(FIELDS),
           '#define PARAMS_SCHEMA_CRC 0x%08xu  // field names+types; guards the NVS blob' % crc, '',
           '// Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px',
-          '// dimension scaled to the board\'s canvas: 1 scaled, 2 scaled and rounded (sim params.ts boardParams)',
+          '// dimension scaled to the board\'s canvas: 1 by the tube\'s px scale, 2 by it and rounded, 3 by the liquid\'s',
+          '// (sim params.ts boardParams)',
           'struct ParamField { const char *name; char type; uint16_t off; uint8_t px; };',
           'static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {']
     px = px_keys()

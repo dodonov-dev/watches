@@ -98,10 +98,10 @@ static uint32_t paramsGen = 1;   // bumped on every param change; renderer cache
 // Every param change goes through here (the render worker is idle outside renderBoth, see below).
 static void paramsChanged() {
 #if PX_SCALED
-  boardParams(params, effH, PX_SCALE_H);
+  boardParams(params, effH, PX_SCALE_H, PX_SCALE_FIZZ);
 #endif
 #if PX_MIXED
-  boardParams(params, effM, PX_SCALE_M);
+  boardParams(params, effM, PX_SCALE_M, PX_SCALE_FIZZ);
 #endif
   paramsGen++;
 }
@@ -317,7 +317,7 @@ static void renderBoth() {
   uint32_t t1 = micros();
   display_next_strips(strip);
   hoursY0 = lay.yH; hoursRows = AB_FACE ? lay.Hm : lay.Hh;   // the A/B face shows the minutes tube in the hours slot
-  render_fizz_prepare(effH, effM);                     // the fizz masks, here on core 1: neither tube builds them while the other draws
+  render_fizz_prepare(effH);                    // the fizz masks, here on core 1: neither tube builds them while the other draws
   xTaskNotifyGive(workerTask);                  // hours → core 0
   display_wait_all();                           // minutes strip free (overlaps the hours render)
   uint32_t t2 = micros();

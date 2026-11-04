@@ -186,7 +186,8 @@ struct Params {
 #define PARAMS_SCHEMA_CRC 0xee478e2cu  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
-// dimension scaled to the board's canvas: 1 scaled, 2 scaled and rounded (sim params.ts boardParams)
+// dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
+// (sim params.ts boardParams)
 struct ParamField { const char *name; char type; uint16_t off; uint8_t px; };
 static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"v", 'i', (uint16_t)offsetof(Params, v), 0},
@@ -258,10 +259,10 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"bubbleTiltGain", 'f', (uint16_t)offsetof(Params, bubbleTiltGain), 1},
   {"fizz", 'b', (uint16_t)offsetof(Params, fizz), 0},
   {"fizzCount", 'f', (uint16_t)offsetof(Params, fizzCount), 0},
-  {"fizzSize", 'f', (uint16_t)offsetof(Params, fizzSize), 1},
+  {"fizzSize", 'f', (uint16_t)offsetof(Params, fizzSize), 3},
   {"fizzSizeVar", 'f', (uint16_t)offsetof(Params, fizzSizeVar), 0},
   {"fizzShadeOff", 'f', (uint16_t)offsetof(Params, fizzShadeOff), 0},
-  {"fizzSpeed", 'f', (uint16_t)offsetof(Params, fizzSpeed), 1},
+  {"fizzSpeed", 'f', (uint16_t)offsetof(Params, fizzSpeed), 3},
   {"fizzDriftGain", 'f', (uint16_t)offsetof(Params, fizzDriftGain), 0},
   {"fizzAcrossGain", 'f', (uint16_t)offsetof(Params, fizzAcrossGain), 0},
   {"fizzFlatRise", 'f', (uint16_t)offsetof(Params, fizzFlatRise), 0},
@@ -273,7 +274,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"fizzSource", 'f', (uint16_t)offsetof(Params, fizzSource), 0},
   {"fizzSourceX", 'f', (uint16_t)offsetof(Params, fizzSourceX), 0},
   {"fizzSourceY", 'f', (uint16_t)offsetof(Params, fizzSourceY), 0},
-  {"fizzSourceSpread", 'f', (uint16_t)offsetof(Params, fizzSourceSpread), 1},
+  {"fizzSourceSpread", 'f', (uint16_t)offsetof(Params, fizzSourceSpread), 3},
   {"fizzSourceRate", 'f', (uint16_t)offsetof(Params, fizzSourceRate), 0},
   {"ticksH", 'b', (uint16_t)offsetof(Params, ticksH), 0},
   {"tickStepH", 'f', (uint16_t)offsetof(Params, tickStepH), 0},

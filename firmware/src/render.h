@@ -14,9 +14,10 @@ void stepFizzTube(int idx, const Params &p, float dt, float along, float across,
 int fizzOverflow();
 // Bytes the fizz size params asked of the mask pool past its boot-time size (0: they fit); bubbles then draw analytically.
 int fizzMaskOverflow();
-// Before rendering both tubes at once (main renderBoth): builds the fizz masks for these params (each tube's) on this
-// core, so neither tube builds them while the other draws. Sequential callers may skip it.
-void render_fizz_prepare(const Params &pH, const Params &pM);
+// Before rendering both tubes at once (main renderBoth): builds the fizz masks for these params on this core, so neither
+// tube builds them while the other draws (both tubes' fizz params are equal: the liquid's px scale). Sequential callers
+// may skip it.
+void render_fizz_prepare(const Params &p);
 // Live bubbles of tube idx; foam = how many of them are parked foam, slots = pool slots the per-step loops run over.
 int fizzCounts(int idx, int &foam, int &slots);
 // Tube geometry from one tube's params, clamped to the panel and the strip buffer (H: that tube's rows; sim: tubeLayout).

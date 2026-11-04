@@ -53,7 +53,7 @@ int main() {
     if (line[0] == 'P') { char *eq = strchr(line + 2, '='); if (!eq) return 4; *eq = 0; if (!setParam(design, line + 2, eq + 1)) fprintf(stderr, "unknown param %s\n", line + 2); }
     else if (line[0] == 'S') { int i; float f, l; sscanf(line + 2, "%d %f %f", &i, &f, &l); st[i] = TubeState(); st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); st[i].fillTarget = f; st[i].light = l; }
     else if (line[0] == 'R') {
-      for (int i = 0; i < 2; i++) boardParams(design, p[i], TUBE_PX_SCALE(i));   // each tube at its own px scale
+      for (int i = 0; i < 2; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ);   // each tube at its own px scale
       gen++;
       memset(canvas, 0, sizeof canvas);
       const FaceLayout lay = faceLayout(p[0], p[1]);

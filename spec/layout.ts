@@ -87,6 +87,9 @@ export const TUBE_PX_SCALE: readonly [number, number] = BOARD === 'lcd316'
   : [1, 1];
 /** The larger tube scale: what buffers are sized for. */
 export const PX_SCALE_MAX = Math.max(TUBE_PX_SCALE[0], TUBE_PX_SCALE[1]);
+/** The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so both tubes draw
+ *  it at the wider tube's scale (params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²). */
+export const PX_SCALE_FIZZ = PX_SCALE_MAX;
 /** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f`, `lcd316@320fh` (see resTag). */
 export const BOARD_TAG = BOARD === 'lcd316' ? `lcd316@${RES_TAG}` : BOARD;
 

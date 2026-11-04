@@ -671,5 +671,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   (`T <epoch> <tz_min>`, as the sim's connect does).
 - e2e's parity right after a flash (liquid still settling) showed 230-510 px > 12/255 on the LCD; settled re-runs of the
   same builds 0. Parity could wait for the fills to settle (or snap them) before the `x` dump.
-- Mixed-width LCD builds: +688 B internal RAM (effM, second mask set) on ~4 KB free heap with BLE; the narrow tube's
-  fizz masks are PSRAM-only. Measure heap / BLE / fps on the board before relying on a mixed build.
+- Mixed-width LCD builds: +688 B internal RAM (effM) on ~4 KB free heap with BLE (3.0-3.8 KB measured on 320fh); a BLE
+  connect at that heap is untested.
+- Physically the meniscus too would differ in a wider bore (capillary length fixed in mm): wide tubes still compute it
+  as the AMOLED bore magnified (MM_PER_PX_AT(k)). Same for the spirit bubble and the wet film.

@@ -3,7 +3,7 @@
 // a few filled ellipses/dots. Mirrored 1:1 by firmware/src/render.cpp.
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
-  rgb565, rgb565to888, mmPerPxAt, TUBE_PX_SCALE,
+  rgb565, rgb565to888, mmPerPxAt, TUBE_PX_SCALE, PX_SCALE_FIZZ,
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H,
 } from '@spec/layout';
 import type { Params } from './params';
@@ -941,8 +941,7 @@ const fizzExposed = [0, 0];
 // caught (or recycled, at a surface foam can't form on), and how much of a concave surface band veils the
 // foam behind it at the profile (the liquid wedge climbing the front glass, thinning to nothing at the ring).
 // FOAM_RELAX: packing sweeps per step.
-const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_VEIL = 0.7, FOAM_RELAX = 3;
-const foamCatch = (i: number): number => 2 * TUBE_PX_SCALE[i];   // 2 design px at tube i's px scale
+const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_SCALE_FIZZ, FOAM_VEIL = 0.7, FOAM_RELAX = 3;   // FOAM_CATCH: the liquid's px
 // A spring is fixed in the tube (mirrored in firmware): `fizzSourceX` of the column as it sits at home. While the
 // liquid covers it, it takes every birth, whatever the tilt; a free slug sliding off it leaves it dry, and every
 // birth goes scattered. Covered again, it takes its births back over SPRING_BACK s (a share ramping to 0), so a
@@ -1015,8 +1014,8 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
 /** Spring (`fizzSource` 1): a new size and depth, born at the spring — `fizzSourceY` across the bore (whole
  *  disc inside), `fizzSourceX` along that row's liquid (between the surfaces, as a respawn) as it sits at home,
  *  so `shift` px back in a slug that slid away — each axis jittered by up to ±`fizzSourceSpread` px, kept in
- *  the liquid. `FOAM_CATCH`: the tube's foamCatch. */
-function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: Float32Array, shift: number, FOAM_CATCH: number): void {
+ *  the liquid. */
+function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: Float32Array, shift: number): void {
   f.v = fizzV(); f.z = fizzZ(); f.life = 0;
   const r = fizzR(p, f.v), s = p.fizzSourceSpread, lo = fizzWall(p) + r, hi = H - lo;
   f.y = hi <= lo ? H / 2 : Math.max(lo, Math.min(hi, lo + p.fizzSourceY * (hi - lo) + (2 * Math.random() - 1) * s));
@@ -1049,7 +1048,6 @@ export function stepFizzTube(i: number, p: Params, dt: number, along: number, ac
   const H = tubeLayout(p).H, spring = p.fizzSource === 1, wall = fizzWall(p);
   const hold = spring && p.fizzFoamLife > 0 && vy !== 0;   // the bore wall the rise points at holds the stream
   const letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
-  const FOAM_CATCH = foamCatch(i);
   const len = fizzLen[i], surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i];
   if (surf.length !== H || len <= 0) return;   // no surfaces for this height yet (drawTube publishes them)
   // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
@@ -1145,7 +1143,7 @@ export function stepFizzTube(i: number, p: Params, dt: number, along: number, ac
       if (live >= cap) { springClock[i] = 1; break; }
       while (slot < arr.length && arr[slot].v !== 0) slot++;
       if (slot === arr.length) arr.push({ x: 0, y: 0, v: 0, life: 0, z: 0 });
-      if (springBirth(i)) springSpawn(arr[slot], p, H, surf, surfL, fizzShift[i], FOAM_CATCH); else scatter(arr[slot]);
+      if (springBirth(i)) springSpawn(arr[slot], p, H, surf, surfL, fizzShift[i]); else scatter(arr[slot]);
       springClock[i] -= 1; live++;
     }
     while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
