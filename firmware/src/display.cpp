@@ -89,7 +89,12 @@ bool display_init(void) {
   return true;
 }
 
-void display_next_strips(uint16_t *s[2]) { s[0] = strips[0]; s[1] = strips[1]; }
+void display_next_strips(uint16_t *s[TUBE_COUNT]) {
+  s[0] = strips[0]; s[1] = strips[1];
+#if TUBE_COUNT == 3
+  s[2] = strips[0];   // no internal DMA RAM for a third 85.8 KB strip: seconds renders into hours' once it is pushed
+#endif
+}
 uint32_t display_busy_cycles(void) { return 0; }
 DisplayRefill display_refill_health(void) { return {0, 0, 0}; }
 

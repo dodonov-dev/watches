@@ -2,10 +2,11 @@
 # End-to-end firmware check: build -> flash -> pinned fps bench -> pixel parity vs the sim.
 #   tools/e2e.sh [--label TEXT] [--stages] [--stage name=v ...] [--no-ble] [--bare] [--no-flash] [--samples N]
 #                [--preset FILE.json] [--fix-pose] [--live-imu] [--runs N] [--ref COMMIT] [--stages fizz,digits] [--quick] [--no-parity]
-#                [--env NAME] [--res N]
+#                [--env NAME] [--res N] [--tubes 2|3]
 # --env NAME = platformio.ini env to build and flash (else $LW_BOARD, else amoled191; lcd316 for the ESP32-S3-LCD-3.16);
 #   --res TAG = the lcd316's res tag: canvas rows (RENDER_H 240 / 256 / 288 / 320) + tube widths (nothing narrow, f both
-#   wide, fh / fm hours / minutes wide; tools/boardtag.py), else $LW_RES, else 320 = native, narrow. Parity renders the
+#   wide, fh / fm hours / minutes wide, three tubes also fs / fhm / fhs / fms; tools/boardtag.py), else $LW_RES, else
+#   320 = native, narrow. --tubes N = 2 / 3 (+ the seconds tube, -DTUBE_COUNT=3), else $LW_TUBES, else 2. Parity renders the
 #   sim at whatever the board reports (`v`). --define NAME=V adds -DNAME=V to the build (e.g. STRIPS_INTERNAL=1,
 #   display_lcd316.cpp) and to the label. After a flash the board's `v` must report the tag of what was built (else
 #   exit 4: the image did not take, or a --ref commit cannot build that tag). Which board: LW_PORT (required with
@@ -23,8 +24,8 @@
 # Appends the bench lines + parity line to firmware/.compare/e2e.log. Board must be reachable (device.py).
 # Exit 3 = bench.py found the IMU dead even after a reboot (the run is not comparable).
 set -euo pipefail
-USAGE="usage: $0 [--label TEXT] [--stages] [--stage name=v] [--no-ble] [--bare] [--no-flash] [--samples N] [--preset FILE] [--fix-pose] [--live-imu] [--runs N] [--ref COMMIT] [--stages LIST] [--quick] [--no-parity] [--env NAME] [--res N] [--define NAME=V]"
-LABEL=""; BENCH=(); FLASH=1; PARITY=1; SAMPLES=5; FLAGS=""; SUFFIX=""; PRESET=""; REF=""; ENV="${LW_BOARD:-amoled191}"; RES="${LW_RES:-}"
+USAGE="usage: $0 [--label TEXT] [--stages] [--stage name=v] [--no-ble] [--bare] [--no-flash] [--samples N] [--preset FILE] [--fix-pose] [--live-imu] [--runs N] [--ref COMMIT] [--stages LIST] [--quick] [--no-parity] [--env NAME] [--res N] [--tubes N] [--define NAME=V]"
+LABEL=""; BENCH=(); FLASH=1; PARITY=1; SAMPLES=5; FLAGS=""; SUFFIX=""; PRESET=""; REF=""; ENV="${LW_BOARD:-amoled191}"; RES="${LW_RES:-}"; TUBES="${LW_TUBES:-2}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --label) LABEL="$2"; shift ;;
@@ -43,6 +44,7 @@ while [ $# -gt 0 ]; do
         --ref) REF="$2"; shift ;;
         --env) ENV="$2"; shift ;;
         --res) RES="$2"; shift ;;
+        --tubes) TUBES="$2"; shift ;;
         --define) DEFINES="${DEFINES:-} -D$2"; SUFFIX="$SUFFIX $2"; shift ;;
         -h|--help) echo "$USAGE"; exit 0 ;;
         *) echo "$USAGE"; exit 2 ;;
@@ -54,9 +56,10 @@ export LW_PORT                                                  # may still take
 [ -n "$LABEL" ] || LABEL="$(git rev-parse --short HEAD)$(git diff --quiet || echo '+dirty')"
 [ "$ENV" = lcd316 ] || RES=""
 FLAGS="$FLAGS${DEFINES:-}"
-RES_FLAGS=""; [ "$ENV" = lcd316 ] && RES_FLAGS="$(python3 tools/boardtag.py flags "$RES")"   # a bad tag stops here
-WANT_TAG="$(python3 tools/boardtag.py tag "$ENV" $FLAGS $RES_FLAGS)"   # what the build's `v` reports
-export LW_BOARD="$ENV" LW_RES="$RES"   # flash.sh / flash-win.sh read them
+TUBE_FLAGS="$(python3 tools/boardtag.py tubes "$TUBES")"   # a bad count stops here
+RES_FLAGS=""; [ "$ENV" = lcd316 ] && RES_FLAGS="$(python3 tools/boardtag.py flags "$RES" "$TUBES")"   # a bad tag stops here
+WANT_TAG="$(python3 tools/boardtag.py tag "$ENV" $FLAGS $TUBE_FLAGS $RES_FLAGS)"   # what the build's `v` reports
+export LW_BOARD="$ENV" LW_RES="$RES" LW_TUBES="$TUBES"   # flash.sh / flash-win.sh read them
 # check_tag WHAT: the attached board's `v` against WANT_TAG (after a flash: exit 4 on a mismatch).
 check_tag() {
     local got; got="$(python3 tools/device.py v | sed -n 's/^board \([^ ]*\).*/\1/p')"
@@ -66,6 +69,7 @@ check_tag() {
     return 4
 }
 ENV_ARGS=(); [ "$ENV" = amoled191 ] || { SUFFIX="$SUFFIX $ENV${RES:+@$RES}"; ENV_ARGS=(--env "$ENV"); }   # default: no flag, so --ref works on commits before flash.sh took --env
+[ "$TUBES" = 2 ] || SUFFIX="$SUFFIX +t$TUBES"
 LABEL="$LABEL$SUFFIX"
 [ -n "$PRESET" ] && BENCH+=(--preset "$PRESET")
 if [ -n "$PRESET" ]; then PRESET_TAG="preset $(basename "$PRESET")"; else PRESET_TAG="preset (board NVS)"; fi
@@ -95,7 +99,7 @@ if [ -n "$REF" ]; then
     [ -d .pio/libdeps ] && cp -r .pio/libdeps "$WT/firmware/.pio/" 2>/dev/null || { mkdir -p "$WT/firmware/.pio" && cp -r .pio/libdeps "$WT/firmware/.pio/"; }   # no library re-download
     # The worktree's flash scripts may predate $LW_PORT and the width suffix of a res tag: route the chosen board here
     # (they cd into its firmware/), the res as -D flags, LW_RES as plain rows (they add -DRENDER_H from it).
-    REF_ENV=(env LW_RES="${RES:+$(python3 tools/boardtag.py flags "$RES" | sed 's/^-DRENDER_H=\([0-9]*\).*/\1/')}" PLATFORMIO_BUILD_FLAGS="$FLAGS $RES_FLAGS")
+    REF_ENV=(env LW_RES="${RES:+$(python3 tools/boardtag.py flags "$RES" "$TUBES" | sed 's/^-DRENDER_H=\([0-9]*\).*/\1/')}" PLATFORMIO_BUILD_FLAGS="$FLAGS $TUBE_FLAGS $RES_FLAGS")
     case "${LW_PORT:-}" in
         COM*) "${REF_ENV[@]}" "$WT/firmware/tools/flash-win.sh" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$LW_PORT" ;;
         ?*) (. tools/pkgdir.sh; cd "$WT/firmware" && "${REF_ENV[@]}" ~/.platformio/penv/bin/pio run -s -e "$ENV" -t upload --upload-port "$LW_PORT") ;;   # pkgdir.sh: lcd316's own packages dir

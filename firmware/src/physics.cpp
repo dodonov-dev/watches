@@ -10,18 +10,29 @@ static inline float jroundf(float x) { return floorf(x + 0.5f); }   // JS Math.r
 
 // One static residue buffer per tube (deterministic footprint, filled by stepTube)
 static uint16_t g_trace[2][TUBE_LENGTH_PX];
+#if TUBE_COUNT == 3
+// The seconds tube's: PSRAM, physics_init (internal RAM has no 1.6 KB to spare next to BLE)
+static uint16_t *g_traceS = nullptr;
+uint16_t *traceBuf(int i) { return i == 2 ? g_traceS : g_trace[i & 1]; }
+#else
 uint16_t *traceBuf(int i) { return g_trace[i & 1]; }
+#endif
 // Its wet part, allocated once at boot in PSRAM (internal RAM has no 2 KB to spare)
-static uint16_t *g_traceWet[2] = {nullptr, nullptr};
+static uint16_t *g_traceWet[TUBE_COUNT] = {};
 bool physics_init() {
-  for (int i = 0; i < 2; i++) {
+#if TUBE_COUNT == 3
+  if (!g_traceS) g_traceS = (uint16_t *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  if (!g_traceS) return false;
+  memset(g_traceS, 0, TUBE_LENGTH_PX * sizeof(uint16_t));
+#endif
+  for (int i = 0; i < TUBE_COUNT; i++) {
     if (!g_traceWet[i]) g_traceWet[i] = (uint16_t *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     if (!g_traceWet[i]) return false;
     memset(g_traceWet[i], 0, TUBE_LENGTH_PX * sizeof(uint16_t));
   }
   return true;
 }
-uint16_t *traceWetBuf(int i) { return g_traceWet[i & 1]; }
+uint16_t *traceWetBuf(int i) { return g_traceWet[TUBE_COUNT == 3 ? i : i & 1]; }
 
 float filmEta(const Params &p, float speed, float full) {
   const float dyn = fmaxf(0, p.contactDyn) * (3.14159265f / 180.0f);

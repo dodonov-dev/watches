@@ -5,19 +5,47 @@
 
 #define BOARD_STR_(x) #x
 #define BOARD_STR(x)  BOARD_STR_(x)
+#if TUBE_COUNT == 3
+#define BOARD_TUBES_ "+t3"   // a three-tube face (layout.h TUBE_COUNT)
+#else
+#define BOARD_TUBES_ ""
+#endif
 #ifdef BOARD_LCD316
 #define BOARD_NAME   "lcd316"
-// Board + canvas rows + tube widths, as the sim names it (spec/layout.ts BOARD_TAG / resTag): no suffix both narrow,
-// f both wide, fh the hours tube wide, fm the minutes tube wide (layout.h LCD_FILL_H / LCD_FILL_M).
-#if LCD_FILL_H && LCD_FILL_M
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "f"
-#elif LCD_FILL_H
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "fh"
-#elif LCD_FILL_M
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) "fm"
+// Board + canvas rows + tube widths, as the sim names it (spec/layout.ts BOARD_TAG / resTag): no suffix all narrow,
+// f all wide, else f + the wide tubes' letters in h / m / s order: fh the hours tube wide, fm the minutes tube wide; three
+// tubes also fs, fhm, fhs, fms (layout.h LCD_FILL_H / LCD_FILL_M / LCD_FILL_S).
+#if TUBE_COUNT == 3
+#define BOARD_WIDE_ALL_ (LCD_FILL_H && LCD_FILL_M && LCD_FILL_S)
+#define BOARD_WIDE_ANY_ (LCD_FILL_H || LCD_FILL_M || LCD_FILL_S)
+#if LCD_FILL_S
+#define BOARD_WIDE_S_ "s"
 #else
-#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H)
+#define BOARD_WIDE_S_ ""
 #endif
+#else
+#define BOARD_WIDE_ALL_ (LCD_FILL_H && LCD_FILL_M)
+#define BOARD_WIDE_ANY_ (LCD_FILL_H || LCD_FILL_M)
+#define BOARD_WIDE_S_ ""
+#endif
+#if LCD_FILL_H
+#define BOARD_WIDE_H_ "h"
+#else
+#define BOARD_WIDE_H_ ""
+#endif
+#if LCD_FILL_M
+#define BOARD_WIDE_M_ "m"
+#else
+#define BOARD_WIDE_M_ ""
+#endif
+#if BOARD_WIDE_ALL_
+#define BOARD_WIDE_  "f"
+#elif BOARD_WIDE_ANY_
+#define BOARD_WIDE_  "f" BOARD_WIDE_H_ BOARD_WIDE_M_ BOARD_WIDE_S_
+#else
+#define BOARD_WIDE_  ""
+#endif
+#define BOARD_TAG    "lcd316@" BOARD_STR(RENDER_H) BOARD_WIDE_ BOARD_TUBES_
 #define BOARD_PANEL_W LCD_PANEL_W
 #define BOARD_PANEL_H LCD_PANEL_H
 #define PIN_I2C_SDA  15      // QMI8658 + PCF85063 RTC (0x51)
@@ -26,7 +54,7 @@
 #define PIN_BAT_ADC  4       // LiPo through 200k / 200k
 #else
 #define BOARD_NAME   "amoled191"
-#define BOARD_TAG    BOARD_NAME
+#define BOARD_TAG    BOARD_NAME BOARD_TUBES_
 #define BOARD_PANEL_W PANEL_W
 #define BOARD_PANEL_H PANEL_H
 #define PIN_I2C_SDA  40      // QMI8658

@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
+#include "layout.h"   // TUBE_COUNT
 
 // Panel backend, one per board (platformio.ini picks the file); both speak the PANEL_W x PANEL_H canvas of layout.h:
 //   display.cpp         RM67162 AMOLED 536x240 over QSPI, via Waveshare's esp_lcd_sh8601 driver
@@ -14,10 +15,11 @@ bool display_init(void);
 void display_push_frame(const uint16_t *fb);
 // Push a horizontal band [y0, y1) of a full-width framebuffer (staged through the strips, blocking).
 void display_push_rows(const uint16_t *fb, int y0, int y1);
-// The two TUBE_HEIGHT_MAX-row strip buffers (hours, minutes) to render the next frame into, owned by the display
-// module: AMOLED the same two every frame (internal DMA RAM: wait for their previous push first); LCD a set neither
-// scanned nor waiting to be (PSRAM). Call once per frame, then push both.
-void display_next_strips(uint16_t *strip[2]);
+// The TUBE_HEIGHT_MAX-row strip buffers (hours, minutes[, seconds]) to render the next frame into, owned by the display
+// module: AMOLED the same two every frame (internal DMA RAM: wait for their previous push first; a seconds strip is the
+// hours one again: render it once the hours push has left it); LCD a set neither scanned nor waiting to be (PSRAM), one
+// strip per tube. Call once per frame, then push them all.
+void display_next_strips(uint16_t *strip[TUBE_COUNT]);
 // CPU cycles spent so far feeding the panel from an ISR (LCD scan-line fill; 0 on the AMOLED), a wrapping counter.
 uint32_t display_busy_cycles(void);
 // Panel refill health (LCD framebuffer scan with bounce buffers; zeros elsewhere): refills of a bounce buffer that
@@ -33,7 +35,7 @@ struct PushVerify { uint32_t checked, bad, words, stored, segs, skipped; };
 PushVerify display_push_verify(void);
 #endif
 #ifdef PUSH_PROF
-void display_push_prof(uint32_t out[2][5], bool reset);   // -DPUSH_PROF (LCD): per strip slot pushes, cycles hashing / storing, changed segments, gather waits
+void display_push_prof(uint32_t out[TUBE_COUNT][5], bool reset);   // -DPUSH_PROF (LCD): per strip slot pushes, cycles hashing / storing, changed segments, gather waits
 #endif
 void display_set_brightness(uint8_t v);   // 0..255 (AMOLED: cmd 0x51; LCD: backlight PWM)
 // RM67162 High Brightness Mode (SetHBMMode B0h, bit1 HBM_EN). On this module it is not a usable

@@ -1,61 +1,86 @@
 // Liquid Watch — single source of truth for panel layout (TS mirror of spec/layout.h).
 // KEEP IN SYNC with spec/layout.h. Landscape, origin top-left.
-// The board, the LCD's render height and its tube widths are picked once at start-up, because modules size their
-// buffers from these constants at import: browser `?board=lcd316&res=320f` (remembered in localStorage), node tools
-// LW_BOARD / LW_RES. Default: the AMOLED. No live switching — the sim reloads with the new choice.
-// LCD res tag = rows + tube widths (layout.h LCD_FILL_H / LCD_FILL_M): `320` both narrow (px params at the AMOLED's
-// physical size), `320f` both wide (scaled with the canvas height), `320fh` hours wide, `320fm` minutes wide.
+// The board, the tube count, the LCD's render height and its tube widths are picked once at start-up, because modules
+// size their buffers from these constants at import: browser `?board=lcd316&res=320f&tubes=3` (remembered in
+// localStorage), node tools LW_BOARD / LW_RES / LW_TUBES. Default: the AMOLED, two tubes. No live switching — the sim
+// reloads with the new choice.
+// Tubes, top to bottom: hours, minutes (two-tube face: hours top, minutes bottom); with TUBE_COUNT 3 (layout.h) a seconds
+// tube takes the bottom slot and minutes moves to the middle (render.ts faceLayout). The seconds tube draws with the
+// minutes tube's ticks and digits (0..60).
+// LCD res tag = rows + tube widths (layout.h LCD_FILL_H / LCD_FILL_M / LCD_FILL_S): no suffix all narrow (px params at
+// the AMOLED's physical size), `f` all wide (scaled with the canvas height), else `f` + the wide tubes' letters in
+// h / m / s order: `320fh` hours wide, `320fm` minutes wide; three tubes add `fs`, `fhm`, `fhs`, `fms`.
 
 export type Board = 'amoled191' | 'lcd316';
 export const BOARDS: readonly Board[] = ['amoled191', 'lcd316'];
 export const LCD_RES: readonly number[] = [240, 256, 288, 320];   // render heights the LCD build takes (RENDER_H)
-/** Tube widths of an LCD build, [hours, minutes]: true = wide (layout.h LCD_FILL_H / LCD_FILL_M). */
-export type TubeWide = readonly [boolean, boolean];
+export const TUBE_COUNTS: readonly number[] = [2, 3];
+/** Tube letters in face order (res tags, labels): hours, minutes, seconds. */
+export const TUBE_LETTERS = 'hms';
+/** LCD tube widths, one per tube (hours, minutes[, seconds]): true = wide (layout.h LCD_FILL_H / _M / _S). */
+export type TubeWide = readonly boolean[];
 
-/** LCD res tag (`320`, `320f`, `320fh`, `320fm`) from rows and tube widths. */
+/** LCD res tag (`320`, `320f`, `320fh`, `320fm`, three tubes also `320fs`, `320fhm`, …) from rows and tube widths. */
 export function resTag(rows: number, wide: TubeWide): string {
-  return `${rows}${wide[0] && wide[1] ? 'f' : wide[0] ? 'fh' : wide[1] ? 'fm' : ''}`;
+  const n = wide.filter(Boolean).length;
+  return `${rows}${n === 0 ? '' : n === wide.length ? 'f' : 'f' + wide.map((w, i) => w ? TUBE_LETTERS[i] : '').join('')}`;
 }
-/** Rows and tube widths of an LCD res tag; null if it is not one. */
-export function parseRes(tag: string): { rows: number; wide: TubeWide } | null {
-  const m = /^(\d+)(f|fh|fm)?$/.exec(tag);
+/** Rows and tube widths of an LCD res tag for a face of `tubes` tubes; null if it is not one (one name per build: the
+ *  letters of all tubes are spelled `f`). */
+export function parseRes(tag: string, tubes = 2): { rows: number; wide: TubeWide } | null {
+  const m = /^(\d+)(f([hms]*))?$/.exec(tag);
   if (!m || !LCD_RES.includes(Number(m[1]))) return null;
-  return { rows: Number(m[1]), wide: [m[2] === 'f' || m[2] === 'fh', m[2] === 'f' || m[2] === 'fm'] };
+  const letters = TUBE_LETTERS.slice(0, tubes), sub = m[3] ?? '';
+  if (m[2] === undefined) return { rows: Number(m[1]), wide: Array(tubes).fill(false) };
+  if (sub === '') return { rows: Number(m[1]), wide: Array(tubes).fill(true) };
+  const wide = [...letters].map((c) => sub.includes(c));
+  if (resTag(Number(m[1]), wide) !== tag) return null;   // unknown, repeated, out-of-order or all letters
+  return { rows: Number(m[1]), wide };
 }
 
 const STORE_KEY = 'liquid-watch.board';
 const browser = (globalThis as any).location?.search !== undefined;
-/** The choice the sim remembers ({ board, res }: res = the last LCD res tag, kept while on the AMOLED). */
-function stored(): { board?: string; res?: string } | null {
-  try { const s = JSON.parse((globalThis as any).localStorage?.getItem(STORE_KEY) ?? 'null'); return s && { board: s.board, res: s.res === undefined ? undefined : String(s.res) }; } catch { return null; }
+/** The choice the sim remembers ({ board, res, tubes }: res = the last LCD res tag, kept while on the AMOLED). */
+function stored(): { board?: string; res?: string; tubes?: number } | null {
+  try {
+    const s = JSON.parse((globalThis as any).localStorage?.getItem(STORE_KEY) ?? 'null');
+    return s && { board: s.board, res: s.res === undefined ? undefined : String(s.res), tubes: s.tubes === undefined ? undefined : Number(s.tubes) };
+  } catch { return null; }
 }
-function pick(): { board: Board; rows: number; wide: TubeWide } {
+function pick(): { board: Board; rows: number; wide: TubeWide; tubes: number } {
   const g = globalThis as any;
-  let board: string | null | undefined, res: string | null | undefined;
+  let board: string | null | undefined, res: string | null | undefined, tubesArg: string | number | null | undefined;
   if (browser) {
     const u = new URLSearchParams(g.location.search);
-    board = u.get('board'); res = u.get('res');
-    if (!board) { const s = stored(); board = s?.board; res ??= s?.res; }
-  } else { board = g.process?.env?.LW_BOARD; res = g.process?.env?.LW_RES; }
+    board = u.get('board'); res = u.get('res'); tubesArg = u.get('tubes');
+    if (!board) { const s = stored(); board = s?.board; res ??= s?.res; tubesArg ??= s?.tubes; }
+  } else { board = g.process?.env?.LW_BOARD; res = g.process?.env?.LW_RES; tubesArg = g.process?.env?.LW_TUBES; }
   if (board && !(BOARDS as readonly string[]).includes(board)) { console.warn(`board ${board}: unknown, using amoled191`); board = undefined; }
+  let tubes = tubesArg === null || tubesArg === undefined || tubesArg === '' ? 2 : Number(tubesArg);
+  if (!TUBE_COUNTS.includes(tubes)) { console.warn(`tubes ${tubesArg}: not one of ${TUBE_COUNTS.join(' / ')}, using 2`); tubes = 2; }
   const b = (board || 'amoled191') as Board;
-  if (b !== 'lcd316') return { board: b, rows: 240, wide: [false, false] };
-  const r = parseRes(res || '320');
-  if (!r) console.warn(`res ${res}: not one of ${LCD_RES.join(' / ')} (+ f / fh / fm), using 320`);
-  return { board: b, ...(r ?? { rows: 320, wide: [false, false] as TubeWide }) };
+  if (b !== 'lcd316') return { board: b, rows: 240, wide: Array(tubes).fill(false), tubes };
+  const r = parseRes(res || '320', tubes);
+  if (!r) console.warn(`res ${res}: not one of ${LCD_RES.join(' / ')} (+ f / f + wide tube letters ${TUBE_LETTERS.slice(0, tubes)}) for ${tubes} tubes, using 320`);
+  return { board: b, ...(r ?? { rows: 320, wide: Array(tubes).fill(false) }), tubes };
 }
 const chosen = pick();
 export const BOARD: Board = chosen.board;
-/** The LCD res tag the sim's board controls start from: this page's on the LCD, else the last one used. */
-export const LAST_LCD_RES = chosen.board === 'lcd316' ? resTag(chosen.rows, chosen.wide) : parseRes(stored()?.res ?? '') ? stored()!.res! : '320';
-if (browser) (globalThis as any).localStorage?.setItem(STORE_KEY, JSON.stringify({ board: chosen.board, res: LAST_LCD_RES }));
-/** Reload the sim on another board / LCD res tag (rows + tube widths, resTag); the page's other URL parameters are kept. */
-export function switchBoard(board: Board, res = '320'): void {
+/** Tubes on the face (layout.h TUBE_COUNT): 2 = hours + minutes, 3 = + seconds. */
+export const TUBE_COUNT = chosen.tubes;
+/** The LCD res tag the sim's board controls start from: this page's on the LCD, else the last one used (parsed with
+ *  three tubes, the widest reading; the controls read the tubes they show). */
+export const LAST_LCD_RES = chosen.board === 'lcd316' ? resTag(chosen.rows, chosen.wide) : parseRes(stored()?.res ?? '', 3) ? stored()!.res! : '320';
+if (browser) (globalThis as any).localStorage?.setItem(STORE_KEY, JSON.stringify({ board: chosen.board, res: LAST_LCD_RES, tubes: chosen.tubes }));
+/** Reload the sim on another board / LCD res tag (rows + tube widths, resTag) / tube count; the page's other URL
+ *  parameters are kept. */
+export function switchBoard(board: Board, res = '320', tubes = 2): void {
   const g = globalThis as any;
-  g.localStorage?.setItem(STORE_KEY, JSON.stringify({ board, res }));
+  g.localStorage?.setItem(STORE_KEY, JSON.stringify({ board, res, tubes }));
   const u = new URL(g.location.href);
   u.searchParams.set('board', board);
   if (board === 'lcd316') u.searchParams.set('res', res); else u.searchParams.delete('res');
+  if (tubes !== 2) u.searchParams.set('tubes', String(tubes)); else u.searchParams.delete('tubes');
   g.location.href = u.toString();
 }
 
@@ -75,28 +100,40 @@ export const MARK_CONTRAST_MAX = 120;   // markContrast
 export const LCD_PANEL_W = 820, LCD_PANEL_H = 320;
 export const PANEL_W = BOARD === 'lcd316' ? chosen.rows * LCD_PANEL_W / LCD_PANEL_H : 536;
 export const PANEL_H = BOARD === 'lcd316' ? chosen.rows : 240;
-/** LCD tube widths [hours, minutes] (true = wide); both false on the AMOLED. */
+/** LCD tube widths, one per tube (true = wide); all false on the AMOLED. */
 export const TUBE_WIDE: TubeWide = chosen.wide;
 /** The LCD's res tag (`320f`, …); '' on the AMOLED. */
 export const RES_TAG = BOARD === 'lcd316' ? resTag(chosen.rows, chosen.wide) : '';
-/** Canvas px per design px of tube i (0 = hours; 1 on the AMOLED): params.ts boardParams scales every px param by it.
- *  LCD narrow: at the AMOLED's physical size (0.083 / 0.0912 mm per panel px, the float32 of layout.h); wide: with the
- *  canvas height. */
-export const TUBE_PX_SCALE: readonly [number, number] = BOARD === 'lcd316'
-  ? [0, 1].map((i) => chosen.wide[i] ? PANEL_H / DESIGN_H : Math.fround(830 * PANEL_H / (912 * LCD_PANEL_H))) as [number, number]
-  : [1, 1];
+/** Canvas px per design px of tube i (0 = hours, 1 = minutes, 2 = seconds; 1 on the AMOLED): params.ts boardParams
+ *  scales every px param by it. LCD narrow: at the AMOLED's physical size (0.083 / 0.0912 mm per panel px, the float32
+ *  of layout.h); wide: with the canvas height. */
+export const TUBE_PX_SCALE: readonly number[] = BOARD === 'lcd316'
+  ? chosen.wide.map((w) => w ? PANEL_H / DESIGN_H : Math.fround(830 * PANEL_H / (912 * LCD_PANEL_H)))
+  : Array(TUBE_COUNT).fill(1);
 /** The larger tube scale: what buffers are sized for. */
-export const PX_SCALE_MAX = Math.max(TUBE_PX_SCALE[0], TUBE_PX_SCALE[1]);
-/** The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so both tubes draw
- *  it at the wider tube's scale (params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²). */
+export const PX_SCALE_MAX = Math.max(...TUBE_PX_SCALE);
+/** The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so every tube
+ *  draws it at the widest tube's scale (params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²). */
 export const PX_SCALE_FIZZ = PX_SCALE_MAX;
-/** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f`, `lcd316@320fh` (see resTag). */
-export const BOARD_TAG = BOARD === 'lcd316' ? `lcd316@${RES_TAG}` : BOARD;
+/** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f`, `lcd316@320fh` (see resTag); a
+ *  three-tube face adds `+t3` (`amoled191+t3`, `lcd316@320fh+t3`). */
+export const BOARD_TAG = (BOARD === 'lcd316' ? `lcd316@${RES_TAG}` : BOARD) + (TUBE_COUNT === 3 ? '+t3' : '');
+/** A board tag (`v`) split into board, LCD res tag and tube count; null if it is not one. */
+export function parseBoardTag(tag: string): { board: Board; res: string; tubes: number } | null {
+  const m = /^(amoled191|lcd316)(?:@([0-9a-z]+))?(?:\+t(\d+))?$/.exec(tag);
+  if (!m) return null;
+  const tubes = m[3] === undefined ? 2 : Number(m[3]);
+  if (!TUBE_COUNTS.includes(tubes) || (m[1] === 'lcd316') !== (m[2] !== undefined)) return null;
+  if (m[2] !== undefined && !parseRes(m[2], tubes)) return null;
+  return { board: m[1] as Board, res: m[2] ?? '', tubes };
+}
 
 export const TUBE_LENGTH_PX = PANEL_W; // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).
 export const TUBE_HEIGHT_MAX = Math.floor(Math.fround(Math.fround(DESIGN_TUBE_HEIGHT_MAX * Math.fround(PX_SCALE_MAX)) + Math.fround(0.999)));
+/** Rows a tube may take on a three-tube face: three of them fit the canvas (params.ts boardParams caps tubeHeight). */
+export const TUBE3_HEIGHT_MAX = Math.floor(PANEL_H / 3);
 export const TUBE_HEIGHT_PX = Math.floor(Math.fround(72 * Math.fround(PX_SCALE_MAX)));  // ≈ 6 mm at 0.083 mm per design px (the wider tube)
 export const HOURS_TUBE_Y = 0;                          // along the top edge
 export const MINUTES_TUBE_Y = PANEL_H - TUBE_HEIGHT_PX; // along the bottom edge

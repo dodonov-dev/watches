@@ -675,3 +675,20 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   connect at that heap is untested.
 - Physically the meniscus too would differ in a wider bore (capillary length fixed in mm): wide tubes still compute it
   as the AMOLED bore magnified (MM_PER_PX_AT(k)). Same for the spirit bubble and the wet film.
+
+## Seconds tube (2026-11-04)
+- `check:meniscus` fails marks-floor-120 (channel delta 17 > 12) already at fb3491c.
+- check_render_frames.py / check_fizz_steps.py build `--reference` against the current headers: an API change (renderTube's
+  y0) breaks the reference build. A `--reference-root` (a worktree: its own headers, physics.cpp, harness) would keep them usable.
+- 3-tube schedule: core 1 pushes minutes + seconds and renders both, core 0 only hours. Rendering seconds on core 0 after
+  the hours push (lanes by core, a hand-off before core 1 pushes its strip) may balance better when hours is narrow.
+- Seconds `Tube` lives in PSRAM (no internal RAM next to BLE): its per-row arrays are hot; move it internal in the memory pass.
+- Seconds wraps every minute: the 2 s retract of a full column deposits residue each time (presets with residue on).
+- AB_COMPARE and LCD_SCAN are two-tube only (#error with TUBE_COUNT 3).
+- `f` with -DTUBE_PROF / FIZZ_PROF / TICK_PROF / DIGIT_PROF still prints hours and minutes only; the seconds tube's counters exist (index 2), unprinted.
+- e2e.sh's parity runs right after the bench, while the slug still slides home after the pose is released: 250-300 px >
+  12/255 at fb3491c too, 0 twenty seconds later. Wait for the springs to settle (or keep the pose) before `x`.
+- AMOLED 3-tube is serialized (seconds renders after the hours push, core 0 idle): 35.5 fps vs ~61 with two tubes.
+- LCD 320fh+t3 (38.7 fps): core 1 is the bottleneck (pushes minutes + seconds, renders both: ~26 ms) while core 0 idles
+  ~7 ms after hours. Pushing seconds from core 0 (gather lane by pushing core, a second seconds strip so core 1 can render
+  the next one meanwhile, +177 KB PSRAM) would split ~22 / ~22 ms (~44 fps). Hours render rose 12.9 -> 14.5 ms (PSRAM traffic).

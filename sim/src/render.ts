@@ -3,7 +3,7 @@
 // a few filled ellipses/dots. Mirrored 1:1 by firmware/src/render.cpp.
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
-  rgb565, rgb565to888, mmPerPxAt, TUBE_PX_SCALE, PX_SCALE_FIZZ,
+  rgb565, rgb565to888, mmPerPxAt, TUBE_COUNT, TUBE_PX_SCALE, PX_SCALE_FIZZ,
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H,
 } from '@spec/layout';
 import type { Params } from './params';
@@ -39,11 +39,25 @@ export function tubeLayout(p: Params): TubeLayout {
   const y = (v: number) => Math.max(0, Math.min(PANEL_H - H, Math.round(v)));
   return { H, yH: y(p.hoursY), yM: y(p.minutesY) };
 }
-export interface FaceLayout { Hh: number; Hm: number; yH: number; yM: number; }
-/** Both tubes on the face, each from its own params (rows and top: hours from `pH`, minutes from `pM`). */
-export function faceLayout(pH: Params, pM: Params): FaceLayout {
+/** The tubes on the face: rows and top row per tube (Hs = yS = 0 without a seconds tube). */
+export interface FaceLayout { Hh: number; Hm: number; yH: number; yM: number; Hs: number; yS: number; }
+/** Top row and rows of tube i (0 hours, 1 minutes, 2 seconds). */
+export function tubeRows(l: FaceLayout, i: number): { y: number; H: number } {
+  return i === 0 ? { y: l.yH, H: l.Hh } : i === 1 ? { y: l.yM, H: l.Hm } : { y: l.yS, H: l.Hs };
+}
+/** The tubes on the face, each from its own params (`ps`: params.ts tubeParams; rows from that tube's). Two tubes:
+ *  hours at its hoursY, minutes at its minutesY. Three (layout TUBE_COUNT): hours at hoursY, seconds in the bottom slot
+ *  (minutesY of its params), minutes centred in the gap between them; a gap shorter than the minutes tube spreads the
+ *  three over the canvas (hours at the top edge, seconds at the bottom, the rows left split evenly). Firmware render.h. */
+export function faceLayout(ps: readonly Params[]): FaceLayout {
+  const [pH, pM] = ps;
   const h = tubeLayout(pH), m = pM === pH ? h : tubeLayout(pM);
-  return { Hh: h.H, Hm: m.H, yH: h.yH, yM: m.yM };
+  if (ps.length < 3) return { Hh: h.H, Hm: m.H, yH: h.yH, yM: m.yM, Hs: 0, yS: 0 };
+  const pS = ps[2], s = pS === pM ? m : pS === pH ? h : tubeLayout(pS);
+  let yH = h.yH, yS = s.yM, yM: number;
+  if (yS - (yH + h.H) >= m.H) yM = Math.floor((yH + h.H + yS - m.H + 1) / 2);
+  else { yH = 0; yS = PANEL_H - s.H; yM = h.H + Math.floor((PANEL_H - h.H - m.H - s.H) / 2); }
+  return { Hh: h.H, Hm: m.H, yH, yM, Hs: s.H, yS };
 }
 
 export interface Palette {
@@ -690,8 +704,8 @@ type WarpFn = (x: number) => number;
  *  is more than 0.7 px away, so a shift resting near x.5 does not flicker between two px. Render state across frames,
  *  one per tube (firmware Labels::holdWhole); `setDigitHold` puts the one a board dump held (render-ref.ts). */
 interface DigitHold { dx: number; dy: number; held: boolean; }
-const digitHold: [DigitHold, DigitHold] = [{ dx: 0, dy: 0, held: false }, { dx: 0, dy: 0, held: false }];
-export function setDigitHold(idx: number, dx: number, dy: number): void { digitHold[idx & 1] = { dx, dy, held: true }; }
+const digitHold: DigitHold[] = Array.from({ length: TUBE_COUNT }, () => ({ dx: 0, dy: 0, held: false }));
+export function setDigitHold(idx: number, dx: number, dy: number): void { if (idx >= 0 && idx < TUBE_COUNT) digitHold[idx] = { dx, dy, held: true }; }
 function holdWhole(h: DigitHold, lb: Labels): void {
   const hold = (v: number, w: number): number => !h.held || Math.abs(v - w) > 0.7 ? Math.round(v) : w;
   h.dx = hold(lb.wetDx, h.dx); h.dy = hold(lb.wetDy, h.dy); h.held = true;
@@ -920,21 +934,21 @@ function drawTicks(y0: number, p: Params, ticksN: number, wetRows: Int16Array, d
  *  pops: > 0 under the time edge, < 0 under the home edge of a free slug; z = depth in the bore (0 = front
  *  wall, 1 = back wall), drawn at spawn and every recycle (never on a move, park or release). */
 export interface Fizz { x: number; y: number; v: number; life: number; z: number; }
-export const fizz: Fizz[][] = [[], []];
+export const fizz: Fizz[][] = Array.from({ length: TUBE_COUNT }, () => []);
 // Bubbles per tube: FIZZ_POOL (spec/layout). A count pushed past the sliders is capped and reported, not silently dropped.
 let fizzOverflowPeak = 0;
 const foamOrder = new Int16Array(FIZZ_POOL);   // settleFoam's sweep order (parked, front first)
-const fizzLen = [0, 0];   // liquid length px per tube, set by drawTube
+const fizzLen: number[] = Array(TUBE_COUNT).fill(0);   // liquid length px per tube, set by drawTube
 /** Per tube, set by drawTube: the surface front per row in the liquid frame — the profile (edges − xs,
  *  edgesL − xs), which is also the inner rim of a concave surface band: foam floats on the liquid there,
  *  not out on the band that climbs the wall to the contact ring — for the time edge and the home edge,
  *  and which of them is exposed (bit 1 = time edge short of the far end, bit 2 =
  *  home edge of a free slug off the near end). Fizz parks only in an exposed surface. */
-const fizzSurf: Float32Array[] = [new Float32Array(0), new Float32Array(0)];
-const fizzSurfL: Float32Array[] = [new Float32Array(0), new Float32Array(0)];
+const fizzSurf: Float32Array[] = Array.from({ length: TUBE_COUNT }, () => new Float32Array(0));
+const fizzSurfL: Float32Array[] = Array.from({ length: TUBE_COUNT }, () => new Float32Array(0));
 /** Last drawn rear-mark column bounds per tube (panel frame) — read by the regression checks. */
-export const markBounds: Edges[] = [{ lo: new Float32Array(0), hi: new Float32Array(0) }, { lo: new Float32Array(0), hi: new Float32Array(0) }];
-const fizzExposed = [0, 0];
+export const markBounds: Edges[] = Array.from({ length: TUBE_COUNT }, () => ({ lo: new Float32Array(0), hi: new Float32Array(0) }));
+const fizzExposed: number[] = Array(TUBE_COUNT).fill(0);
 // Foam constants (mirrored in firmware/src/render.cpp): the pop's swell + fade time, slide speed along the
 // surface as a fraction of fizzSpeed per px/row of meniscus slope, lag rate behind an advancing surface
 // (also how a caught bubble glides onto the surface), how far short of the profile a free bubble's rim is
@@ -957,11 +971,11 @@ const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_S
 // along the glass with the across rise and pops after its life.
 const SPRING_BACK = 3;
 /** Per tube: px the liquid frame sits off its home (a free slug that slid away; 0 pinned), set by drawTube. */
-const fizzShift = [0, 0];
+const fizzShift: number[] = Array(TUBE_COUNT).fill(0);
 /** Per tube: share of spring births born scattered instead (0 = all at the spring), advanced by stepFizz. */
-const springScatter = [0, 0];
+const springScatter: number[] = Array(TUBE_COUNT).fill(0);
 /** Per tube: bubbles the spring may release now (its cadence accrued). */
-const springClock = [0, 0];
+const springClock: number[] = Array(TUBE_COUNT).fill(0);
 /** This spring birth in tube i comes from the spring itself (covered by the liquid), not scattered. */
 const springBirth = (i: number): boolean => springScatter[i] <= 0 || Math.random() >= springScatter[i];
 /** Half-height of the surface blick's row tent as a fraction of the tube height (firmware BLICK_H). */
@@ -1032,8 +1046,8 @@ function springSpawn(f: Fizz, p: Params, H: number, surf: Float32Array, surfL: F
  *  A spring (`fizzSource` 1) takes every birth instead, at its cadence (springClock), so the bubbles rise as a
  *  stream; a bubble leaving or popping frees its slot. A slug sliding off the spring leaves it dry, and its births
  *  go scattered instead (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). */
-export function stepFizz(pH: Params, pM: Params, dt: number, along = 0, across = 0, agitation = 0): void {
-  stepFizzTube(0, pH, dt, along, across, agitation); stepFizzTube(1, pM, dt, along, across, agitation);
+export function stepFizz(ps: readonly Params[], dt: number, along = 0, across = 0, agitation = 0): void {
+  ps.forEach((p, i) => stepFizzTube(i, p, dt, along, across, agitation));
 }
 /** stepFizz of tube i (0 = hours) on its own params (boardParams at its px scale). */
 export function stepFizzTube(i: number, p: Params, dt: number, along: number, across: number, agitation: number): void {
@@ -2127,14 +2141,16 @@ function applyLens(y0: number, H: number, p: Params, smooth: boolean): void {
 }
 
 /** Full frame. Bridge zone and margins stay black (we never draw there). */
-/** The face: each tube on its own params (`pH` / `pM`: boardParams at its px scale, params.ts tubeParams). */
-export function renderFrame(hours: TubeState, minutes: TubeState, pH: Params, pM: Params, lensEffect = true, lensSmooth = false): void {
+/** The face: tubes [hours, minutes(, seconds)], each on its own params (`ps`: boardParams at its px scale, params.ts
+ *  tubeParams). The seconds tube reads the minutes tube's scale (60 units: its ticks and digits). */
+export function renderFrame(tubes: readonly TubeState[], ps: readonly Params[], lensEffect = true, lensSmooth = false): void {
   fb.fill(0);
-  const palH = buildPalette(pH, hours.light);
-  const palM = pM === pH && hours.light === minutes.light ? palH : buildPalette(pM, minutes.light);
-  const lay = faceLayout(pH, pM);
-  drawTube(0, lay.yH, hours, pH, palH, 12, lensEffect, lensSmooth);
-  drawTube(1, lay.yM, minutes, pM, palM, 60, lensEffect, lensSmooth);
+  const lay = faceLayout(ps), pals: Palette[] = [];
+  tubes.forEach((t, i) => {
+    const j = tubes.findIndex((u, k) => k < i && ps[k] === ps[i] && u.light === t.light);   // equal params and light: one palette
+    pals.push(j >= 0 ? pals[j] : buildPalette(ps[i], t.light));
+    drawTube(i, tubeRows(lay, i).y, t, ps[i], pals[i], i === 0 ? 12 : 60, lensEffect, lensSmooth);
+  });
 }
 
 /** Blit RGB565 framebuffer to a canvas ImageData (exact 565 expansion). */

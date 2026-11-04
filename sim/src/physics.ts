@@ -448,9 +448,9 @@ export function followClock(s: TubeState, clock: number, dt = PHYS_DT, snap = fa
 }
 
 /** Continuous fill levels per the layout spec. */
-export function fillLevels(d: Date): { hours: number; minutes: number } {
+export function fillLevels(d: Date): { hours: number; minutes: number; seconds: number } {
   const h = d.getHours() % 12, m = d.getMinutes(), s = d.getSeconds() + d.getMilliseconds() / 1000;
-  return { hours: (h + (m + s / 60) / 60) / 12, minutes: (m + s / 60) / 60 };
+  return { hours: (h + (m + s / 60) / 60) / 12, minutes: (m + s / 60) / 60, seconds: s / 60 };
 }
 
 /** Tracks the magnitude of gravity as the sensor reports it (this QMI8658 reads ~0.94 g at rest).

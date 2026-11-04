@@ -73,6 +73,11 @@ inline void boardParams(const Params &p, Params &out, float k, float kf) {
     v *= f.px == 3 ? kf : k;
     if (f.px == 2) v = floorf(v + 0.5f);   // whole pixels stay on the grid (JS Math.round)
   }
+#if TUBE_COUNT == 3
+  // Three tubes fit the canvas: rows past a third of it are cut (layout.h TUBE3_HEIGHT_MAX; only a wide LCD tube at the
+  // tallest tubeHeight reaches it: 3 x 107 > 320). Physics and render read the capped height alike. See sim boardParams.
+  if (out.tubeHeight > TUBE3_HEIGHT_MAX) out.tubeHeight = TUBE3_HEIGHT_MAX;
+#endif
   if (k != kf) { const float r = k / kf, q = r * r; out.fizzCount = floorf(p.fizzCount * q + 0.5f); }
   // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
   // move in (canvas rows minus its height), so the tubes stay at the face's edges.

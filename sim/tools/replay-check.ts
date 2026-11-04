@@ -11,7 +11,7 @@
 // (compiled outside sim/ so package.json "type":"module" doesn't bite the CJS output)
 import {
   ANGLE_HARD_MAX_DEG, ANGLE_VERTICAL_MAX_DEG, capDynMaxPx, fillSloshMaxPx, filmFullPxS, GravityNorm, ImuFilter, PHYS_DT,
-  columnLen, contactLeads, drainTrace, mirrored, newTube, stepTube, type TiltInput,
+  columnLen, contactLeads, drainTrace, fillLevels, followClock, mirrored, newTube, stepTube, type TiltInput,
 } from '../src/physics';
 import { DEFAULT_PARAMS, PRESETS, migrateParams, presetParams } from '../src/params';
 
@@ -425,6 +425,26 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
     if (!(xs > 100 && near === Math.max(...bins) && near > 2 * start)) fail(`residue: a drop's densest residue is not next to the liquid (slug at ${xs}, bins ${bins.map((v) => v.toFixed(0)).join(' ')})`);
     else console.log(`ok  residue: a drop (slug at ${xs} px) leaves ${near.toFixed(0)} right behind its line, ${start.toFixed(0)} where it started`);
   }
+}
+// Seconds tube: its clock fill (fillLevels.seconds) runs 0..1 over a minute with the fraction of the second; at the
+// wrap the column retracts over RETRACT_S into the running seconds (followClock), moving no faster than a smoothstep
+// of a full column over 2 s, and then shows the clock again; a set clock snaps.
+{
+  const at = (ms: number): number => fillLevels(new Date(ms)).seconds;
+  const t0 = new Date(2026, 0, 1, 10, 9, 59, 500).getTime();
+  const tube = newTube(); let ms = t0 - 3000, prev = 0, maxStep = 0, wrapped = false;
+  followClock(tube, at(ms), PHYS_DT, true); prev = tube.fillTarget;
+  const exact = Math.abs(at(t0) - 59.5 / 60) < 1e-12 && Math.abs(tube.fillTarget - at(ms)) < 1e-12;
+  for (let i = 0; i < 7 * 50; i++) {
+    ms += 1000 * PHYS_DT; followClock(tube, at(ms));
+    maxStep = Math.max(maxStep, Math.abs(tube.fillTarget - prev)); prev = tube.fillTarget;
+    if (tube.retract < 1) wrapped = true;
+  }
+  const settled = Math.abs(tube.fillTarget - at(ms)) < 1e-12;   // 7 s on: the wrap at 3.5 s, its retract done
+  followClock(tube, 0.5, PHYS_DT, true);
+  if (!exact || !wrapped || !settled || maxStep > 0.016 || tube.fillTarget !== 0.5)
+    fail(`seconds tube: fill exact ${exact}, wrap retract ${wrapped}, back on the clock ${settled}, max step ${maxStep.toFixed(4)} (<= 0.016), snap ${tube.fillTarget}`);
+  else console.log(`ok  seconds tube: fraction of the second, wrap retract (max ${maxStep.toFixed(4)} a step), back on the clock, snap`);
 }
 if (failures) throw new Error(`${failures} failure(s)`);
 console.log('all scenarios within bounds');

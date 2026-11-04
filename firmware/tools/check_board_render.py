@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Sim vs firmware render parity on any board / canvas, on the host (no device): every preset, one pinned scene.
 
-  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tiles] [--tolerance 12] [presets/x.json ...]
+  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tubes 2|3] [--tiles] [--tolerance 12] [presets/x.json ...]
 
 Board: --board / --res (a res tag: rows + tube widths, 320 / 320f / 320fh / 320fm, tools/boardtag.py), else $LW_BOARD /
-$LW_RES, else lcd316 at 320 (amoled191 works too). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
+$LW_RES, else lcd316 at 320 (amoled191 works too); --tubes / $LW_TUBES: 3 = + the seconds tube (-DTUBE_COUNT=3). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
 params scaled by physics.h boardParams; the sim side is tools/render-ref.ts with LW_BOARD / LW_RES (params.ts
 boardParams). Presets default to presets/*.json and presets/physical/*.json (design px). Fizz off (random). Prints
 per preset the pixels off and those beyond the tolerance (RGB888 steps); exits 1 if any preset has one.
@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SIM = ROOT / 'sim'
 SHEETS = ['digits-steel', 'digits-brass-steampunk', 'digits-copper-gauge', 'digits-forged-iron',
           'digits-ivory-enamel', 'digits-carved-slate', 'digits-amber-resin']
-STATE = {'hours': {'fillTarget': 0.42, 'light': 20.0}, 'minutes': {'fillTarget': 0.71, 'light': 20.0}}
+STATE = {'hours': {'fillTarget': 0.42, 'light': 20.0}, 'minutes': {'fillTarget': 0.71, 'light': 20.0}, 'seconds': {'fillTarget': 0.5, 'light': 20.0}}
+TUBES = ('hours', 'minutes', 'seconds')
 
 HARNESS = r'''
 #include <cstdio>
@@ -45,21 +46,25 @@ static bool setParam(Params &p, const char *name, const char *val) {   // main.c
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
-  Params design = PRESET_DEFAULT, p[2]; TubeState st[2]; uint32_t gen = 1;
-  for (int i = 0; i < 2; i++) { st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); }
+  Params design = PRESET_DEFAULT, p[TUBE_COUNT]; TubeState st[TUBE_COUNT]; uint32_t gen = 1;
+  for (int i = 0; i < TUBE_COUNT; i++) { st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); }
   char line[256];
   while (fgets(line, sizeof line, stdin)) {
     line[strcspn(line, "\r\n")] = 0;
     if (line[0] == 'P') { char *eq = strchr(line + 2, '='); if (!eq) return 4; *eq = 0; if (!setParam(design, line + 2, eq + 1)) fprintf(stderr, "unknown param %s\n", line + 2); }
     else if (line[0] == 'S') { int i; float f, l; sscanf(line + 2, "%d %f %f", &i, &f, &l); st[i] = TubeState(); st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); st[i].fillTarget = f; st[i].light = l; }
     else if (line[0] == 'R') {
-      for (int i = 0; i < 2; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ);   // each tube at its own px scale
+      for (int i = 0; i < TUBE_COUNT; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ);   // each tube at its own px scale
       gen++;
       memset(canvas, 0, sizeof canvas);
+#if TUBE_COUNT == 3
+      const FaceLayout lay = faceLayout(p[0], p[1], p[2]);
+#else
       const FaceLayout lay = faceLayout(p[0], p[1]);
-      for (int i = 0; i < 2; i++) {
-        renderTube(i, st[i], p[i], gen, strip);
-        const int y0 = i ? lay.yM : lay.yH, rows = i ? lay.Hm : lay.Hh;
+#endif
+      for (int i = 0; i < TUBE_COUNT; i++) {
+        renderTube(i, st[i], p[i], gen, strip, nullptr, TUBE_COUNT == 3 ? lay.top(i) : -1);
+        const int y0 = lay.top(i), rows = lay.rows(i);
         for (int k = 0; k < rows * PANEL_W; k++) canvas[y0 * PANEL_W + k] = __builtin_bswap16(strip[k]);
       }
       fwrite(canvas, sizeof canvas, 1, stdout); fflush(stdout);
@@ -77,6 +82,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--board', default=os.environ.get('LW_BOARD') or 'lcd316')
     ap.add_argument('--res', default=os.environ.get('LW_RES') or '320')
+    ap.add_argument('--tubes', type=int, default=int(os.environ.get('LW_TUBES') or 2), choices=(2, 3))
     ap.add_argument('--tolerance', type=int, default=12)
     ap.add_argument('--tiles', action='store_true', help='firmware side through the tiled band loop (-DTILE_RENDER=1)')
     ap.add_argument('--out', type=Path, help='write device / ref / diff PNGs of failing presets here')
@@ -86,17 +92,18 @@ def main():
     lcd = a.board == 'lcd316'
     if not lcd: a.res = '240'
     else:
-        try: rows = boardtag.parse_res(a.res)[0]
+        try: rows = boardtag.parse_res(a.res, a.tubes)[0]
         except ValueError as e: sys.exit(f'check_board_render: {e}')
     paths = a.presets or sorted(glob.glob(str(ROOT / 'presets/*.json')) + glob.glob(str(ROOT / 'presets/physical/*.json')))
-    env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res)
+    env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res, LW_TUBES=str(a.tubes))
+    names = TUBES[:a.tubes]
     with tempfile.TemporaryDirectory(prefix='watches-board-') as tmp:
         tmp = Path(tmp)
         (tmp / 'esp_heap_caps.h').write_text('#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_SPIRAM 0\n'
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res)] if lcd else []),
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else []),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)
@@ -110,7 +117,7 @@ def main():
             params = json.load(open(path))
             if not isinstance(params, dict) or 'tubeHeight' not in params: continue
             params = {**params, 'fizz': False}
-            job = {'params': params, **STATE}
+            job = {'params': params, **{t: STATE[t] for t in names}}
             font = int(round(params.get('digitFont', 0)))
             if font >= 5:
                 base = SIM / 'public/assets' / (SHEETS[font - 5] + '.png')
@@ -121,7 +128,7 @@ def main():
             jf = tmp / f'job{len(jobs)}.json'; jf.write_text(json.dumps(job))
             jobs.append((path, jf))
             script += [f'P {k}={fmt(v)}' for k, v in params.items() if k != 'v']
-            script += [f'S {i} {STATE[t]["fillTarget"]} {STATE[t]["light"]}' for i, t in enumerate(('hours', 'minutes'))] + ['R']
+            script += [f'S {i} {STATE[t]["fillTarget"]} {STATE[t]["light"]}' for i, t in enumerate(names)] + ['R']
         out = subprocess.run([str(tmp / 'h')], input=('\n'.join(script) + '\n').encode(), stdout=subprocess.PIPE, check=True).stdout
         W = rows * 820 // 320 if lcd else 536; H = rows if lcd else 240; n = W * H
         assert len(out) == len(jobs) * n * 2, f'harness wrote {len(out)} bytes for {len(jobs)} presets of {W}x{H}'
@@ -145,7 +152,7 @@ def main():
                     a.out.mkdir(parents=True, exist_ok=True)
                     for tag, px in (('ref', ref), ('device', dev)):
                         im = Image.new('RGB', (W, H)); im.putdata([exp(c) for c in px]); im.save(a.out / f'{Path(path).stem}-{tag}.png')
-        print(f'{a.board}{"@" + a.res if lcd else ""} ({W}x{H}): {len(jobs) - bad} of {len(jobs)} presets within {a.tolerance}/255')
+        print(f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""} ({W}x{H}): {len(jobs) - bad} of {len(jobs)} presets within {a.tolerance}/255')
         sys.exit(1 if bad else 0)
 
 if __name__ == '__main__': main()

@@ -1,6 +1,6 @@
 // All tunables live here. Colours are RGB888 hex strings but are quantised to RGB565 at render time.
 import { legacyTraceDrain } from './physics';
-import { DESIGN_H, PANEL_H, TUBE_PX_SCALE, PX_SCALE_FIZZ, DESIGN_TUBE_HEIGHT_MAX, FIZZ_COUNT_MAX, DIGIT_SCALE_MAX, DIGIT_SHADOW_OFFSET_MAX, MARK_CONTRAST_MAX } from '../../spec/layout';
+import { DESIGN_H, PANEL_H, TUBE_COUNT, TUBE_PX_SCALE, TUBE3_HEIGHT_MAX, PX_SCALE_FIZZ, DESIGN_TUBE_HEIGHT_MAX, FIZZ_COUNT_MAX, DIGIT_SCALE_MAX, DIGIT_SHADOW_OFFSET_MAX, MARK_CONTRAST_MAX } from '../../spec/layout';
 // Export/import as JSON from the control panel; the exported file is the contract for Phase 3 (spec/params.h).
 
 export interface Params {
@@ -1551,6 +1551,9 @@ export function boardParams(p: Params, scale: number, fizzScale: number): Params
   const f = Math.fround, o = { ...p };
   for (const k of PX_KEYS) o[k] = f(f(p[k]) * f(FIZZ_PX_KEYS.includes(k) ? fizzScale : scale));   // float32 product, as the firmware scales
   for (const k of PX_WHOLE_KEYS) o[k] = Math.round(o[k]);
+  // Three tubes fit the canvas: rows past a third of it are cut (layout.h TUBE3_HEIGHT_MAX; only a wide LCD tube at the
+  // tallest tubeHeight reaches it: 3 x 107 > 320). Physics and render read the capped height alike.
+  if (TUBE_COUNT === 3 && o.tubeHeight > TUBE3_HEIGHT_MAX) o.tubeHeight = TUBE3_HEIGHT_MAX;
   if (scale !== fizzScale) { const r = f(f(scale) / f(fizzScale)), q = f(r * r); o.fizzCount = Math.floor(f(f(f(p.fizzCount) * q) + 0.5)); }
   // Scaled other than the canvas height (LCD at physical size): the tube rows keep their place in the room a tube can
   // move in (canvas rows minus its height), so the tubes stay at the face's edges (firmware physics.h, float32).
@@ -1560,10 +1563,12 @@ export function boardParams(p: Params, scale: number, fizzScale: number): Params
   }
   return o;
 }
-/** Both tubes' params [hours, minutes] (boardParams at each tube's scale); one object when the scales are equal. */
-export function tubeParams(p: Params): readonly [Params, Params] {
-  const h = boardParams(p, TUBE_PX_SCALE[0], PX_SCALE_FIZZ);
-  return [h, TUBE_PX_SCALE[1] === TUBE_PX_SCALE[0] ? h : boardParams(p, TUBE_PX_SCALE[1], PX_SCALE_FIZZ)];
+/** Every tube's params [hours, minutes(, seconds)] (boardParams at each tube's scale); tubes of equal scales share one
+ *  object. */
+export function tubeParams(p: Params): readonly Params[] {
+  const out: Params[] = [];
+  TUBE_PX_SCALE.forEach((k, i) => { const j = TUBE_PX_SCALE.indexOf(k); out.push(j < i ? out[j] : boardParams(p, k, PX_SCALE_FIZZ)); });
+  return out;
 }
 
 /** Map keys from older exports (shared tick settings, digitScale, digitFontBig) onto the current schema. */

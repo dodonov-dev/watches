@@ -1,6 +1,6 @@
 // Leather cuff + acrylic vial overlay. Cuff/gloss and lens smoothing are view-only.
-import { PANEL_W } from '@spec/layout';
-import type { FaceLayout } from './render';
+import { PANEL_W, TUBE_COUNT } from '@spec/layout';
+import { tubeRows, type FaceLayout } from './render';
 
 export interface OverlayOpts {
   enabled: boolean;
@@ -20,7 +20,7 @@ export function buildOverlayDom(root: HTMLElement): { leather: HTMLElement; slot
   const slots = document.createElement('div');
   slots.className = 'slots';
   const vials: HTMLElement[] = [];
-  for (let i = 0; i < 2; i++) {
+  for (let i = 0; i < TUBE_COUNT; i++) {
     const slot = document.createElement('div');
     slot.className = 'slot';
     const vial = document.createElement('div');
@@ -38,17 +38,18 @@ export function applyOverlay(dom: { leather: HTMLElement; slots: HTMLElement; vi
   dom.leather.style.display = o.enabled ? 'block' : 'none';
   dom.slots.style.display = o.enabled ? 'block' : 'none';
   dom.leather.dataset.leather = o.leather;
-  const w = PANEL_W - 2 * o.slotInset, h = [lay.Hh + 2 * o.slotPad, lay.Hm + 2 * o.slotPad];   // per tube (widths may differ)
-  // Punch the two slots out of the leather with a CSS mask (exclude composite).
-  const holes = [lay.yH, lay.yM].map((y0, i) =>
-    `linear-gradient(#000 0 0) ${o.slotInset + LEATHER_PAD_X}px ${y0 - o.slotPad + LEATHER_PAD_Y}px / ${w}px ${h[i]}px no-repeat`);
+  const rows = dom.vials.map((_, i) => tubeRows(lay, i));
+  const w = PANEL_W - 2 * o.slotInset, h = rows.map((r) => r.H + 2 * o.slotPad);   // per tube (widths may differ)
+  // Punch the slots out of the leather with a CSS mask (exclude composite).
+  const holes = rows.map((r, i) =>
+    `linear-gradient(#000 0 0) ${o.slotInset + LEATHER_PAD_X}px ${r.y - o.slotPad + LEATHER_PAD_Y}px / ${w}px ${h[i]}px no-repeat`);
   const mask = `linear-gradient(#000 0 0), ${holes.join(', ')}`;
   dom.leather.style.setProperty('-webkit-mask', mask);
   dom.leather.style.setProperty('-webkit-mask-composite', 'xor');
   dom.leather.style.setProperty('mask', mask);
   dom.leather.style.setProperty('mask-composite', 'exclude');
   dom.vials.forEach((slot, i) => {
-    slot.style.top = `${i ? lay.yM : lay.yH}px`;
+    slot.style.top = `${rows[i].y}px`;
     slot.style.left = `${o.slotInset}px`;
     slot.style.width = `${w}px`;
     slot.style.height = `${h[i]}px`;

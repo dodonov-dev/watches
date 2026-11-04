@@ -23,13 +23,13 @@ export interface ViewState {
   /** Minutes sweep: the minutes tube runs empty→full→empty every `sweepPeriod` s instead of telling time. */
   sweep: boolean;
   sweepPeriod: number;
-  setClock: { h: number; m: number };
+  setClock: { h: number; m: number; s?: number };   // s: the frozen seconds (three tubes; 0 when unset)
   manual: { along: number; across: number };
   overlay: OverlayOpts;
 }
 export const DEFAULT_VIEW: ViewState = {
   scale: 0.5, showGrid: false, paused: false, timeMode: 'real', demoSpeed: 60, sweep: false, sweepPeriod: 10,
-  setClock: { h: 10, m: 9 }, manual: { along: 0, across: 0 }, overlay: { ...DEFAULT_OVERLAY },
+  setClock: { h: 10, m: 9, s: 0 }, manual: { along: 0, across: 0 }, overlay: { ...DEFAULT_OVERLAY },
 };
 /** Physical-material mode (material/ui.ts): in 'material' mode `params` is derive(material, design).
  *  `name` / `provenance` are the envelope metadata of the loaded material (a preset's or an imported

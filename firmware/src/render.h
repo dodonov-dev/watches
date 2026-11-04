@@ -1,5 +1,5 @@
-// Port of sim/src/render.ts. Draws the two tube strips into a 536x240 RGB565 framebuffer whose
-// pixels are stored BYTE-SWAPPED (panel is big-endian; see PsramCanvas in main.cpp).
+// Port of sim/src/render.ts. Draws the tube strips (hours, minutes; + seconds with TUBE_COUNT 3, layout.h) of the
+// face; pixels are stored BYTE-SWAPPED (panel is big-endian; see PsramCanvas in main.cpp).
 #pragma once
 #include <stdint.h>
 #include "gen/params_gen.h"
@@ -8,7 +8,11 @@
 // Fizz animation state (sim: stepFizz), call at PHYS_HZ; each tube on its own params (pH hours, pM minutes: boardParams
 // at its px scale).
 void stepFizz(const Params &pH, const Params &pM, float dt, float along = 0, float across = 0, float agitation = 0);
-// One tube's share of stepFizz (idx 0 hours, 1 minutes): the tubes are independent, so they may step at once on two cores.
+#if TUBE_COUNT == 3
+void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, float along = 0, float across = 0, float agitation = 0);
+#endif
+// One tube's share of stepFizz (idx 0 hours, 1 minutes, 2 seconds): the tubes are independent, so they may step at once
+// on two cores.
 void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation);
 // Largest fizz count requested past the fixed pool since boot (0 = everything fitted); main reports it.
 int fizzOverflow();
@@ -23,17 +27,43 @@ int fizzCounts(int idx, int &foam, int &slots);
 // Tube geometry from one tube's params, clamped to the panel and the strip buffer (H: that tube's rows; sim: tubeLayout).
 struct TubeLayout { int H, yH, yM; };
 TubeLayout tubeLayout(const Params &p);
-// Both tubes on the face, each from its own params: hours rows / top from pH, minutes from pM (sim: faceLayout).
+// The tubes on the face, each from its own params: hours rows / top from pH, minutes from pM (sim: faceLayout).
+// TUBE_COUNT 3 (layout.h): seconds (pS) in the bottom slot (minutesY of its params), minutes centred in the gap between
+// hours and seconds; a gap shorter than the minutes tube spreads the three over the canvas (hours at the top edge,
+// seconds at the bottom, the rows left split evenly; boardParams caps each at TUBE3_HEIGHT_MAX, so they fit).
 struct FaceLayout {
+#if TUBE_COUNT == 3
+  int Hh, Hm, yH, yM, Hs, yS;
+  bool operator!=(const FaceLayout &o) const { return Hh != o.Hh || Hm != o.Hm || yH != o.yH || yM != o.yM || Hs != o.Hs || yS != o.yS; }
+  int rows(int i) const { return i == 0 ? Hh : i == 1 ? Hm : Hs; }   // tube i's rows / top row
+  int top(int i) const { return i == 0 ? yH : i == 1 ? yM : yS; }
+#else
   int Hh, Hm, yH, yM;
   bool operator!=(const FaceLayout &o) const { return Hh != o.Hh || Hm != o.Hm || yH != o.yH || yM != o.yM; }
+  int rows(int i) const { return i == 0 ? Hh : Hm; }
+  int top(int i) const { return i == 0 ? yH : yM; }
+#endif
 };
 inline FaceLayout faceLayout(const Params &pH, const Params &pM) {
   const TubeLayout h = tubeLayout(pH), m = &pM == &pH ? h : tubeLayout(pM);
+#if TUBE_COUNT == 3
+  return {h.H, m.H, h.yH, m.yM, 0, 0};   // two tubes' rows only (the three-tube overload places the seconds tube)
+#else
   return {h.H, m.H, h.yH, m.yM};
+#endif
 }
-// Draw one tube (0 = hours, 1 = minutes) into `strip`: H x PANEL_W RGB565, byte-swapped,
-// representing panel rows yH.. / yM.. . Everything else on the panel stays as is.
+#if TUBE_COUNT == 3
+inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &pS) {
+  const TubeLayout h = tubeLayout(pH), m = &pM == &pH ? h : tubeLayout(pM), s = &pS == &pM ? m : &pS == &pH ? h : tubeLayout(pS);
+  int yH = h.yH, yS = s.yM, yM;
+  if (yS - (yH + h.H) >= m.H) yM = (yH + h.H + yS - m.H + 1) / 2;   // >= 0: JS Math.floor((n + 1) / 2)
+  else { yH = 0; yS = PANEL_H - s.H; yM = h.H + (PANEL_H - h.H - m.H - s.H) / 2; }
+  return {h.H, m.H, yH, yM, s.H, yS};
+}
+#endif
+// Draw one tube (0 = hours, 1 = minutes, 2 = seconds: the minutes tube's ticks and digits) into `strip`: H x PANEL_W
+// RGB565, byte-swapped, representing panel rows from y0 on (-1: the tube's own params' row, yH / yM of tubeLayout; a
+// three-tube face passes faceLayout's top(idx)). Everything else on the panel stays as is.
 // Allocates the fixed render pools (once, at boot). False = PSRAM allocation failed.
 bool render_init();
 // gen: params generation counter (bumped by main on every param write / preset load / NVS restore);
@@ -41,7 +71,7 @@ bool render_init();
 // lensRows (optional): when nothing is drawn after the whole-tube lens (no front-printed digits), the lens is not
 // applied to the strip; *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
 // the next render of this tube; nullptr = no lens), for a push that remaps rows anyway (display_lcd316.cpp).
-void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr);
+void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr, int y0 = -1);
 // The whole-px shift the sprite digits of tube idx were last drawn at (render.cpp Labels::holdWhole: held across
 // frames), for the `x` dump: the sim renders a dumped state at the same shift (sim setDigitHold).
 void render_digit_shift(int idx, int &dx, int &dy);

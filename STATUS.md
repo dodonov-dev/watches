@@ -1,6 +1,38 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-03 (per-tube LCD widths, board selection fixes)_
+_Last update: 2026-11-04 (seconds tube, compile-time; LCD board-checked)_
+
+## Seconds tube (2026-11-04, uncommitted)
+
+- Compile-time third tube: `TUBE_COUNT 3` (firmware `-DTUBE_COUNT=3`, scripts `--tubes 3` / `LW_TUBES`, sim `?tubes=3` + the
+  top-bar "tubes" select, remembered). Board tag adds `+t3` (`amoled191+t3`, `lcd316@320fh+t3`). Two-tube builds unchanged.
+- Face top to bottom: hours / minutes / seconds. Presets unchanged: seconds takes the bottom slot (minutesY of its params),
+  minutes is centred in the gap; a gap shorter than the minutes tube spreads the three (hours top edge, seconds bottom,
+  rows left split evenly). 3-tube boardParams caps a tube at PANEL_H / 3 rows (wide 80 px at 320 rows: 107 -> 106).
+  `npm run check:layout`: 50 board / res / tube-count configs x presets + height/row sweep, ordered and in bounds.
+- Seconds fill = (s + fraction) / 60, wraps with the 2 s retract (followClock); draws with the minutes tube's ticks and
+  digits (ticksN 60). Sim `set` time takes seconds (`?t=10:09:30`).
+- LCD width: `LCD_FILL_S` (default LCD_FILL); res tags spell the wide tubes in h / m / s order: three tubes add `fs`,
+  `fhm`, `fhs`, `fms` (`320`, `320f`, `320fh`, `320fm` mean the same). TS / boardtag.py / board.h agree on every combo.
+- Firmware: seconds `Tube` (~15 KB), its residue buffers, strip (LCD), push-hash slot (LCD) in PSRAM at boot; +224 B
+  static internal RAM (TubeState, counters). Core 1 renders seconds after minutes (tile / gather lane 1); LCD: core 1 pushes
+  last frame's minutes + seconds next to the hours render, the hours push waits for them (pushesDone). AMOLED: seconds
+  renders into the hours strip once its push has left it. A failed boot allocation keeps the face off (hello + error).
+  AB_COMPARE / LCD_SCAN: two tubes only (#error). `x` dumps 3 tubes (LAYOUT gets yS Hs), `X` prints 3 hashes.
+- Proof, two tubes vs fb3491c: RAM identical (AMOLED 76256 B, LCD 320fh 122452 B), flash -20 / -28 B; host render strips
+  byte-identical (13136, also --tiles / --big-fizz), X sequences identical (80 x 350 frames: amoled191, 320fh tiles,
+  320f), sim renders identical (77 presets x 2 states x 5 boards). Board AMOLED A/B fizz drawn off: 61.8 / 61.0 fps
+  (render 9.86 / 10.04 ms, ranges overlap); parity right after a bench fails at fb3491c too (slug still sliding home).
+- Proof, three tubes: host sim vs firmware 320fh+t3 76/77, 320+t3 77/77, amoled191+t3 74/77 (same presets as two
+  tubes; xenon-big at 320f+t3 / 320fs+t3 = one edge px also failing with two tubes at fill 0.5); fizz sequences strip vs
+  tiles identical. Board AMOLED amoled191+t3 (panel black, firmware-side): 35.5 fps (cores h 8.7 / m 17.6 ms, seconds
+  8.1 ms), parity 0 px > 12/255 settled, heap 14.5 KB with BLE up.
+- LCD board (COM11, user-fav pinned, fix-pose): two tubes vs fb3491c X sequence 350 / 350 frames identical, 57.3 vs
+  57.5 fps (render 16.84 / 16.77 ms). 320fh+t3: **38.7 fps**, render 25.06 ms, cores h 14.47 / m 17.77 ms (seconds 9.25 of
+  them), push 12.59 ms (three strips), frame-p95 27 ms; X sequence deterministic (2 runs agree); parity after the springs
+  settle 0 px > 12/255 (seconds tube with residue); heap with BLE 3264 B (two tubes 3200). Verify build (PUSH_VERIFY,
+  TILE_VERIFY, TILE_CLIP_CHECK) through a seconds wrap, `x`, a face switch and a layout change: tile-verify bad 0 of 175 M
+  px, push-verify bad 0 of 176 M px, no reset. LCD left on lcd316@320fh+t3, AMOLED on amoled191.
 
 ## Per-tube tube widths, board selection (2026-11-03)
 

@@ -1,5 +1,6 @@
 #include <climits>
 #include <atomic>
+#include <new>
 #include "render.h"
 #include "gen/sprites_gen.h"
 #include "layout.h"
@@ -1133,11 +1134,19 @@ struct FizzFrame {
   int xsI, L; uint16_t blickC; bool mir;
 };
 struct MarkPlan;   // step 9, after the mark kernels
-// All mutable state of one tube's renderer (hours = tubes[0], minutes = tubes[1]). Two of these are
-// static (fixed footprint, ~9 KB each); the strip pointer / geometry are set per call by renderTube.
-// Nothing here is shared between the two, so the tubes can render concurrently on both cores.
+// All mutable state of one tube's renderer (hours = tubes[0], minutes = tubes[1], seconds = *tubeS: tubeAt). Two of
+// these are static (fixed footprint, ~9 KB each), the seconds tube's in PSRAM (render_init); the strip pointer / geometry
+// are set per call by renderTube. Nothing here is shared between the tubes, so they can render concurrently on both
+// cores. lane: the scratch the render borrows per core (tiles.h slots and copy channel): hours 0, minutes and seconds 1
+// (one after the other on core 1, main renderBoth), so tube identity (idx: px scale, residue streak) and lane differ.
 struct Tube {
   uint16_t *FB = nullptr; int baseY = 0, H = TUBE_HEIGHT_PX; int idx = 0;
+#if TUBE_COUNT == 3
+  int lane = 0;
+#else
+  static constexpr int lane = -1;   // unused: two tubes, the lane is idx (laneOf)
+#endif
+  inline int laneOf() const { return TUBE_COUNT == 3 ? lane : idx; }
   const int16_t **lensRowsOut = nullptr;   // set by renderTube: hand the lens row map to the caller instead of applying it
   Palette pal; RowCache rc; Labels labels; ScaledSet set;
   PalCache *palCache = nullptr;   // PSRAM, render_init
@@ -1274,6 +1283,13 @@ struct Tube {
   void traceBlur(const uint16_t *trace, bool mir, int a0, int a1, int c0, int c1, float filmV, int &aLo, int &aHi);
 };
 static Tube tubes[2];
+#if TUBE_COUNT == 3
+static Tube *tubeS = nullptr;   // the seconds tube: PSRAM, render_init (~15 KB at native; no internal RAM to spare)
+static inline Tube &tubeAt(int idx) { return idx == 2 ? *tubeS : tubes[idx & 1]; }
+#else
+static inline Tube &tubeAt(int idx) { return tubes[idx & 1]; }
+#endif
+#define TUBE_LANE(idx) ((idx) ? 1 : 0)   // the scratch lane of tube idx (Tube::lane)
 
 inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const {
 #ifdef TICK_PROF
@@ -3283,13 +3299,13 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
 // (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). See sim stepFizz.
 int fizzOverflow() { return fizzOverflowPeak.load(std::memory_order_relaxed); }
 int fizzCounts(int idx, int &foam, int &slots) {
-  const Tube &t = tubes[idx & 1]; int live = 0; foam = 0; slots = t.fizzN;
+  const Tube &t = tubeAt(idx); int live = 0; foam = 0; slots = t.fizzN;
   for (int i = 0; i < t.fizzN; i++) { if (t.fizz[i].v != 0) live++; if (t.fizz[i].life != 0) foam++; }
   return live;
 }
 
-// One tube's step (idx): each tube steps only its own state, so the two may step at once on two cores (main: each on
-// the core that renders it); stepFizz steps both, one after the other.
+// One tube's step (idx): each tube steps only its own state, so two may step at once on two cores (main: each on the
+// core that renders it); stepFizz steps all, one after the other.
 FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation) {
   FZ_T0(st0); if (idx == 1) FS_CNT(FS_STEPS, 1);   // a step: both tubes
   if (mirrored(p)) along = -along;   // fizz lives in the mirrored liquid frame (see drawTube)
@@ -3304,7 +3320,7 @@ FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, flo
   const bool hold = spring && p.fizzFoamLife > 0 && vy != 0;   // the bore wall the rise points at holds the stream
   const float letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
   {
-    Tube &t = tubes[idx & 1]; const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
+    Tube &t = tubeAt(idx); const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
     if (len <= 0) return;   // no liquid drawn yet: no surfaces
     FZ_T0(sp0);
     // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
@@ -3438,6 +3454,11 @@ FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, flo
 void stepFizz(const Params &pH, const Params &pM, float dt, float along, float across, float agitation) {
   stepFizzTube(0, pH, dt, along, across, agitation); stepFizzTube(1, pM, dt, along, across, agitation);
 }
+#if TUBE_COUNT == 3
+void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, float along, float across, float agitation) {
+  stepFizz(pH, pM, dt, along, across, agitation); stepFizzTube(2, pS, dt, along, across, agitation);
+}
+#endif
 
 // Magnification for a bubble of radius r at float row y: mean of the row table over the rows the
 // pre-squashed sprite covers, iterated once (see sim fizzMag). Single-row reads snap between rows.
@@ -3940,13 +3961,13 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // SIMD / scalar path as on the strip. The pixel helpers clip to the band's rows (rowLo / rowHi).
   uint16_t *const stripFB = FB;
   int tileSlot = 0;
-  tile_begin(idx, stripFB, H);
+  tile_begin(laneOf(), stripFB, H);
   TU_MARK(TU_TILE);
-#define TILE_BAND_START(rb0) do { uint16_t *const t_ = tile_slot(idx, tileSlot); const int e_ = (rb0) + TILE_ROWS < H ? (rb0) + TILE_ROWS : H; \
+#define TILE_BAND_START(rb0) do { uint16_t *const t_ = tile_slot(laneOf(), tileSlot); const int e_ = (rb0) + TILE_ROWS < H ? (rb0) + TILE_ROWS : H; \
                                   FB = t_ - (rb0) * PANEL_W; bandLo = t_; bandHi = t_ + TILE_ROWS * PANEL_W; rowLo = baseY + (rb0); rowHi = baseY + e_; \
                                   TCLIP_SET(t_, t_ + (e_ - (rb0)) * PANEL_W); } while (0)
 #define TILE_BAND_MARKS(rb0, rb1) marks(rb0, rb1, !stripLens)
-#define TILE_BAND_END(rb0, rb1) do { tile_put(idx, tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); tileSlot ^= 1; TU_MARK(TU_TILE); } while (0)
+#define TILE_BAND_END(rb0, rb1) do { tile_put(laneOf(), tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); tileSlot ^= 1; TU_MARK(TU_TILE); } while (0)
 #else
 #define TILE_BAND_START(rb0) ((void)0)
 #define TILE_BAND_MARKS(rb0, rb1) ((void)0)
@@ -4337,7 +4358,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
 #if TILE_RENDER
   FB = stripFB; bandLo = FB; bandHi = FB + H * PANEL_W; rowLo = baseY; rowHi = baseY + H;
   TCLIP_SET(stripFB, stripFB + (size_t)H * PANEL_W);
-  tile_end(idx);   // nothing touched the strip since tile_begin: every mark ran in the tiles
+  tile_end(laneOf());   // nothing touched the strip since tile_begin: every mark ran in the tiles
   TU_MARK(TU_TILE);
   if (stripLens) {   // reads other rows: on the strip, then the digits printed over it (the push writes the lines back)
     applyLens(p);
@@ -4704,55 +4725,61 @@ bool render_init() {
   EXP565 = (uint32_t *)heap_caps_malloc(512 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   buildLuts();
   bool ok = EXP565 != nullptr && fizzMasks.ps && (!FIZZ_MASK_INTL || fizzMasks.intl);
-  for (int i = 0; i < 2; i++) {
-    tubes[i].idx = i;   // the tube's px scale (TUBE_PX_SCALE) before its first render: stepFizzTube reads it
-    tubes[i].set.poolC = (uint16_t *)heap_caps_malloc(GLYPH_POOL_PX * 2, GLYPH_POOL_CAPS);
-    tubes[i].set.poolA = (uint8_t *)heap_caps_malloc(GLYPH_POOL_PX, GLYPH_POOL_CAPS);
-    tubes[i].set.poolS = (uint8_t *)heap_caps_malloc(GLYPH_SPAN_BYTES, MALLOC_CAP_SPIRAM);
-    tubes[i].wetShare = (uint16_t *)heap_caps_malloc(PANEL_W * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    tubes[i].wetRun = (int16_t *)heap_caps_malloc((PANEL_W + 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    tubes[i].digitOff = (float *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
-    tubes[i].traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    tubes[i].fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
-    tubes[i].palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
+#if TUBE_COUNT == 3
+  if (void *mem = heap_caps_malloc(sizeof(Tube), MALLOC_CAP_SPIRAM)) tubeS = new (mem) Tube();   // never freed
+  if (!tubeS) return false;
+  for (int i = 0; i < 3; i++) tubeAt(i).lane = TUBE_LANE(i);
+#endif
+  for (int i = 0; i < TUBE_COUNT; i++) {
+    Tube &tb = tubeAt(i);
+    tb.idx = i;   // the tube's px scale (TUBE_PX_SCALE) before its first render: stepFizzTube reads it
+    tb.set.poolC = (uint16_t *)heap_caps_malloc(GLYPH_POOL_PX * 2, GLYPH_POOL_CAPS);
+    tb.set.poolA = (uint8_t *)heap_caps_malloc(GLYPH_POOL_PX, GLYPH_POOL_CAPS);
+    tb.set.poolS = (uint8_t *)heap_caps_malloc(GLYPH_SPAN_BYTES, MALLOC_CAP_SPIRAM);
+    tb.wetShare = (uint16_t *)heap_caps_malloc(PANEL_W * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    tb.wetRun = (int16_t *)heap_caps_malloc((PANEL_W + 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    tb.digitOff = (float *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
+    tb.traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    tb.fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
+    tb.palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
     {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)
       const uintptr_t raw = (uintptr_t)heap_caps_malloc(sizeof(MarkPlan) + 63, MALLOC_CAP_SPIRAM);
-      tubes[i].plan = raw ? (MarkPlan *)((raw + 63) & ~(uintptr_t)63) : nullptr;
+      tb.plan = raw ? (MarkPlan *)((raw + 63) & ~(uintptr_t)63) : nullptr;
     }
-    ok = ok && tubes[i].plan;
-    tubes[i].look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
-    if (tubes[i].look) {
-      FizzLook &fl = *tubes[i].look;
+    ok = ok && tb.plan;
+    tb.look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
+    if (tb.look) {
+      FizzLook &fl = *tb.look;
       fl.valid = fl.masks = false; fl.mask = nullptr;
     }
-    ok = ok && tubes[i].look;
-    tubes[i].foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB
-    if (tubes[i].foam) memset(tubes[i].foam, 0, sizeof(FoamWork));
-    ok = ok && tubes[i].foam;
+    ok = ok && tb.look;
+    tb.foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB
+    if (tb.foam) memset(tb.foam, 0, sizeof(FoamWork));
+    ok = ok && tb.foam;
 #ifdef BOARD_LCD316
-    tubes[i].glowT = (EffectTable *)heap_caps_malloc(2 * sizeof(EffectTable), MALLOC_CAP_SPIRAM);
-    if (tubes[i].glowT) for (int k = 0; k < 2; k++) tubes[i].glowT[k].valid = false;
-    ok = ok && tubes[i].glowT;
+    tb.glowT = (EffectTable *)heap_caps_malloc(2 * sizeof(EffectTable), MALLOC_CAP_SPIRAM);
+    if (tb.glowT) for (int k = 0; k < 2; k++) tb.glowT[k].valid = false;
+    ok = ok && tb.glowT;
 #endif
 #if TILE_RENDER && defined(TILE_VERIFY)
-    tubes[i].tileVerifyStrip = (uint16_t *)heap_caps_malloc((size_t)TUBE_HEIGHT_MAX * PANEL_W * 2, MALLOC_CAP_SPIRAM);
-    ok = ok && tubes[i].tileVerifyStrip;
+    tb.tileVerifyStrip = (uint16_t *)heap_caps_malloc((size_t)TUBE_HEIGHT_MAX * PANEL_W * 2, MALLOC_CAP_SPIRAM);
+    ok = ok && tb.tileVerifyStrip;
 #endif
 #ifdef TUBE_VERIFY
-    tubes[i].verifyRow = (uint16_t *)heap_caps_malloc(PANEL_W * 2, MALLOC_CAP_SPIRAM);
-    tubes[i].verifyPal = (Palette *)heap_caps_malloc(sizeof(Palette), MALLOC_CAP_SPIRAM);
-    ok = ok && tubes[i].verifyRow && tubes[i].verifyPal;
+    tb.verifyRow = (uint16_t *)heap_caps_malloc(PANEL_W * 2, MALLOC_CAP_SPIRAM);
+    tb.verifyPal = (Palette *)heap_caps_malloc(sizeof(Palette), MALLOC_CAP_SPIRAM);
+    ok = ok && tb.verifyRow && tb.verifyPal;
 #endif
-    if (tubes[i].palCache) tubes[i].palCache->valid = false;
-    tubes[i].traceMemo = (TraceMemo *)heap_caps_malloc(sizeof(TraceMemo), MALLOC_CAP_SPIRAM);
-    if (tubes[i].traceMemo) tubes[i].traceMemo->valid = false;
-    tubes[i].traceStreakTab = (float *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(float), MALLOC_CAP_SPIRAM);
-    if (tubes[i].traceStreakTab) for (int x = 0; x < TUBE_LENGTH_PX; x++) tubes[i].traceStreakTab[x] = traceStreak(x + (uint32_t)i * 6151u);
-    ok = ok && tubes[i].traceStreakTab;
+    if (tb.palCache) tb.palCache->valid = false;
+    tb.traceMemo = (TraceMemo *)heap_caps_malloc(sizeof(TraceMemo), MALLOC_CAP_SPIRAM);
+    if (tb.traceMemo) tb.traceMemo->valid = false;
+    tb.traceStreakTab = (float *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(float), MALLOC_CAP_SPIRAM);
+    if (tb.traceStreakTab) for (int x = 0; x < TUBE_LENGTH_PX; x++) tb.traceStreakTab[x] = traceStreak(x + (uint32_t)i * 6151u);
+    ok = ok && tb.traceStreakTab;
     if (uint8_t *rows = (uint8_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(DigitRow) + 63, MALLOC_CAP_SPIRAM))   // one row per cache line
-      tubes[i].digitRows = (DigitRow *)(((uintptr_t)rows + 63) & ~(uintptr_t)63);
-    ok = ok && tubes[i].fizz && tubes[i].set.poolC && tubes[i].set.poolA && tubes[i].set.poolS && tubes[i].wetShare && tubes[i].wetRun && tubes[i].digitOff
-         && tubes[i].digitRows && tubes[i].traceLut && tubes[i].palCache && tubes[i].traceMemo;
+      tb.digitRows = (DigitRow *)(((uintptr_t)rows + 63) & ~(uintptr_t)63);
+    ok = ok && tb.fizz && tb.set.poolC && tb.set.poolA && tb.set.poolS && tb.wetShare && tb.wetRun && tb.digitOff
+         && tb.digitRows && tb.traceLut && tb.palCache && tb.traceMemo;
   }
   FILM_PHI = (uint16_t *)heap_caps_malloc(257 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
   FILM_LG = (uint16_t *)heap_caps_malloc(256 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
@@ -4832,18 +4859,18 @@ TUBE_IRAM void __attribute__((noinline)) Tube::traceBlur(const uint16_t *trace, 
   aLoOut = aLo; aHiOut = aHi;
 }
 
-// Safe to call for idx 0 and 1 concurrently from different tasks: each touches only tubes[idx] and its
-// own strip; params / state are read-only for the duration of the call.
-void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows) {
+// Safe to call for tubes on different lanes (hours and minutes / seconds) concurrently from different tasks: each touches
+// only tubeAt(idx), its lane's scratch and its own strip; params / state are read-only for the duration of the call.
+void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows, int y0) {
+  Tube &t = tubeAt(idx);
 #ifdef DIGIT_PROF
-  memset(tubes[idx].prof, 0, sizeof(tubes[idx].prof)); memset(tubes[idx].profCyc, 0, sizeof(tubes[idx].profCyc));
+  memset(t.prof, 0, sizeof(t.prof)); memset(t.profCyc, 0, sizeof(t.profCyc));
 #endif
-  Tube &t = tubes[idx & 1];
 #ifdef TUBE_PROF
   const uint32_t tu0 = esp_cpu_get_cycle_count();
 #endif
   TubeLayout lay = tubeLayout(p);
-  t.FB = strip; t.H = lay.H; t.baseY = idx == 0 ? lay.yH : lay.yM; t.idx = idx & 1;
+  t.FB = strip; t.H = lay.H; t.baseY = y0 >= 0 ? y0 : idx == 0 ? lay.yH : lay.yM; t.idx = TUBE_COUNT == 3 ? idx : idx & 1;
   t.rowLo = t.baseY; t.rowHi = t.baseY + t.H;
   TCLIP_SET(strip, strip + (size_t)t.H * PANEL_W);
   t.lensRowsOut = lensRows; if (lensRows) *lensRows = nullptr;
@@ -4884,30 +4911,30 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
 }
 
 #ifdef FIZZ_PROF
-const uint32_t *render_fizz_profile(int idx) { return tubes[idx].fizzProf; }
+const uint32_t *render_fizz_profile(int idx) { return tubeAt(idx).fizzProf; }
 const uint32_t *render_fizz_step_profile() { for (int i = 0; i < FS_N; i++) fizzStepProf[i] = fizzStepProfCore[0][i] + fizzStepProfCore[1][i]; return fizzStepProf; }
-void render_fizz_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].fizzProf, 0, sizeof(tubes[i].fizzProf)); memset(fizzStepProfCore, 0, sizeof(fizzStepProfCore)); }
+void render_fizz_profile_reset() { for (int i = 0; i < TUBE_COUNT; i++) memset(tubeAt(i).fizzProf, 0, sizeof(tubeAt(i).fizzProf)); memset(fizzStepProfCore, 0, sizeof(fizzStepProfCore)); }
 #endif
 #ifdef TUBE_PROF
-const uint32_t *render_tube_profile(int idx) { return tubes[idx].tubeProf; }
-void render_tube_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].tubeProf, 0, sizeof(tubes[i].tubeProf)); }
+const uint32_t *render_tube_profile(int idx) { return tubeAt(idx).tubeProf; }
+void render_tube_profile_reset() { for (int i = 0; i < TUBE_COUNT; i++) memset(tubeAt(i).tubeProf, 0, sizeof(tubeAt(i).tubeProf)); }
 #endif
 #ifdef TICK_PROF
-const uint32_t *render_tick_profile(int idx) { return tubes[idx].tickProf; }
-void render_tick_profile_reset() { for (int i = 0; i < 2; i++) memset(tubes[i].tickProf, 0, sizeof(tubes[i].tickProf)); }
+const uint32_t *render_tick_profile(int idx) { return tubeAt(idx).tickProf; }
+void render_tick_profile_reset() { for (int i = 0; i < TUBE_COUNT; i++) memset(tubeAt(i).tickProf, 0, sizeof(tubeAt(i).tickProf)); }
 #endif
 #if TILE_RENDER
 bool tile_strip_clean(const uint16_t *strip) {
-  for (Tube &t : tubes) if (strip && t.cleanStrip == strip) { t.cleanStrip = nullptr; return true; }
+  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); if (strip && t.cleanStrip == strip) { t.cleanStrip = nullptr; return true; } }
   return false;
 }
 #endif
 bool render_seq_reset(uint32_t seed) {
-  for (Tube &t : tubes) { t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; if (t.foam) t.foam->nOrder = 0; }
+  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; if (t.foam) t.foam->nOrder = 0; }
   return fizzReseed(seed);
 }
-void render_digit_shift(int idx, int &dx, int &dy) { const Labels &lb = tubes[idx & 1].labels; dx = lb.wholeDx; dy = lb.wholeDy; }
+void render_digit_shift(int idx, int &dx, int &dy) { const Labels &lb = tubeAt(idx).labels; dx = lb.wholeDx; dy = lb.wholeDy; }
 #ifdef DIGIT_PROF
-const uint32_t *render_profile(int idx) { return tubes[idx].prof; }
-const uint32_t *render_profile_cycles(int idx) { return tubes[idx].profCyc; }
+const uint32_t *render_profile(int idx) { return tubeAt(idx).prof; }
+const uint32_t *render_profile_cycles(int idx) { return tubeAt(idx).profCyc; }
 #endif

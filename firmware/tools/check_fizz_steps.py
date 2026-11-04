@@ -2,10 +2,10 @@
 """Stepped sequences, current render.cpp vs a saved reference (native C++, no board): fizz, residue, cross-frame memos.
 
   python3 firmware/tools/check_fizz_steps.py --reference /tmp/render-before.cpp [--fma] [--board lcd316 --res 320f]
-                                             [--tiles] [-j N] [presets/x.json ...]
+                                             [--tubes 2|3] [--tiles] [-j N] [presets/x.json ...]
 
 Each preset (default: presets/*.json and presets/physical/*.json, plus the built-in spring SCENES) runs the deterministic sequence of firmware/src/seq.h
-(the board's `X` command: a fixed tilt script, both tubes and the fizz stepped, a frame every 2 steps) in a fresh
+(the board's `X` command: a fixed tilt script, every tube and the fizz stepped, a frame every 2 steps) in a fresh
 process per side, with esp_random as a fixed LCG, so the bubbles really move: births, springs, parked and popping
 foam. Frames are compared by hash per tube (strip pixels, and the fizz state: render.cpp is #included by the driver,
 its tubes' Fizz slots + spring clocks hashed), with the fizz counts; the first differing frame is reported. A rewrite
@@ -14,8 +14,8 @@ check_render_frames.py never steps the fizz (every bubble of a scene on one spot
 --fma builds both sides with -mfma -ffp-contract=fast: like the board, a * b + c fuses, so a rewrite that changes
 which products feed which adds shows up (default -ffp-contract=off, like the other host checks). Still not the
 board's code: confirm a fizz rewrite on the board with tools/check_board_steps.py.
---board / --res as check_board_render.py (default amoled191; lcd316 --res 320f = the wide LCD canvas); --tiles: the
-current side renders through the tiled band loop (-DTILE_RENDER=1).
+--board / --res / --tubes as check_board_render.py (default amoled191; lcd316 --res 320f = the wide LCD canvas; --tubes 3
+= + the seconds tube); --tiles: the current side renders through the tiled band loop (-DTILE_RENDER=1).
 """
 import argparse, glob, json, os, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -39,12 +39,12 @@ HARNESS = r'''
 #include <cstring>
 #include RENDER_SRC   // the side's render.cpp itself: its tubes' fizz state is hashed below
 #include "seq.h"
-static uint16_t strip[2][PANEL_W * TUBE_HEIGHT_MAX];
+static uint16_t strip[TUBE_COUNT][PANEL_W * TUBE_HEIGHT_MAX];
 static uint32_t fizzHash(int i) {   // the stepped state of one tube: live slots, spring clocks
 #ifdef PIXELS_ONLY
   return 0;
 #else
-  const Tube &t = tubes[i];
+  const Tube &t = tubeAt(i);
   uint32_t h = seqHash((const uint16_t *)t.fizz, t.fizzN * (int)sizeof(Fizz) / 2);
   const float c[2] = {t.springScatter, t.springClock};
   return h ^ seqHash((const uint16_t *)c, sizeof c / 2) * 31u ^ (uint32_t)t.fizzN;
@@ -65,20 +65,32 @@ static bool setParam(Params &p, const char *name, const char *val) {   // main.c
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
-  Params design = PRESET_DEFAULT; TubeState h, m; uint32_t gen = 1;
+  Params design = PRESET_DEFAULT; TubeState st[TUBE_COUNT]; uint32_t gen = 1;
   char line[256];
   while (fgets(line, sizeof line, stdin)) {
     line[strcspn(line, "\r\n")] = 0;
     char *eq = strchr(line, '='); if (!eq) return 4;
     *eq = 0; if (!setParam(design, line, eq + 1)) fprintf(stderr, "unknown param %s\n", line);
   }
-  Params pH, pM; boardParams(design, pH, TUBE_PX_SCALE(0), PX_SCALE_FIZZ); boardParams(design, pM, TUBE_PX_SCALE(1), PX_SCALE_FIZZ);   // each tube at its px scale
-  uint16_t *const s[2] = {strip[0], strip[1]};
-  const FaceLayout lay = faceLayout(pH, pM); const int wordsH = lay.Hh * PANEL_W, wordsM = lay.Hm * PANEL_W;
-  seqRun(h, m, pH, pM, gen, s, [&](int frame, uint16_t *const *st) {
-    int fh, sh, fm, sm; const int lh = fizzCounts(0, fh, sh), lm = fizzCounts(1, fm, sm);
-    printf("SEQ %d %08x %08x fizz %d/%d %d/%d state %08x %08x\n", frame, seqHash(st[0], wordsH), seqHash(st[1], wordsM), lh, fh, lm, fm,
-           fizzHash(0), fizzHash(1));
+  Params p[TUBE_COUNT]; for (int i = 0; i < TUBE_COUNT; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ);   // each tube at its px scale
+  uint16_t *s[TUBE_COUNT]; TubeState *tb[TUBE_COUNT]; const Params *pp[TUBE_COUNT]; int top[TUBE_COUNT];
+#if TUBE_COUNT == 3
+  const FaceLayout lay = faceLayout(p[0], p[1], p[2]);
+#else
+  const FaceLayout lay = faceLayout(p[0], p[1]);
+#endif
+  for (int i = 0; i < TUBE_COUNT; i++) { s[i] = strip[i]; tb[i] = &st[i]; pp[i] = &p[i]; top[i] = TUBE_COUNT == 3 ? lay.top(i) : -1; }
+  uint32_t hash[TUBE_COUNT];
+  seqRun(tb, pp, gen, s, top, [&](int frame, int i, const uint16_t *px) {   // the board's `X` line, + the fizz state
+    hash[i] = seqHash(px, lay.rows(i) * PANEL_W);
+    if (i < TUBE_COUNT - 1) return;
+    printf("SEQ %d", frame);
+    for (int k = 0; k < TUBE_COUNT; k++) printf(" %08x", hash[k]);
+    printf(" fizz");
+    for (int k = 0; k < TUBE_COUNT; k++) { int f, sl; const int live = fizzCounts(k, f, sl); printf(" %d/%d", live, f); }
+    printf(" state");
+    for (int k = 0; k < TUBE_COUNT; k++) printf(" %08x", fizzHash(k));
+    printf("\n");
   });
   return 0;
 }
@@ -101,6 +113,7 @@ def main():
     ap.add_argument('--fma', action='store_true', help='-mfma -ffp-contract=fast on both sides (fused multiply-add like the board)')
     ap.add_argument('--board', default='amoled191', choices=('amoled191', 'lcd316'))
     ap.add_argument('--res', default='320', help='lcd316 res tag: rows + tube widths (320 / 320f / 320fh / 320fm, tools/boardtag.py)')
+    ap.add_argument('--tubes', type=int, default=2, choices=(2, 3), help='3 = + the seconds tube (-DTUBE_COUNT=3)')
     ap.add_argument('--tiles', action='store_true', help='current side through the tiled band loop (-DTILE_RENDER=1)')
     ap.add_argument('--pixels-only', action='store_true', help='compare strips and counts, not the fizz state (struct Fizz changed on purpose)')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
@@ -123,7 +136,7 @@ def main():
                                           'inline uint32_t esp_random() { static uint32_t s = 721; s = s * 1664525u + 1013904223u; return s; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
         fp = ['-mfma', '-ffp-contract=fast'] if a.fma else ['-ffp-contract=off']
-        board = ['-DBOARD_LCD316', *boardtag.res_flags(a.res)] if lcd else []
+        board = [*boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else [])]
         sides = [('reference', reference), ('current', ROOT / 'firmware/src/render.cpp')]
         builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-fno-strict-aliasing', *fp, *board,   # fizzHash reads floats as uint16_t
                                     *(['-DTILE_RENDER=1'] if a.tiles and name == 'current' else []),
@@ -151,13 +164,14 @@ def main():
                 else: print(f'{name:40s} {frames} frames identical')
                 if a.v:   # both sides' populations when they differ (a rewrite that is not exact must keep them close)
                     for side, out in zip(('reference', 'current') if diff else ('',), outs[::-1][:1] if not diff else outs):
-                        rows = [l.split()[5:7] for l in out.splitlines()]   # 'live/foam' per tube
-                        most = [max(int(r[t].split('/')[0]) for r in rows) for t in (0, 1)]
-                        foam = [max(int(r[t].split('/')[1]) for r in rows) for t in (0, 1)]
-                        mean = [sum(int(r[t].split('/')[1]) for r in rows) / len(rows) for t in (0, 1)]
-                        print(f'  {side + " " if side else ""}fizz live max h {most[0]} m {most[1]}, foam max h {foam[0]} m {foam[1]}'
-                              f' mean h {mean[0]:.1f} m {mean[1]:.1f}, end {" ".join(rows[-1])}')
-        tag = f'{a.board}{"@" + a.res if lcd else ""}{" fma" if a.fma else ""}{" tiles" if a.tiles else ""}'
+                        rows = [(w := l.split())[w.index('fizz') + 1:w.index('fizz') + 1 + a.tubes] for l in out.splitlines()]   # 'live/foam' per tube
+                        T = range(a.tubes); nm = 'hms'
+                        most = [max(int(r[t].split('/')[0]) for r in rows) for t in T]
+                        foam = [max(int(r[t].split('/')[1]) for r in rows) for t in T]
+                        mean = [sum(int(r[t].split('/')[1]) for r in rows) / len(rows) for t in T]
+                        print(f'  {side + " " if side else ""}fizz live max {" ".join(f"{nm[t]} {most[t]}" for t in T)}, foam max {" ".join(f"{nm[t]} {foam[t]}" for t in T)}'
+                              f' mean {" ".join(f"{nm[t]} {mean[t]:.1f}" for t in T)}, end {" ".join(rows[-1])}')
+        tag = f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}{" fma" if a.fma else ""}{" tiles" if a.tiles else ""}'
         print(f'{tag}: {len(jobs) - bad} of {len(jobs)} presets identical over the sequence')
         sys.exit(1 if bad else 0)
 

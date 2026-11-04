@@ -1,8 +1,8 @@
 import './style.css';
-import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_PX_SCALE, parseRes, resTag, switchBoard, type Board } from '@spec/layout';
+import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, parseBoardTag, parseRes, resTag, switchBoard, type Board } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
 import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
-import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout } from './render';
+import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
 import { buildPanel } from './ui';
@@ -27,7 +27,8 @@ const manual = session.view.manual;             // sliders / drag
 const setClock = session.view.setClock;
 let { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = session.view;  // demoSpeed = demo s per real s
 let sweepPhase = 0;   // 0..1 through the minutes sweep cycle
-const hours = newTube(), minutes = newTube();
+const tubes = Array.from({ length: TUBE_COUNT }, () => newTube());   // hours, minutes(, seconds): spec/layout TUBE_COUNT
+const [hours, minutes] = tubes;
 const input: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0 };
 const imuFilter = new ImuFilter();
 let inputSource: 'manual' | 'device' | 'serial' = 'manual'; // not persisted: device/serial need a gesture
@@ -35,13 +36,17 @@ let demoClock = Date.now();
 let clockSet = false;   // the user set the clock: the fill jumps there instead of retracting (followClock)
 
 /** Canvas layout of the current params (design px scaled to each tube's px scale, see params.ts tubeParams). */
-const layoutNow = () => faceLayout(...tubeParams(params));
-/** A board tag in words, for the sim's board controls (`lcd316@320fh` → `lcd316, rows 320, hours wide, minutes narrow`). */
+const layoutNow = () => faceLayout(tubeParams(params));
+const TUBE_NAMES = ['hours', 'minutes', 'seconds'] as const;
+/** A board tag in words, for the sim's board controls (`lcd316@320fh` → `lcd316, rows 320, hours wide, minutes narrow`;
+ *  `+t3` → `…, 3 tubes`). */
 function boardWords(tag: string): string {
-  const [b, r] = tag.split('@'), lcd = r === undefined ? null : parseRes(r);
-  return lcd ? `${b}, rows ${lcd.rows}, hours ${lcd.wide[0] ? 'wide' : 'narrow'}, minutes ${lcd.wide[1] ? 'wide' : 'narrow'}` : b;
+  const t = parseBoardTag(tag), lcd = t?.res ? parseRes(t.res, t.tubes) : null;
+  if (!t) return tag;
+  return (lcd ? `${t.board}, rows ${lcd.rows}, ${lcd.wide.map((w, i) => `${TUBE_NAMES[i]} ${w ? 'wide' : 'narrow'}`).join(', ')}` : t.board)
+    + `, ${t.tubes} tubes`;
 }
-const lcdStart = parseRes(LAST_LCD_RES) ?? { rows: 320, wide: [false, false] };
+const lcdStart = parseRes(LAST_LCD_RES, 3) ?? { rows: 320, wide: [false, false, false] };
 
 // ---------- DOM ----------
 const app = document.getElementById('app')!;
@@ -50,9 +55,10 @@ app.innerHTML = `
   <h1>Liquid Watch — sim</h1>
   <div class="top">
     <label title="Board the sim renders for (canvas size; params stay in design px and are scaled to it). Reloads the page.">board <select id="board">${['amoled191', 'lcd316'].map((b) => `<option${b === BOARD ? ' selected' : ''}>${b}</option>`).join('')}</select></label>
+    <label title="Tubes on the face: 2 = hours, minutes; 3 = hours, minutes, seconds (seconds at the bottom, minutes in the middle; seconds draws with the minutes ticks and digits). Firmware TUBE_COUNT. Reloads the page.">tubes <select id="tubes">${TUBE_COUNTS.map((n) => `<option${n === TUBE_COUNT ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
     <span id="lcdopts" style="display: ${BOARD === 'lcd316' ? 'contents' : 'none'}">
       <label title="LCD canvas rows (RENDER_H): fewer render faster and are upscaled to the 320-row panel. Reloads the page.">rows <select id="lcdrows">${LCD_RES.map((r) => `<option${r === lcdStart.rows ? ' selected' : ''}>${r}</option>`).join('')}</select></label>
-      ${(['hours', 'minutes'] as const).map((t, i) => `<label title="${t} tube width: narrow = the AMOLED's physical size, wide = scaled with the canvas height (fills the face as on the AMOLED). Firmware LCD_FILL_${'HM'[i]}. Reloads the page.">${t} <select id="width${'hm'[i]}"><option value="0"${lcdStart.wide[i] ? '' : ' selected'}>narrow</option><option value="1"${lcdStart.wide[i] ? ' selected' : ''}>wide</option></select></label>`).join('')}
+      ${TUBE_NAMES.slice(0, TUBE_COUNT).map((t, i) => `<label title="${t} tube width: narrow = the AMOLED's physical size, wide = scaled with the canvas height (fills the face as on the AMOLED). Firmware LCD_FILL_${'HMS'[i]}. Reloads the page.">${t} <select id="width${'hms'[i]}"><option value="0"${lcdStart.wide[i] ? '' : ' selected'}>narrow</option><option value="1"${lcdStart.wide[i] ? ' selected' : ''}>wide</option></select></label>`).join('')}
     </span>
     <label>scale <select id="scale"><option value="0.33">0.33 (≈ real size @96 dpi)</option><option value="0.5" selected>0.5</option><option value="0.75">0.75</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label><input type="checkbox" id="ovl" checked> leather cuff</label>
@@ -79,7 +85,7 @@ app.innerHTML = `
       <fieldset><legend>Time</legend>
         <label><input type="radio" id="tm-real" name="tm" value="real" checked> real</label>
         <label><input type="radio" id="tm-demo" name="tm" value="demo"> demo ×<input type="number" id="demospeed" value="60" min="1" max="3600" style="width:5em"></label>
-        <label><input type="radio" id="tm-set" name="tm" value="set"> set <input type="number" id="seth" value="10" min="0" max="23" style="width:3.5em">:<input type="number" id="setm" value="9" min="0" max="59" style="width:3.5em"></label>
+        <label><input type="radio" id="tm-set" name="tm" value="set"> set <input type="number" id="seth" value="10" min="0" max="23" style="width:3.5em">:<input type="number" id="setm" value="9" min="0" max="59" style="width:3.5em"><span style="display: ${TUBE_COUNT === 3 ? 'contents' : 'none'}">:<input type="number" id="sets" value="0" min="0" max="59" style="width:3.5em"></span></label>
         <label title="Minutes tube runs empty→full→empty instead of telling time; sent to the device live and kept there across resets"><input type="checkbox" id="sweep"> minutes sweep, period <input type="number" id="sweepperiod" value="10" min="1" max="3600" style="width:4.5em"> s</label>
         <span id="clock"></span>
         <button id="settime" title="Send this time and mode to the device: real, demo speed, or frozen selected time, plus the minutes sweep">send sim time</button>
@@ -152,10 +158,10 @@ setScale();
 // Board controls: any change reloads the sim on that board (spec/layout switchBoard); rows and widths are the LCD's.
 const boardPicked = (): void => {
   const b = $<HTMLSelectElement>('board').value as Board;
-  const wide = [$<HTMLSelectElement>('widthh').value === '1', $<HTMLSelectElement>('widthm').value === '1'] as const;
-  save(); switchBoard(b, resTag(+$<HTMLSelectElement>('lcdrows').value, wide));
+  const n = +$<HTMLSelectElement>('tubes').value, wide = [...'hms'.slice(0, n)].map((c) => $<HTMLSelectElement>(`width${c}`)?.value === '1');
+  save(); switchBoard(b, resTag(+$<HTMLSelectElement>('lcdrows').value, wide), n);
 };
-for (const id of ['board', 'lcdrows', 'widthh', 'widthm']) $(id).oninput = boardPicked;
+for (const id of ['board', 'tubes', 'lcdrows', ...[...'hms'.slice(0, TUBE_COUNT)].map((c) => `width${c}`)]) $(id).oninput = boardPicked;
 $('scale').oninput = (e) => { scale = +(e.target as HTMLSelectElement).value; setScale(); };
 $('ovl').oninput = (e) => { overlay.enabled = (e.target as HTMLInputElement).checked; applyOverlay(ovlDom, overlay, layoutNow()); setScale(); };
 $('leather').oninput = (e) => { overlay.leather = (e.target as HTMLSelectElement).value as any; applyOverlay(ovlDom, overlay, layoutNow()); };
@@ -191,6 +197,7 @@ $('sweepperiod').onchange = (e) => {
 };
 $('seth').oninput = (e) => { setClock.h = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
 $('setm').oninput = (e) => { setClock.m = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
+$('sets').oninput = (e) => { setClock.s = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
 $('resetview').onclick = () => {
   Object.assign(overlay, DEFAULT_OVERLAY); Object.assign(manual, DEFAULT_VIEW.manual); Object.assign(setClock, DEFAULT_VIEW.setClock);
   ({ scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = DEFAULT_VIEW);
@@ -222,6 +229,7 @@ function syncView(): void {
   $<HTMLInputElement>('sweepperiod').value = String(sweepPeriod);
   $<HTMLInputElement>('seth').value = String(setClock.h);
   $<HTMLInputElement>('setm').value = String(setClock.m);
+  $<HTMLInputElement>('sets').value = String(setClock.s ?? 0);
   $<HTMLInputElement>(`tm-${timeMode}`).checked = true;
   syncSliders();
   applyOverlay(ovlDom, overlay, layoutNow()); setScale(); drawGrid();
@@ -335,7 +343,8 @@ async function pushTime(): Promise<void> {
     const speed = timeMode === 'demo' ? demoSpeed : timeMode === 'set' ? 0 : 1;
     if (!Number.isFinite(d.getTime()) || (timeMode === 'set' &&
       (!Number.isInteger(setClock.h) || setClock.h < 0 || setClock.h > 23 ||
-       !Number.isInteger(setClock.m) || setClock.m < 0 || setClock.m > 59))) throw new Error('invalid time');
+       !Number.isInteger(setClock.m) || setClock.m < 0 || setClock.m > 59 ||
+       !Number.isInteger(setClock.s ?? 0) || (setClock.s ?? 0) < 0 || (setClock.s ?? 0) > 59))) throw new Error('invalid time');
     await transport.setDemoSpeed(speed);
     await transport.setTime(d.getTime(), -d.getTimezoneOffset());
     await transport.setSweep(sweepValue());
@@ -392,8 +401,9 @@ panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
 
 // URL params, applied on top of the restored session — for reproducible states / screenshots:
 //   ?board=lcd316&res=320 (canvas of another board, read by spec/layout.ts at load; remembered; res tag 320 / 320f /
-//   320fh / 320fm = tube widths narrow / both wide / hours wide / minutes wide)
-//   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09 &demo=120 &settle=1
+//   320fh / 320fm = tube widths narrow / both wide / hours wide / minutes wide; three tubes also 320fs / fhm / fhs / fms)
+//   &tubes=3 (+ the seconds tube; remembered)
+//   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09[:30] &demo=120 &settle=1
 //   &along=0.3 &across=0 &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1
 //   &p.<paramKey>=<value>   e.g. &p.liquid=%2339ff14&p.bubble=0
 // Physical material (applied in this order): preset → &material=<id from MATERIAL_PRESETS> (enters
@@ -428,7 +438,7 @@ panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
   }
   if (u.has('along')) manual.along = +u.get('along')!;
   if (u.has('across')) manual.across = +u.get('across')!;
-  if (u.has('t')) { const [h, m] = u.get('t')!.split(':').map(Number); setClock.h = h; setClock.m = m; timeMode = 'set'; }
+  if (u.has('t')) { const [h, m, sec] = u.get('t')!.split(':').map(Number); setClock.h = h; setClock.m = m; setClock.s = sec || 0; timeMode = 'set'; }
   if (u.has('demo')) { demoSpeed = +u.get('demo')!; timeMode = 'demo'; }
   if (u.has('scale')) scale = +u.get('scale')!;
   if (u.has('cuff')) overlay.enabled = u.get('cuff') === '1';
@@ -451,12 +461,13 @@ function drawGrid() {
   g.clearRect(0, 0, PANEL_W, PANEL_H);
   if (!showGrid) return;
   g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 1 / Math.min(1, scale); g.setLineDash([4, 4]);
-  const { Hh, Hm, yH, yM } = layoutNow();
-  for (const y of [yH, yH + Hh, yM, yM + Hm]) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(PANEL_W, y + 0.5); g.stroke(); }
-  const b0 = yH <= yM ? yH + Hh : yM + Hm, b1 = Math.max(yH, yM);
-  g.fillStyle = 'rgba(255,0,0,0.25)'; g.fillRect(0, b0, PANEL_W, b1 - b0);
+  const lay = layoutNow(), rows = tubes.map((_, i) => tubeRows(lay, i)), byY = [...rows].sort((a, b) => a.y - b.y);
+  for (const r of rows) for (const y of [r.y, r.y + r.H]) { g.beginPath(); g.moveTo(0, y + 0.5); g.lineTo(PANEL_W, y + 0.5); g.stroke(); }
+  g.fillStyle = 'rgba(255,0,0,0.25)';
+  for (let i = 1; i < byY.length; i++) g.fillRect(0, byY[i - 1].y + byY[i - 1].H, PANEL_W, byY[i].y - byY[i - 1].y - byY[i - 1].H);
   g.fillStyle = '#fff'; g.font = '10px monospace';
-  g.fillText(`hours y=${yH}`, 4, yH + 10); g.fillText(`minutes y=${yM}`, 4, yM + 10); g.fillText('bridge (must stay black)', 4, b0 + 14);
+  rows.forEach((r, i) => g.fillText(`${TUBE_NAMES[i]} y=${r.y}`, 4, r.y + 10));
+  g.fillText('bridge (must stay black)', 4, byY[0].y + byY[0].H + 14);
 }
 
 // ---------- IMU scope: raw (dim) vs filtered (bright) accel + gyro, ~6 s window ----------
@@ -496,7 +507,7 @@ function drawScope(): void {
 let acc = 0, last = performance.now(), frames = 0, fpsT = last;
 function currentDate(): Date {
   if (timeMode === 'real') return new Date();
-  if (timeMode === 'set') { const d = new Date(); d.setHours(setClock.h, setClock.m, 0, 0); return d; }
+  if (timeMode === 'set') { const d = new Date(); d.setHours(setClock.h, setClock.m, setClock.s ?? 0, 0); return d; }
   return new Date(demoClock);
 }
 function physics(dt: number) {
@@ -516,31 +527,31 @@ function physics(dt: number) {
   }
   if (kick !== 0) { raw.gyroAcross += kick; kick *= Math.exp(-dt / 0.06); if (Math.abs(kick) < 5) kick = 0; }
   if (wristT > 0) { wristT -= dt; raw.gyroAlong += 250 * Math.sin((wristT / 0.5) * Math.PI); }
-  const [pH, pM] = tubeParams(params);   // the physics runs in canvas px, each tube at its own px scale
-  Object.assign(input, imuFilter.step(raw, pH, dt));
+  const ps = tubeParams(params);   // the physics runs in canvas px, each tube at its own px scale
+  Object.assign(input, imuFilter.step(raw, ps[0], dt));
   scopePush(raw, input);
   if (timeMode === 'demo') demoClock += dt * 1000 * demoSpeed;
   const f = fillLevels(currentDate());
   if (sweep) sweepPhase = (sweepPhase + dt / sweepPeriod) % 1;
   followClock(hours, f.hours, dt, clockSet);
   followClock(minutes, sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes, dt, clockSet);
+  if (TUBE_COUNT === 3) followClock(tubes[2], f.seconds, dt, clockSet);
   clockSet = false;
-  stepTube(hours, input, pH, dt, TUBE_PX_SCALE[0]);
-  stepTube(minutes, input, pM, dt, TUBE_PX_SCALE[1]);
-  stepFizz(pH, pM, dt, input.along, input.across, hours.agitation);
+  tubes.forEach((t, i) => stepTube(t, input, ps[i], dt, TUBE_PX_SCALE[i]));
+  stepFizz(ps, dt, input.along, input.across, hours.agitation);
 }
 function frame(now: number) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.25, (now - last) / 1000); last = now;
   if (!paused) { acc += dt; while (acc >= PHYS_DT) { physics(PHYS_DT); acc -= PHYS_DT; } }
   if (params.vertical !== shownVertical) setScale();
-  renderFrame(hours, minutes, ...tubeParams(params), true, overlay.lensSmooth);
+  renderFrame(tubes, tubeParams(params), true, overlay.lensSmooth);
   blit(img); fullctx.putImageData(img, 0, 0);
   fbctx.imageSmoothingEnabled = scale < 1; fbctx.drawImage(fullc, 0, 0);
   drawScope();
   frames++;
   if (now - fpsT > 1000) {
-    $('fps').textContent = `${String(frames).padStart(3)} fps · fill h=${hours.fillTarget.toFixed(3)} m=${minutes.fillTarget.toFixed(3)} · angle ${hours.angle.toFixed(1).padStart(5)}° · cap ${hours.cap.toFixed(1).padStart(5)} px · read ${hours.reading.toFixed(2)}`;
+    $('fps').textContent = `${String(frames).padStart(3)} fps · fill h=${hours.fillTarget.toFixed(3)} m=${minutes.fillTarget.toFixed(3)}${TUBE_COUNT === 3 ? ` s=${tubes[2].fillTarget.toFixed(3)}` : ''} · angle ${hours.angle.toFixed(1).padStart(5)}° · cap ${hours.cap.toFixed(1).padStart(5)} px · read ${hours.reading.toFixed(2)}`;
     frames = 0; fpsT = now;
   }
   const d = currentDate();
@@ -553,4 +564,4 @@ if (url.has('settle')) for (let i = 0; i < 250; i++) physics(PHYS_DT); // spring
 requestAnimationFrame(frame);
 
 // dev hook
-(window as any).sim = { params, hours, minutes, fb, fizz, overlay, material: matState, links }; // links: check-material-ui stubs a transport
+(window as any).sim = { params, hours, minutes, seconds: tubes[2], tubes, fb, fizz, overlay, material: matState, links }; // links: check-material-ui stubs a transport

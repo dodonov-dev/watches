@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 # Spelled differently on purpose (board selection, float vs double rounding spelled out, font tables).
-BOARD_DEPENDENT = {'BOARD_TAG', 'PANEL_W', 'PANEL_H', 'PX_SCALE_MAX', 'SPRITE_FONT', 'TUBE_HEIGHT_MAX', 'TUBE_HEIGHT_PX'}
+BOARD_DEPENDENT = {'BOARD_TAG', 'PANEL_W', 'PANEL_H', 'PX_SCALE_MAX', 'SPRITE_FONT', 'TUBE_COUNT', 'TUBE_HEIGHT_MAX', 'TUBE_HEIGHT_PX'}
 
 def norm(v):
     v = re.sub(r'\s+', '', v).lower()

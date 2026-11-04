@@ -3,11 +3,12 @@
 
   python3 firmware/tools/compare-device.py [--port /dev/ttyACM0|COM6] [--out DIR]   (port auto-detected, see device.py)
 
-Sends `x` to the firmware (dumps TubeState + both strips), renders the same state through
+Sends `x` to the firmware (dumps TubeState + every strip), renders the same state through
 sim/src/render.ts in node (tools/render-ref.ts) with the params currently in the firmware (`p?`),
 and writes device.png / ref.png / diff.png plus a mismatch summary. Fizz is switched off on the
 device for the dump (random positions) and restored afterwards. Either board: the canvas and the tubes' rows come
-from the dump's LAYOUT line, the sim renders the same canvas (LW_BOARD / LW_RES from the board's `v`).
+from the dump's LAYOUT line, the sim renders the same canvas (LW_BOARD / LW_RES / LW_TUBES from the board's `v`; a
+three-tube board dumps the seconds tube too).
 """
 import argparse, json, os, subprocess, sys, time
 from PIL import Image
@@ -27,9 +28,10 @@ def talk(s, cmd, end=b'\n', timeout=10, ok=None):
     return s.talk(cmd, end.decode(), timeout, ok)
 
 def layout(line):
-    """`LAYOUT W H Hh yH yM [Hm]` -> (W, H, (Hh, Hm), (yH, yM)): the canvas, each tube's rows and top (firmware before
-    per-tube widths has no Hm: both tubes Hh rows)."""
+    """`LAYOUT W H Hh yH yM [Hm [yS Hs]]` -> (W, H, (Hh, Hm[, Hs]), (yH, yM[, yS])): the canvas, each tube's rows and top
+    (firmware before per-tube widths has no Hm: both tubes Hh rows; a three-tube board adds the seconds tube)."""
     v = list(map(int, line.split()[1:]))
+    if len(v) > 7: return v[0], v[1], (v[2], v[5], v[7]), (v[3], v[4], v[6])
     return v[0], v[1], (v[2], v[5] if len(v) > 5 else v[2]), (v[3], v[4])
 
 def whole(dump):
@@ -65,24 +67,25 @@ def main():
         Y0 = tuple(max(0, min(H - th, round(params[k]))) for k in ('hoursY', 'minutesY'))
     st = [l for l in lines if l.startswith('STATE')][0].split()[1:]
     rows = [l for l in lines if len(l) == W * 4]
-    assert len(rows) == sum(TH), f'got {len(rows)} rows, expected {TH[0]} + {TH[1]}'
+    assert len(rows) == sum(TH), f'got {len(rows)} rows, expected {" + ".join(map(str, TH))}'
+    NT = len(TH); names = ('hours', 'minutes', 'seconds')[:NT]
     dev = [0] * (W * H)
-    for t in range(2):
+    for t in range(NT):
         for y in range(TH[t]):
-            r = rows[t * TH[0] + y]
+            r = rows[sum(TH[:t]) + y]
             dev[(Y0[t] + y) * W:(Y0[t] + y + 1) * W] = [int(r[i:i + 4], 16) for i in range(0, W * 4, 4)]
     f = list(map(float, st))
     key = ['fillTarget', 'fillPos', 'angle', 'light', 'edgeLight', 'agitation', 'acrossTilt', 'cap', 'filmFree', 'filmHome', 'slugPos', 'reading',
            'pinFree', 'pinHome', 'lineVFree', 'lineVHome']
-    n = len(f) // 2; key = key[:n]; hours = dict(zip(key, f[:n])); minutes = dict(zip(key, f[n:2 * n]))  # render-ref fills the rest from newTube()
+    n = len(f) // NT; key = key[:n]; tubes = [dict(zip(key, f[t * n:(t + 1) * n])) for t in range(NT)]  # render-ref fills the rest from newTube()
     for tag, key in (('TRACE ', 'trace'), ('WET ', 'traceWet')):  # dried-trace residue and its wet part, hex per tube (see render-ref.ts)
         tr = [l for l in lines if l.startswith(tag)]
         parts = tr[0].split()[1:] if tr else []
-        if len(parts) == 2:
-            hours[key] = parts[0]; minutes[key] = parts[1]
-    job = {'params': params, 'hours': hours, 'minutes': minutes}
+        if len(parts) == NT:
+            for t in range(NT): tubes[t][key] = parts[t]
+    job = {'params': params, **dict(zip(names, tubes))}
     dg = [l for l in lines if l.startswith('DIGITS ')]   # the sprite digits' held whole-px shift per tube (render-ref.ts)
-    if dg: v = list(map(int, dg[0].split()[1:5])); job['digitShift'] = [v[0:2], v[2:4]]
+    if dg: v = list(map(int, dg[0].split()[1:1 + 2 * NT])); job['digitShift'] = [v[2 * t:2 * t + 2] for t in range(NT)]
     font = int(round(params['digitFont']))
     if font >= 5:
         name = SHEETS[font - 5]; base = os.path.join(SIM, 'public', 'assets', name + '.png')
@@ -115,8 +118,9 @@ def main():
         e = max(abs(A[k] - B[k]) for k in range(3)); big += e > 12
         dd.append((255, 255, 0) if e > 12 else (90, 0, 0))
     diff.putdata(dd); diff.save(os.path.join(a.out, 'diff.png'))
-    print(f'state hours={hours} minutes={minutes}' + (f' digitShift={job["digitShift"]}' if 'digitShift' in job else ''))
-    print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}), tubes {TH[0]} / {TH[1]} px at y {Y0[0]} / {Y0[1]}')
+    print('state ' + ' '.join(f'{k}={t}' for k, t in zip(names, tubes)) + (f' digitShift={job["digitShift"]}' if 'digitShift' in job else ''))
+    print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}{"+t" + env["LW_TUBES"] if env.get("LW_TUBES", "2") != "2" else ""}),'
+          f' tubes {" / ".join(map(str, TH))} px at y {" / ".join(map(str, Y0))}')
     print(f'mismatched pixels: {n} of {W * sum(TH)} ({100 * n / (W * sum(TH)):.2f}%), >12/255 off: {big}')
     print('wrote', a.out)
 

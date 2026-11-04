@@ -15,7 +15,19 @@
 //                  AMOLED. LCD_FILL sets both tubes, LCD_FILL_H / LCD_FILL_M one each. The board tag (`v`, sim
 //                  ?res= / LW_RES) says which: lcd316@320 (both narrow), @320f (both wide), @320fh (hours wide),
 //                  @320fm (minutes wide).
+// Tubes (-DTUBE_COUNT, LW_TUBES for the tools, ?tubes= in the sim): 2 (default) = hours along the top edge, minutes along
+// the bottom; 3 = hours / minutes / seconds top to bottom: the seconds tube takes the bottom slot (minutesY) and minutes
+// moves to the middle (render.h faceLayout); seconds draws with the minutes tube's ticks and digits. Its LCD width is
+// LCD_FILL_S (default LCD_FILL); res tags spell the wide tubes in h / m / s order (`320fs`, `320fhm`, ...) and the board
+// tag adds `+t3`.
 #pragma once
+
+#ifndef TUBE_COUNT
+#define TUBE_COUNT         2
+#endif
+#if TUBE_COUNT != 2 && TUBE_COUNT != 3
+#error "TUBE_COUNT: 2 (hours, minutes) or 3 (+ seconds)"
+#endif
 
 #define DESIGN_H           240   // canvas rows the params / presets are tuned on
 #define DESIGN_TUBE_HEIGHT_MAX 80   // largest tubeHeight a preset may ask for, design px
@@ -50,13 +62,22 @@
 #ifndef LCD_FILL_M
 #define LCD_FILL_M         LCD_FILL   // minutes tube wide
 #endif
+#ifndef LCD_FILL_S
+#define LCD_FILL_S         LCD_FILL   // seconds tube wide (TUBE_COUNT 3)
+#endif
 #define PX_SCALE_WIDE      ((float)PANEL_H / DESIGN_H)
 #define PX_SCALE_NARROW    ((float)(830 * RENDER_H) / (912 * LCD_PANEL_H))   // 0.083 / 0.0912 per panel px, exact ratio
 #define PX_SCALE_H         (LCD_FILL_H ? PX_SCALE_WIDE : PX_SCALE_NARROW)
 #define PX_SCALE_M         (LCD_FILL_M ? PX_SCALE_WIDE : PX_SCALE_NARROW)
 #define PX_SCALED_H        (LCD_FILL_H ? RENDER_H != DESIGN_H : 1)
 #define PX_SCALED_M        (LCD_FILL_M ? RENDER_H != DESIGN_H : 1)
+#if TUBE_COUNT == 3
+#define PX_SCALE_S         (LCD_FILL_S ? PX_SCALE_WIDE : PX_SCALE_NARROW)
+#define PX_SCALED_S        (LCD_FILL_S ? RENDER_H != DESIGN_H : 1)
+#define PX_MIXED           (!LCD_FILL_H != !LCD_FILL_M || !LCD_FILL_H != !LCD_FILL_S)
+#else
 #define PX_MIXED           (!LCD_FILL_H != !LCD_FILL_M)
+#endif
 #else
 #define PANEL_W            536
 #define PANEL_H            240
@@ -64,13 +85,23 @@
 #define PX_SCALE_M         1.0f
 #define PX_SCALED_H        0
 #define PX_SCALED_M        0
+#define PX_SCALE_S         1.0f
+#define PX_SCALED_S        0
 #define PX_MIXED           0
 #endif
-// PX_SCALE_H / _M: canvas px per design px of the hours / minutes tube (1 on the AMOLED); PX_SCALED_x: it is not 1
-// (that tube's px params need scaling); PX_MIXED: the two differ (each tube runs on its own scaled params).
+// PX_SCALE_H / _M / _S: canvas px per design px of the hours / minutes / seconds tube (1 on the AMOLED); PX_SCALED_x: it
+// is not 1 (that tube's px params need scaling); PX_MIXED: the tubes' scales differ (each tube runs on its own scaled
+// params).
+#if TUBE_COUNT == 3
+#define PX_SCALED          (PX_SCALED_H || PX_SCALED_M || PX_SCALED_S)
+#define TUBE_PX_SCALE(i)   ((i) == 0 ? PX_SCALE_H : (i) == 1 ? PX_SCALE_M : PX_SCALE_S)   // tube i (0 = hours)
+#define PX_SCALE_HM_       (PX_SCALE_H > PX_SCALE_M ? PX_SCALE_H : PX_SCALE_M)
+#define PX_SCALE_MAX       (PX_SCALE_HM_ > PX_SCALE_S ? PX_SCALE_HM_ : PX_SCALE_S)   // what buffers are sized for
+#else
 #define PX_SCALED          (PX_SCALED_H || PX_SCALED_M)
 #define TUBE_PX_SCALE(i)   (PX_MIXED && (i) ? PX_SCALE_M : PX_SCALE_H)   // tube i (0 = hours); a constant unless PX_MIXED
 #define PX_SCALE_MAX       (PX_SCALE_H > PX_SCALE_M ? PX_SCALE_H : PX_SCALE_M)   // what buffers are sized for
+#endif
 // The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so both tubes draw
 // it at the wider tube's scale (sim params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²).
 #define PX_SCALE_FIZZ      PX_SCALE_MAX
@@ -78,6 +109,7 @@
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).
 #define TUBE_HEIGHT_MAX    ((int)(DESIGN_TUBE_HEIGHT_MAX * PX_SCALE_MAX + 0.999f))
+#define TUBE3_HEIGHT_MAX   (PANEL_H / 3)   // rows a tube may take on a three-tube face (physics.h boardParams caps tubeHeight)
 #define TUBE_HEIGHT_PX     ((int)(72 * PX_SCALE_MAX))   // ≈ 6 mm at 0.083 mm per design px (the wider tube: test pattern)
 #define HOURS_TUBE_Y       0                            // along the top edge
 #define MINUTES_TUBE_Y     (PANEL_H - TUBE_HEIGHT_PX)   // along the bottom edge

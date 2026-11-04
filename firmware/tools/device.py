@@ -135,9 +135,9 @@ class Device:
         return (m.group(1), int(m.group(2)), int(m.group(3))) if m else ('amoled191', 536, 240)
 
     def board_env(self):
-        """os.environ plus LW_BOARD / LW_RES of the attached board, for the sim's node tools (spec/layout.ts)."""
-        tag = self.board()[0]; b, _, res = tag.partition('@')
-        return dict(os.environ, LW_BOARD=b, LW_RES=res)
+        """os.environ plus LW_BOARD / LW_RES / LW_TUBES of the attached board, for the sim's node tools (spec/layout.ts)."""
+        tag, _, tubes = self.board()[0].partition('+t'); b, _, res = tag.partition('@')
+        return dict(os.environ, LW_BOARD=b, LW_RES=res, LW_TUBES=tubes or '2')
 
     def close(self):
         if self._wrote: time.sleep(2.5); self._wrote = False

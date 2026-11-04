@@ -182,6 +182,9 @@ static void backlight_on(void) {
 #if LCD_SCAN && defined(PUSH_VERIFY)
 #error "PUSH_VERIFY checks the framebuffer push (LCD_SCAN 0)"
 #endif
+#if LCD_SCAN && TUBE_COUNT == 3
+#error "LCD_SCAN (experimental scan-out) shows two tubes; the seconds tube needs the framebuffer push (LCD_SCAN 0)"
+#endif
 #if LCD_SCAN
 // No framebuffer: the LCD DMA streams two small internal bounce buffers, and on_bounce_empty (an ISR on the core
 // that ran display_init, the loop's) fills each with the next BB_LINES scan lines straight from what is shown —
@@ -277,7 +280,7 @@ bool display_init(void) {
   return true;
 }
 
-void display_next_strips(uint16_t *s[2]) {
+void display_next_strips(uint16_t *s[TUBE_COUNT]) {
   portENTER_CRITICAL(&mux);
   for (int i = 0; i < SETS; i++) if (i != scanSrc && i != readySrc) { backSet = i; break; }
   portEXIT_CRITICAL(&mux);
@@ -344,7 +347,7 @@ static uint16_t *fbuf = NULL;   // LCD_V_RES lines x LCD_H_RES px, native RGB565
 #ifndef STRIPS_INTERNAL
 #define STRIPS_INTERNAL 0
 #endif
-static uint16_t *strips[2];
+static uint16_t *strips[TUBE_COUNT];   // hours, minutes[, seconds]
 static int16_t bStart[PANEL_H + 1];   // canvas row y covers face rows [bStart[y], bStart[y + 1])
 static int32_t srcOff[2][LCD_H_RES];  // turn_rows scratch per core (either core pushes): strip offset of face row b
 // A canvas a strip is pushed from: size and its face maps (colOf / rowOf / bStart as above).
@@ -469,11 +472,13 @@ static bool create_panel(const esp_lcd_rgb_panel_config_t &cfg, const esp_lcd_rg
   return j.ok;
 }
 
+static bool push_slots_init();   // below, with the push slots
 bool display_init(void) {
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < TUBE_COUNT; i++) {
     strips[i] = (uint16_t *)heap_caps_aligned_alloc(64, STRIP_BYTES, i < STRIPS_INTERNAL ? MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT : MALLOC_CAP_SPIRAM);
     if (!strips[i]) { log_e("strip buf alloc failed"); return false; }
   }
+  if (!push_slots_init()) { log_e("push slot alloc failed"); return false; }
   for (int y = 0; y <= PANEL_H; y++) bStart[y] = (int16_t)((y * LCD_H_RES + PANEL_H - 1) / PANEL_H);
 #ifdef AB_COMPARE
   for (int a = 0; a < LCD_V_RES; a++) abColOf[a] = (int16_t)(a * AB_W / LCD_V_RES);
@@ -512,7 +517,7 @@ bool display_init(void) {
   return true;
 }
 
-void display_next_strips(uint16_t *s[2]) { s[0] = strips[0]; s[1] = strips[1]; }
+void display_next_strips(uint16_t *s[TUBE_COUNT]) { for (int i = 0; i < TUBE_COUNT; i++) s[i] = strips[i]; }
 uint32_t display_busy_cycles(void) { return 0; }
 
 // Turn `rows` canvas rows from y0 on (src: PANEL_W wide, byte-swapped) into fbuf, scaled to the face: they cover
@@ -556,7 +561,7 @@ static uint32_t verifyChecked[2], verifyBad[2], verifyWords[2], verifyStored[2],
 #define PUSH_GATHER 0
 #endif
 #ifdef PUSH_PROF
-static uint32_t pushProf[2][5];   // per strip slot: pushes, cycles reading + hashing, cycles storing, changed segments, gather waits
+static uint32_t pushProf[TUBE_COUNT][5];   // per strip slot: pushes, cycles reading + hashing, cycles storing, changed segments, gather waits
 #define PP_T0(v) const uint32_t v = esp_cpu_get_cycle_count()
 #define PP_ADD(i, v) (prof[i] += esp_cpu_get_cycle_count() - (v))
 #else
@@ -568,9 +573,21 @@ static uint32_t pushProf[2][5];   // per strip slot: pushes, cycles reading + ha
 #define SKIP_REFRESH 64   // power of two
 #define SEG_MAX ((TUBE_HEIGHT_MAX + 2 * SEG_PX - 2) / SEG_PX)   // cache-line segments a run of up to TUBE_HEIGHT_MAX rows spans
 // A strip's rows [b0, b0 + n) (n 0 = free) and the hashes of its last push: one slot per tube strip, 8.2 KB each,
-// internal (.bss). busy: a push is filling its hashes (either core); known: they describe fbuf.
+// internal (.bss); the seconds strip's in PSRAM (display_init: no internal RAM to spare). busy: a push is filling its
+// hashes (either core); known: they describe fbuf.
 struct PushSlot { int16_t b0, n; bool known, busy; uint8_t refresh; uint32_t hash[LCD_V_RES / 2][SEG_MAX]; };
 static PushSlot pushSlots[2];
+#if TUBE_COUNT == 3
+static PushSlot *pushSlotS = nullptr;
+static inline PushSlot &slotAt(int i) { return i == 2 ? *pushSlotS : pushSlots[i]; }
+static bool push_slots_init() {   // display_init, once
+  pushSlotS = (PushSlot *)heap_caps_calloc(1, sizeof(PushSlot), MALLOC_CAP_SPIRAM);
+  return pushSlotS != nullptr;
+}
+#else
+static inline PushSlot &slotAt(int i) { return pushSlots[i]; }
+static bool push_slots_init() { return true; }
+#endif
 static portMUX_TYPE slotMux = portMUX_INITIALIZER_UNLOCKED;
 #if !PUSH_GATHER
 static uint32_t pairBuf[2][LCD_H_RES];   // per core: one line pair's strip words between hashing and storing
@@ -580,15 +597,17 @@ static uint32_t pairBuf[2][LCD_H_RES];   // per core: one line pair's strip word
 static PushSlot *slot_take(int b0, int n, bool track) {
   PushSlot *hit = nullptr; bool clash = false;
   portENTER_CRITICAL(&slotMux);
-  for (PushSlot &s : pushSlots)
+  for (int i = 0; i < TUBE_COUNT; i++) {
+    PushSlot &s = slotAt(i);
     if (s.b0 == b0 && s.n == n && !s.busy) hit = &s;   // n > 0: a free slot never matches
     else if (s.n && b0 < s.b0 + s.n && s.b0 < b0 + n) { s.n = 0; s.known = false; clash = true; }
+  }
   if (!track || clash) {
     if (hit) { hit->n = 0; hit->known = false; }
     hit = nullptr;
   } else if (!hit) {
-    for (PushSlot &s : pushSlots) if (!s.n && !s.busy) { hit = &s; break; }
-    if (!hit) for (PushSlot &s : pushSlots) if (!s.busy) { hit = &s; break; }   // a third strip range: reuse one
+    for (int i = 0; i < TUBE_COUNT && !hit; i++) if (!slotAt(i).n && !slotAt(i).busy) hit = &slotAt(i);
+    for (int i = 0; i < TUBE_COUNT && !hit; i++) if (!slotAt(i).busy) hit = &slotAt(i);   // one more strip range: reuse one
     if (hit) { hit->b0 = (int16_t)b0; hit->n = (int16_t)n; hit->known = false; }
   }
   if (hit) hit->busy = true;
@@ -664,8 +683,9 @@ static void __attribute__((noinline)) turn_segs(uint16_t *line0, const uint16_t 
 #define GB_COLS 64   // columns (32 line pairs, 128 B of a strip row) per gather unit
 static_assert(2 * TILE_GATHER_ROWS * GB_COLS * 2 + TUBE_HEIGHT_MAX * 4 <= TILE_SCRATCH_FREE, "two gather units + a pair buffer fit the scratch");
 static_assert(SEG_PX <= TILE_GATHER_ROWS, "a unit is at most one segment");
-// turn_segs with the strip rows of each unit gathered by DMA from strip t (0 / 1, its tube's channel and scratch). Same
-// hashes, same skips, same stores; units in the order (column block, segment).
+// turn_segs with the strip rows of each unit gathered by DMA, on lane t's channel and scratch (0 / 1, tiles.h: the lane of
+// the strip's tube, which renders and pushes on that core). Same hashes, same skips, same stores; units in the order
+// (column block, segment).
 static void __attribute__((noinline)) turn_segs_gather(int t, uint16_t *line0, const uint16_t *src, int rows, const int32_t *off, int b0,
                                                        int n, uint32_t (*hash)[SEG_MAX], bool known, int refresh, uint32_t *prof) {
   (void)prof;
@@ -724,6 +744,8 @@ static void __attribute__((noinline)) turn_segs_gather(int t, uint16_t *line0, c
   }
 }
 #endif   // PUSH_GATHER
+#else
+static bool push_slots_init() { return true; }
 #endif   // PUSH_SKIP
 static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowMap = nullptr, const Canvas &cv = MAIN, bool track = false) {
   if (rows <= 0) return;
@@ -744,13 +766,15 @@ static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowM
   for (int r = 0; r < n; r++) { const int sr = cv.rowOf[b0 + r] - y0; off[r] = (rowMap ? rowMap[sr] : sr) * cv.W; }
 #if PUSH_SKIP
 #if PUSH_GATHER
-  const int gatherT = src == strips[0] ? 0 : src == strips[1] ? 1 : -1;   // a strip: its tube's channel and slots
+  int gatherT = -1;   // a strip: its tube's lane (render.cpp TUBE_LANE: hours 0, minutes and seconds 1), channel and slots
+  for (int i = 0; i < TUBE_COUNT; i++) if (src == strips[i]) gatherT = i ? 1 : 0;
   if (gatherT < 0) track = false;
 #endif
   PushSlot *const slot = slot_take(b0, n, track && &cv == &MAIN && (b0 % SEG_PX + n + SEG_PX - 1) / SEG_PX <= SEG_MAX);
   if (slot) {   // the slot is this core's while busy: refresh needs no lock
 #ifdef PUSH_PROF
-    uint32_t *const prof = pushProf[slot - pushSlots]; prof[0]++;
+    int si = 0; while (&slotAt(si) != slot) si++;
+    uint32_t *const prof = pushProf[si]; prof[0]++;
 #else
     uint32_t *const prof = nullptr;
 #endif
@@ -794,9 +818,9 @@ static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowM
 }
 
 #ifdef PUSH_PROF
-void display_push_prof(uint32_t out[2][5], bool reset) { memcpy(out, pushProf, sizeof pushProf); if (reset) memset(pushProf, 0, sizeof pushProf); }
+void display_push_prof(uint32_t out[TUBE_COUNT][5], bool reset) { memcpy(out, pushProf, sizeof pushProf); if (reset) memset(pushProf, 0, sizeof pushProf); }
 #endif
-const bool display_push_any_core = true;   // a CPU copy into fbuf; display_next_strips: always strips[0], strips[1]
+const bool display_push_any_core = true;   // a CPU copy into fbuf; display_next_strips: always the same strips (one per tube)
 #ifdef PUSH_VERIFY
 PushVerify display_push_verify(void) {
   return {verifyChecked[0] + verifyChecked[1], verifyBad[0] + verifyBad[1], verifyWords[0] + verifyWords[1], verifyStored[0] + verifyStored[1],

@@ -1,14 +1,15 @@
-// Headless reference render: reads a JSON {params, hours, minutes, sprite:{i,w,h,cellW,cellH,widths,rgbaFile}, digitShift?}
+// Headless reference render: reads a JSON {params, hours, minutes, seconds?, sprite:{i,w,h,cellW,cellH,widths,rgbaFile}, digitShift?}
 // from argv[2], renders one frame exactly as the browser sim would (fizz must be off), writes the
 // PANEL_W x PANEL_H RGB565 framebuffer (little-endian u16) to argv[3]. Used by firmware/tools/compare-device.py.
-// Board: LW_BOARD / LW_RES (spec/layout.ts), as the device reports it (`v`); params are the device's (design px).
+// Board: LW_BOARD / LW_RES / LW_TUBES (spec/layout.ts), as the device reports it (`v`); params are the device's (design px).
+// Three tubes: `seconds` is the seconds tube's state (required then).
 // Run: see compare-device.py (compiles with tsc like check:imu).
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
 import { renderFrame, fb, setSprite, setDigitHold } from '../src/render';
 import { newTube, type TubeState } from '../src/physics';
 import { tubeParams } from '../src/params';
-import { TUBE_LENGTH_PX } from '@spec/layout';
+import { TUBE_COUNT, TUBE_LENGTH_PX } from '@spec/layout';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (job.sprite) {
@@ -33,11 +34,13 @@ const trace = (hex: unknown, wet: unknown, st: TubeState): void => {
   for (let i = 0; i < a.length; i++) if (a[i]) { if (i < lo) lo = i; hi = i + 1; }
   st.traceLo = lo; st.traceHi = hi;
 };
-const h: TubeState = { ...newTube(), ...job.hours }, m: TubeState = { ...newTube(), ...job.minutes };  // device STATE carries only the drawn fields
-trace(job.hours.trace, job.hours.traceWet, h); trace(job.minutes.trace, job.minutes.traceWet, m);
+const names = ['hours', 'minutes', 'seconds'].slice(0, TUBE_COUNT);
+if (names.some((k) => !job[k])) throw new Error(`render-ref: the job needs ${names.join(', ')} (LW_TUBES=${TUBE_COUNT})`);
+const tubes: TubeState[] = names.map((k) => ({ ...newTube(), ...job[k] }));   // device STATE carries only the drawn fields
+names.forEach((k, i) => trace(job[k].trace, job[k].traceWet, tubes[i]));
 // the sprite digits' whole-px shift the board held (`DIGITS` line of the `x` dump; render.ts DigitHold): carried
 // across frames, so one dumped state alone would not give it
 if (Array.isArray(job.digitShift)) job.digitShift.forEach((d: number[], i: number) => setDigitHold(i, d[0], d[1]));
-renderFrame(h, m, ...tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)
+renderFrame(tubes, tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)
 fs.writeFileSync(process.argv[3], Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength));
 console.log('ok');

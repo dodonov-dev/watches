@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "outDir": "../node_modules/.cache/check-face-layout", "module": "commonjs", "target": "es2021",
+    "moduleResolution": "node", "esModuleInterop": true, "skipLibCheck": true, "strict": true,
+    "baseUrl": "..", "paths": { "@spec/*": ["../spec/*"] }
+  },
+  "files": ["check-face-layout.ts"]
+}
