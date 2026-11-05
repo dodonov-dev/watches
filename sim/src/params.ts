@@ -20,7 +20,7 @@ export interface Params {
   glassRim: number;      // 0..1 grazing reflection across the wall band, brightest at the silhouette
   glassWall: number;     // px wall thickness at the top/bottom silhouette: dry rows behind it show no tube back (only the grazing reflection), rear marks fade out there
   glassWallGlow: number; // 0..1 the dry wall band lit by light piped along the glass (visible on a black tube back; over the liquid the band shows the liquid); plateau across the band under the grazing rim
-  wallWet: number;       // 0..1 how far the contents fill the wall band and frustrate the glow piped along it: 1 a liquid (seen to the silhouette, no glow over it), 0 a gas (the band over the column is the empty tube's)
+  wallWet: number;       // 0..1 share of the wall band the contents fill (seen out to n·r) and frustrate the glow piped along it: 1 a liquid reaching the silhouette (no glow over it), less = the contents end inside the band and the empty tube's band is beyond, 0 a gas
   rimLight: number;      // 0..4 gain: side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls
   rimTint: string;       // colour of that rim light (8-bit, scaled by brightness)
   glassOverLiquid: number; // 0..1 how much of the glass specular is laid over the liquid too
@@ -39,7 +39,7 @@ export interface Params {
   highlightBright: number; // 0..1.5 strength of the specular band
   highlightSharp: number;  // 0.3..4 band profile exponent (high = narrow, glossy)
   shadeDepth: number;    // 0..1, how dark the bottom rows get (cylinder shading)
-  liquidThin: number;    // 0..1 the liquid lightens and desaturates toward the walls (short path through the column)
+  liquidThin: number;    // 0..1 the liquid lightens and desaturates toward the walls (short path through the column; the refracted chord, floored by the wall)
   contactAngle: number;  // deg, static contact angle on the glass: < 90 wetting (concave), > 90 non-wetting (convex bead)
   contactHyst: number;   // deg, hysteresis half-band: a line advances at θ + this, recedes at θ − this; tilt pressure moves θ within it
   contactDyn: number;    // deg, Cox–Voinov speed term: the angle a zero-angle line reaches advancing at 25 px/s (viscosity / surface tension)
@@ -1653,7 +1653,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   glassRim: { help: 'Grazing reflection across the wall band: brightest at the silhouette, fading inward. The outer surface reflects it, so it is the same over the liquid.', group: 'Glass', label: 'wall rims', min: 0, max: 1, step: 0.01 },
   glassWall: { help: 'Wall thickness at the top/bottom silhouette in px. Behind it the empty tube shows no tube back (only the rim reflection) and rear marks fade out; the liquid reaches the silhouette.', group: 'Glass', label: 'wall thickness', min: 0, max: 10, step: 0.5 },
   glassWallGlow: { help: 'Light piped along the dry glass lights the wall band itself, so the walls read on a black tube back; over the liquid the band shows the liquid (grazing rim only). Plateau across the band, the grazing rim on top.', group: 'Glass', label: 'wall glow', min: 0, max: 1, step: 0.01 },
-  wallWet: { help: 'How far the contents fill the wall band: 1 a liquid, seen to the silhouette with no wall glow over it; 0 a gas, the band over the column looks like the empty tube (wall only, glowing).', group: 'Glass', label: 'wall wetting', min: 0, max: 1, step: 0.01 },
+  wallWet: { help: 'Share of the wall band the contents fill: they are seen out to n·r (n their index, r the bore). 1 a liquid reaching the silhouette with no wall glow over it (a wall up to (1 − 1/n) of the radius: a quarter for water); less, the column ends inside the band and the band beyond is the empty tube\'s (silvery wall); 0 a gas, the band over the column looks like the empty tube (wall only, glowing).', group: 'Glass', label: 'wall wetting', min: 0, max: 1, step: 0.01 },
   rimLight: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls (a gain 0..4; the sum clamps at 255).', group: 'Glass', label: 'rim light', min: 0, max: 4, step: 0.01 },
   rimTint: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls.', group: 'Glass', label: 'rim tint' },
   glassOverLiquid: { help: 'How much of the glass specular is laid over the liquid too (not the grazing rim: that stays full).', group: 'Glass', label: 'specular over liquid', min: 0, max: 1, step: 0.01 },
@@ -1672,7 +1672,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   highlightBright: { help: 'Strength of the specular band.', group: 'Shape', min: 0, max: 1.5, step: 0.05 },
   highlightSharp: { help: 'Band profile exponent. High = narrow, glossy.', group: 'Shape', min: 0.3, max: 4, step: 0.1 },
   shadeDepth: { help: 'How dark the bottom rows get (cylinder shading).', group: 'Shape', min: 0, max: 1, step: 0.01 },
-  liquidThin: { help: 'The liquid lightens and desaturates toward the walls, where the path through the column is short.', group: 'Shape', label: 'thin edge', min: 0, max: 1, step: 0.01 },
+  liquidThin: { help: 'The liquid lightens and desaturates toward the walls, where the path through the column is short. The path is the refracted one: through the glass it stays long at the silhouette (0.54 of the centre chord for a 4 px wall on a 72 px tube), so the edge does not grey out completely.', group: 'Shape', label: 'thin edge', min: 0, max: 1, step: 0.01 },
   contactAngle: { help: 'Static contact angle of the liquid on the glass, degrees. Sets both ends\' curvature: a spherical cap whose ring leads its centre by R·(1 − sin θ)/cos θ — a hemisphere at 0°, flat at 90°, a convex bead above (mercury ~140°). Water on glass ~20–30°.', group: 'Shape', label: 'contact angle °', min: 0, max: 180, step: 1 },
   contactHyst: { help: 'Contact-angle hysteresis, degrees either side of the static angle. Tilting the watch along the tube presses the liquid into the lower end: that end flattens toward the advancing angle, the upper end deepens toward the receding angle — both keep the curvature\'s sign unless the band crosses 90°. A moving contact line sits at the advancing / receding angle.', group: 'Shape', label: 'hysteresis °', min: 0, max: 40, step: 0.5 },
   contactDyn: { help: 'Dynamic contact angle (Cox–Voinov, θ³ = θ₀³ ± G·v): the angle a zero-angle line reaches advancing at 25 px/s — grows with viscosity over surface tension (water ~8°, oil ~40°, honey 180°). An advancing edge flattens with speed, a receding one deepens until θ = 0 and it pulls its film.', group: 'Meniscus dynamics', label: 'dynamic angle °', min: 0, max: 180, step: 1 },

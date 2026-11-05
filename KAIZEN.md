@@ -53,6 +53,12 @@
   two convex caps of a short slug can cross on their own (lean or not). Scaling by the gap changes non-free strips.
 - A slug's hanging (gravity-ward) end leans as much as the level upper one (one `angle`); a weaker lean there
   (Bond number) would be closer to a capillary.
+- `throughLiquid`'s contrast floor picks its direction by sign(mark luma − liquid luma): where they are equal (cola-big's
+  tick vs its 2nd tube row on lcd 320w9-7-5+t3) sim float and firmware integer luma pick opposite sides, ±24 → 58/255
+  parity outlier. Inherent to any threshold unless both sides compute the same integer luma.
+- `boreRow` maps display rows 1:1 onto the bore, then eases onto the ring in the wall band. A filled tube
+  magnifies by n_l instead (a ray at display y gets no closer to the axis than y/n_l), so a physical meniscus
+  lens never closes at the silhouette: the outermost row reaches only u = R/(n_l·r), 0.85 on preset 1.
 
 ## Tooling / firmware
 - `check_meniscus.py` raises on the first over-tolerance pixel: later scenes go uncompared. Report all

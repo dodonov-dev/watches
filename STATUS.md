@@ -1,6 +1,22 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-04 (LCD tube widths in mm)_
+_Last update: 2026-11-04 (wall band over the contents; LCD on 9-7-5)_
+
+## Wall band over the contents (2026-11-04, uncommitted)
+
+- Optics (2D trace of the cross-section, Fresnel at every interface): contents of index n are seen out to display n·r, so
+  a wall thinner than (1 − 1/n)·R (a quarter for water, ≥ 9 px on a 72 px tube) is invisible over a liquid; thicker,
+  the band beyond n·r is the empty tube's (internal reflection).
+- Palette (sim buildPalette, firmware buildPalCache / buildPalette / TUBE_VERIFY ref): `wallWet` < 1 now ends the
+  contents at liqU = wallU + wallWet·(1 − wallU) with the empty tube's row past it (bore-edge ramp), instead of a
+  uniform `(1 − wallWet)·(1 − dryT)` blend; 0 and 1 unchanged. `liquidThin` uses the refracted chord
+  √(1 − (u·R/(n·r))²), n = THIN_IOR 1.333: the edge stays coloured (0.54 of the centre chord at the silhouette, 4/72 px).
+- Derived physical presets re-dumped (rimTint, one liquidThin); check:materials 1138/0, check:presets, check:layout ok.
+- Host sim vs firmware: AMOLED 74/77 (= HEAD), lcd 320w9-7-5+t3 71/77 (HEAD 72: cola-big's tick contrast floor flips at
+  equal luma, KAIZEN).
+- Board (COM11, user-fav, fix-pose): 9-7-5 38.4 fps (= before), parity 303 px, 0 > 12/255; 10-8-6 33.7 fps (34.0
+  before, spread 33.3–33.8), parity 337 px, 0 > 12/255. The board's own look now glassWall 9 / wallWet 0.65 (was 6.5 / 1,
+  tubeHeight 54): ~3 design rows of wall over the liquid.
 
 ## LCD tube widths in mm (2026-11-04)
 
@@ -20,7 +36,7 @@ _Last update: 2026-11-04 (LCD tube widths in mm)_
 - Board (COM11, user-fav pinned, fix-pose): 10-8-6 **34.0 fps** (render 28.6 ms, cores h 17.0 / m 20.7, seconds 9.6, push
   13.9, p95 31), heap with BLE **96-216 B**; 9-7-5 **38.4 fps** (render 25.3, cores h 15.3 / m 18.1, seconds 8.3, push
   12.6, p95 27), heap 1984 B. Parity settled 0 px > 12/255 both. BLE connect not tested (10-8-6 has no heap left for it).
-  LCD left on lcd316@320w10-8-6+t3 for the user's look; visual check pending.
+  LCD back on lcd316@320w10-8-6+t3 (2026-11-04 16:19, with the wall-band palette below); visual check pending.
 
 ## Seconds tube (2026-11-04, uncommitted)
 

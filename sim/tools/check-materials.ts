@@ -781,7 +781,7 @@ for (const e of [0.02, 0.021]) {
 {
   // row mapping: bore position u sits at display offset d(u) = u·r/(r + wall); the palette chord at the wall sample
   const d = displayOffset(U_WALL, WATER.m);
-  report(`row mapping: d(0.85) = ${d.toFixed(3)} ≈ 0.695, t = ${((1 + d) / 2).toFixed(3)} ≈ 0.848, chord ${paletteChord(d).toFixed(3)}`,
+  report(`row mapping: d(0.85) = ${d.toFixed(3)} ≈ 0.695, t = ${((1 + d) / 2).toFixed(3)} ≈ 0.848, chord ${paletteChord(d, WATER.m).toFixed(3)}`,
     Math.abs(d - 0.6955) < 1e-3 && Math.abs((1 + d) / 2 - 0.848) < 1e-3 ? [] : [`${d}`], []);
   // a bright scattering body on black: either snaps down through T_up to residual ≤ 5 or is rejected (10), never shown wrong
   for (const S of [0.05, 0.1]) {

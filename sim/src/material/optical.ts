@@ -5,6 +5,7 @@ import { traceRowDetail } from './optics/geometry';
 import { backingLight } from './optics/lighting';
 import { decode, encode, fresnel, type PhysicalParams } from './optics/optics';
 import type { Material } from './model';
+import { THIN_IOR } from '../render';
 
 export type RGB3 = [number, number, number];
 export type Anchor = readonly [number, number];
@@ -70,8 +71,12 @@ export const U_WALL = 0.85;
 /** Display row offset from the tube centre (fraction of the drawn radius, which spans the outer wall) of
  *  bore position u: d(u) = u·r/(r + wallThickness); its row fraction is t = (1 + d)/2. */
 export const displayOffset = (u: number, m: Material): number => u * m.innerRadius / (m.innerRadius + m.wallThickness);
-/** The palette's chord factor √(1 − d²) at display offset d (buildPalette liquidThin). */
-export const paletteChord = (d: number): number => Math.sqrt(Math.max(0, 1 - d * d));
+/** The palette's chord factor at display offset d (buildPalette liquidThin): the refracted chord
+ *  √(1 − (d·R/(n·r))²), n = the palette's THIN_IOR, R/r = (r + wallThickness)/r. */
+export const paletteChord = (d: number, m: Material): number => {
+  const k = d * (m.innerRadius + m.wallThickness) / (THIN_IOR * m.innerRadius);
+  return Math.sqrt(Math.max(0, 1 - k * k));
+};
 /** Lamp radiance relative to a white diffuse surface (highlightBright calibration). */
 export const L_SPEC = 12;
 
@@ -289,7 +294,7 @@ export function colourLaws(c: ColourInput): ColourOutput {
   // wall desaturation fit
   const e0 = map3((i) => enc01(C0[i])), ew = map3((i) => enc01(Cw[i]));
   const s0 = sat3(e0);
-  const dW = displayOffset(U_WALL, m), chordW = paletteChord(dW);
+  const dW = displayOffset(U_WALL, m), chordW = paletteChord(dW, m);
   const liquidThin = c.metal || s0 < 0.05 ? 0 : clamp((1 - sat3(ew) / s0) / (1 - chordW) ** 2, 0, 1);
 
   // cylinder shading fitted to the wall sample: only the scattered light is Lambert-shaded at the row's

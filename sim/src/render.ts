@@ -10,6 +10,8 @@ import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
+/** Contents index the palette's thin-edge chord refracts by (water; legacy params carry no index). Firmware THIN_IOR. */
+export const THIN_IOR = 1.333;
 const lensScratch = new Uint16Array(PANEL_W * TUBE_HEIGHT_MAX);
 
 function hexToRgb(h: string): [number, number, number] {
@@ -148,11 +150,22 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
   // and, near index-matched, fills the band, so the column reads as wide as the tube; it takes the
   // grazing rim (a front-surface reflection) alone. A gas (wallWet 0) does neither: over its column
   // the glow stays and the band is the empty tube's — the contents are seen where the back would be
-  // (dryT). In between, both blend by wallWet. At 1 neither step runs.
+  // (dryT). In between, the glow over them scales by 1 − wallWet and they fill the band to liqU (below).
+  // At 1 neither step runs.
   const glowW = (u: number): number => p.glassWallGlow * Math.max(0, Math.min(1, 0.4 + 3 * (Math.abs(u) - wallU) / (1 - wallU)));
   const wallW = (u: number): number => { const g = glowW(u), r = rimW(u); return g + r - g * r; };
   const wallT = (u: number): number => p.glassWall <= 0 ? 1 : Math.abs(u) >= wallU ? 0 : 1 - Math.exp(-(wallU - Math.abs(u)) / 0.04);
   const wet = Math.max(0, Math.min(1, p.wallWet));
+  // The contents are seen out to display n·r (the invariant n·ρ·sin θ): `wallWet` is the share of the band they fill,
+  // so they end at liqU, and past it the row is the empty tube's (the wall's internal reflection, as over a gas).
+  // The edge ramps in like the bore's (wallT): the ray grazes the inner wall there. At wallWet 1 the contents reach
+  // the silhouette (no step); at 0 the edge is the bore's own.
+  const liqU = wallU + wet * (1 - wallU);
+  const liqT = (u: number): number => p.glassWall <= 0 ? 1 : Math.abs(u) >= liqU ? 0 : 1 - Math.exp(-(liqU - Math.abs(u)) / 0.04);
+  // Thin edge (liquidThin) through the glass: a ray at display offset u gets no closer to the axis than u·R/n inside
+  // the contents, so its chord is √(1 − (u·R/(n·r))²) of the centre one — floored by the wall (0.54 at the silhouette
+  // for a 4 px wall on a 72 px tube), never 0. n = water's (legacy params carry no index).
+  const thinK = 1 / (THIN_IOR * Math.max(1e-3, 1 - 2 * Math.max(0, p.glassWall) / H));
   for (let y = 0; y < H; y++) {
     const t = y / (H - 1);
     const gradient = Math.round(p.tubeBackGradient);
@@ -169,9 +182,9 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
     if (p.lightPhys > 0) c = mix(c, mix(lo, body, 1 - p.shadeDepth * (1 - lambert(y))), p.lightPhys);
     // Thin edge: the chord through the column shortens toward the walls, so less of the light is
     // absorbed there — the colour drifts to a grey of its own peak channel (Beer-Lambert, all
-    // channels converging), strongest on the outermost rows.
+    // channels converging), strongest on the outermost rows (the refracted chord, thinK above).
     if (p.liquidThin > 0) {
-      const chord = Math.sqrt(Math.max(0, 1 - u * u)), m = Math.max(c[0], c[1], c[2]);
+      const ku = u * thinK, chord = Math.sqrt(Math.max(0, 1 - ku * ku)), m = Math.max(c[0], c[1], c[2]);
       c = mix(c, [m, m, m], p.liquidThin * (1 - chord) * (1 - chord));
     }
     rowL[y] = luma(c);   // the light inside the liquid at this row (before the backing, highlight and glass: they do not light a bubble)
@@ -201,7 +214,7 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
     // band must run continuously across the meniscus of a clear liquid). The grazing rim is the outer
     // surface's reflection, whatever is inside: full weight over the liquid and the residue alike.
     c = ambientize(mix(mix(c, glassHiScaled, glassWet), glassEdge, wetRim), bodyL, ambAmt);
-    if (wet < 1) c = mix(c, dryRow, (1 - wet) * (1 - dryT[y]));   // unwetted band: the empty tube's row
+    if (wet < 1) c = mix(c, dryRow, 1 - liqT(u));   // past the contents' edge: the empty tube's row
     rows[y] = q(c);
     bubbleIn[y] = q(mix(c, [0, 0, 0], p.bubbleDark));
   }

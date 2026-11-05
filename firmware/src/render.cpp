@@ -796,6 +796,7 @@ struct PalCache {
   // light-independent row terms of buildPalette, the same expressions: wall glow + rim, over the contents, dryT, the
   // back gradient and the body shading before the light mix
   float wall[TUBE_HEIGHT_MAX], wetRim[TUBE_HEIGHT_MAX], dryT[TUBE_HEIGHT_MAX]; RGB back[TUBE_HEIGHT_MAX], c0[TUBE_HEIGHT_MAX];
+  float liqDry[TUBE_HEIGHT_MAX];   // weight of the empty tube's row over the contents: past their edge liqU (sim liqT)
   // 3e concave band colours per row, a function of the palette and the row cache only (buildBandRows, rebuilt with the
   // palette): inner shoulder, the lens / body mix under the outer colour, the rim colour, the back's luma weight
   uint16_t bandInner[TUBE_HEIGHT_MAX], bandLensMix[TUBE_HEIGHT_MAX], bandRimC[TUBE_HEIGHT_MAX]; float bandBackK[TUBE_HEIGHT_MAX];
@@ -1385,23 +1386,30 @@ void Tube::buildBandRows(PalCache &pc) const {
     pc.bandRimC[ry] = q(mix(to888(rc.hiC), to888(q(mix(to888(pal.rows[ry]), to888(rc.darkC), 0.75f))), pc.bandBackK[ry]));
   }
 }
+// Contents index the palette's thin-edge chord refracts by (water; params carry no index). Sim THIN_IOR.
+static constexpr float THIN_IOR = 1.333f;
 // Fill pc for (p, H): the same calls on the same arguments as buildPalette / glassW made inline.
 void Tube::buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const {
   if (pc.valid && pc.gen == gen && pc.H == H) return;
   pc.valid = true; pc.gen = gen; pc.H = H;
   const float yc = (H - 1) / 2.0f, wallU = 1 - 2 * fmx(1, p.glassWall) / H;
+  // sim buildPalette thinK: the refracted chord √(1 − (u·R/(n·r))²), floored by the wall
+  const float thinK = 1 / (THIN_IOR * fmx(1e-3f, 1 - 2 * fmx(0, p.glassWall) / H));
   for (int y = 0; y < H; y++) {
     const float t = (float)y / (H - 1);
     const float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
     pc.rimPow[y] = powf(fmx(0, (au - wallU) / (1 - wallU)), 2.5f);
     pc.dryExp[y] = p.glassWall <= 0 || au >= wallU ? 0 : expf(-(wallU - au) / 0.04f);
     pc.asinY[y] = asinf(clampf((yc - y) / yc, -1, 1));
-    pc.chord[y] = p.liquidThin > 0 ? sqrtf(fmx(0, 1 - u * u)) : 0;
+    const float ku = u * thinK;
+    pc.chord[y] = p.liquidThin > 0 ? sqrtf(fmx(0, 1 - ku * ku)) : 0;
     pc.ambCos[y] = cosf((t - 0.3f) * (float)M_PI * 1.6f);
     const float d = (t - 0.82f) / 0.07f;
     pc.reflExp[y] = expf(-d * d);
   }
   const float wet = clampf(p.wallWet, 0, 1);
+  // sim liqU / liqT: the contents fill the share wallWet of the band; past their edge the empty tube's row
+  const float liqU = wallU + wet * (1 - wallU);
   RGB body = hexToRgb(p.liquid), lo = hexToRgb(p.liquidLo), tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2);
   for (int y = 0; y < H; y++) {   // buildPalette's loop, its light-independent part
     float t = (float)y / (H - 1);
@@ -1411,6 +1419,7 @@ void Tube::buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const {
     pc.wall[y] = glow + rim - glow * rim;
     const float gW = glow * (1 - wet); pc.wetRim[y] = gW + rim - gW * rim;
     pc.dryT[y] = p.glassWall <= 0 ? 1 : au >= wallU ? 0 : 1 - pc.dryExp[y];
+    pc.liqDry[y] = p.glassWall <= 0 ? 0 : au >= liqU ? 1 : expf(-(liqU - au) / 0.04f);
     int gradient = (int)jround(p.tubeBackGradient);
     float backMix = gradient == 1 ? t : gradient == 2 ? 1 - fabsf(t * 2 - 1)
       : gradient == 3 ? fabsf(t * 2 - 1) : 0;
@@ -1458,6 +1467,8 @@ void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const 
   float wallU = 1 - 2 * fmx(1, p.glassWall) / H;
   RGB glassEdge = scale(mix(ghi, {180, 190, 195}, 0.72f), p.brightness);
   const float wet = clampf(p.wallWet, 0, 1);   // sim: a gas (0) keeps the glow and the empty tube's band over its column
+  const float liqU = wallU + wet * (1 - wallU);   // sim liqU: the contents' edge
+  const float thinK = 1 / (THIN_IOR * fmx(1e-3f, 1 - 2 * fmx(0, p.glassWall) / H));   // sim thinK
   for (int y = 0; y < H; y++) {
     float t = (float)y / (H - 1);
     float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
@@ -1482,7 +1493,7 @@ void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const 
     // Thin edge: shorter chord toward the walls absorbs less, the colour drifts to a grey of its
     // own peak channel, strongest on the outermost rows.
     if (p.liquidThin > 0) {
-      float chord = sqrtf(fmx(0, 1 - u * u)), m = fmx(c.r, fmx(c.g, c.b));
+      float ku = u * thinK, chord = sqrtf(fmx(0, 1 - ku * ku)), m = fmx(c.r, fmx(c.g, c.b));
       c = mix(c, {m, m, m}, p.liquidThin * (1 - chord) * (1 - chord));
     }
     rowL[y] = luma(c);   // the light inside the liquid at this row (before backing, highlight, glass: they do not light a bubble)
@@ -1507,7 +1518,7 @@ void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const 
     // Glass weight rises to the dry-side one with transparency; the grazing rim is the outer surface's
     // reflection, full weight over the liquid (sim).
     c = ambientize(mix(mix(c, glassHiScaled, glassWet), glassEdge, wetRim), bodyL, ambAmt);
-    if (wet < 1) c = mix(c, dryRow, (1 - wet) * (1 - dryT));   // unwetted band: the empty tube's row
+    if (wet < 1) c = mix(c, dryRow, p.glassWall <= 0 ? 0 : au >= liqU ? 1 : expf(-(liqU - au) / 0.04f));   // past the contents' edge: the empty tube's row
     pal.rows[y] = q(c);
     pal.bubbleIn[y] = q(mix(c, {0, 0, 0}, p.bubbleDark));
   }
@@ -1583,7 +1594,7 @@ void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal, const Pal
     // Glass weight rises to the dry-side one with transparency; the grazing rim is the outer surface's
     // reflection, full weight over the liquid (sim).
     c = ambientize(mix(mix(c, glassHiScaled, glassWet), glassEdge, wetRim), bodyL, ambAmt);
-    if (wet < 1) c = mix(c, dryRow, (1 - wet) * (1 - dryT));   // unwetted band: the empty tube's row
+    if (wet < 1) c = mix(c, dryRow, pc.liqDry[y]);   // past the contents' edge: the empty tube's row
     pal.rows[y] = q(c);
     pal.bubbleIn[y] = q(mix(c, {0, 0, 0}, p.bubbleDark));
   }
