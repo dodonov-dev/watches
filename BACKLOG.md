@@ -38,5 +38,9 @@ number (now angleTiltGain / angleMax; vertical mode uses the real tilt up to 45Â
 - ESP-IDF upstream issue: esp_restart_noos (IDF 5.5.5) does not wait for a running D-cache preload before the MSPI
   reset (hang until the RTC WDT; worked around here by a shutdown handler); the stock RGB LCD driver's bounce refill
   preloads the same way (KAIZEN "Robustness / parity")
+- ESP-IDF upstream issue: the RGB LCD driver with CONFIG_LCD_RGB_RESTART_IN_VSYNC=y (Arduino's default) restarts at
+  every VSYNC without resetting its bounce-buffer EOF count: one EOF the refill ISR misses (an NVS write holds it off
+  ~14 ms) swaps the buffer it refills for good, and the picture stays shifted sideways by a bounce buffer; worked around
+  with =n (firmware/platformio.ini, env lcd316 comment)
 - LCD 3 tubes swinging at 80 MHz: ~3 ms a frame short of 30 fps (27.6); levers in KAIZEN (render-side hash, 64-B tile
   bursts, residue / palette leftovers)
