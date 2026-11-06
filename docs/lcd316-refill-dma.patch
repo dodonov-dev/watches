@@ -1,0 +1,247 @@
+--- a/firmware/src/display_lcd316.cpp
++++ b/firmware/src/display_lcd316.cpp
+@@ -19,6 +19,8 @@
+ #include "esp_rom_sys.h"
+ #include "esp_system.h"
+ #include "esp32s3/rom/cache.h"
++#include "esp_private/gdma.h"
++#include "hal/dma_types.h"
+ #include "layout.h"
+ #include "tiles.h"
+ 
+@@ -395,6 +397,65 @@
+ static uint32_t refillWorst = 0;                 // cycles, since the last display_refill_health, under worstMux
+ static portMUX_TYPE worstMux = portMUX_INITIALIZER_UNLOCKED;
+ static volatile uint32_t refillCycles = 0;      // CPU cycles spent in refill() since boot (display_busy_cycles: `f` scan-isr %)
++// -DREFILL_DMA=1: the refill is a GDMA mem-to-mem copy (fbuf in PSRAM -> the internal bounce buffer) started from the ISR,
++// instead of its memcpy + D-cache preload of the next part: the refill costs core LCD_ISR_CORE only the descriptor set-up,
++// and fbuf no longer streams through the shared 64 KB D-cache (a bounce buffer, 26 KB, every ~1 ms). The DMA reads PSRAM
++// behind the cache, so every push writes the fbuf lines it touched back (fb_writeback). A copy must land within one
++// bounce-buffer time (the panel DMA comes back for the buffer at the next EOF): checked there (late = still in flight;
++// worst = how long the ISR then waited). A frame's first buffer (and any refill outside the timed grid) waits for its copy.
++#ifndef REFILL_DMA
++#define REFILL_DMA 0
++#endif
++#if REFILL_DMA
++#define RD_BB (FB_BOUNCE_LINES * LCD_H_RES * 2)
++#define RD_DESC 4032                                   // 63 x 64-B bursts, under the 12-bit size field
++#define RD_N ((RD_BB + RD_DESC - 1) / RD_DESC)
++static_assert(RD_BB % 64 == 0, "a bounce buffer is whole 64-B bursts: fbuf offsets stay burst-aligned");
++static gdma_channel_handle_t rdTx = nullptr, rdRx = nullptr;
++static dma_descriptor_t rdTxd[2][RD_N], rdRxd[2][RD_N];   // per bounce buffer (internal .bss, DMA-reachable)
++static void *rdBb[2] = {nullptr, nullptr};
++static const dma_descriptor_t *volatile rdPending = nullptr;   // the last RX descriptor of the copy in flight
++// The copy in flight: started at EOF estimate rdStartEof (timed: on the refill grid), landed at rdLandAt (its RX EOF
++// interrupt, on LCD_ISR_CORE like the refill: rd_landed only runs between refills).
++static volatile uint32_t rdLandAt = 0;
++static uint32_t rdStartEof = 0, rdBlank = 0; static bool rdTimed = false;
++static bool IRAM_ATTR rd_landed(gdma_channel_handle_t, gdma_event_data_t *, void *) { rdLandAt = esp_cpu_get_cycle_count(); return false; }
++static bool refill_dma_init() {
++  gdma_channel_alloc_config_t txc = {}; txc.direction = GDMA_CHANNEL_DIRECTION_TX; txc.flags.reserve_sibling = 1;
++  if (gdma_new_ahb_channel(&txc, &rdTx) != ESP_OK) return false;
++  gdma_channel_alloc_config_t rxc = {}; rxc.direction = GDMA_CHANNEL_DIRECTION_RX; rxc.sibling_chan = rdTx;
++  if (gdma_new_ahb_channel(&rxc, &rdRx) != ESP_OK) return false;
++  gdma_trigger_t trig = GDMA_MAKE_TRIGGER(GDMA_TRIG_PERIPH_M2M, 0);
++  uint32_t mask = 0;
++  if (gdma_get_free_m2m_trig_id_mask(rdTx, &mask) != ESP_OK || !mask) return false;
++  trig.instance_id = __builtin_ctz(mask);
++  if (gdma_connect(rdRx, trig) != ESP_OK || gdma_connect(rdTx, trig) != ESP_OK) return false;
++  gdma_strategy_config_t st = {};
++  st.owner_check = true; st.auto_update_desc = true; st.eof_till_data_popped = true;
++  gdma_apply_strategy(rdTx, &st); gdma_apply_strategy(rdRx, &st);
++  gdma_transfer_config_t tc = {}; tc.access_ext_mem = true; tc.max_data_burst_size = 64;
++  if (gdma_config_transfer(rdTx, &tc) != ESP_OK) return false;
++  tc.access_ext_mem = false; tc.max_data_burst_size = 32;
++  if (gdma_config_transfer(rdRx, &tc) != ESP_OK) return false;
++  gdma_rx_event_callbacks_t cb = {}; cb.on_recv_eof = rd_landed;   // its interrupt on this core (panelTask: LCD_ISR_CORE)
++  if (gdma_register_rx_event_callbacks(rdRx, &cb, nullptr) != ESP_OK) return false;
++  // Ahead of the tile copies and gathers (priority 0) on PSRAM; 5 is the S3's highest.
++  return gdma_set_priority(rdTx, 5) == ESP_OK && gdma_set_priority(rdRx, 5) == ESP_OK;
++}
++// Wait (spinning, at most `limit` cycles) for the copy in flight; true = landed (land: when; untouched if it had
++// already landed before the wait: the caller passes rdLandAt).
++static bool IRAM_ATTR rd_wait(uint32_t limit, uint32_t &land) {
++  if (!rdPending || !((const volatile dma_descriptor_t *)rdPending)->dw0.owner) return true;
++  const uint32_t w0 = esp_cpu_get_cycle_count();
++  while (((const volatile dma_descriptor_t *)rdPending)->dw0.owner)
++    if (esp_cpu_get_cycle_count() - w0 > limit) return false;
++  land = esp_cpu_get_cycle_count();
++  return true;
++}
++// A landed copy against its schedule, as the memcpy refill's parts: the panel DMA reads the buffer from one bounce time
++// (refillT, + the vertical blanking for a frame's first two) after the EOF that asked for it. Late = it read old lines.
++static void IRAM_ATTR rd_account(uint32_t land);
++#endif
+ // esp_restart (IDF 5.5.5) disables the caches and resets the MSPI with the refill's D-cache preload of PSRAM still
+ // running: the chip then hung until the RTC WDT's second stage reset it (`r`: reset wdt, rst 0x10, ~1 in 3; both
+ // with and without the tiles, also on the hello face; never with the preload off or the panel deleted first,
+@@ -403,11 +464,15 @@
+ static portMUX_TYPE preloadMux = portMUX_INITIALIZER_UNLOCKED;
+ static bool preloadOff = false;
+ static void preload_shutdown(void) {
+-  portENTER_CRITICAL(&preloadMux);   // a refill past the test has started its preload once this is taken
++  portENTER_CRITICAL(&preloadMux);   // a refill past the test has started its preload (or copy) once this is taken
+   preloadOff = true;
+   portEXIT_CRITICAL(&preloadMux);
+   const uint32_t c0 = esp_cpu_get_cycle_count();   // a preload is ~26 KB (< 1 ms); give up after 20 ms
++#if REFILL_DMA
++  (void)c0; uint32_t land = 0; rd_wait(20u * 1000 * getCpuFrequencyMhz(), land);
++#else
+   while (!Cache_DCache_Preload_Done() && esp_cpu_get_cycle_count() - c0 < 20u * 1000 * getCpuFrequencyMhz()) {}
++#endif
+ }
+ 
+ static bool IRAM_ATTR onVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t *, void *) {
+@@ -416,6 +481,17 @@
+   refillsInFrame = 0;
+   return false;
+ }
++#if REFILL_DMA
++static void IRAM_ATTR rd_account(uint32_t land) {
++  rdPending = nullptr;
++  if (!rdTimed) return;
++  const int32_t took = (int32_t)(land - rdStartEof - rdBlank);
++  if (took > (int32_t)refillT) refillLate = refillLate + 1;
++  portENTER_CRITICAL_ISR(&worstMux);
++  if (took > 0 && (uint32_t)took > refillWorst) refillWorst = took;
++  portEXIT_CRITICAL_ISR(&worstMux);
++}
++#endif
+ static bool IRAM_ATTR refill(esp_lcd_panel_handle_t, void *bb, int pos_px, int len_bytes, void *) {
+   const uint32_t c0 = esp_cpu_get_cycle_count();
+   const bool timed = refillsInFrame >= 0 && c0 - vsyncAt >= refillT / 2;   // not before the first VSYNC, nor a
+@@ -427,6 +503,47 @@
+     if (eofKnown) { const uint32_t grid = eofAt + step + step / 128; if ((int32_t)(grid - c0) < 0) eof = grid; }
+     eofAt = eof; eofKnown = true;
+   }
++#if REFILL_DMA
++  int slot = bb == rdBb[0] ? 0 : bb == rdBb[1] ? 1 : -1;
++  if (slot < 0) { slot = rdBb[0] ? 1 : 0; rdBb[slot] = bb; }
++  // The copy started at the last EOF (into the other buffer) must have landed: the panel DMA reads that buffer from now.
++  if (rdPending) {
++    uint32_t land = rdLandAt;
++    if (!rd_wait(2 * refillT, land)) {   // stalled: never start a copy on a busy channel; this buffer keeps old lines
++      refillLate = refillLate + 1;
++      refillCycles = refillCycles + (esp_cpu_get_cycle_count() - c0);
++      return false;
++    }
++    rd_account(land);
++  }
++  portENTER_CRITICAL_ISR(&preloadMux);
++  if (!preloadOff) {
++    uint8_t *const src = (uint8_t *)(fbuf + pos_px), *const dst = (uint8_t *)bb;
++    dma_descriptor_t *const tx = rdTxd[slot], *const rx = rdRxd[slot];
++    for (int k = 0; k < RD_N; k++) {
++      const int n = k < RD_N - 1 ? RD_DESC : len_bytes - RD_DESC * (RD_N - 1);
++      const bool last = k == RD_N - 1;
++      tx[k].buffer = src + k * RD_DESC; tx[k].next = last ? nullptr : &tx[k + 1];
++      tx[k].dw0.size = n; tx[k].dw0.length = n; tx[k].dw0.err_eof = 0; tx[k].dw0.suc_eof = last; tx[k].dw0.owner = 1;
++      rx[k].buffer = dst + k * RD_DESC; rx[k].next = last ? nullptr : &rx[k + 1];
++      rx[k].dw0.size = n; rx[k].dw0.length = 0; rx[k].dw0.err_eof = 0; rx[k].dw0.suc_eof = 0; rx[k].dw0.owner = 1;
++    }
++    __asm__ __volatile__("memw" ::: "memory");
++    rdTimed = timed; rdStartEof = eof; rdBlank = blank;
++    gdma_start(rdRx, (intptr_t)&rx[0]); gdma_start(rdTx, (intptr_t)&tx[0]);
++    rdPending = &rx[RD_N - 1];
++  }
++  portEXIT_CRITICAL_ISR(&preloadMux);
++  // A frame's first buffer lands before the ISR returns: the driver's (re)start pre-fills it (in the VSYNC ISR, right
++  // after onVsync) and starts the panel DMA on it at once. Normally it is filled across the vertical blanking, so the
++  // wait costs one copy a panel frame. The second buffer has the first one's scan time, as every other refill.
++  if (rdPending && (!timed || pos_px == 0)) {
++    uint32_t land = 0;
++    if (rd_wait(2 * refillT, land)) rd_account(land);   // else accounted (late) at the next refill
++  }
++  refillCycles = refillCycles + (esp_cpu_get_cycle_count() - c0);
++  return false;
++#else
+   const int part = len_bytes / REFILL_PARTS;
+   const uint8_t *src = (const uint8_t *)(fbuf + pos_px);
+   int32_t took = 0;   // part p is due when the DMA reaches it: eof + refillT + blank + p * refillT / REFILL_PARTS
+@@ -446,6 +563,7 @@
+   if ((uint32_t)took > refillWorst) refillWorst = took;
+   portEXIT_CRITICAL_ISR(&worstMux);
+   return false;
++#endif
+ }
+ DisplayRefill display_refill_health(void) {
+   portENTER_CRITICAL(&worstMux);
+@@ -465,7 +583,11 @@
+ struct PanelJob { const esp_lcd_rgb_panel_config_t *cfg; const esp_lcd_rgb_panel_event_callbacks_t *cbs; bool ok; TaskHandle_t caller; };
+ static void panelTask(void *arg) {
+   PanelJob &j = *(PanelJob *)arg;
+-  j.ok = esp_lcd_new_rgb_panel(j.cfg, &panel) == ESP_OK
++  j.ok =
++#if FB_BOUNCE_LINES && REFILL_DMA
++         refill_dma_init() &&   // its RX EOF interrupt on this core, with the refill ISR
++#endif
++         esp_lcd_new_rgb_panel(j.cfg, &panel) == ESP_OK
+          && (!j.cbs || esp_lcd_rgb_panel_register_event_callbacks(panel, j.cbs, nullptr) == ESP_OK)
+          && esp_lcd_panel_reset(panel) == ESP_OK && esp_lcd_panel_init(panel) == ESP_OK;   // init starts the scan
+   xTaskNotifyGive(j.caller);
+@@ -497,6 +619,9 @@
+ #if FB_BOUNCE_LINES
+   fbuf = (uint16_t *)heap_caps_aligned_calloc(64, 1, (size_t)LCD_H_RES * LCD_V_RES * 2, MALLOC_CAP_SPIRAM);   // black
+   if (!fbuf) { log_e("framebuffer alloc failed"); return false; }
++#if REFILL_DMA
++  esp_cache_msync(fbuf, (size_t)LCD_H_RES * LCD_V_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);   // the calloc's zeros, for the DMA
++#endif
+   cfg.num_fbs = 0;
+   cfg.flags.no_fb = 1;
+   cfg.bounce_buffer_size_px = FB_BOUNCE_LINES * LCD_H_RES;
+@@ -558,6 +683,23 @@
+ // 13.0. The hash pass costs ~10 instructions a strip word, every push. -DPUSH_VERIFY checks every push.
+ // Step 7 (tiles.h): the strip is read by GDMA, not through the cache (PUSH_GATHER, turn_segs_gather): both strips
+ // 21 -> 12.7 ms swinging, 14.6 -> 9.6 pinned (2026-10-30).
++// REFILL_DMA: the fbuf scan lines of face columns [a0, a0 + w) back to PSRAM, where the refill DMA reads them; 16 lines
++// (10 KB) a call, so interrupts are never off long on the pushing core (esp_cache_msync's critical section).
++#if FB_BOUNCE_LINES && REFILL_DMA
++static void fb_writeback(int a0, int w) {
++  for (int a = a0; a < a0 + w; a += 16) {
++    const int n = a0 + w - a < 16 ? a0 + w - a : 16;
++#if USB_LEFT
++    uint16_t *const lo = fbuf + (size_t)(LCD_V_RES - a - n) * LCD_H_RES;   // column a is line LCD_V_RES - 1 - a
++#else
++    uint16_t *const lo = fbuf + (size_t)a * LCD_H_RES;
++#endif
++    esp_cache_msync(lo, (size_t)n * LCD_H_RES * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
++  }
++}
++#else
++static inline void fb_writeback(int, int) {}
++#endif
+ #ifdef PUSH_VERIFY
+ static uint32_t verifyChecked[2], verifyBad[2], verifyWords[2], verifyStored[2], verifySegs[2], verifySkipped[2];   // per core, since boot
+ #define VERIFY_STORED() (verifyStored[xPortGetCoreID()]++)
+@@ -692,6 +834,7 @@
+       if (changed >> k & 1) put_rows(d0 + seg[k], d1 + seg[k], buf + seg[k], (b0 + seg[k]) & 1, seg[k + 1] - seg[k]);
+     PP_ADD(2, pst);
+   }
++  fb_writeback(0, LCD_V_RES);
+ }
+ #if PUSH_GATHER
+ #define GB_COLS 64   // columns (32 line pairs, 128 B of a strip row) per gather unit
+@@ -755,6 +898,7 @@
+       put_rows(d0 + r0, d0 - LCD_H_RES + r0, buf, (b0 + r0) & 1, cnt);
+       PP_ADD(2, pst);
+     }
++    if (k == nseg - 1) fb_writeback(a0, 2 * wpr);   // the block's last segment: its scan lines are done
+   }
+ }
+ #endif   // PUSH_GATHER
+@@ -805,9 +949,12 @@
+ #else
+   (void)track;
+ #endif
+-  for (int a = 0; a < LCD_V_RES; a++) {   // other canvases, and whole-frame pushes (display_push_rows)
+-    uint16_t *d = LINE(a); const uint16_t *s = src + cv.colOf[a];
+-    for (int r = 0; r < n; r++) PIX(d, r) = __builtin_bswap16(s[off[r]]);
++  {
++    for (int a = 0; a < LCD_V_RES; a++) {   // other canvases, and whole-frame pushes (display_push_rows)
++      uint16_t *d = LINE(a); const uint16_t *s = src + cv.colOf[a];
++      for (int r = 0; r < n; r++) PIX(d, r) = __builtin_bswap16(s[off[r]]);
++    }
++    fb_writeback(0, LCD_V_RES);
+   }
+ #ifdef PUSH_VERIFY
+   {   // every pixel of the run against the reference formula (the per-pixel loop of 2026-10-28)

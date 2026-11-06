@@ -65,7 +65,9 @@ inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &p
 // RGB565, byte-swapped, representing panel rows from y0 on (-1: the tube's own params' row, yH / yM of tubeLayout; a
 // three-tube face passes faceLayout's top(idx)). Everything else on the panel stays as is.
 // Allocates the fixed render pools (once, at boot). False = PSRAM allocation failed.
-bool render_init();
+// fast: this boot has the internal RAM BLE would hold (main.cpp, ble.h fast mode): the shared fizz masks (LCD) and the
+// seconds tube's state (LCD, three tubes) go there; else to PSRAM (slower fizz and seconds tube, room for BLE).
+bool render_init(bool fast = true);
 // gen: params generation counter (bumped by main on every param write / preset load / NVS restore);
 // all param-only tables inside the renderer are keyed on it.
 // lensRows (optional): when nothing is drawn after the whole-tube lens (no front-printed digits), the lens is not
@@ -90,7 +92,7 @@ const uint32_t *render_tube_profile(int idx);
 void render_tube_profile_reset();
 #endif
 #ifdef TUBE_VERIFY
-void render_tube_verify(int k, uint32_t &n, uint32_t &bad);   // -DTUBE_VERIFY (LCD): k 0 residue zone px, 1 palette entries, since boot
+void render_tube_verify(int k, uint32_t &n, uint32_t &bad);   // -DTUBE_VERIFY (LCD): k 0 residue row columns, 1 palette entries, since boot
 #endif
 #ifdef TILE_VERIFY
 void render_tile_verify(uint32_t &px, uint32_t &bad);   // -DTILE_VERIFY (LCD tiles): the whole tiled render vs the strip path, px since boot

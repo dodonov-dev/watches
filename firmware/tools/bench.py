@@ -3,6 +3,7 @@
 
   tools/bench.py [--scene 10:09:30] [--samples 5] [--settle 4] [--stages [LIST]] [--stage name=value ...] [--quick]
                  [--preset FILE.json] [--fix-pose] [--live-imu] [--allow-dead-imu] [--runs N] [--label TEXT] [--json]
+                 [--ble-window]
 
 Pins: optional preset (--preset: every key of the JSON the board knows; `v` and unknown keys are skipped and listed
 once), clock fixed (`t`), demo frozen (`d0`), IMU influence off (`inputGain=0`, unless --live-imu), waits for the physics to settle, then reads `f` once per 2 s window and
@@ -24,6 +25,9 @@ check then (the override reads as all 0).
 --stages additionally turns rendering stages off one at a time (digits, ticks, fizz, glow, ...) and prints what
 each costs. --runs N repeats the whole measurement (base + stages) N times and reports, per line, the median
 across runs and the min-max spread across runs (fizz positions are random: ~±0.5 ms per run on heavy presets).
+Fast mode: firmware that reports `ble on|off` in `s` opens a BLE window after every boot (ble.h) with a slower memory
+layout; the bench first switches such a board to fast mode (`B0`, a reboot), the steady state. --ble-window benches the
+window as it is (no switch).
 Every param it touched is restored from a `p?` snapshot at the end (not `p!`, which would also overwrite
 NVS-tuned params) and demo speed goes back to x1.
 """
@@ -89,6 +93,7 @@ def main():
     ap.add_argument('--allow-dead-imu', action='store_true', help='accept along/across/gyro all 0 (no reboot, no exit 3)')
     ap.add_argument('--runs', type=int, default=1, help='repeat base + stages N times; median and spread across runs')
     ap.add_argument('--label', default=''); ap.add_argument('--json', action='store_true')
+    ap.add_argument('--ble-window', action='store_true', help='bench the BLE window (no switch to fast mode)')
     a = ap.parse_args()
     stage_samples, stage_settle = max(3, a.samples - 2), 1.5
     if a.quick:
@@ -111,6 +116,28 @@ def main():
 
     dev = [device.Device(a.port)]           # a list so a reconnect after `r` can swap it
     talk = lambda cmd, **kw: dev[0].talk(cmd, **kw)
+    def reboot(cmd='r'):
+        try: talk(cmd, timeout=3)
+        except Exception: pass
+        deadline = time.monotonic() + REBOOT_TIMEOUT_S
+        time.sleep(2)
+        while time.monotonic() < deadline:
+            try:
+                if parse_tilt(talk('s', timeout=2)) is not None: return
+            except Exception:              # the port dropped with the reset: reopen it
+                try: dev[0].close()
+                except Exception: pass
+                try: dev[0] = device.Device(a.port)
+                except BaseException: pass
+            time.sleep(1)
+        raise SystemExit(f'bench.py: the board did not answer `s` within {REBOOT_TIMEOUT_S} s after `{cmd}`')
+    mode = re.search(r' ble (on|off)', talk('s'))
+    if mode and mode.group(1) == 'on' and not a.ble_window:
+        print('bench.py: board in its BLE window: rebooting into fast mode (B0)', file=sys.stderr)
+        reboot('B0')
+        mode = re.search(r' ble (on|off)', talk('s'))
+        if not mode or mode.group(1) != 'off': raise SystemExit('bench.py: the board did not come back in fast mode after B0')
+    mode_txt = '' if not mode else ('  BLE window' if mode.group(1) == 'on' else '  fast mode')
     snap = json.loads(talk('p?').splitlines()[-1])
     cur = dict(snap)                         # what the board holds now (the stage "on" values)
     touched = set()
@@ -141,21 +168,6 @@ def main():
             if tilt is None or any(tilt): return tilt
             if i + 1 < tries: time.sleep(0.5)
         return tilt
-    def reboot():
-        try: talk('r', timeout=3)
-        except Exception: pass
-        deadline = time.monotonic() + REBOOT_TIMEOUT_S
-        time.sleep(2)
-        while time.monotonic() < deadline:
-            try:
-                if parse_tilt(talk('s', timeout=2)) is not None: return
-            except Exception:              # the port dropped with the reset: reopen it
-                try: dev[0].close()
-                except Exception: pass
-                try: dev[0] = device.Device(a.port)
-                except BaseException: pass
-            time.sleep(1)
-        raise SystemExit(f'bench.py: the board did not answer `s` within {REBOOT_TIMEOUT_S} s after `r`')
 
     result = {'scene': a.scene, 'label': a.label, 'preset': a.preset, 'runs': a.runs}
     try:
@@ -170,7 +182,7 @@ def main():
         elif dead(tilt):
             print('bench.py: WARNING: IMU reads exactly 0 (along/across/gyro) - dead after flash? rebooting with `r`',
                   file=sys.stderr)
-            reboot()
+            reboot('B0' if mode and mode.group(1) == 'off' else 'r')   # `r` would open the BLE window again
             cur = dict(json.loads(talk('p?').splitlines()[-1]))   # NVS state after the reboot; restore target stays `snap`
             pin(); time.sleep(1)
             tilt = read_tilt()
@@ -189,7 +201,7 @@ def main():
         elif dead(tilt): imu_txt += ', IMU dead'
         result.update(tilt=None if tilt is None else dict(zip(('along', 'across', 'gyro'), tilt)), imu=imu_txt)
         print(f'{a.label + ": " if a.label else ""}scene {a.scene}  preset {a.preset or "(board NVS)"}  {tilt_txt}  '
-              f'{imu_txt}  runs {a.runs}')
+              f'{imu_txt}  runs {a.runs}{mode_txt}')
 
         per_run = []
         for run in range(a.runs):

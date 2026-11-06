@@ -347,7 +347,11 @@ static uint16_t *fbuf = NULL;   // LCD_V_RES lines x LCD_H_RES px, native RGB565
 #ifndef STRIPS_INTERNAL
 #define STRIPS_INTERNAL 0
 #endif
-static uint16_t *strips[TUBE_COUNT];   // hours, minutes[, seconds]
+// Three tubes: two sets, handed out in turn (display_next_strips), so a strip rendered last frame is pushed by one core
+// while the other renders the tube's next frame into the other set (main.cpp renderBoth). Two tubes: one set.
+#define STRIP_SETS (TUBE_COUNT == 3 ? 2 : 1)
+static uint16_t *strips[STRIP_SETS][TUBE_COUNT];   // per set: hours, minutes[, seconds]
+static int stripSet = 0;                           // the set display_next_strips handed out last
 static int16_t bStart[PANEL_H + 1];   // canvas row y covers face rows [bStart[y], bStart[y + 1])
 static int32_t srcOff[2][LCD_H_RES];  // turn_rows scratch per core (either core pushes): strip offset of face row b
 // A canvas a strip is pushed from: size and its face maps (colOf / rowOf / bStart as above).
@@ -390,6 +394,7 @@ static int refillsInFrame = -1;                  // EOF refills since the last V
 static volatile uint32_t refillLate = 0, refillRestarts = 0;   // totals since boot (written by the ISR only)
 static uint32_t refillWorst = 0;                 // cycles, since the last display_refill_health, under worstMux
 static portMUX_TYPE worstMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t refillCycles = 0;      // CPU cycles spent in refill() since boot (display_busy_cycles: `f` scan-isr %)
 // esp_restart (IDF 5.5.5) disables the caches and resets the MSPI with the refill's D-cache preload of PSRAM still
 // running: the chip then hung until the RTC WDT's second stage reset it (`r`: reset wdt, rst 0x10, ~1 in 3; both
 // with and without the tiles, also on the hello face; never with the preload off or the panel deleted first,
@@ -434,6 +439,7 @@ static bool IRAM_ATTR refill(esp_lcd_panel_handle_t, void *bb, int pos_px, int l
   portENTER_CRITICAL_ISR(&preloadMux);
   if (!preloadOff) Cache_Start_DCache_Preload((uint32_t)(fbuf + (next < LCD_H_RES * LCD_V_RES ? next : 0)), len_bytes, 0);
   portEXIT_CRITICAL_ISR(&preloadMux);
+  refillCycles = refillCycles + (esp_cpu_get_cycle_count() - c0);
   if (!timed) return false;
   if ((uint32_t)took > refillT) refillLate = refillLate + 1;
   portENTER_CRITICAL_ISR(&worstMux);
@@ -474,10 +480,11 @@ static bool create_panel(const esp_lcd_rgb_panel_config_t &cfg, const esp_lcd_rg
 
 static bool push_slots_init();   // below, with the push slots
 bool display_init(void) {
-  for (int i = 0; i < TUBE_COUNT; i++) {
-    strips[i] = (uint16_t *)heap_caps_aligned_alloc(64, STRIP_BYTES, i < STRIPS_INTERNAL ? MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT : MALLOC_CAP_SPIRAM);
-    if (!strips[i]) { log_e("strip buf alloc failed"); return false; }
-  }
+  for (int k = 0; k < STRIP_SETS; k++)
+    for (int i = 0; i < TUBE_COUNT; i++) {
+      strips[k][i] = (uint16_t *)heap_caps_aligned_alloc(64, STRIP_BYTES, k == 0 && i < STRIPS_INTERNAL ? MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT : MALLOC_CAP_SPIRAM);
+      if (!strips[k][i]) { log_e("strip buf alloc failed"); return false; }
+    }
   if (!push_slots_init()) { log_e("push slot alloc failed"); return false; }
   for (int y = 0; y <= PANEL_H; y++) bStart[y] = (int16_t)((y * LCD_H_RES + PANEL_H - 1) / PANEL_H);
 #ifdef AB_COMPARE
@@ -517,8 +524,15 @@ bool display_init(void) {
   return true;
 }
 
-void display_next_strips(uint16_t *s[TUBE_COUNT]) { for (int i = 0; i < TUBE_COUNT; i++) s[i] = strips[i]; }
+void display_next_strips(uint16_t *s[TUBE_COUNT]) {
+  stripSet = (stripSet + 1) % STRIP_SETS;
+  for (int i = 0; i < TUBE_COUNT; i++) s[i] = strips[stripSet][i];
+}
+#if FB_BOUNCE_LINES
+uint32_t display_busy_cycles(void) { return refillCycles; }   // the bounce refill ISR's share of LCD_ISR_CORE
+#else
 uint32_t display_busy_cycles(void) { return 0; }
+#endif
 
 // Turn `rows` canvas rows from y0 on (src: PANEL_W wide, byte-swapped) into fbuf, scaled to the face: they cover
 // face rows [b0, b1), a contiguous run on each of the 820 scan lines (one face column per line). Bound by PSRAM
@@ -560,8 +574,19 @@ static uint32_t verifyChecked[2], verifyBad[2], verifyWords[2], verifyStored[2],
 #ifndef PUSH_GATHER
 #define PUSH_GATHER 0
 #endif
+// Gathered pushes by the render's change records (turn_segs_rec); -DPUSH_BY_RECORD=0: always by hashes. Not the A/B face
+// (its second renderer has no tiles).
+#ifndef PUSH_BY_RECORD
+#ifdef AB_COMPARE
+#define PUSH_BY_RECORD 0
+#else
+#define PUSH_BY_RECORD 1
+#endif
+#endif
 #ifdef PUSH_PROF
-static uint32_t pushProf[TUBE_COUNT][5];   // per strip slot: pushes, cycles reading + hashing, cycles storing, changed segments, gather waits
+// per strip slot: pushes, cycles reading + hashing (by-record pushes: picking the units), cycles storing, changed segments
+// (by-record pushes: column pairs x segments stored), gather waits, units gathered, pushes by the render's record
+static uint32_t pushProf[TUBE_COUNT][PUSH_PROF_N];
 #define PP_T0(v) const uint32_t v = esp_cpu_get_cycle_count()
 #define PP_ADD(i, v) (prof[i] += esp_cpu_get_cycle_count() - (v))
 #else
@@ -574,20 +599,31 @@ static uint32_t pushProf[TUBE_COUNT][5];   // per strip slot: pushes, cycles rea
 #define SEG_MAX ((TUBE_HEIGHT_MAX + 2 * SEG_PX - 2) / SEG_PX)   // cache-line segments a run of up to TUBE_HEIGHT_MAX rows spans
 // A strip's rows [b0, b0 + n) (n 0 = free) and the hashes of its last push: one slot per tube strip, 8.2 KB each,
 // internal (.bss); the seconds strip's in PSRAM (display_init: no internal RAM to spare). busy: a push is filling its
-// hashes (either core); known: they describe fbuf.
-struct PushSlot { int16_t b0, n; bool known, busy; uint8_t refresh; uint32_t hash[LCD_V_RES / 2][SEG_MAX]; };
+// hashes (either core); known: fbuf holds its last push. hashed: the hashes describe it too (a push by the render's
+// record, turn_segs_rec, does not hash). tube / seq: the render it pushed last (tiles.h TileDirty; tube -1: none), off:
+// the strip offsets of its face rows then (PSRAM, push_slots_init; offN -1: none).
+struct PushSlot { int16_t b0, n; bool known, busy; uint8_t refresh; bool hashed; int8_t tube; uint16_t refreshU; int16_t offN; uint32_t seq;
+                  int32_t *off; uint32_t hash[LCD_V_RES / 2][SEG_MAX]; };
 static PushSlot pushSlots[2];
 #if TUBE_COUNT == 3
 static PushSlot *pushSlotS = nullptr;
 static inline PushSlot &slotAt(int i) { return i == 2 ? *pushSlotS : pushSlots[i]; }
-static bool push_slots_init() {   // display_init, once
-  pushSlotS = (PushSlot *)heap_caps_calloc(1, sizeof(PushSlot), MALLOC_CAP_SPIRAM);
-  return pushSlotS != nullptr;
-}
 #else
 static inline PushSlot &slotAt(int i) { return pushSlots[i]; }
-static bool push_slots_init() { return true; }
 #endif
+static bool push_slots_init() {   // display_init, once
+#if TUBE_COUNT == 3
+  pushSlotS = (PushSlot *)heap_caps_calloc(1, sizeof(PushSlot), MALLOC_CAP_SPIRAM);
+  if (!pushSlotS) return false;
+#endif
+  for (int i = 0; i < TUBE_COUNT; i++) {
+    PushSlot &s = slotAt(i);
+    s.off = (int32_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(int32_t), MALLOC_CAP_SPIRAM);
+    s.offN = -1; s.tube = -1;
+    if (!s.off) return false;
+  }
+  return true;
+}
 static portMUX_TYPE slotMux = portMUX_INITIALIZER_UNLOCKED;
 #if !PUSH_GATHER
 static uint32_t pairBuf[2][LCD_H_RES];   // per core: one line pair's strip words between hashing and storing
@@ -620,19 +656,19 @@ static void slot_done(PushSlot *s) {   // its hashes describe fbuf unless anothe
   portEXIT_CRITICAL(&slotMux);
 }
 static inline uint32_t swap2(uint32_t w) { return (w & 0x00FF00FFu) << 8 | (w >> 8 & 0x00FF00FFu); }   // bswap16 per lane
-// `count` rows of scan lines d0, d1 (= d0 - one line) from strip words b, storing only what differs (lead: the first
-// row is the upper half of a 32-bit fbuf word).
-static inline void put_rows(uint16_t *d0, uint16_t *d1, const uint32_t *b, int lead, int count) {
+// `count` rows of scan lines d0, d1 (= d0 - one line) from strip words b, b + st, ..., storing only what differs (lead:
+// the first row is the upper half of a 32-bit fbuf word).
+static inline void put_rows(uint16_t *d0, uint16_t *d1, const uint32_t *b, int lead, int count, int st = 1) {
   if (lead) {
-    const uint32_t w = swap2(*b++);
+    const uint32_t w = swap2(*b); b += st;
     if (d0[0] != (uint16_t)w) d0[0] = (uint16_t)w;
     if (d1[0] != (uint16_t)(w >> 16)) d1[0] = (uint16_t)(w >> 16);
     d0++; d1++; count--;
   }
   uint32_t *e0 = (uint32_t *)d0, *e1 = (uint32_t *)d1;
   const int pairs = count >> 1;
-  for (int k = 0; k < pairs; k++, b += 2) {
-    const uint32_t w0 = swap2(b[0]), w1 = swap2(b[1]);
+  for (int k = 0; k < pairs; k++, b += 2 * st) {
+    const uint32_t w0 = swap2(b[0]), w1 = swap2(b[st]);
     const uint32_t x0 = (w0 & 0xFFFF) | w1 << 16, x1 = w0 >> 16 | (w1 & 0xFFFF0000u);
     if (e0[k] != x0) { e0[k] = x0; VERIFY_STORED(); }
     if (e1[k] != x1) { e1[k] = x1; VERIFY_STORED(); }
@@ -683,6 +719,13 @@ static void __attribute__((noinline)) turn_segs(uint16_t *line0, const uint16_t 
 #define GB_COLS 64   // columns (32 line pairs, 128 B of a strip row) per gather unit
 static_assert(2 * TILE_GATHER_ROWS * GB_COLS * 2 + TUBE_HEIGHT_MAX * 4 <= TILE_SCRATCH_FREE, "two gather units + a pair buffer fit the scratch");
 static_assert(SEG_PX <= TILE_GATHER_ROWS, "a unit is at most one segment");
+// The DMA reads PSRAM, not the cache: write back what the CPU drew into the strip (since step 9 only the strip lens and
+// the digits printed over it, run after the tiles; otherwise nothing: tile_strip_clean), in pieces so interrupts are
+// never off long on this core (the hours push shares core 0 with the refill ISR).
+static void strip_to_psram(const uint16_t *src, int rows) {
+  if (!tile_strip_clean(src)) for (size_t o = 0, e = (size_t)rows * PANEL_W * 2; o < e; o += 16384)
+    esp_cache_msync((uint8_t *)src + o, e - o < 16384 ? e - o : 16384, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
 // turn_segs with the strip rows of each unit gathered by DMA, on lane t's channel and scratch (0 / 1, tiles.h: the lane of
 // the strip's tube, which renders and pushes on that core). Same hashes, same skips, same stores; units in the order
 // (column block, segment).
@@ -696,11 +739,7 @@ static void __attribute__((noinline)) turn_segs_gather(int t, uint16_t *line0, c
 #ifdef PUSH_VERIFY
   verifyWords[xPortGetCoreID()] += LCD_V_RES * (n >> 1);
 #endif
-  // The DMA reads PSRAM, not the cache: write back what the CPU drew into the strip (since step 9 only the strip lens and
-  // the digits printed over it, run after the tiles; otherwise nothing: tile_strip_clean), in pieces so interrupts are
-  // never off long on this core (the hours push shares core 0 with the refill ISR).
-  if (!tile_strip_clean(src)) for (size_t o = 0, e = (size_t)rows * PANEL_W * 2; o < e; o += 16384)
-    esp_cache_msync((uint8_t *)src + o, e - o < 16384 ? e - o : 16384, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+  strip_to_psram(src, rows);
   uint8_t *const scr = tile_scratch(t);
   uint32_t *const unit[2] = {(uint32_t *)scr, (uint32_t *)(scr + TILE_GATHER_ROWS * GB_COLS * 2)};
   uint32_t *const buf = (uint32_t *)(scr + 2 * TILE_GATHER_ROWS * GB_COLS * 2);   // one pair's words of a segment
@@ -743,6 +782,84 @@ static void __attribute__((noinline)) turn_segs_gather(int t, uint16_t *line0, c
     }
   }
 }
+// Perf lever 1 (docs/lcd316-3tube-perf.md): the push by the render's change record (tiles.h TileDirty). fbuf holds the
+// tube's previous render in these face rows through the same strip offsets (turn_rows checks), so a word can differ only
+// in a column pair the record marks in a tile the segment reads. A unit (column block x segment) is gathered only if a
+// pair of it is marked, and only from its first to its last marked pair and from its first to its last row in a tile
+// with a mark in the block; only the marked pairs are stored (the words that differ), over those rows. No hash pass. One unit a push (refreshU, rotating: every unit within `units` pushes, ~2 s) is gathered
+// and compared whole: a pair the render's hash missed (a collision) cannot stay wrong on a still face.
+#define REC_BLOCKS ((LCD_V_RES + GB_COLS - 1) / GB_COLS)
+static_assert(GB_COLS == 64 && REC_BLOCKS == TILE_PAIR_WORDS && LCD_V_RES == PANEL_W, "a column block is one word of a record's pair bits");
+static_assert(TUBE_HEIGHT_MAX <= 255 && TILE_MAX <= 255, "rows and tiles fit a byte");
+static void __attribute__((noinline)) turn_segs_rec(int t, uint16_t *line0, const uint16_t *src, int rows, const int32_t *off, int b0, int n,
+                                                    const TileDirty &rec, unsigned refreshU, uint32_t *prof) {
+  (void)prof;
+  PP_T0(ps);
+  int16_t seg[SEG_MAX + 1]; int nseg = 0;   // segment k: rows [seg[k], seg[k + 1])
+  seg[0] = 0;
+  for (int r = SEG_PX - b0 % SEG_PX; r < n; r += SEG_PX) seg[++nseg] = (int16_t)r;
+  seg[++nseg] = (int16_t)n;
+  uint8_t tileOf[TUBE_HEIGHT_MAX];   // per face row the tile it shows (n <= TUBE_HEIGHT_MAX: turn_rows, slot offN)
+  uint32_t segT[SEG_MAX];            // per segment the tiles its face rows show
+  for (int r = 0; r < n; r++) tileOf[r] = (uint8_t)(off[r] / (PANEL_W * TILE_ROWS));
+  for (int k = 0; k < nseg; k++) {
+    uint32_t m = 0;
+    for (int r = seg[k]; r < seg[k + 1]; r++) m |= 1u << tileOf[r];
+    segT[k] = m;
+  }
+  strip_to_psram(src, rows);
+  const int units = REC_BLOCKS * nseg, ru = (int)(refreshU % (unsigned)units);
+  struct Unit { uint32_t pairs; uint8_t j, k, r0, cnt; };   // a unit to gather: block, segment, its marked pairs and rows
+  Unit list[REC_BLOCKS * SEG_MAX]; int nl = 0;
+  for (int j = 0, u = 0; j < REC_BLOCKS; j++) {
+    const int wpr = (LCD_V_RES - j * GB_COLS < GB_COLS ? LCD_V_RES - j * GB_COLS : GB_COLS) / 2;
+    for (int k = 0; k < nseg; k++, u++) {
+      uint32_t pm = 0;
+      for (uint32_t m = segT[k]; m; m &= m - 1) pm |= rec.bits[__builtin_ctz(m)][j];
+      int r0 = seg[k], r1 = seg[k + 1];
+      if (u == ru) pm = wpr == 32 ? ~0u : (1u << wpr) - 1;
+      else if (pm) {   // rows outside the first .. last one in a tile with a mark in this block: unchanged in every pair
+        while (!rec.bits[tileOf[r0]][j]) r0++;
+        while (!rec.bits[tileOf[r1 - 1]][j]) r1--;
+      }
+      if (pm) list[nl++] = {pm, (uint8_t)j, (uint8_t)k, (uint8_t)r0, (uint8_t)(r1 - r0)};
+    }
+  }
+  uint8_t *const scr = tile_scratch(t);
+  uint32_t *const unit[2] = {(uint32_t *)scr, (uint32_t *)(scr + TILE_GATHER_ROWS * GB_COLS * 2)};
+  auto start = [&](int i) {
+    const Unit &e = list[i]; const int lo = __builtin_ctz(e.pairs), w = 32 - __builtin_clz(e.pairs) - lo;
+    tile_gather_start(t, i & 1, (uint8_t *)unit[i & 1], src, off + e.r0, e.cnt, e.j * GB_COLS + 2 * lo, w * 4);
+  };
+  PP_ADD(1, ps);
+  uint32_t stored = 0;
+  if (nl) start(0);
+  for (int i = 0; i < nl; i++) {
+    PP_T0(pw);
+    tile_gather_wait(t);
+    PP_ADD(4, pw);
+    if (i + 1 < nl) start(i + 1);
+    PP_T0(pst);
+    const Unit &e = list[i];
+    const int a0 = e.j * GB_COLS, lo = __builtin_ctz(e.pairs), w = 32 - __builtin_clz(e.pairs) - lo;
+    const int r0 = e.r0, cnt = e.cnt, lead = (b0 + r0) & 1;
+    const uint32_t *const ub = unit[i & 1];   // cnt rows of w words: pairs lo .. lo + w - 1
+    for (uint32_t m = e.pairs; m; m &= m - 1) {
+      const int p = __builtin_ctz(m);
+      uint16_t *const d0 = line0 - (size_t)(a0 + 2 * p) * LCD_H_RES;
+      put_rows(d0 + r0, d0 - LCD_H_RES + r0, ub + (p - lo), lead, cnt, w);
+      stored++;
+    }
+    PP_ADD(2, pst);
+  }
+#ifdef PUSH_PROF
+  prof[3] += stored; prof[5] += nl; prof[6]++;
+#endif
+#ifdef PUSH_VERIFY
+  const int c = xPortGetCoreID();
+  verifyWords[c] += LCD_V_RES * (n >> 1); verifySegs[c] += LCD_V_RES / 2 * nseg; verifySkipped[c] += LCD_V_RES / 2 * nseg - stored;
+#endif
+}
 #endif   // PUSH_GATHER
 #else
 static bool push_slots_init() { return true; }
@@ -766,8 +883,10 @@ static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowM
   for (int r = 0; r < n; r++) { const int sr = cv.rowOf[b0 + r] - y0; off[r] = (rowMap ? rowMap[sr] : sr) * cv.W; }
 #if PUSH_SKIP
 #if PUSH_GATHER
-  int gatherT = -1;   // a strip: its tube's lane (render.cpp TUBE_LANE: hours 0, minutes and seconds 1), channel and slots
-  for (int i = 0; i < TUBE_COUNT; i++) if (src == strips[i]) gatherT = i ? 1 : 0;
+  // A strip: the lane (channel and slots, tiles.h) of the pushing core, which renders only that lane's tubes (render.cpp
+  // TUBE_LANE: hours 0 on core 0, minutes and seconds 1 on core 1) and never during its own push (main.cpp renderBoth).
+  int gatherT = -1;
+  for (int k = 0; k < STRIP_SETS; k++) for (int i = 0; i < TUBE_COUNT; i++) if (src == strips[k][i]) gatherT = xPortGetCoreID() ? 1 : 0;
   if (gatherT < 0) track = false;
 #endif
   PushSlot *const slot = slot_take(b0, n, track && &cv == &MAIN && (b0 % SEG_PX + n + SEG_PX - 1) / SEG_PX <= SEG_MAX);
@@ -779,7 +898,19 @@ static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowM
     uint32_t *const prof = nullptr;
 #endif
 #if PUSH_GATHER
-    turn_segs_gather(gatherT, line0, src, rows, off, b0, n, slot->hash, slot->known, slot->refresh++ & (SKIP_REFRESH - 1), prof);
+    // By the render's change record when fbuf holds exactly the render before it in these rows: this slot's last push was
+    // that render of the same tube (renders not pushed, `x`, `X`: a gap in seq), nothing has drawn here since (known:
+    // other pushes over these rows drop the slot), and every face row shows the same strip row (the lens row map). Else
+    // by hashes (forced when they are stale: the last push went by record).
+    const TileDirty *const rec = PUSH_BY_RECORD ? tile_dirty(src) : nullptr;
+    const bool byRec = rec && rec->valid && slot->known && slot->tube == rec->tube && slot->seq + 1 == rec->seq && rec->rows == rows
+                       && slot->offN == n && !memcmp(slot->off, off, (size_t)n * sizeof(int32_t));
+    if (byRec) turn_segs_rec(gatherT, line0, src, rows, off, b0, n, *rec, slot->refreshU++, prof);
+    else turn_segs_gather(gatherT, line0, src, rows, off, b0, n, slot->hash, slot->known && slot->hashed, slot->refresh++ & (SKIP_REFRESH - 1), prof);
+    slot->hashed = !byRec;
+    slot->tube = rec ? rec->tube : -1; slot->seq = rec ? rec->seq : 0;
+    slot->offN = (int16_t)(n <= TUBE_HEIGHT_MAX ? n : -1);
+    if (n <= TUBE_HEIGHT_MAX) memcpy(slot->off, off, (size_t)n * sizeof(int32_t));
 #else
     turn_segs(line0, src, off, b0, n, slot->hash, slot->known, slot->refresh++ & (SKIP_REFRESH - 1), pairBuf[xPortGetCoreID()], prof);
 #endif
@@ -818,7 +949,7 @@ static void turn_rows(const uint16_t *src, int y0, int rows, const int16_t *rowM
 }
 
 #ifdef PUSH_PROF
-void display_push_prof(uint32_t out[TUBE_COUNT][5], bool reset) { memcpy(out, pushProf, sizeof pushProf); if (reset) memset(pushProf, 0, sizeof pushProf); }
+void display_push_prof(uint32_t out[TUBE_COUNT][PUSH_PROF_N], bool reset) { memcpy(out, pushProf, sizeof pushProf); if (reset) memset(pushProf, 0, sizeof pushProf); }
 #endif
 const bool display_push_any_core = true;   // a CPU copy into fbuf; display_next_strips: always the same strips (one per tube)
 #ifdef PUSH_VERIFY
@@ -839,8 +970,8 @@ void display_wait_all(void) {}
 void display_push_rows(const uint16_t *fb, int y0, int y1) {
   for (int y = y0; y < y1; y += STRIP_ROWS) {
     int rows = min(STRIP_ROWS, y1 - y);
-    memcpy(strips[0], fb + (size_t)y * PANEL_W, (size_t)rows * PANEL_W * 2);
-    turn_rows(strips[0], y, rows);
+    memcpy(strips[0][0], fb + (size_t)y * PANEL_W, (size_t)rows * PANEL_W * 2);
+    turn_rows(strips[0][0], y, rows);
   }
 }
 

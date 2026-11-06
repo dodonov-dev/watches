@@ -19,6 +19,8 @@
 //      10:09:30)
 //   TUBE_COUNT 3 (layout.h): + the seconds tube (bottom; minutes in the middle), rendered on core 1 after minutes
 //   v  board and canvas: `board <name>[@<RENDER_H>] canvas <W>x<H> panel <W>x<H>` (tools pick the sim's layout by it)
+//   B0  reboot into fast mode (BLE off) now   B1  reboot into the BLE window   B  the mode (ble.h: every boot opens a
+//      BLE window, then reboots into fast mode)
 //   r  reboot
 #include <Arduino.h>
 #include <atomic>
@@ -27,6 +29,7 @@
 #include <Wire.h>
 #include <sys/time.h>
 #include "esp_heap_caps.h"
+#include "esp_private/sar_periph_ctrl.h"   // temperature_sensor_power_acquire / temp_sensor_get_raw_value (die temperature, `s`)
 #include "layout.h"
 #include "board.h"
 #include "display.h"
@@ -285,8 +288,8 @@ static FaceLayout shownLayout = {};
 // reused, so it still holds that frame), then renders minutes. The minutes tube shows one frame later than the
 // hours tube. 2026-10-28, user preset: 16.0 → 17.7 fps over the serial push after both renders (core 1, 18.8 ms).
 // Otherwise (AMOLED, one SPI DMA queue): the loop pushes both strips after both renders.
-// Three tubes: core 1 renders seconds after minutes (lane 1, render.cpp TUBE_LANE). Staggered: core 1 pushes the last
-// frame's minutes and seconds next to the hours render, and the hours push waits for those (pushesDone) so it runs
+// Three tubes: core 1 renders seconds after minutes (lane 1, render.cpp TUBE_LANE). Staggered: the pushes swap cores
+// (pend, below): core 1 pushes last frame's hours next to the hours render, core 0 last frame's minutes and seconds
 // next to core 1's renders. AMOLED: after the hours and minutes pushes are queued, the seconds tube renders into the
 // hours strip once its push has left it, then is pushed.
 // Priority 1 = same as loop(); far below the BT controller (23) and NimBLE host on the same core, and
@@ -328,12 +331,60 @@ static int hoursY0 = 0, hoursRows = 0;     // where this frame's hours strip goe
 // lensRows[1]. Dropped whenever something else drew the face or the strip (layout change, other faces, `x`).
 static bool minutesPending = false; static int minutesY0 = 0, minutesRows = 0;
 #if TUBE_COUNT == 3
-static int secondsY0 = 0, secondsRows = 0;   // strip[2]'s rows, pending with minutes (minutesPending)
-static std::atomic<bool> pushesDone{true};   // staggered: core 1's pushes of the frame are done (the hours push waits)
+// Staggered, three tubes (LCD): the pushes swap cores against the renders, one frame late for every tube. Core 1 pushes
+// last frame's hours strip, then renders minutes and seconds; core 0 renders hours, then pushes last frame's minutes and
+// seconds (after core 1's push: one push at a time, PSRAM-bound). The strips come in two sets (display_next_strips),
+// so a pushed strip is never the one its tube renders into. pend: last frame's strips, rows and lens row maps (copied:
+// the tube's own map may be rebuilt by its next render while the other core pushes). Dropped like minutesPending.
+// Loads (2026-11-05, 10-8-6): core 0 21.9 + 13.7 vs core 1 9.8 + 24.1 ms, was 31.7 / 37.8.
+struct PendingPush { const uint16_t *buf; int y0, rows; const int16_t *map; };
+static PendingPush pend[3]; static bool pendOn = false;
+static int16_t *pendMap = nullptr;               // 3 x TUBE_HEIGHT_MAX, PSRAM (setup)
+static std::atomic<bool> hoursPushDone{true};    // core 1 pushed last frame's hours strip (core 0's pushes wait for it)
+static bool workerPushMS = false;                // this frame the worker pushes pend[1], pend[2] after the hours render
+#endif
+static void dropPending() {   // something else drew the face or the strips
+  minutesPending = false;
+#if TUBE_COUNT == 3
+  pendOn = false;
+#endif
+}
+// One 50 Hz physics step (k = its index in the frame): clock targets, IMU filter, every tube's stepTube; records the
+// step's fizz inputs (FIZZ_SPLIT) for the per-core fizz runs.
+static void physStep(int k) {
+  demoOffset += PHYS_DT * (demoSpeed - 1);
+  if (sweepPeriod > 0) sweepPhase = fmod(sweepPhase + PHYS_DT / sweepPeriod, 1.0);
+  updateTimeTargets(PHYS_DT);
+  TiltInput in = have_imu ? imuFilter.step(rawTilt, effH) : TiltInput{0, 0, 0, 0};   // no px params
+  const uint32_t p0 = micros();
+  stepTube(tubeH, in, effH, PHYS_DT, TUBE_PX_SCALE(0));
+  stepTube(tubeM, in, effM, PHYS_DT, TUBE_PX_SCALE(1));
+#if TUBE_COUNT == 3
+  stepTube(tubeS, in, effS, PHYS_DT, TUBE_PX_SCALE(2));
+#endif
+  const uint32_t p1 = micros();
+  if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation};
+  else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation);   // AB_COMPARE only: two tubes
+#ifdef AB_COMPARE
+  abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
+#endif
+  const uint32_t fz = micros() - p1;
+  tubeStepUs += p1 - p0; fizzStepUs += fz; physSteps++;
+  if (fz > fizzStepMaxUs) fizzStepMaxUs = fz;
+}
+#if TUBE_COUNT == 3
+// Three tubes, staggered (LCD): the frame's physics steps run on core 0 at the start of the worker's job, next to core
+// 1's push of last frame's hours strip (which reads no tube state); core 1 waits for physDone before its fizz and renders.
+// Swinging the tilt the steps cost ~2.5 ms a frame (3 tubes, ~2 steps), which no longer sit in front of both renders.
+static int physPending = 0;                  // steps for the worker to run this frame (0: liquid_tick ran them)
+static std::atomic<bool> physDone{true};
 #endif
 static void renderWorker(void *) {
   for (;;) {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#if TUBE_COUNT == 3
+    if (physPending) { for (int k = 0; k < physPending; k++) physStep(k); physPending = 0; physDone.store(true, std::memory_order_release); }
+#endif
     if (FIZZ_SPLIT) runFizzSteps(0, workerFizzUs);
     uint32_t t0 = micros();
     renderOneTube(0, strip[0]);
@@ -341,11 +392,18 @@ static void renderWorker(void *) {
     workerUs = t1 - t0;
     if (STAGGER_PUSH) {
 #if TUBE_COUNT == 3
-      while (!pushesDone.load(std::memory_order_acquire)) {}   // core 1's pushes first: one push at a time (PSRAM-bound)
-#endif
+      uint32_t tp = micros();
+      if (workerPushMS) {   // last frame's minutes and seconds, next to core 1's renders, once its hours push is done
+        while (!hoursPushDone.load(std::memory_order_acquire)) {}
+        tp = micros();
+        for (int t = 1; t < 3; t++) display_push_strip_async(pend[t].buf, pend[t].y0, pend[t].rows, pend[t].map);
+      }
+      workerPushUs = micros() - tp;
+#else
       const uint32_t tp = micros();
       display_push_strip_async(strip[0], hoursY0, hoursRows, lensRows[0]);
       workerPushUs = micros() - tp;
+#endif
     }
     workerStackFree = uxTaskGetStackHighWaterMark(nullptr);
     xTaskNotifyGive(loopTask);
@@ -361,7 +419,7 @@ static void renderBoth() {
   if (lay != shownLayout) {                 // tubes moved: wipe the rows they used to cover
     display_wait_all();
     fb.fillScreen(0); display_push_frame(fb.buf);
-    shownLayout = lay; minutesPending = false;
+    shownLayout = lay; dropPending();
   }
 #if TUBE_COUNT == 3
   frameLayout = lay;
@@ -377,22 +435,31 @@ static void renderBoth() {
   hoursY0 = lay.yH; hoursRows = AB_FACE ? lay.Hm : lay.Hh;   // the A/B face shows the minutes tube in the hours slot
   render_fizz_prepare(effH);                    // the fizz masks, here on core 1: neither tube builds them while the other draws
 #if TUBE_COUNT == 3
-  pushesDone.store(!(STAGGER_PUSH && minutesPending), std::memory_order_release);
+  workerPushMS = STAGGER_PUSH && pendOn;
+  hoursPushDone.store(!workerPushMS, std::memory_order_release);
+  physDone.store(physPending == 0, std::memory_order_release);
 #endif
   xTaskNotifyGive(workerTask);                  // hours → core 0
   display_wait_all();                           // minutes strip free (overlaps the hours render)
   uint32_t t2 = micros();
   if (STAGGER_PUSH) {
-    if (minutesPending) {                       // last frame's minutes, next to the hours render
-      display_push_strip_async(strip[1], minutesY0, minutesRows, lensRows[1]);
 #if TUBE_COUNT == 3
-      display_push_strip_async(strip[2], secondsY0, secondsRows, lensRows[2]);   // and seconds
-      pushesDone.store(true, std::memory_order_release);
-#endif
+    if (pendOn) {                               // last frame's hours, next to the hours render
+      display_push_strip_async(pend[0].buf, pend[0].y0, pend[0].rows, pend[0].map);
+      hoursPushDone.store(true, std::memory_order_release);
       const uint32_t t = micros(); pushUs += t - t2; t2 = t;
     }
+#else
+    if (minutesPending) {                       // last frame's minutes, next to the hours render
+      display_push_strip_async(strip[1], minutesY0, minutesRows, lensRows[1]);
+      const uint32_t t = micros(); pushUs += t - t2; t2 = t;
+    }
+#endif
   }
   uint32_t fz1[5];
+#if TUBE_COUNT == 3
+  while (!physDone.load(std::memory_order_acquire)) {}   // core 0 steps the tubes first (physPending)
+#endif
   if (FIZZ_SPLIT) runFizzSteps(1, fz1);   // the minutes tube's fizz steps, next to the hours tube's on core 0
   t2 = micros();
   renderOneTube(1, strip[1]);
@@ -410,9 +477,16 @@ static void renderBoth() {
   uint32_t t4 = micros();
   if (STAGGER_PUSH) {
     pushUs += workerPushUs;
-    minutesPending = true; minutesY0 = lay.yM; minutesRows = lay.Hm;
 #if TUBE_COUNT == 3
-    secondsY0 = lay.yS; secondsRows = lay.Hs;
+    for (int t = 0; t < 3; t++) {   // this frame's strips: pushed next frame (rows and lens map as rendered now)
+      const int rows = lay.rows(t);
+      int16_t *const m = lensRows[t] ? pendMap + t * TUBE_HEIGHT_MAX : nullptr;
+      if (m) memcpy(m, lensRows[t], rows * sizeof(int16_t));
+      pend[t] = {strip[t], lay.top(t), rows, m};
+    }
+    pendOn = true;
+#else
+    minutesPending = true; minutesY0 = lay.yM; minutesRows = lay.Hm;
 #endif
   } else {
 #ifdef AB_COMPARE
@@ -514,20 +588,20 @@ static void report_fps() {
 #endif
   out.printf("\n");
 #if defined(PUSH_PROF) && defined(BOARD_LCD316)
-  { uint32_t k[TUBE_COUNT][5]; display_push_prof(k, true);
+  { uint32_t k[TUBE_COUNT][PUSH_PROF_N]; display_push_prof(k, true);
     for (int i = 0; i < TUBE_COUNT; i++) { const float n = k[i][0] ? (float)k[i][0] : 1;
-      out.printf("push-prof %d pushes %u  us hash %.0f store %.0f gather-wait %.0f  changed segs %.0f\n", i, (unsigned)k[i][0], k[i][1] / 240.0f / n,
-                 k[i][2] / 240.0f / n, k[i][4] / 240.0f / n, k[i][3] / n); } }
+      out.printf("push-prof %d pushes %u (by record %u)  us hash %.0f store %.0f gather-wait %.0f  changed segs %.0f  units %.1f\n", i, (unsigned)k[i][0],
+                 (unsigned)k[i][6], k[i][1] / 240.0f / n, k[i][2] / 240.0f / n, k[i][4] / 240.0f / n, k[i][3] / n, k[i][5] / n); } }
 #endif
 #ifdef TUBE_PROF
   const uint32_t k0frames = render_tube_profile(0)[0];
-  for (int i = 0; i < 2; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us), TU_* order
+  for (int i = 0; i < TUBE_COUNT; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us), TU_* order
     const uint32_t *k = render_tube_profile(i); const float n = k[0] ? (float)k[0] : 1, us = 240 * n;
     out.printf("tube-prof %c frames %u  us all %.0f pal %.0f back %.0f trprep %.0f trrows %.0f (fill %.0f shear %.0f zone %.0f) backing %.0f"
-               " body %.0f front %.0f glow %.0f film %.0f inset %.0f band %.0f bounds %.0f labels %.0f ticks %.0f digits %.0f fizz %.0f top %.0f ramp %.0f bandk %.0f palp %.0f palb %.0f tile %.0f\n",
-               i ? 'm' : 'h', (unsigned)k[0], k[1] / us, k[2] / us, k[3] / us, k[4] / us, k[5] / us, k[19] / us, k[20] / us, k[21] / us,
+               " body %.0f front %.0f glow %.0f film %.0f inset %.0f band %.0f bounds %.0f labels %.0f ticks %.0f digits %.0f fizz %.0f top %.0f ramp %.0f bandk %.0f palp %.0f palb %.0f tile %.0f hash %.0f\n",
+               "hms"[i], (unsigned)k[0], k[1] / us, k[2] / us, k[3] / us, k[4] / us, k[5] / us, k[19] / us, k[20] / us, k[21] / us,
                k[6] / us, k[7] / us, k[8] / us, k[9] / us, k[10] / us, k[11] / us, k[12] / us, k[13] / us, k[14] / us, k[15] / us,
-               k[16] / us, k[17] / us, k[18] / us, k[22] / us, k[23] / us, k[25] / us, k[24] / us, k[26] / us);
+               k[16] / us, k[17] / us, k[18] / us, k[22] / us, k[23] / us, k[25] / us, k[24] / us, k[26] / us, k[27] / us);
   }
   render_tube_profile_reset();
 #if TILE_RENDER
@@ -583,7 +657,7 @@ static void report_fps() {
 static void liquid_start() {
   fb.fillScreen(0);
   display_push_frame(fb.buf);
-  minutesPending = false;   // another face drew the strips / the face
+  dropPending();   // another face drew the strips / the face
   display_set_brightness(255);   // params.brightness is applied in the render LUTs
   updateTimeTargets(0);
   memset(frameIntervalHist, 0, sizeof(frameIntervalHist));
@@ -606,28 +680,12 @@ static void liquid_tick() {
   // physics at 50 Hz, catch up if a render took longer than one step
   uint32_t now = micros();
   int steps = 0;
-  while ((int32_t)(now - lastPhysUs) >= (int32_t)(1000000 / PHYS_HZ) && steps < 5) {
-    lastPhysUs += 1000000 / PHYS_HZ; steps++;
-    demoOffset += PHYS_DT * (demoSpeed - 1);
-    if (sweepPeriod > 0) sweepPhase = fmod(sweepPhase + PHYS_DT / sweepPeriod, 1.0);
-    updateTimeTargets(PHYS_DT);
-    TiltInput in = have_imu ? imuFilter.step(rawTilt, effH) : TiltInput{0, 0, 0, 0};   // no px params
-    const uint32_t p0 = micros();
-    stepTube(tubeH, in, effH, PHYS_DT, TUBE_PX_SCALE(0));
-    stepTube(tubeM, in, effM, PHYS_DT, TUBE_PX_SCALE(1));
+  while ((int32_t)(now - lastPhysUs) >= (int32_t)(1000000 / PHYS_HZ) && steps < 5) { lastPhysUs += 1000000 / PHYS_HZ; steps++; }
 #if TUBE_COUNT == 3
-    stepTube(tubeS, in, effS, PHYS_DT, TUBE_PX_SCALE(2));
+  if (STAGGER_PUSH) physPending = steps;   // the worker runs them (renderWorker)
+  else
 #endif
-    const uint32_t p1 = micros();
-    if (FIZZ_SPLIT) fizzIn[steps - 1] = {in.along, in.across, tubeH.agitation};
-    else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation);   // AB_COMPARE only: two tubes
-#ifdef AB_COMPARE
-    abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
-#endif
-    const uint32_t fz = micros() - p1;
-    tubeStepUs += p1 - p0; fizzStepUs += fz; physSteps++;
-    if (fz > fizzStepMaxUs) fizzStepMaxUs = fz;
-  }
+  for (int k = 0; k < steps; k++) physStep(k);
   fizzInN = steps;   // renderBoth steps the fizz (FIZZ_SPLIT)
   renderBoth();
   fizzInN = 0;
@@ -775,7 +833,7 @@ static void handleLine(char *line) {
         out.printf(ok ? "ok %s\n" : "unknown param %s\n", arg); }
       break; }
     case 'x': {  // dump state + every strip (hex) for offline comparison with the sim
-      display_wait_all(); display_next_strips(strip); minutesPending = false;   // strips re-rendered without the lens map
+      display_wait_all(); display_next_strips(strip); dropPending();   // strips re-rendered without the lens map
       const FaceLayout l = currentLayout();   // canvas W H, hours rows, tops, minutes rows (tube widths may differ)
 #if TUBE_COUNT == 3
       for (int t = 0; t < 3; t++) renderTube(t, tubeOf(t), effOf(t), paramsGen, strip[t], nullptr, l.top(t));
@@ -816,7 +874,7 @@ static void handleLine(char *line) {
       out.println("END");
       break; }
     case 'X': {  // deterministic sequence (seq.h) on the current params, frame hashes (tools/check_board_steps.py)
-      display_wait_all(); display_next_strips(strip); minutesPending = false;   // strips rendered without the lens map, as `x`
+      display_wait_all(); display_next_strips(strip); dropPending();   // strips rendered without the lens map, as `x`
       const bool seeded = render_seq_reset(0x5eedu);
       const FaceLayout l = currentLayout();
       const uint32_t t0 = millis();
@@ -855,10 +913,17 @@ static void handleLine(char *line) {
 #ifdef PIN_BAT_ADC
       out.printf(" bat %.2f V", analogReadMilliVolts(PIN_BAT_ADC) * 2 / 1000.0f);   // 200k / 200k divider
 #endif
+      out.printf(" temp %d C ble %s", (int)temp_sensor_get_raw_value(nullptr), ble_on() ? "on" : "off");
       out.println(); break;
     case 'v': out.printf("board %s canvas %dx%d panel %dx%d\n", BOARD_TAG, PANEL_W, PANEL_H, BOARD_PANEL_W, BOARD_PANEL_H); break;
+    case 'B':
+      if (arg[0] == '0') { out.println("rebooting into fast mode (BLE off)"); ble_request_fast(); }
+      else if (arg[0] == '1') { out.println("rebooting into the BLE window"); delay(50); ESP.restart(); }
+      else if (!ble_on()) out.println("mode fast (BLE off)");
+      else { const int left = ble_window_left_s(); if (left < 0) out.println("mode ble (connected)"); else out.printf("mode ble (window: fast mode in %d s)\n", left); }
+      break;
     case 'r': ESP.restart(); break;
-    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v r"); break;
+    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v B[0|1] r"); break;
     default: out.println("error unknown command"); break;
   }
 }
@@ -879,12 +944,16 @@ void setup() {
   dumpHex = (char *)heap_caps_malloc(DUMP_HEX_BYTES, MALLOC_CAP_SPIRAM);
   if (!dumpHex) out.println("FATAL: dump buffer alloc failed");
 #endif
-  const bool dispOk = display_init(), renderOk = render_init(), physOk = physics_init();
+  // Fast mode (BLE off this boot): the RAM Arduino released from the BT controller takes the face's hottest tables
+  // (render_init); the BLE window keeps them in PSRAM so BLE (and the PSRAM timing task) fit.
+  const bool dispOk = display_init(), renderOk = render_init(!ble_on()), physOk = physics_init();
   if (!dispOk) out.println("display init FAILED");
   if (!renderOk) out.println("render init FAILED (glyph pools / mark tables / film tables / lane table, PSRAM)");
   if (!physOk) out.println("physics init FAILED (wet-film buffers, PSRAM): no residue");
 #if TUBE_COUNT == 3
-  liquidOk = dispOk && renderOk && physOk;   // the seconds tube's state lives in these allocations: no face without them
+  pendMap = (int16_t *)heap_caps_malloc(3 * TUBE_HEIGHT_MAX * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  if (!pendMap) out.println("FATAL: pending lens map alloc failed");
+  liquidOk = dispOk && renderOk && physOk && pendMap;   // the seconds tube's state lives in these allocations: no face without them
 #endif
 #ifdef AB_COMPARE
   out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");
@@ -916,7 +985,9 @@ void setup() {
   show(BOOT_MODE);
   clockRestore();
   clockSec = clockNow();
-  ble_init("liquid-watch");
+  temperature_sensor_power_acquire();   // `s` reads the die temperature (shared with the PSRAM timing task)
+  if (ble_on()) ble_init("liquid-watch");
+  out.printf("mode: %s\n", ble_on() ? "ble window (B0 = fast mode now)" : "fast (BLE off; B1 = BLE window)");
   out.println("ready. ? for commands");
 }
 
@@ -932,6 +1003,7 @@ void loop() {
   while (Serial.available()) feedByte(Serial.read());
   for (int c; (c = ble_read()) >= 0;) feedByte((char)c);
   imu_poll();
+  ble_tick();
   paramsFlush();
   clockSaveTick();
   if (mode == 'l') liquid_tick(); else delay(1);

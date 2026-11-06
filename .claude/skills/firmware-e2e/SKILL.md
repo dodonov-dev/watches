@@ -94,6 +94,13 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
 - `python.exe "$(wslpath -w tools/ble-session.py)" s f` — same protocol over BLE from the Windows radio.
 
 ## Rules
+- BLE window / fast mode (2026-11-05, ble.h): every boot runs BLE for up to 3 min (15 s after a disconnect), then
+  reboots into fast mode (BLE off; the freed RAM holds the seconds tube and fizz masks). `s` ends `temp <C> ble on|off`;
+  `B0` = fast now, `B1` = window now, `B` = mode. bench.py switches a board in its window to fast mode first
+  (`--ble-window` benches the window); a raw `f` right after a flash measures the window.
+- A wedged chip (silent serial, esptool "No serial data received") needs the user's BOOT + RST; after a manual download
+  entry the app only starts after RST / replug (esptool's USB reset keeps the latched straps). Windows device.py
+  bridges outlive a killed WSL parent and hold the port: stop them by PID (KAIZEN 2026-11-05).
 - Pin a preset (`--preset`) whenever before/after straddle a Params change: a flash that changes
   `PARAMS_SCHEMA_CRC` resets NVS to presets/1.json, so the two sides would otherwise bench different looks.
   `--ref` across a schema change resets NVS twice (the tuned params are lost either way).

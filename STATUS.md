@@ -1,6 +1,23 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-04 (wall band over the contents; LCD on 9-7-5)_
+_Last update: 2026-11-06 (LCD 3 tubes 10-8-6: 27.6 fps in motion at 80 MHz, BLE window + fast mode)_
+
+## LCD 3 tubes 10-8-6 mm: faster in motion, BLE window + fast mode (2026-11-05/06; docs/lcd316-3tube-perf.md)
+
+- The board's look saved as firmware/bench/lcd-1105.json. Same session, pinned / swinging tilt (swing.py 60 s):
+  baseline 31.5 / 22.9 fps -> committed (80 MHz) 40.7 / 27.6; 30 / 30 reboots fine.
+- I-cache 32 KB, NimBLE heap in PSRAM (one connection), libs -O2 (platformio.ini custom_sdkconfig).
+- Pushes swapped between cores, strips double-buffered (main.cpp renderBoth, pend[]); physics on core 0.
+- Push by the render's change records (lever 1: tile hashes, records per strip buffer; push 10 -> 3 ms pinned).
+- Motion stages exact (lever B: thin residue rows, fill block skip, palette row memo): swing +1.6 fps.
+- BLE window + fast mode (ble.h): BLE on after every boot until 3 min without a central / 15 s after a disconnect, then
+  reboot into fast mode (BLE memory released, seconds tube + fizz masks internal, heap ~25 KB); `B0` / `B1` / `B`, `s`
+  shows temp and ble on|off; bench.py switches to fast mode. BLE connect tested in the window (heap 9 KB connected).
+  Same on the AMOLED (shared code).
+- Shelved: flash + PSRAM 120 MHz (48.5 / 31.8 fps, but the chip wedged at resets; BACKLOG), GDMA bounce refill
+  (docs/lcd316-refill-dma.patch), ESP-IDF's PSRAM temperature retuning (wedged once).
+- Host checks identical to HEAD (render frames, stepped sequences 80 presets); TUBE_VERIFY / PUSH_VERIFY bad 0;
+  AMOLED builds (76256 B, as before). Faster boards surveyed: docs/devkit-survey.md (ESP32-P4 kits first).
 
 ## Wall band over the contents (2026-11-04, uncommitted)
 

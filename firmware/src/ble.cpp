@@ -1,6 +1,20 @@
 #include "ble.h"
+#include "esp_system.h"
+// The boot's mode: a one-shot flag in RTC memory (survives the software reset, garbage after power-on). Read in
+// bleInUse(), which Arduino's initArduino calls before setup: false = it releases the BT controller's memory to the heap.
+RTC_NOINIT_ATTR static uint32_t fastBootMagic;
+static const uint32_t FAST_BOOT_MAGIC = 0x66617374;
+static int8_t bootBle = -1;   // decided once, at the first ask
+static bool decideBle() {
+  if (bootBle < 0) { bootBle = fastBootMagic == FAST_BOOT_MAGIC ? 0 : 1; fastBootMagic = 0; }
+  return bootBle;
+}
+void ble_request_fast() { fastBootMagic = FAST_BOOT_MAGIC; delay(50); esp_restart(); }
 #ifdef NO_BLE   // perf-baseline build (see tools/e2e.sh --no-ble): USB serial only
 DualOut out;
+bool ble_on() { return false; }
+void ble_tick() {}
+int ble_window_left_s() { return -1; }
 void ble_init(const char *) {}
 int ble_read() { return -1; }
 size_t DualOut::write(uint8_t c) { return Serial.write(c); }
@@ -19,6 +33,20 @@ static volatile uint16_t rxHead = 0, rxTail = 0;  // written on the NimBLE task,
 static uint8_t txBuf[244];
 static size_t txLen = 0;
 static volatile uint16_t peerMtu = 23;
+static volatile bool everConnected = false; static volatile uint32_t lastSeenMs = 0;   // the window (ble_tick)
+// Arduino's hook (esp32-hal-bt.c, weak): BT memory stays reserved only on a boot that runs BLE.
+extern "C" bool bleInUse(void) { return decideBle(); }
+bool ble_on() { return decideBle(); }
+int ble_window_left_s() {
+  if (!ble_on() || connected) return -1;
+  const uint32_t limit = everConnected ? BLE_GRACE_S * 1000u : BLE_WINDOW_S * 1000u, since = everConnected ? millis() - lastSeenMs : millis();
+  return since >= limit ? 0 : (int)((limit - since + 999) / 1000);
+}
+void ble_tick() {
+  if (!ble_on()) return;
+  if (connected) { lastSeenMs = millis(); return; }
+  if (ble_window_left_s() == 0) { Serial.println("ble: window over, rebooting into fast mode (BLE off)"); ble_request_fast(); }
+}
 
 static size_t txMax() { size_t m = peerMtu > 3 ? peerMtu - 3 : 20; return m < sizeof(txBuf) ? m : sizeof(txBuf); }
 
@@ -29,7 +57,10 @@ static void txFlush() {
 
 struct ServerCb : NimBLEServerCallbacks {
   void onConnect(NimBLEServer *, NimBLEConnInfo &ci) override { connected = true; peerMtu = ci.getMTU(); Serial.printf("ble: connect mtu %u\n", peerMtu); }
-  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int reason) override { connected = false; txLen = 0; Serial.printf("ble: disconnect %d\n", reason); NimBLEDevice::startAdvertising(); }
+  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int reason) override {
+    connected = false; txLen = 0; everConnected = true; lastSeenMs = millis();   // BLE_GRACE_S to come back
+    Serial.printf("ble: disconnect %d\n", reason); NimBLEDevice::startAdvertising();
+  }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo &) override { peerMtu = mtu; Serial.printf("ble: mtu %u\n", mtu); }
 };
 struct RxCb : NimBLECharacteristicCallbacks {

@@ -596,11 +596,22 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 
 ### Exact kernel levers (backlog, ~0.2-1 ms each)
 - Exact inline divide (div0.s / divn.s, like sqrtExact): buildPalette (~1.0 ms a tube per light change: cosf,
-  ~6 __divsf3, 4 q() a row), drawBubble's 4-5 __divsf3 a bubble, the 3e setup.
+  ~5 __divsf3 a row, of them u now from PalCache), drawBubble's 4-5 __divsf3 a bubble, the 3e setup. libgcc's
+  __divsf3 already is that sequence: an inline copy saves only the call (~15 cycles), not the ~25-op chain.
+  buildPalette also: cosf is skippable where |asinY - lightRad| > pi/2 + 1e-5 (lam 0: ~15 % of the rows at 22.5 deg);
+  rowK's divide is memoisable on (rows[y], lmax) like the band rows (~90 % of rows keep their 565 while swinging).
 - Ramps (soft edge + glow) are bound by their per-pixel float alpha chain (~100 cycles): rows with bitwise-equal edges
   (symmetric halves of a level tube) could share one T run (memo keyed on ex and the frame's terms); pinned, ~0.6 ms a core.
-- Residue zone (~2 ms a tube swinging, ~300 cycles a px) recomputes tint.at(T) per px: per-row T -> colour memo
-  (stamped, PSRAM), ~10 %.
+- Residue zone (~2 ms a tube swinging, ~330 cycles a px): thin rows / segments (no coat shows, lever B) take the film
+  only. Left on the other ~45 %: per-row T -> colour memo (stamped, PSRAM) hits 72 % of the writes but only ~38 % of the
+  px write: ~4 %; a sh == 0 shortcut (sample column x itself, no floor / interpolation, exact) on ~40 % of the px: ~5 %.
+  The sheared spans of a non-thin row could take residueZones' per-segment bound too (skip traceShearRow).
+- Residue fill LUT: a non-thin row builds ~29 at() + ~72 lutI entries (~2k cycles): ~0.28 ms a frame on the minutes
+  core swinging. Lazy lutI (stamped) or incremental channel indices.
+- Trace prep (trprep) measures 0.7-0.8 ms a tube swinging, but its loops count ~60-80 k cycles (~135-485 dirty
+  columns of 820 a frame): the rest is likely cache misses (drawTube's flash code once a frame, PSRAM dirty / streak
+  tables). Fusing traceBlur's 4 passes into one lagged pass (dirty(d) = last change >= d - 4) saves only ~0.05 ms.
+- IRAM: traceBlur (~830 B) runs once a frame a tube; in flash it would give that back at a few I-cache misses a call.
 - Disc kernel ~7 us a row on the hours core for ~4-5 px (AA root ~90 cycles, blend ~130, tests ~100): two px a step to
   overlap the root chains, 1-iteration bounds for chord / core / reach (conservative margins).
 - 3e band kernel (bandRow) ~280 cycles a px: first layer's premultiplied sum lazily (exact: first P = C a, A = a),
@@ -706,3 +717,43 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Width cap 10 mm comes from MarkPlan's int8 rows (TUBE_HEIGHT_MAX <= 127; 10.4 mm max at 320 rows). Wider: int16 rows.
 - Three-tube TUBE_HEIGHT_MAX is still sized for tubeHeight 80 at the widest tube even where its share cap is lower.
 - Two pio builds of lcd316 at once (two worktrees) break each other in packages-lcd316 (CMake: no such file 'LICENSE').
+
+## New-machine setup (2026-11-05)
+- pioarduino platform 55.03.311 + the latest pioarduino core (6.2.0.post1, installed into ~/.platformio/penv by the
+  platform's penv_setup) disagree on tool-scons (platform 4.8.1, core 4.11.1): the platform deletes the core's copy
+  mid-build (`No module named 'SCons.Tool.FortranCommon'`). Fix used: `uv pip install --python ~/.platformio/penv/bin/python
+  pioarduino==6.1.19`. Pin it in the setup notes (docs/lcd316-perf-plan.md "New machine setup").
+- penv needs a Python with ensurepip (Ubuntu's lacks python3-venv): pio installed via `uv tool install --python 3.12
+  --python-preference only-managed platformio`. tools/pkgdir.sh copies ~/.platformio/packages, which a fresh pioarduino
+  setup never creates (tools live in ~/.platformio/tools): an empty packages-lcd316 dir works.
+- No Windows Python on the corporate box (winget source blocked): a uv venv at C:\Users\<user>\lwtools\py (pyserial,
+  esptool) plus a `~/.local/bin/python.exe` shim to it serves device.py's bridge and flash-win.sh.
+
+## LCD 3-tube perf (2026-11-05, docs/lcd316-3tube-perf.md)
+- Bounce refill by GDMA (ISR starts an fbuf -> bounce-buffer M2M copy; pushes write fbuf back per block): at 80 MHz the
+  renders got ~3 ms faster a core (no fbuf streaming through the D-cache) but the push ~5 ms slower (gathers behind the
+  refill DMA on PSRAM + esp_cache_msync walks); at flash + PSRAM 120 MHz the build wedged at boot (no serial, no USB
+  reset into download; BOOT + RST needed). Removed; patch: docs/lcd316-refill-dma.patch (-DREFILL_DMA=1).
+- Push hash chain (display_lcd316.cpp turn_segs / turn_segs_gather: h = (h ^ w) K, h ^= h >> 15) is weak on structured
+  2-word changes: host scenes, 4.6 M changed 4-word units: its low 20 bits collided 14,286x (ideal 4.4), the whole hash
+  1x (2 words, 1-3 high bits each). The change records' round (x K1, x ^= x >> 16, x K2; render.cpp tileHashes) is ideal.
+  Pushes without a record (stripLens looks, the first push after a gap) still hash the old way: switch to that round.
+- Change records (lever 1): swinging, the render-side tile hashes (+2.2 ms hours core, +2.9 m + s; pinned +1.5 / +2.5)
+  cancel the push saving (11.9 -> 6.6 ms): fps flat (~29.3), pinned +2.2 (44.3 -> 46.5). The push is now mostly fbuf
+  stores (5.8 ms swinging, 2 lines per changed pair-segment; same as before). Rebalance next: all three pushes on core
+  0 after the hours render (core 1: render m + s only; swing ~30 / ~30 by the profile).
+- Record proofs on the host (scratch check_dirty.py / check_dirty_seq.py: bits == changed (pair, tile) units, every
+  preset through seq.h, lens maps handed out): could become check_fizz_steps.py --records.
+- Free internal heap with the records: boot 456 B, after a swing 188 (base 504-524 / 256-272; +64 B static).
+- -DTUBE_PROF -DPUSH_PROF builds of today's tree (c2 + 120 MHz + physics on core 0) boot-loop: `BLE_INIT: Malloc
+  failed`, then `reset int-wdt` (no TUBE_PROF profile possible); esptool first "No serial data received", the next try
+  flashed. PUSH_PROF alone boots. After flashing, the IMU read exactly 0 once (`r` fixed it).
+- CONFIG_SPIRAM_TIMING_TUNING_POINT_VIA_TEMPERATURE_SENSOR (120 MHz octal PSRAM retuning task, flash vendor 0x20 here):
+  the board wedged ~3 min into a swing bench with it (no serial, no USB reset into download); never without it at
+  120 MHz (hours of runs). Not reproduced (each wedge costs the user BOOT + RST); left off. Retuning live MSPI timing
+  under heavy GDMA PSRAM traffic is the suspect.
+- After a manual BOOT + RST, esptool's USB-JTAG reset leaves the S3 in ROM download mode (straps latched): the app only
+  starts after RST (or a replug). `esptool --before no-reset chip-id` connects = still in download mode.
+- device.py's Windows bridge (python.exe --bridge COMx) outlives its WSL parent when that is killed (e.g. `timeout`)
+  and holds the port ("Access is denied" / "port is busy"); stop it by PID (Get-CimInstance Win32_Process ...).
+  device.py could kill its bridge on SIGTERM / atexit.

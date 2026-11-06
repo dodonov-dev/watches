@@ -30,3 +30,13 @@ number (now angleTiltGain / angleMax; vertical mode uses the real tilt up to 45Â
 - Connection over Wi-Fi? How? Strich/QR displayed?
 - App? Or just BLE/Wi-Fi?
 - Softened metall ball to fill weight shift when tilting
+
+## Firmware / ESP-IDF
+- LCD flash + PSRAM 120 MHz: +25 % fps (3 tubes swinging 27.6 -> 31.8), but the chip wedged at resets (esp_restart,
+  esptool reset, one boot): reproduce with reboot loops, halt the wedged chip over USB-JTAG (OpenOCD) to see where it
+  hangs; fix or report upstream (docs/lcd316-3tube-perf.md "Wedges at 120 MHz", KAIZEN 2026-11-05)
+- ESP-IDF upstream issue: esp_restart_noos (IDF 5.5.5) does not wait for a running D-cache preload before the MSPI
+  reset (hang until the RTC WDT; worked around here by a shutdown handler); the stock RGB LCD driver's bounce refill
+  preloads the same way (KAIZEN "Robustness / parity")
+- LCD 3 tubes swinging at 80 MHz: ~3 ms a frame short of 30 fps (27.6); levers in KAIZEN (render-side hash, 64-B tile
+  bursts, residue / palette leftovers)

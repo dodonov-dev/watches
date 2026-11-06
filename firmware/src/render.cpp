@@ -84,8 +84,9 @@ static inline RGB hexToRgb(uint32_t v) { return { (float)((v >> 16) & 0xff), (fl
 static inline RGB mix(RGB a, RGB b, float t) { return { a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t }; }
 static inline RGB scale(RGB a, float k) { return { a.r * k, a.g * k, a.b * k }; }
 static inline uint16_t rgb565(int r, int g, int b) { return (uint16_t)(((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3)); }
+// (int)jround(v) of a clamped channel: v + 0.5 lies in [0.5, 255.5] (or is NaN, both trunc it), where floor is trunc.
 static inline uint16_t q(RGB c) {
-  return rgb565((int)jround(clampf(c.r, 0, 255)), (int)jround(clampf(c.g, 0, 255)), (int)jround(clampf(c.b, 0, 255)));
+  return rgb565((int)(clampf(c.r, 0, 255) + 0.5f), (int)(clampf(c.g, 0, 255) + 0.5f), (int)(clampf(c.b, 0, 255) + 0.5f));
 }
 static inline RGB to888(uint16_t c) {
   int r5 = (c >> 11) & 0x1f, g6 = (c >> 5) & 0x3f, b5 = c & 0x1f;
@@ -150,6 +151,7 @@ struct ResidueTint {
 // noinline: inside drawTube the loop shared a register file with hundreds of locals and spilled every
 // iteration; on its own it stays in registers.
 #define TRACE_LUT 257   // T 0..256; PSRAM, one per tube (render_init)
+#define TRACE_BLK 16    // columns per traceFillLutI skip block (TraceMemo::blkMax)
 #ifndef TUBE_BAND
 #if TILE_RENDER
 #define TUBE_BAND TILE_ROWS   // a band is a tile (tiles.h): internal RAM, copied out when done
@@ -169,6 +171,47 @@ void tile_begin(int, uint16_t *, int) {}
 void tile_put(int idx, int slot, uint16_t *dst, int rows) { memcpy(dst, hostTile[idx & 1][slot & 1], (size_t)rows * PANEL_W * 2); }
 void tile_end(int) {}
 const uint32_t *tile_prof(int) { static const uint32_t z[5] = {}; return z; }
+#endif
+#if TILE_RENDER
+// The change record of one finished tile (tiles.h TileDirty): per column pair p the hash of its `rows` words (the tile's
+// strip rows; a word = columns 2p, 2p + 1) against hash[p], the tube's last hashed render of this tile; a pair that
+// differs takes the new hash and sets bit p % 32 of bits[p / 32]. Per word but the last h = F(h ^ w), F(x) = x K1, x ^= x
+// >> 16, x K2; the last word only h ^= w (F is a bijection: it would collide the same). A bijection per word, so one
+// changed word always changes the hash; F mixes every bit into every other (the push's chain, x K, x ^= x >> 15, keeps a
+// high-bit change in a few high bits: host scenes 2026-11-05, 4.6 M changed 4-word units, its low 20 bits collided
+// 14,286 times and the whole hash once (2 words, 1-3 bits each), F's 1 and 0 times; 4.4 expected of an ideal 20 bits).
+// A collision left is repaired by the push's rolling refresh. Two pairs at a time: independent chains overlap the
+// multiplies' latency. Reads the slot while its copy runs.
+static_assert(TILE_ROWS == 4 && TILE_PAIRS % 2 == 0, "tileHashes: 4-row tiles, pairs two at a time");
+static void __attribute__((noinline)) tileHashes(const uint32_t *tile, int rows, uint32_t *hash, uint32_t *bits) {
+  constexpr int P = TILE_PAIRS; constexpr uint32_t K1 = 0x9E3779B1u, K2 = 0x85EBCA6Bu, H0 = 0x811C9DC5u;
+#define TH_ROUND(h, w) do { h = ((h) ^ (w)) * K1; h ^= h >> 16; h *= K2; } while (0)
+  for (int j = 0; j < TILE_PAIR_WORDS; j++) {
+    const int p0 = 32 * j, p1 = p0 + 32 < P ? p0 + 32 : P;
+    uint32_t m = 0;
+    if (rows == TILE_ROWS) {   // one pointer a row (1,640 B apart: past l32i's offsets), the pair's bit kept shifted
+      const uint32_t *w0 = tile + p0, *w1 = w0 + P, *w2 = w1 + P, *w3 = w2 + P;
+      uint32_t *hp = hash + p0, bit = 1;
+      for (int n = (p1 - p0) >> 1; n > 0; n--, w0 += 2, w1 += 2, w2 += 2, w3 += 2, hp += 2, bit <<= 2) {
+        uint32_t a = H0, b = H0;
+        TH_ROUND(a, w0[0]); TH_ROUND(b, w0[1]);
+        TH_ROUND(a, w1[0]); TH_ROUND(b, w1[1]);
+        TH_ROUND(a, w2[0]); TH_ROUND(b, w2[1]);
+        a ^= w3[0]; b ^= w3[1];
+        if (a != hp[0]) { hp[0] = a; m |= bit; }
+        if (b != hp[1]) { hp[1] = b; m |= bit << 1; }
+      }
+    }
+    else for (int p = p0; p < p1; p++) {   // the tube's last tile, short of TILE_ROWS
+      uint32_t h = H0;
+      for (int r = 0; r + 1 < rows; r++) TH_ROUND(h, tile[r * P + p]);
+      h ^= tile[(rows - 1) * P + p];
+      if (h != hash[p]) { hash[p] = h; m |= 1u << (p - p0); }
+    }
+    bits[j] = m;
+  }
+#undef TH_ROUND
+}
 #endif
 // -DTILE_CLIP_CHECK (tiled builds, board and host): every strip write of drawTube (and the reads around it) is checked
 // against the memory the render may touch now: the band's tile slot during a tile, the strip after the band loop. A
@@ -203,18 +246,27 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillLut(uint16_t *row, cons
 }
 // The same fill with the colour indexed by i = (A K + 2^15) >> 16 (depthT's phi index, clamped at 256) instead of T:
 // lutI[i - iZ] = the colour of T(i) for i in [iZ, i1]; T(i) is non-decreasing in i (FILM_PHI is), so T > 0 exactly
-// from iZ on. Saves depthT's phi load and gain multiply per pixel (step 6).
+// from iZ on. Saves depthT's phi load and gain multiply per pixel (step 6). With no wrap of A K over the span and
+// iZ >= 1, "A != 0 and i >= iZ" is exactly A >= aMin = ceil((iZ 2^16 - 2^15) / K): a column below costs one compare,
+// and a TRACE_BLK block whose largest coat (blkMax, traceBlur) is below aMin one compare in all (the thin coat between
+// the deposits, ~half the minutes tube's residue columns while it swings).
 TUBE_IRAM static void __attribute__((noinline)) traceFillLutI(uint16_t *row, const uint16_t *traceA, int x0, int x1, uint32_t K, int iZ,
-                                                     const uint16_t *lutI) {
-  for (int x = x0; x < x1; x++) {
-    const uint32_t A = traceA[x];
-    if (!A) continue;
-    uint32_t i = (A * K + 32768u) >> 16; if (i > 256) i = 256;
-    if ((int)i >= iZ) row[x] = lutI[i - iZ];
+                                                     uint32_t aMin, const uint16_t *blkMax, const uint16_t *lutI) {
+  for (int x = x0; x < x1;) {
+    const int b = (unsigned)x / TRACE_BLK, e = (b + 1) * TRACE_BLK, xe = e < x1 ? e : x1;
+    if (blkMax[b] < aMin) { x = xe; continue; }
+    for (; x < xe; x++) {
+      const uint32_t A = traceA[x];
+      if (A < aMin) continue;
+      uint32_t i = (A * K + 32768u) >> 16; if (i > 256) i = 256;
+      row[x] = lutI[i - iZ];
+    }
   }
 }
+// iZ0: the first phi index of a visible depth (T > 0) at this traceAmount (drawTube, per frame); blkMax: TraceMemo's.
 TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, const uint16_t *traceA, int x0, int x1, int x2, int x3,
-                                                    const ResidueTint &tint, int aLo, int aHi, uint16_t *lut) {   // lut: 2 x TRACE_LUT entries, the tube's own
+                                                    const ResidueTint &tint, int aLo, int aHi, int iZ0, const uint16_t *blkMax,
+                                                    uint16_t *lut) {   // lut: 2 x TRACE_LUT entries, the tube's own
   const ResidueTint t = tint;
   const int Tlo = t.depthT((uint32_t)aLo), Thi = t.depthT((uint32_t)aHi);
   const int n = (x1 > x0 ? x1 - x0 : 0) + (x3 > x2 ? x3 - x2 : 0);
@@ -222,16 +274,18 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, cons
   const uint64_t qLo = (uint64_t)(uint32_t)aLo * t.K + 32768u, qHi = (uint64_t)(uint32_t)aHi * t.K + 32768u;
   if (aHi >= aLo && qHi < (1ull << 32) && n > 0) {
     const int iLo = (int)(qLo >> 16) > 256 ? 256 : (int)(qLo >> 16), i1 = (int)(qHi >> 16) > 256 ? 256 : (int)(qHi >> 16);
-    int iZ = iLo;
     auto Ti = [&](int i) { const int T = ((i >= 256 ? 256 : t.phi[i]) * t.G + 128) >> 8; return T < 256 ? T : 256; };   // depthT from i
-    while (iZ <= i1 && Ti(iZ) == 0) iZ++;
+    // the first i >= iLo of T > 0 (T(i) non-decreasing, 0 exactly below iZ0)
+    const int iZ = iLo > iZ0 ? iLo : iZ0;
+    if (iZ > i1) return;   // every pixel of the spans takes T 0: nothing to write (the paths below write nothing either)
     if (n > (i1 - iZ + 1) + (Thi - Tlo + 1)) {
-      if (iZ > i1) return;   // every pixel of the spans takes T 0: nothing to write
       uint16_t *const lutI = lut + TRACE_LUT;
-      for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(t.at(T)) : 0;
-      for (int i = iZ; i <= i1; i++) lutI[i - iZ] = lut[Ti(i) - Tlo];
-      traceFillLutI(row, traceA, x0, x1, t.K, iZ, lutI);
-      traceFillLutI(row, traceA, x2, x3, t.K, iZ, lutI);
+      // T(i) runs through [T(iZ), Thi] non-decreasing: one colour per depth reached, as lut[T - Tlo] held it
+      uint16_t c = 0;
+      for (int i = iZ, Tp = -1; i <= i1; i++) { const int T = Ti(i); if (T != Tp) { Tp = T; c = __builtin_bswap16(t.at(T)); } lutI[i - iZ] = c; }
+      const uint32_t aMin = ((uint32_t)iZ * 65536u - 32768u + t.K - 1) / t.K;
+      traceFillLutI(row, traceA, x0, x1, t.K, iZ, aMin, blkMax, lutI);
+      traceFillLutI(row, traceA, x2, x3, t.K, iZ, aMin, blkMax, lutI);
       return;
     }
   }
@@ -690,16 +744,26 @@ static inline float ease(float t) { const float s = clampf(t, 0, 1); return 1 - 
 // (noinline): inline, its ~40 live values spilled every pixel. The same expressions, in the same order.
 // The residue blur's cross-frame memo (drawTube, step 6): the key of the last traceA (filmV; the columns computed
 // [a0, a1) and read [c0, c1) of traceRaw) and the per-frame dirty flags. PSRAM, one per tube (render_init).
-struct TraceMemo { bool valid; float filmV; int a0, a1, c0, c1, aLo, aHi; uint8_t dirty[TUBE_LENGTH_PX]; };
+// blkMax: the largest traceA of each TRACE_BLK-column block over [a0, a1) (traceFillLutI's skip test).
+struct TraceMemo { bool valid; float filmV; int a0, a1, c0, c1, aLo, aHi; uint8_t dirty[TUBE_LENGTH_PX];
+                   uint16_t blkMax[(TUBE_LENGTH_PX + TRACE_BLK - 1) / TRACE_BLK]; };
+// mode (a segment's: residueRowMode / residueZones): on a thin row or segment every residue sample has depthF + 0.5 < 1,
+// so T = (int)(fmx(dF, fw) + 0.5) is (int)(fw + 0.5) (fw >= dF wherever that shows, else both give 0): the sampling goes,
+// and with it the shift (it only moves the sample), and the film term of a side whose term is exactly +0 on the row.
 struct ZoneRow {
   const uint16_t *traceA; const ResidueTint *tint;
   float ex, exL, hw, invSoftW, xm, invBW, invN, shL, shR, invZL, invZR, etaL, etaR, kRow, visL, visR;
   int softW, xrL, xr, a0, a1; bool rowPlain;
+  // the segment modes' inputs (residueRowMode / residueZones): the span's largest coat, trZ, TraceMemo::blkMax, and the
+  // two zone segments [zl0, zl1) and [zr0, zr1)
+  int aHi, trZ; const uint16_t *blkMax; int zl0, zl1, zr0, zr1;
 };
-TUBE_IRAM static void __attribute__((noinline)) traceZoneRow(uint16_t *row, int z0, int z1, const ZoneRow &z) {
+TUBE_IRAM static void __attribute__((noinline)) traceZoneRow(uint16_t *row, int z0, int z1, const ZoneRow &z, int mode) {
   const ResidueTint &tint = *z.tint; const uint16_t *traceA = z.traceA;
   const float ex = z.ex, exL = z.exL, hw = z.hw, invSoftW = z.invSoftW, xm = z.xm, invBW = z.invBW, invN = z.invN;
-  const float shL = z.shL, shR = z.shR, invZL = z.invZL, invZR = z.invZR, etaL = z.etaL, etaR = z.etaR, kRow = z.kRow;
+  const bool thin = mode & 1;
+  const float shL = thin ? 0.0f : z.shL, shR = thin ? 0.0f : z.shR, invZL = z.invZL, invZR = z.invZR, kRow = z.kRow;
+  const float etaL = thin && !(mode & 2) ? 0.0f : z.etaL, etaR = thin && !(mode & 4) ? 0.0f : z.etaR;
   const float visL = z.visL, visR = z.visR;
   const int softW = z.softW, xrL = z.xrL, xr = z.xr, a0 = z.a0, a1 = z.a1; const bool rowPlain = z.rowPlain;
   for (int x = z0; x < z1; x++) {
@@ -717,12 +781,55 @@ TUBE_IRAM static void __attribute__((noinline)) traceZoneRow(uint16_t *row, int 
     float sh = 0, fw = 0;
     if (bt < 1) { const float k = 1 - bt, wN = ease(oL * invN); if (shL != 0) sh += k * shL * ease(oL * invZL); if (etaL > 0) fw += k * filmRowT(etaL * wN, kRow) * wN * visL; }
     if (bt > 0) { const float wN = ease(oR * invN); if (shR != 0) sh += bt * shR * ease(oR * invZR); if (etaR > 0) fw += bt * filmRowT(etaR * wN, kRow) * wN * visR; }
-    const float xf = x - sh;
-    const int i0 = (int)ffloor(xf);
-    const float ft = xf - i0;
-    const float r0 = i0 >= a0 && i0 < a1 ? (float)traceA[i0] : 0.0f, r1 = i0 + 1 >= a0 && i0 + 1 < a1 ? (float)traceA[i0 + 1] : 0.0f;
-    const int T = (int)(fmx(r0 + r1 > 0 ? tint.depthF(r0 + (r1 - r0) * ft) : 0.0f, fw) + 0.5f);
+    int T;
+    if (thin) T = (int)(fw + 0.5f);   // see ZoneRow
+    else {
+      const float xf = x - sh;
+      const int i0 = (int)ffloor(xf);
+      const float ft = xf - i0;
+      const float r0 = i0 >= a0 && i0 < a1 ? (float)traceA[i0] : 0.0f, r1 = i0 + 1 >= a0 && i0 + 1 < a1 ? (float)traceA[i0 + 1] : 0.0f;
+      T = (int)(fmx(r0 + r1 > 0 ? tint.depthF(r0 + (r1 - r0) * ft) : 0.0f, fw) + 0.5f);
+    }
     if (T > 0) row[x] = __builtin_bswap16(tint.at(T));
+  }
+}
+
+// drawTube 3d, per residue row: bit 1 = thin (no coat of the span [a0, a1) shows on the row: every depth it samples, in the
+// fill, the sheared spans and the zone, is of a coat A <= aHi, a column or interpolated between two, and depthT / depthF
+// are non-decreasing in A, so each is 0 when aHi's phi index is below trZ; the fill and sheared spans write nothing then,
+// the zone only its film: ZoneRow::thin). That index is floor(v), v = (aHi K + 2^15) / 2^16, in depthT; depthF's float
+// forms of it (rounded product + 0.5, or fused) stay within ~5e-5 of v below index 257, so they can only reach floor(v) + 1
+// when v is within 2^-10 of it: the bound takes that one then. Bits 2 / 4, on a thin row: the home / time edge's film term
+// can be non-zero. It is exactly +0 when that film is off, or when every filmRowT index it takes is 0: eta wN <= eta <= 1
+// (wN <= 1) and eta (2 - eta) kRow rises with eta, so the index stays 0 while the bound is below a quarter of the rounding
+// step (its own rounding: a few ulp). Flash: once a row, no IRAM to spare.
+static int coatMode(uint32_t aMax, const ZoneRow &z) {   // aMax: the largest coat any sample can take
+  const uint64_t v = (uint64_t)aMax * z.tint->K + 32768u;
+  const uint64_t idx = (v >> 16) + ((v & 0xffffu) >= 0xffffu - 63 ? 1 : 0);
+  if ((idx < 256 ? (int)idx : 256) >= z.trZ) return 0;
+  const float kRow = z.kRow;
+  auto film = [kRow](float eta) { return !(eta <= 0 || (eta <= 1 && eta * (2 - eta) * kRow * 256 < 0.25f)); };
+  return 1 | (film(z.etaL) ? 2 : 0) | (film(z.etaR) ? 4 : 0);
+}
+static int __attribute__((noinline)) residueRowMode(const ZoneRow &z) { return coatMode((uint32_t)z.aHi, z); }
+// The row's two zone segments (drawTube 3d), each by its mode: the row's, or on a row that is not thin the segment's own:
+// its samples lie within S >= |shL| + |shR| + 1 px of it (the shift sums shL and shR scaled by weights <= 1; a sample takes
+// the floor column and the next), so the largest coat they can take is the largest blkMax over those columns in [a0, a1)
+// (0 past them). A thin segment writes only a film (ZoneRow): none on a plain row. Flash, like residueRowMode.
+static void __attribute__((noinline)) residueZones(uint16_t *row, const ZoneRow &z, int rowMode) {
+  const float shAbs = fabsf(z.shL) + fabsf(z.shR);
+  const int S = shAbs < (float)TUBE_LENGTH_PX ? (int)shAbs + 2 : TUBE_LENGTH_PX + 2;
+  for (int seg = 0; seg < 2; seg++) {
+    const int z0 = seg ? z.zr0 : z.zl0, z1 = seg ? z.zr1 : z.zl1;
+    if (z1 <= z0) continue;
+    int mode = rowMode;
+    if (!mode) {
+      const int c0 = z0 - S > z.a0 ? z0 - S : z.a0, c1 = z1 + S < z.a1 ? z1 + S : z.a1;
+      uint32_t m = 0;
+      for (int b = c0 / TRACE_BLK; b * TRACE_BLK < c1; b++) if (z.blkMax[b] > m) m = z.blkMax[b];
+      mode = coatMode(m, z);
+    }
+    if (mode == 0 || (mode > 1 && !z.rowPlain)) traceZoneRow(row, z0, z1, z, mode);
   }
 }
 
@@ -800,6 +907,10 @@ struct PalCache {
   // 3e concave band colours per row, a function of the palette and the row cache only (buildBandRows, rebuilt with the
   // palette): inner shoulder, the lens / body mix under the outer colour, the rim colour, the back's luma weight
   uint16_t bandInner[TUBE_HEIGHT_MAX], bandLensMix[TUBE_HEIGHT_MAX], bandRimC[TUBE_HEIGHT_MAX]; float bandBackK[TUBE_HEIGHT_MAX];
+  // the palette rows those band colours were made of (bandValid: since this pc's (gen, H)): a row whose body and back
+  // colours did not change keeps them (a moving light changes ~1 row in 10 a frame)
+  uint16_t bandKeyRow[TUBE_HEIGHT_MAX], bandKeyBack[TUBE_HEIGHT_MAX]; bool bandValid = false;
+  float u[TUBE_HEIGHT_MAX];   // buildPalette's row position u (rim light), the same expression
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -1100,9 +1211,10 @@ enum { TP_FRAMES, TP_CYC, TP_CYC_FACTS, TP_CYC_RANGE, TP_CYC_ROWS, TP_CYC_GEN, T
 // whole render call; palette + row cache (renderTube); edges + tube back; residue prep (blur), residue rows; nose
 // backing; body + soft ramps; 3a; 3b; 3c; 4; 3e band; bounds / mirror / wet share; label layout; rear ticks; rear
 // digits; fizz; bubble + top marks + lens. TU_TR*: residue rows split (fill, shear, zone); TU_RAMP the soft ramps
-// (part of the body), TU_BANDK the 3e kernel (part of the band), TU_PALB / TU_PALP band rows / buildPalette (part of pal).
+// (part of the body), TU_BANDK the 3e kernel (part of the band), TU_PALB / TU_PALP band rows / buildPalette (part of pal),
+// TU_HASH the tiles' change records (tileHashes).
 enum { TU_FRAMES, TU_ALL, TU_PAL, TU_BACK, TU_TRPREP, TU_TRROWS, TU_BACKING, TU_BODY, TU_FRONT, TU_GLOW, TU_FILM, TU_INSET,
-       TU_BAND, TU_BOUNDS, TU_LABELS, TU_TICKS, TU_DIGITS, TU_FIZZ, TU_TOP, TU_TRFILL, TU_TRSHEAR, TU_TRZONE, TU_RAMP, TU_BANDK, TU_PALB, TU_PALP, TU_TILE, TU_N };
+       TU_BAND, TU_BOUNDS, TU_LABELS, TU_TICKS, TU_DIGITS, TU_FIZZ, TU_TOP, TU_TRFILL, TU_TRSHEAR, TU_TRZONE, TU_RAMP, TU_BANDK, TU_PALB, TU_PALP, TU_TILE, TU_HASH, TU_N };
 #define TU_T0() uint32_t tuT = esp_cpu_get_cycle_count()
 #define TU_MARK(i) do { const uint32_t tuN = esp_cpu_get_cycle_count(); tubeProf[i] += tuN - tuT; tuT = tuN; } while (0)
 #define TU_SUB0(v) const uint32_t v = esp_cpu_get_cycle_count()
@@ -1115,8 +1227,9 @@ enum { TU_FRAMES, TU_ALL, TU_PAL, TU_BACK, TU_TRPREP, TU_TRROWS, TU_BACKING, TU_
 #endif
 #ifdef TUBE_VERIFY
 // -DTUBE_VERIFY (LCD board, off by default): the step-5 code of the step-6 float-path changes runs next to the new
-// code and the results are compared bitwise (render_tube_verify; main prints them in `f`): TV_ZONE residue zone
-// pixels (the old inline loop on a row copy), TV_PAL palette entries (the old buildPalette).
+// code and the results are compared bitwise (render_tube_verify; main prints them in `f`): TV_ZONE residue row
+// columns (fill + shear calls and the old inline zone loop on a row copy: covers the thin-row skips too), TV_PAL
+// palette entries (the old buildPalette).
 enum { TV_ZONE, TV_PAL, TV_BAND, TV_TRACE, TV_RAMP, TV_N };
 static volatile uint32_t tubeVerifyN[2][TV_N], tubeVerifyBad[2][TV_N];   // per core
 static inline void tubeVerify(int k, int n, int bad) { const int c = esp_cpu_get_core_id() & 1; tubeVerifyN[c][k] += n; tubeVerifyBad[c][k] += bad; }
@@ -1213,7 +1326,20 @@ struct Tube {
   // the marks run band by band, each stage clipped to the band's rows; on the tiled LCD the band is a tile slot).
   int rowLo = 0, rowHi = 0;
 #if TILE_RENDER
-  const uint16_t *cleanStrip = nullptr;   // the strip the last render wrote by DMA only (tile_strip_clean), else null
+  // Strips the tube's last renders wrote by DMA only (tile_strip_clean), one entry per strip buffer: the three-tube LCD
+  // pushes one strip while the other core renders the tube into its other one, so a render never writes the entry the
+  // push of the other strip reads (both directions of a lost update only cost a writeback). Else null.
+  const uint16_t *volatile cleanStrip[2] = {nullptr, nullptr};
+  // Change records (tiles.h TileDirty): per tile and column pair the hash of the last render that hashed its tiles
+  // (TILE_MAX x TILE_PAIRS, PSRAM), the rows that render had (-1: no valid table); one record per strip buffer (PSRAM).
+  // All allocated by render_init. renderSeq counts every render of the tube.
+  uint32_t *tileHash = nullptr; int hashH = -1; uint32_t renderSeq = 0;
+  TileDirty *dirty[2] = {nullptr, nullptr};
+  TileDirty *dirtyFor(const uint16_t *strip) {   // strip's record; a strip without one takes a free entry, else the first
+    const int e = dirty[0]->strip == strip ? 0 : dirty[1]->strip == strip ? 1 : !dirty[0]->strip || dirty[1]->strip ? 0 : 1;
+    dirty[e]->strip = strip;
+    return dirty[e];
+  }
 #endif
 
   inline bool inStrip(int x, int y) const { return x >= 0 && x < PANEL_W && y >= rowLo && y < rowHi; }
@@ -1285,7 +1411,7 @@ struct Tube {
 };
 static Tube tubes[2];
 #if TUBE_COUNT == 3
-static Tube *tubeS = nullptr;   // the seconds tube: PSRAM, render_init (~15 KB at native; no internal RAM to spare)
+static Tube *tubeS = nullptr;   // the seconds tube (~16 KB at 10-8-6): internal in fast mode, else PSRAM (render_init)
 static inline Tube &tubeAt(int idx) { return idx == 2 ? *tubeS : tubes[idx & 1]; }
 #else
 static inline Tube &tubeAt(int idx) { return tubes[idx & 1]; }
@@ -1379,25 +1505,30 @@ float Tube::glassW(const Params &p, int y, int hiTop, float lam, const PalCache 
 // evaluated per row and edge.
 void Tube::buildBandRows(PalCache &pc) const {
   auto tone = [&](uint16_t c) -> uint16_t { return rc.toneT > 0 ? blend565T(c, rc.toneC, rc.toneT) : c; };
+  // A row's four colours are a function of its palette row and back row and rc (keyed on the same (gen, H) as pc).
   for (int ry = 0; ry < H; ry++) {
+    if (pc.bandValid && pc.bandKeyRow[ry] == pal.rows[ry] && pc.bandKeyBack[ry] == pal.tubeBackRows[ry]) continue;
+    pc.bandKeyRow[ry] = pal.rows[ry]; pc.bandKeyBack[ry] = pal.tubeBackRows[ry];
     pc.bandInner[ry] = tone(blend565(pal.rows[ry], rc.darkC, 0.3f));
     pc.bandLensMix[ry] = blend565(rc.lensC, pal.rows[ry], 0.2f);
     pc.bandBackK[ry] = fmn(1, luma(to888(pal.tubeBackRows[ry])) / 255.0f);
     pc.bandRimC[ry] = q(mix(to888(rc.hiC), to888(q(mix(to888(pal.rows[ry]), to888(rc.darkC), 0.75f))), pc.bandBackK[ry]));
   }
+  pc.bandValid = true;
 }
 // Contents index the palette's thin-edge chord refracts by (water; params carry no index). Sim THIN_IOR.
 static constexpr float THIN_IOR = 1.333f;
 // Fill pc for (p, H): the same calls on the same arguments as buildPalette / glassW made inline.
 void Tube::buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const {
   if (pc.valid && pc.gen == gen && pc.H == H) return;
-  pc.valid = true; pc.gen = gen; pc.H = H;
+  pc.valid = true; pc.gen = gen; pc.H = H; pc.bandValid = false;
   const float yc = (H - 1) / 2.0f, wallU = 1 - 2 * fmx(1, p.glassWall) / H;
   // sim buildPalette thinK: the refracted chord √(1 − (u·R/(n·r))²), floored by the wall
   const float thinK = 1 / (THIN_IOR * fmx(1e-3f, 1 - 2 * fmx(0, p.glassWall) / H));
   for (int y = 0; y < H; y++) {
     const float t = (float)y / (H - 1);
     const float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
+    pc.u[y] = u;
     pc.rimPow[y] = powf(fmx(0, (au - wallU) / (1 - wallU)), 2.5f);
     pc.dryExp[y] = p.glassWall <= 0 || au >= wallU ? 0 : expf(-(wallU - au) / 0.04f);
     pc.asinY[y] = asinf(clampf((yc - y) / yc, -1, 1));
@@ -1553,8 +1684,7 @@ void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal, const Pal
   RGB glassEdge = scale(mix(ghi, {180, 190, 195}, 0.72f), p.brightness);
   const float wet = clampf(p.wallWet, 0, 1);   // sim: a gas (0) keeps the glow and the empty tube's band over its column
   for (int y = 0; y < H; y++) {
-    float t = (float)y / (H - 1);
-    float u = (y + 0.5f - H / 2.0f) / (H / 2.0f), au = fabsf(u);
+    const float u = pc.u[y];   // (y + 0.5 - H / 2) / (H / 2), from pc: a division a row less
     // Wall glow (sim glowW/wallW): light piped along the wall lights the band itself; plateau with a
     // short ramp starting just inside the band, the grazing rim on top. Dry glass only, as far as the contents
     // wet the wall (wallWet): a liquid frustrates the internal reflection and fills the band (rim alone over it).
@@ -3737,7 +3867,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // over an already-AA body leaks the bare tube colour at their junction.
   // The residue's per-frame terms (computed here once; its rows are drawn band by band below).
   bool trRows = false, bandR = false, bandL = false, shearR = false, shearL = false;
-  int trN = 0, trA0 = 0, trA1 = 0, aLo = 65535, aHi = 0, trG = 0;   // aLo / aHi: path coefficient band of the span (traceFillRow's LUT)
+  int trN = 0, trA0 = 0, trA1 = 0, aLo = 65535, aHi = 0, trG = 0, trZ = 257;   // aLo / aHi: path coefficient band of the span (traceFillRow's LUT); trZ: first visible phi index
   float invSoftW = 0, invN = 0, invBW = 1, etaR = 0, etaL = 0, visR = 0, visL = 0, ZR = 1, ZL = 1, invZR = 1, invZL = 1;
   if (traceMode) {
     const float hw = softW * 0.5f;
@@ -3787,6 +3917,10 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       traceBlur(st.trace, mir, a0, a1, c0, c1, filmV, aLo, aHi);
       trRows = true; trA0 = a0; trA1 = a1;
       trG = (int)(p.traceAmount * 256 + 0.5f);   // stain depth gain 1/256
+      // the first phi index whose depth shows (T > 0, depthT's rounding) at this gain: FILM_PHI is non-decreasing, so
+      // every coat whose index is below it takes T 0 (depthT and depthF alike)
+      trZ = 1;   // FILM_PHI[0] = 0
+      while (trZ <= 256 && (((trZ >= 256 ? 256 : FILM_PHI[trZ]) * trG + 128) >> 8) == 0) trZ++;
     }
   }
   TU_MARK(TU_TRPREP);
@@ -3972,13 +4106,22 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // SIMD / scalar path as on the strip. The pixel helpers clip to the band's rows (rowLo / rowHi).
   uint16_t *const stripFB = FB;
   int tileSlot = 0;
+  // Change record of this strip (tiles.h TileDirty): every finished tile hashed against the tube's last render, unless
+  // the CPU rewrites the strip after the tiles (stripLens: no record). Usable by the push when that last render hashed
+  // the same rows (hashH).
+  TileDirty *const rec = dirtyFor(stripFB);
+  const bool hashOn = !stripLens;
+  rec->valid = false;
   tile_begin(laneOf(), stripFB, H);
   TU_MARK(TU_TILE);
 #define TILE_BAND_START(rb0) do { uint16_t *const t_ = tile_slot(laneOf(), tileSlot); const int e_ = (rb0) + TILE_ROWS < H ? (rb0) + TILE_ROWS : H; \
                                   FB = t_ - (rb0) * PANEL_W; bandLo = t_; bandHi = t_ + TILE_ROWS * PANEL_W; rowLo = baseY + (rb0); rowHi = baseY + e_; \
                                   TCLIP_SET(t_, t_ + (e_ - (rb0)) * PANEL_W); } while (0)
 #define TILE_BAND_MARKS(rb0, rb1) marks(rb0, rb1, !stripLens)
-#define TILE_BAND_END(rb0, rb1) do { tile_put(laneOf(), tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); tileSlot ^= 1; TU_MARK(TU_TILE); } while (0)
+#define TILE_BAND_END(rb0, rb1) do { tile_put(laneOf(), tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); TU_MARK(TU_TILE); \
+                                     if (hashOn) tileHashes((const uint32_t *)tile_slot(laneOf(), tileSlot), (rb1) - (rb0), \
+                                                            tileHash + (rb0) / TILE_ROWS * TILE_PAIRS, rec->bits[(rb0) / TILE_ROWS]); \
+                                     tileSlot ^= 1; TU_MARK(TU_HASH); } while (0)
 #else
 #define TILE_BAND_START(rb0) ((void)0)
 #define TILE_BAND_MARKS(rb0, rb1) ((void)0)
@@ -4041,24 +4184,29 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         // strip row directly — y is inside the strip (drawTube's y0 is baseY), [a0, a1) inside [0, PANEL_W).
         static_assert(TUBE_LENGTH_PX <= PANEL_W, "trace columns index the strip row directly");
         uint16_t *const row = FB + ry * PANEL_W;
-        TU_SUB0(tuF);
-        traceFillRow(row, traceA, a0, pl1, pr0, a1, tint, aLo, aHi, traceLut);
-        TU_SUB(TU_TRFILL, tuF); TU_SUB0(tuS);
-        if (zl0 > pl1) traceShearRow(row, traceA, a0, a1, pl1, zl0, tint, exL, true, shL, invZL);
-        if (pr0 > zr1) traceShearRow(row, traceA, a0, a1, zr1, pr0, tint, ex, false, shR, invZR);
-        TU_SUB(TU_TRSHEAR, tuS); TU_SUB0(tuZ);
         // a row with no shear and no film up: the zone is only the soft ramp over plain residue
         const bool rowPlain = shL == 0 && shR == 0 && !bandL && !bandR;
-        {
-          const ZoneRow zr{traceA, &tint, ex, exL, hw, invSoftW, xm, invBW, invN, shL, shR, invZL, invZR, etaL, etaR, kRow, visL, visR,
-                           softW, xrL, xr, a0, a1, rowPlain};
+        const ZoneRow zr{traceA, &tint, ex, exL, hw, invSoftW, xm, invBW, invN, shL, shR, invZL, invZR, etaL, etaR, kRow, visL, visR,
+                         softW, xrL, xr, a0, a1, rowPlain, aHi, trZ, traceMemo->blkMax, zl0, zl1, zr0, zr1};
+        // thin row (no coat of the span shows on it) and its films: residueRowMode
+        const int mode = residueRowMode(zr);
+        const bool thin = mode & 1;   // (a thin row's fill and sheared spans write nothing)
 #ifdef TUBE_VERIFY
-          memcpy(verifyRow, row, PANEL_W * 2);
+        memcpy(verifyRow, row, PANEL_W * 2);
 #endif
-          traceZoneRow(row, zl0, zl1, zr);
-          traceZoneRow(row, zr0, zr1, zr);
+        TU_SUB0(tuF);
+        if (!thin) traceFillRow(row, traceA, a0, pl1, pr0, a1, tint, aLo, aHi, trZ, traceMemo->blkMax, traceLut);
+        TU_SUB(TU_TRFILL, tuF); TU_SUB0(tuS);
+        if (!thin && zl0 > pl1) traceShearRow(row, traceA, a0, a1, pl1, zl0, tint, exL, true, shL, invZL);
+        if (!thin && pr0 > zr1) traceShearRow(row, traceA, a0, a1, zr1, pr0, tint, ex, false, shR, invZR);
+        TU_SUB(TU_TRSHEAR, tuS); TU_SUB0(tuZ);
+        {
+          residueZones(row, zr, mode);   // not thin as a row: each segment may still be (the deposits lie elsewhere)
 #ifdef TUBE_VERIFY
-          { uint16_t *const keep = FB; FB = verifyRow - ry * PANEL_W;   // the step-5 loop on the copy (px writes FB)
+          { uint16_t *const keep = FB; FB = verifyRow - ry * PANEL_W;   // step 6's fill and shear calls, then the step-5 loop, on the copy (px writes FB)
+            traceFillRow(verifyRow, traceA, a0, pl1, pr0, a1, tint, aLo, aHi, trZ, traceMemo->blkMax, traceLut);
+            if (zl0 > pl1) traceShearRow(verifyRow, traceA, a0, a1, pl1, zl0, tint, exL, true, shL, invZL);
+            if (pr0 > zr1) traceShearRow(verifyRow, traceA, a0, a1, zr1, pr0, tint, ex, false, shR, invZR);
         for (int seg = 0; seg < 2; seg++) {
           const int z0 = seg ? zr0 : zl0, z1 = seg ? zr1 : zl1;
           for (int x = z0; x < z1; x++) {
@@ -4095,7 +4243,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
           }
         }
             FB = keep; int bad = 0; for (int x = 0; x < PANEL_W; x++) bad += verifyRow[x] != row[x];
-            tubeVerify(TV_ZONE, zl1 - zl0 + zr1 - zr0, bad); }
+            tubeVerify(TV_ZONE, a1 - a0, bad); }
 #endif
         }
         TU_SUB(TU_TRZONE, tuZ);
@@ -4376,7 +4524,13 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     if (haveLabels && p.digitsOnTop) labelBand(y0, labels, digitWarp, digitMark, false, 0, H);
     TU_MARK(TU_TOP);
   }
-  cleanStrip = stripLens ? nullptr : stripFB;
+  {
+    const int e = cleanStrip[0] == stripFB ? 0 : cleanStrip[1] == stripFB ? 1 : cleanStrip[0] == nullptr ? 0 : 1;
+    cleanStrip[e] = stripLens ? nullptr : stripFB;
+  }
+  rec->tube = (int8_t)idx; rec->seq = renderSeq; rec->rows = (int16_t)H;
+  rec->valid = hashOn && hashH == H;   // the table held the tube's last render (renderSeq - 1), the same rows
+  hashH = hashOn ? H : -1;
 #if defined(TILE_VERIFY) && !defined(TUBE_BAND_INLINE)
   {   // the whole render again straight into a PSRAM copy of the strip (the step-6 path: bands, then every mark over the
       // whole tube, the lens, the top digits), compared with what the tiles left
@@ -4728,16 +4882,21 @@ void Tube::fizzBand(int r0, int r1) {
 #endif
 }
 
-bool render_init() {
+bool render_init(bool fast) {
   fizzSeed();
   fizzMasks.psCap = fizzMaskWorst();   // the sliders' largest bubbles (~55 KB on the LCD)
   fizzMasks.ps = (uint8_t *)heap_caps_malloc(fizzMasks.psCap, MALLOC_CAP_SPIRAM);
-  if (FIZZ_MASK_INTL) fizzMasks.intl = (uint8_t *)heap_caps_malloc(FIZZ_MASK_INTL, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (FIZZ_MASK_INTL && fast) fizzMasks.intl = (uint8_t *)heap_caps_malloc(FIZZ_MASK_INTL, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   EXP565 = (uint32_t *)heap_caps_malloc(512 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   buildLuts();
-  bool ok = EXP565 != nullptr && fizzMasks.ps && (!FIZZ_MASK_INTL || fizzMasks.intl);
+  bool ok = EXP565 != nullptr && fizzMasks.ps && (!FIZZ_MASK_INTL || !fast || fizzMasks.intl);
 #if TUBE_COUNT == 3
-  if (void *mem = heap_caps_malloc(sizeof(Tube), MALLOC_CAP_SPIRAM)) tubeS = new (mem) Tube();   // never freed
+#ifdef BOARD_LCD316
+  const uint32_t tubeSCaps = fast ? MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT : MALLOC_CAP_SPIRAM;   // fast: hot per-row arrays internal
+#else
+  const uint32_t tubeSCaps = MALLOC_CAP_SPIRAM;
+#endif
+  if (void *mem = heap_caps_malloc(sizeof(Tube), tubeSCaps)) tubeS = new (mem) Tube();   // never freed
   if (!tubeS) return false;
   for (int i = 0; i < 3; i++) tubeAt(i).lane = TUBE_LANE(i);
 #endif
@@ -4776,6 +4935,14 @@ bool render_init() {
     tb.tileVerifyStrip = (uint16_t *)heap_caps_malloc((size_t)TUBE_HEIGHT_MAX * PANEL_W * 2, MALLOC_CAP_SPIRAM);
     ok = ok && tb.tileVerifyStrip;
 #endif
+#if TILE_RENDER
+    tb.tileHash = (uint32_t *)heap_caps_malloc((size_t)TILE_MAX * TILE_PAIRS * sizeof(uint32_t), MALLOC_CAP_SPIRAM);   // ~51 KB
+    for (int e = 0; e < 2; e++) {
+      tb.dirty[e] = (TileDirty *)heap_caps_malloc(sizeof(TileDirty), MALLOC_CAP_SPIRAM);   // ~1.6 KB
+      if (tb.dirty[e]) { tb.dirty[e]->strip = nullptr; tb.dirty[e]->valid = false; }
+    }
+    ok = ok && tb.tileHash && tb.dirty[0] && tb.dirty[1];
+#endif
 #ifdef TUBE_VERIFY
     tb.verifyRow = (uint16_t *)heap_caps_malloc(PANEL_W * 2, MALLOC_CAP_SPIRAM);
     tb.verifyPal = (Palette *)heap_caps_malloc(sizeof(Palette), MALLOC_CAP_SPIRAM);
@@ -4803,6 +4970,16 @@ bool render_init() {
   return ok;
 }
 
+// traceFillLutI's block bounds: the largest traceA of each TRACE_BLK block over [a0, a1). Once a frame a tube: flash
+// (no IRAM to spare).
+static void __attribute__((noinline)) traceBlockMax(const uint16_t *traceA, int a0, int a1, uint16_t *blkMax) {
+  for (int b = a0 / TRACE_BLK; b * TRACE_BLK < a1; b++) {
+    const int x0 = b * TRACE_BLK > a0 ? b * TRACE_BLK : a0, x1 = (b + 1) * TRACE_BLK < a1 ? (b + 1) * TRACE_BLK : a1;
+    uint16_t m = 0;
+    for (int x = x0; x < x1; x++) if (traceA[x] > m) m = traceA[x];
+    blkMax[b] = m;
+  }
+}
 // drawTube 3d's residue blur and streak (traceA over [a0, a1), and its non-zero range aLo / aHi), with its memo across
 // frames (TraceMemo): traceA[x] is a function of traceRaw over [x - 4, x + 4] (clamped), filmV, x and the tube only, so a
 // column is recomputed only where its window holds a changed or unknown value or it was not computed last frame; a frame
@@ -4868,6 +5045,7 @@ TUBE_IRAM void __attribute__((noinline)) Tube::traceBlur(const uint16_t *trace, 
 #endif
   tm.aLo = aLo; tm.aHi = aHi;
   aLoOut = aLo; aHiOut = aHi;
+  traceBlockMax(traceA, a0, a1, tm.blkMax);
 }
 
 // Safe to call for tubes on different lanes (hours and minutes / seconds) concurrently from different tasks: each touches
@@ -4915,6 +5093,9 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
 #ifdef TUBE_PROF
   t.tubeProf[TU_PAL] += esp_cpu_get_cycle_count() - tu0;
 #endif
+#if TILE_RENDER
+  t.renderSeq++;   // the change records (tiles.h) count every render
+#endif
   t.drawTube(t.baseY, s, p, gen, idx == 0 ? 12 : 60);
 #ifdef TUBE_PROF
   t.tubeProf[TU_ALL] += esp_cpu_get_cycle_count() - tu0; t.tubeProf[TU_FRAMES]++;
@@ -4935,8 +5116,14 @@ const uint32_t *render_tick_profile(int idx) { return tubeAt(idx).tickProf; }
 void render_tick_profile_reset() { for (int i = 0; i < TUBE_COUNT; i++) memset(tubeAt(i).tickProf, 0, sizeof(tubeAt(i).tickProf)); }
 #endif
 #if TILE_RENDER
+const TileDirty *tile_dirty(const uint16_t *strip) {
+  for (int i = 0; i < TUBE_COUNT; i++)
+    for (int e = 0; e < 2; e++) { const TileDirty *d = tubeAt(i).dirty[e]; if (strip && d && d->strip == strip) return d; }
+  return nullptr;
+}
 bool tile_strip_clean(const uint16_t *strip) {
-  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); if (strip && t.cleanStrip == strip) { t.cleanStrip = nullptr; return true; } }
+  for (int i = 0; i < TUBE_COUNT; i++)
+    for (int e = 0; e < 2; e++) { Tube &t = tubeAt(i); if (strip && t.cleanStrip[e] == strip) { t.cleanStrip[e] = nullptr; return true; } }
   return false;
 }
 #endif

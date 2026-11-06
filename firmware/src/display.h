@@ -35,7 +35,10 @@ struct PushVerify { uint32_t checked, bad, words, stored, segs, skipped; };
 PushVerify display_push_verify(void);
 #endif
 #ifdef PUSH_PROF
-void display_push_prof(uint32_t out[TUBE_COUNT][5], bool reset);   // -DPUSH_PROF (LCD): per strip slot pushes, cycles hashing / storing, changed segments, gather waits
+// -DPUSH_PROF (LCD): per strip slot pushes, cycles hashing (by-record pushes: picking units) / storing, changed segments
+// (by-record: pairs x segments stored), gather waits, units gathered, pushes by the render's change record
+#define PUSH_PROF_N 7
+void display_push_prof(uint32_t out[TUBE_COUNT][PUSH_PROF_N], bool reset);
 #endif
 void display_set_brightness(uint8_t v);   // 0..255 (AMOLED: cmd 0x51; LCD: backlight PWM)
 // RM67162 High Brightness Mode (SetHBMMode B0h, bit1 HBM_EN). On this module it is not a usable
