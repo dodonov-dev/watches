@@ -39,6 +39,7 @@ number (now angleTiltGain / angleMax; vertical mode uses the real tilt up to 45Â
 - LCD flash + PSRAM 120 MHz: +25 % fps (3 tubes swinging 27.6 -> 31.8), but the chip wedged at resets (esp_restart,
   esptool reset, one boot): reproduce with reboot loops, halt the wedged chip over USB-JTAG (OpenOCD) to see where it
   hangs; fix or report upstream (docs/lcd316-3tube-perf.md "Wedges at 120 MHz", KAIZEN 2026-11-05)
+- Hang 1 (rear-parallax round-2, 80 MHz, 2026-11-06) **parked: not reproduced** (H1.4 2026-11-09: reconstructed round-2 tree + DIGIT_VERIFY, bench + 60 s swing, render0 492 B free, digit-verify 0 bad of 109 M px, the closing esptool reset clean; no coredump from it, E0). The hang diagnostics (src/diag.cpp: RTC boot record, panic breadcrumb, cached coredump summary, `v` / `C`) are in the production LCD build and will record it if it recurs; -DLOOP_WDT and -DSTACK_GUARD=1152 stay opt-in (docs/hang-investigation-plan.md).
 - ESP-IDF upstream issue: esp_restart_noos (IDF 5.5.5) does not wait for a running D-cache preload before the MSPI
   reset (hang until the RTC WDT; worked around here by a shutdown handler); the stock RGB LCD driver's bounce refill
   preloads the same way (KAIZEN "Robustness / parity")

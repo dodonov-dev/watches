@@ -18,6 +18,11 @@
 - sim markFn takes Mark::operator()'s integer coverage steps and blend565T (2026-11-06: a sub-pixel digit over a tick's AA /
   emboss edge stacked to 17/255). Left in float: the band-footprint branch (bandMark mirrors it in float) and the baked
   contrast-floor branch (cov / a vs the firmware's covT * 256 / T): each still one 565 step apart at worst.
+- 2026-11-06 80 MHz: the -DDIGIT_VERIFY build of the round-2 rear-parallax tree went silent right after bench.py ended (params
+  restored, live IMU); esptool then "No serial data received" twice = the reset wedge (BOOT + RST needed). Prime suspect: the
+  fractional kernels' stack scratch (520 + 576 + 288 B) on the 4 KB render task: with it in per-Tube DigitScratch the verify build
+  survived the same bench + swing (digit-verify bad 0). `v` / `s` print both render tasks' stack high-water marks.
+  2026-11-09: Hang 1 (rear-parallax round-2, 80 MHz, 2026-11-06) **parked: not reproduced** (H1.4 2026-11-09: reconstructed round-2 tree + DIGIT_VERIFY, bench + 60 s swing, render0 492 B free, digit-verify 0 bad of 109 M px, the closing esptool reset clean; no coredump from it, E0). The hang diagnostics (src/diag.cpp: RTC boot record, panic breadcrumb, cached coredump summary, `v` / `C`) are in the production LCD build and will record it if it recurs; -DLOOP_WDT and -DSTACK_GUARD=1152 stay opt-in (docs/hang-investigation-plan.md).
 - LCD board vs sim, presets/1.json, the board lying flat after a bench (compare-device, 2026-11-06): 66 px > 12/255 in column 0 of
   the tubes (rear tick 0 just below x = 0 under tickParallax), plus (685,12) at 17/255 (red only: device 49 vs sim 66; unchanged with
   digits off) and (69,140) at 16. All three already on the pre-issue HEAD build in the same state with its own sim. Host renders of
@@ -257,6 +262,8 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
   Fizz positions still carry the *old* H when the layout changes, so `m` can go ~0/negative and `ry`
   explodes → the loop runs to INT_MAX. Not caused by the traces work (`p.traces` is false at the crash
   instant). Fix: clamp `ry` (and `m`) and/or reseed `fizz[]` on a geometry change.
+  **Fixed** (a13f41a, 2026-09-18: fizzMag's row range clamped into the tube; since then the bubble row loops are
+  also clamped to the band / tube rows). Host repro 2026-11-06 (docs/hang-investigation-plan.md, hang 3): clean.
 - Trace render layer is ~3.0 ms/frame (46.9 → 40.9 fps on the pinned scene); the physics decay loop is
   ~0.07 ms, i.e. free. If traces need to be cheaper, the win is in `drawTube` step 3d (full L×H scan with
   a `pxaT` per non-liquid pixel), not in the decay loop.
@@ -775,3 +782,24 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - device.py's Windows bridge (python.exe --bridge COMx) outlives its WSL parent when that is killed (e.g. `timeout`)
   and holds the port ("Access is denied" / "port is busy"); stop it by PID (Get-CimInstance Win32_Process ...).
   device.py could kill its bridge on SIGTERM / atexit.
+
+## Hang investigation, desk (2026-11-06, docs/hang-investigation-plan.md)
+- seq.h / check_fizz_steps never change tubeHeight mid-sequence: a shrink scene would keep the fizz/tubeHeight fix covered.
+- pioarduino's hybrid compile rebuilds the libs but not the bootloader ELFs (libs bin/bootloader_*.elf dated Jul 20):
+  bootloader-side custom_sdkconfig options (BOOTLOADER_FLASH_DC_AWARE, bootloader log level / WDT) never reach the board.
+- IDF log level ERROR hides the boot's HPM / MSPI-tuning warnings ("High performance mode of this flash model hasn't been
+  supported"): read the state into `v` rather than raising the log level.
+- flash-win.sh --full writes the merged factory image from 0x0: the NVS gap at 0x9000 is probably overwritten (params
+  reset). Unverified.
+- No direct "did it reboot?" field: `s` going `ble off` -> `ble on` (fast mode lasts one boot) is the only tell. Uptime in `s`.
+- Arduino's `Print::printf` mallocs (and frees) for any line of 64 B or more, and silently drops it if malloc fails:
+  `s`, `f`, the `x` LAYOUT / state lines and the `X` frame lines do this every call. diag_printf (src/diag.cpp) is the
+  static-buffer pattern; move them over in the memory pass.
+- A pio build of env lcd316 in a fresh git worktree made the Tool Manager re-install esp32-core 3.3.11 + libs into the
+  shared packages-lcd316 and recompile the libs (5 min; the custom_sdkconfig came out the same). Expect that, and never
+  build two trees at once.
+- USB CDC TX-stall watchdog (HWCDC ring buffer full for N s while `connected`): not added. With the port enumerated but
+  no host app reading, a full buffer is normal, and a watchdog that re-enumerates would flap the COM port every N s.
+  Only worth it with a "host is reading" signal (OUT traffic, DTR).
+- The CPU-only-reset USB re-enumeration (src/diag.cpp diag_usb_reenum) is LCD-only, like the rest of diag; the AMOLED
+  uses the same USB-Serial-JTAG and could take it once it has the RAM / code budget (none of it is RAM).

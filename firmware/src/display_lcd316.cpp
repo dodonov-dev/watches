@@ -6,6 +6,7 @@
 // Pins, init sequence and RGB timings from Waveshare's ESP32-S3-LCD-3.16 demo (07_LVGL_V8_Test). LCD CS is
 // GPIO0 through R38 in both schematic revisions (the wiki's pin table says IO42).
 #include "display.h"
+#include "diag.h"
 #include <Arduino.h>
 #include <string.h>
 #include "driver/gpio.h"
@@ -408,6 +409,7 @@ static void preload_shutdown(void) {
   portEXIT_CRITICAL(&preloadMux);
   const uint32_t c0 = esp_cpu_get_cycle_count();   // a preload is ~26 KB (< 1 ms); give up after 20 ms
   while (!Cache_DCache_Preload_Done() && esp_cpu_get_cycle_count() - c0 < 20u * 1000 * getCpuFrequencyMhz()) {}
+  diag_preload(Cache_DCache_Preload_Done());   // drained, or the 20 ms timeout
 }
 
 static bool IRAM_ATTR onVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t *, void *) {

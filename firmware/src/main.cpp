@@ -38,6 +38,7 @@
 #error "AB_COMPARE (the A/B resolution face) shows the minutes tube twice: two-tube builds only"
 #endif
 #include "ble.h"
+#include "diag.h"
 #include "rtc.h"
 #include "physics.h"
 #include "render.h"
@@ -295,7 +296,9 @@ static FaceLayout shownLayout = {};
 // Priority 1 = same as loop(); far below the BT controller (23) and NimBLE host on the same core, and
 // the worker blocks every frame so core 0's idle task (task-WDT) keeps running.
 #define WORKER_PRIO 1
-#define WORKER_STACK 4096   // measured use ~1.5 KB
+#ifndef WORKER_STACK
+#define WORKER_STACK 4096   // measured use ~3 KB (`v` stack-free worker ~1068)
+#endif
 #ifdef AB_COMPARE
 #define STAGGER_PUSH false  // the A/B face pushes its second strip from another canvas, after both renders
 #define AB_FACE 1
@@ -409,9 +412,28 @@ static void renderWorker(void *) {
     xTaskNotifyGive(loopTask);
   }
 }
+#ifdef STACK_GUARD
+// -DSTACK_GUARD=N (diagnostic builds, docs/hang-investigation-plan.md aid 6): render0's stack is static with N bytes of
+// 0xA5 below it, outside the stack FreeRTOS sees; loop() checks them each frame. Partial detection only: a frame that
+// jumps further than N, or a loop() blocked on render0, is not caught (read the guard over JTAG then: `v` prints it).
+// Moves the stack from the heap to .bss (+N bytes internal RAM): what an overflow hits differs from production.
+static StackType_t workerStackMem[(STACK_GUARD + WORKER_STACK) / sizeof(StackType_t)] __attribute__((aligned(16)));
+static StaticTask_t workerTcb;
+static int guardDamaged() {   // bytes of the guard no longer 0xA5
+  int n = 0; const uint8_t *g = (const uint8_t *)workerStackMem;
+  for (int i = 0; i < STACK_GUARD; i++) n += g[i] != 0xA5;
+  return n;
+}
+#endif
 static void workerStart() {
   loopTask = xTaskGetCurrentTaskHandle();
+#ifdef STACK_GUARD
+  memset(workerStackMem, 0xA5, STACK_GUARD);
+  workerTask = xTaskCreateStaticPinnedToCore(renderWorker, "render0", WORKER_STACK, nullptr, WORKER_PRIO,
+                                             workerStackMem + STACK_GUARD / sizeof(StackType_t), &workerTcb, 0);
+#else
   xTaskCreatePinnedToCore(renderWorker, "render0", WORKER_STACK, nullptr, WORKER_PRIO, &workerTask, 0);
+#endif
 }
 
 static void renderBoth() {
@@ -518,6 +540,7 @@ static void renderBoth() {
     }
   renderUs += t4 - t1; waitUs += t1 - t0;       // render = wall time of the concurrent section (staggered: with the pushes)
   hoursUs += workerUs; minutesUs += t3 - t2;
+  diag_feed();   // -DLOOP_WDT: the waits above completed
 }
 
 // Laid out on the AMOLED's 536x240, stretched to this canvas (SX / SY: identity there).
@@ -690,6 +713,15 @@ static void liquid_tick() {
   renderBoth();
   fizzInN = 0;
   frames++;
+  {   // hang diagnostics: the frame into the RTC boot record; the loop task's high-water mark every 64 frames (a scan)
+    static uint32_t loopFree = 0;
+    if ((frames & 63) == 1 && loopTask) loopFree = uxTaskGetStackHighWaterMark(loopTask);
+    diag_frame(workerStackFree, loopFree);
+#ifdef STACK_GUARD
+    const int bad = guardDamaged();
+    if (bad) { diag_stage(DIAG_GUARD); diag_printf(out, "STACK GUARD render0: %d of %d B below the stack overwritten\n", bad, STACK_GUARD); abort(); }
+#endif
+  }
   {   // fizz asked past its fixed pool (params pushed past the sliders): say so once per new peak
     static int reported = 0; const int over = fizzOverflow();
     if (over > reported) { reported = over; out.printf("error fizz pool: %d bubbles requested, fixed pool holds fewer (capped)\n", over); }
@@ -759,10 +791,16 @@ static bool setParam(Params &dst, const char *name, const char *val) {
   }
   return true;
 }
+// Long serial output in bounded chunks: under host backpressure a USB CDC write can take ~200 ms per 256 B, so the
+// -DLOOP_WDT feed goes between chunks of at most 512 B (~0.4 s), not between whole strips. Same bytes either way.
+static void writeChunked(const char *s, size_t n) {
+  while (n) { const size_t k = n < 512 ? n : 512; out.write((const uint8_t *)s, k); s += k; n -= k; diag_feed(); }
+}
 static void dumpParams() {
   out.print("{");
   for (int i = 0; i < PARAMS_NUM_FIELDS; i++) {
     const ParamField &f = PARAM_FIELDS[i]; const uint8_t *p = (const uint8_t *)&params + f.off;
+    diag_feed();   // -DLOOP_WDT: one short write per field
     out.printf("%s\"%s\":", i ? "," : "", f.name);
     switch (f.type) {
       case 'f': out.printf("%g", *(const float *)p); break;
@@ -793,6 +831,7 @@ static void show(char m) {
 static void handleLine(char *line) {
   while (*line == ' ') line++;
   char c = line[0]; char *arg = line + 1; while (*arg == ' ') arg++;
+  diag_cmd(c);
   switch (c) {
     case 'h': case 'c': case 'l': show(c); break;
     case 'f': report_fps(); break;   // query only: does not change the face
@@ -853,7 +892,7 @@ static void handleLine(char *line) {
       auto dumpTrace = [&](const uint16_t *v) {
         if (v) for (int x = 0; x < TUBE_LENGTH_PX; x++) sprintf(thex + x * 4, "%04x", v[x]);
         else thex[0] = 0;
-        out.print(thex); out.print(' ');
+        writeChunked(thex, strlen(thex)); out.print(' ');
       };
       out.print("TRACE "); for (int t = 0; t < TUBE_COUNT; t++) dumpTrace(tubeOf(t).trace); out.println();
       out.print("WET "); for (int t = 0; t < TUBE_COUNT; t++) dumpTrace(tubeOf(t).traceWet); out.println();
@@ -865,7 +904,7 @@ static void handleLine(char *line) {
         for (int y = 0; y < l.rows(t); y++) {
           const uint16_t *row = strip[t] + y * PANEL_W; char *o = dumpHex;
           for (int x = 0; x < PANEL_W; x++) { uint16_t c = __builtin_bswap16(row[x]); o += sprintf(o, "%04x", c); }
-          *o++ = '\n'; *o = 0; out.write(dumpHex);
+          *o++ = '\n'; *o = 0; writeChunked(dumpHex, (size_t)(o - dumpHex));
         }
       }
       out.println("END");
@@ -896,14 +935,15 @@ static void handleLine(char *line) {
         for (int i = 0; i < TUBE_COUNT; i++) { int f, sl; const int live = fizzCounts(i, f, sl); out.printf(" %d/%d", live, f); }
         out.println();
         delay(1);   // the idle task (task watchdog)
+        diag_feed();
       });
       out.printf("SEQ END %d frames %lu ms%s\n", SEQ_FRAMES, (unsigned long)(millis() - t0), seeded ? "" : " (fizz unseeded: esp_random)");
       clockJumped = true;   // the fills jump back to the clock
       break; }
-    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u",
+    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u loop-stack-free %u",
                  mode, fps, (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60,
                  rawTilt.along, rawTilt.across, rawTilt.gyroAcross, tubeH.fillTarget, tubeM.fillTarget,
-                 ESP.getFreeHeap(), (unsigned)workerStackFree);
+                 ESP.getFreeHeap(), (unsigned)workerStackFree, loopTask ? (unsigned)uxTaskGetStackHighWaterMark(loopTask) : 0u);
 #if TUBE_COUNT == 3
       out.printf(" fillS %.3f", tubeS.fillTarget);
 #endif
@@ -912,20 +952,29 @@ static void handleLine(char *line) {
 #endif
       out.printf(" temp %d C ble %s", (int)temp_sensor_get_raw_value(nullptr), ble_on() ? "on" : "off");
       out.println(); break;
-    case 'v': out.printf("board %s canvas %dx%d panel %dx%d\n", BOARD_TAG, PANEL_W, PANEL_H, BOARD_PANEL_W, BOARD_PANEL_H); break;
+    case 'v': diag_printf(out, "board %s canvas %dx%d panel %dx%d stack-free worker %u loop %u", BOARD_TAG, PANEL_W, PANEL_H, BOARD_PANEL_W, BOARD_PANEL_H,
+                         (unsigned)workerStackFree, loopTask ? (unsigned)uxTaskGetStackHighWaterMark(loopTask) : 0u);   // both render tasks' high-water marks, bytes
+      diag_print_v(out);   // one line: device.py reads `v` as one
+#ifdef STACK_GUARD
+      diag_printf(out, " guard 0x%08lx %d/%d", (unsigned long)(uintptr_t)workerStackMem, guardDamaged(), STACK_GUARD);
+#endif
+      out.println(); break;
+    case 'C': diag_print_core(out); break;   // the last coredump's summary, read at boot
     case 'B':
       if (arg[0] == '0') { out.println("rebooting into fast mode (BLE off)"); ble_request_fast(); }
-      else if (arg[0] == '1') { out.println("rebooting into the BLE window"); delay(50); ESP.restart(); }
+      else if (arg[0] == '1') { out.println("rebooting into the BLE window"); diag_stage(DIAG_RESTART_REQ); delay(50); ESP.restart(); }
       else if (!ble_on()) out.println("mode fast (BLE off)");
       else { const int left = ble_window_left_s(); if (left < 0) out.println("mode ble (connected)"); else out.printf("mode ble (window: fast mode in %d s)\n", left); }
       break;
-    case 'r': ESP.restart(); break;
-    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v B[0|1] r"); break;
+    case 'r': diag_stage(DIAG_RESTART_REQ); ESP.restart(); break;
+    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v C B[0|1] r"); break;
     default: out.println("error unknown command"); break;
   }
+  diag_feed();   // -DLOOP_WDT: a completed command
 }
 
 void setup() {
+  diag_usb_reenum();   // LCD: after a CPU-only reset, make the host re-enumerate before the CDC starts (diag.cpp)
   Serial.begin(115200);
   Serial.setTxTimeoutMs(10);  // bulk CDC writes never wedge loop() (see DualOut::write in ble.cpp)
   uint32_t t = millis();
@@ -936,6 +985,7 @@ void setup() {
   out.printf("\nliquid-watch | %s %dx%d | cpu %lu MHz | psram %u KB | heap %u KB | reset %s\n", BOARD_TAG, PANEL_W, PANEL_H,
                 getCpuFrequencyMhz(), ESP.getPsramSize() / 1024, ESP.getFreeHeap() / 1024,
                 rr >= 0 && rr < 16 ? RST[rr] : "?");
+  diag_boot(out);   // previous boot's RTC record, the cached coredump summary (hang diagnostics, diag.h)
   if (!fb.buf) { out.println("FATAL: framebuffer alloc failed"); }
 #ifdef BOARD_LCD316
   dumpHex = (char *)heap_caps_malloc(DUMP_HEX_BYTES, MALLOC_CAP_SPIRAM);
@@ -943,7 +993,8 @@ void setup() {
 #endif
   // Fast mode (BLE off this boot): the RAM Arduino released from the BT controller takes the face's hottest tables
   // (render_init); the BLE window keeps them in PSRAM so BLE (and the PSRAM timing task) fit.
-  const bool dispOk = display_init(), renderOk = render_init(!ble_on()), physOk = physics_init();
+  const bool dispOk = display_init(); diag_stage(DIAG_DISPLAY);
+  const bool renderOk = render_init(!ble_on()), physOk = physics_init(); diag_stage(DIAG_RENDER);
   if (!dispOk) out.println("display init FAILED");
   if (!renderOk) out.println("render init FAILED (glyph pools / mark tables / film tables / lane table, PSRAM)");
   if (!physOk) out.println("physics init FAILED (wet-film buffers, PSRAM): no residue");
@@ -983,8 +1034,10 @@ void setup() {
   clockRestore();
   clockSec = clockNow();
   temperature_sensor_power_acquire();   // `s` reads the die temperature (shared with the PSRAM timing task)
-  if (ble_on()) ble_init("liquid-watch");
+  if (ble_on()) { diag_stage(DIAG_BLE); ble_init("liquid-watch"); }
   out.printf("mode: %s\n", ble_on() ? "ble window (B0 = fast mode now)" : "fast (BLE off; B1 = BLE window)");
+  diag_loop_wdt_init(out);   // -DLOOP_WDT: loopTask on the task watchdog, registered once
+  diag_setup_done();
   out.println("ready. ? for commands");
 }
 
@@ -997,11 +1050,12 @@ static void feedByte(char c) {
 }
 
 void loop() {
-  while (Serial.available()) feedByte(Serial.read());
-  for (int c; (c = ble_read()) >= 0;) feedByte((char)c);
+  while (Serial.available()) { feedByte(Serial.read()); diag_feed(); }   // -DLOOP_WDT: draining input is progress
+  for (int c; (c = ble_read()) >= 0;) { feedByte((char)c); diag_feed(); }
   imu_poll();
   ble_tick();
   paramsFlush();
   clockSaveTick();
   if (mode == 'l') liquid_tick(); else delay(1);
+  diag_feed();   // -DLOOP_WDT: one ordinary loop() iteration completed (every mode)
 }

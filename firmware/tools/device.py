@@ -20,6 +20,12 @@ Espressif (VID 303A) COM port on Windows; with several attached (either side, to
 import argparse, glob, json, os, subprocess, sys, time
 
 SENTINEL = '\x1e<<END>>\x1e'
+# A reply that crossed the LCD firmware's USB re-enumeration (diag.cpp diag_usb_reenum: after a CPU-only reset, i.e.
+# `r`, `B0` / `B1`, the BLE window's end or a panic, the app detaches and re-attaches USB, so the port drops for well
+# under a second): raw(..., reopen=S) marks the drop and the re-open in the reply with these lines.
+PORT_LOST, PORT_BACK, PORT_GONE = '[port lost]', '[port back after', '[port gone]'
+REOPEN_S = 5           # how long a dropped port may take to come back
+RESTART_CMDS = ('r', 'B0', 'B1')   # talk() lets these re-open: their reply may cross the re-enumeration
 
 def is_wsl():
     return os.path.exists('/proc/sys/fs/binfmt_misc/WSLInterop') or 'microsoft' in os.uname().release.lower()
@@ -56,18 +62,71 @@ def close_serial(s):
     except Exception: pass
     s.close()
 
-def serial_talk(s, cmd, end, timeout):
-    s.reset_input_buffer()
-    s.write((cmd + '\n').encode()); s.flush()
-    t0 = time.monotonic(); out = b''; endb = end.encode()
+def reopen_serial(port, limit):
+    """(serial or None, seconds): the port re-opened as open_serial does, but without flushing what already arrived."""
+    import serial
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < limit:
+        s = serial.Serial(None, 115200, timeout=0.1)
+        s.port = port; s.dtr = True; s.rts = True
+        try: s.open(); return s, time.monotonic() - t0
+        except _lost_errors(): time.sleep(0.1)   # not enumerated again yet
+    return None, time.monotonic() - t0
+
+def _lost_errors():
+    """What a vanished port raises: pyserial's SerialException, OSError, and on Linux termios.error (pyserial's
+    reset_input_buffer / flush call tcflush / tcdrain directly)."""
+    import serial
+    try:
+        import termios
+        return (serial.SerialException, OSError, termios.error)
+    except ImportError:   # Windows (the bridge)
+        return (serial.SerialException, OSError)
+
+def serial_talk(s, cmd, end, timeout, reopen=0, port=None):
+    """(reply, serial). reopen 0: a dropped port raises. reopen S: it is re-opened (for up to S s, then PORT_GONE and
+    serial None) and the reply goes on to `end` / `timeout`, with PORT_LOST / PORT_BACK lines where it happened.
+    A command is sent at most once: a failure before transmission (flushing the input, the liveness probe: a stale
+    handle after an earlier re-enumeration fails there) re-opens and sends it then; once write() was called the
+    command may have reached the board (an `r` would restart it twice), so a later failure only re-opens and reads on."""
+    lost = _lost_errors()
+    out = b''; dev = b''   # dev: the board's bytes only (the end marker is searched there, not in PORT_* lines)
+    def back():
+        nonlocal s, out
+        try: s.close()
+        except Exception: pass
+        out += ('\n' + PORT_LOST + '\n').encode()
+        s, waited = reopen_serial(port, reopen)
+        out += (PORT_GONE + '\n' if s is None else f'{PORT_BACK} {waited:.1f} s]\n').encode()
+        return s is not None
+    for attempt in (0, 1):
+        try:                                           # before transmission: safe to redo
+            s.reset_input_buffer()
+            s.in_waiting                               # probe: a stale handle (port gone while idle) raises here
+        except lost:
+            if not reopen or attempt: raise
+            if not back(): return out.decode(errors='replace'), None
+            continue
+        break
+    try:
+        s.write((cmd + '\n').encode()); s.flush()     # from here on the command may have been delivered
+    except lost:
+        if not reopen: raise
+        if not back(): return out.decode(errors='replace'), None
+    t0 = time.monotonic(); endb = end.encode()
     echo = cmd.strip().encode() + b'\r\n'             # firmware echoes the command line first
     while time.monotonic() - t0 < timeout:
-        c = s.read(65536); out += c
-        body = out[len(echo):] if out.startswith(echo) else out
+        try: c = s.read(65536)
+        except lost:
+            if not reopen: raise
+            if not back(): break
+            continue
+        out += c; dev += c
+        body = dev[len(echo):] if dev.startswith(echo) else dev
         k = body.find(endb) if endb else -1
         if k >= 0 and (endb.endswith(b'\n') or b'\n' in body[k:]): break   # the end marker's whole line
-        if not endb and out and c == b'': break        # no terminator: stop at the first quiet gap
-    return out.decode(errors='replace')
+        if not endb and dev and c == b'': break        # no terminator: stop at the first quiet gap
+    return out.decode(errors='replace'), s
 
 class Device:
     def __init__(self, port=None):
@@ -83,9 +142,13 @@ class Device:
         else:
             self._s = open_serial(self.port)
 
-    def raw(self, cmd, end='\n', timeout=10):
-        if self._s: return serial_talk(self._s, cmd, end, timeout)
-        self._b.stdin.write(json.dumps([cmd, end, timeout]) + '\n'); self._b.stdin.flush()
+    def raw(self, cmd, end='\n', timeout=10, reopen=0):
+        """The reply as it came, echo included. reopen S: a port that drops mid-reply is re-opened (serial_talk)."""
+        if not self.windows:
+            if self._s is None: raise RuntimeError('port gone')
+            out, self._s = serial_talk(self._s, cmd, end, timeout, reopen, self.port)
+            return out
+        self._b.stdin.write(json.dumps([cmd, end, timeout, reopen]) + '\n'); self._b.stdin.flush()
         buf = []
         while True:
             line = self._b.stdout.readline()
@@ -99,7 +162,8 @@ class Device:
     def talk(self, cmd, end='\n', timeout=10, ok=None):
         """Send one command, return the reply with the firmware's echo line stripped. A reply that is empty, misses
         `end` or fails ok(reply) is asked again (RETRY times in all; then returned as it is) - except for commands that
-        are not idempotent (`r`, `i`) or silent by design (`l`, `h`, `c`: no reply, they always wait out `timeout`)."""
+        are not idempotent (`r`, `i`) or silent by design (`l`, `h`, `c`: no reply, they always wait out `timeout`).
+        The restarts (RESTART_CMDS) may cross the firmware's USB re-enumeration: their port is re-opened (REOPEN_S)."""
         if cmd.startswith('p') and not cmd.startswith('p~') and '=' in cmd: self._wrote = True
         if ok is None: ok = lambda r: r != '' and (end == '\n' or end in r)
         tries = 1 if cmd.strip()[:1] in ('r', 'i', 'l', 'h', 'c') else self.RETRY
@@ -119,7 +183,7 @@ class Device:
         return self.talk(f'p{name}={value}')
 
     def _talk1(self, cmd, end, timeout):
-        out = self.raw(cmd, end, timeout).replace('\r\n', '\n')
+        out = self.raw(cmd, end, timeout, REOPEN_S if cmd.strip() in RESTART_CMDS else 0).replace('\r\n', '\n')
         lines = out.split('\n')
         for l in lines:                                   # boot banner in a reply = the board rebooted
             if l.startswith('liquid-watch |'):
@@ -153,10 +217,12 @@ class Device:
 def _bridge(port):
     s = open_serial(port)
     for line in sys.stdin:
-        cmd, end, timeout = json.loads(line)
-        out = serial_talk(s, cmd, end, timeout)
+        req = json.loads(line)
+        cmd, end, timeout = req[:3]
+        out, s = serial_talk(s, cmd, end, timeout, req[3] if len(req) > 3 else 0, port)
         sys.stdout.write(out if out.endswith('\n') or not out else out + '\n')
         sys.stdout.write(SENTINEL + '\n'); sys.stdout.flush()
+        if s is None: return   # the port is gone: the next raw() sees the bridge die
     close_serial(s)
 
 if __name__ == '__main__':

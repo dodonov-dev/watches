@@ -1,0 +1,39 @@
+--- a/firmware/src/render.cpp
++++ b/firmware/src/render.cpp
+@@ -2407,16 +2407,10 @@
+ // A run's lanes for pieBlend: the whole 16-B blocks of its strip row around it, T = 0 outside the run. The lanes are the
+ // Tube's DigitScratch (never the stack).
+ struct PieRun {
+-  int16_t *T; uint16_t *C;
+-#ifdef DIGIT_VERIFY
+-  uint16_t *want;
+-#endif
++  int16_t T[PIE_LANES] __attribute__((aligned(16)));   // reconstruction: lanes on the stack (pre-DigitScratch)
++  uint16_t C[PIE_LANES] __attribute__((aligned(16)));
+   uint16_t *blk; int lead, nb;
+-  explicit PieRun(DigitScratch &ds) : T(ds.T), C(ds.C) {
+-#ifdef DIGIT_VERIFY
+-    want = ds.want;
+-#endif
+-  }
++  explicit PieRun(DigitScratch &) {}
+   // fb: the run's first strip pixel, column px0, n pixels. false: its blocks would leave the strip row (scalar path).
+   static inline bool fits(const uint16_t *fb, int px0, int n) {
+     const int lead = (int)(((uintptr_t)fb & 15) >> 1), nb = (lead + n + 7) >> 3;
+@@ -2432,6 +2426,7 @@
+   }
+   inline void end() {
+ #ifdef DIGIT_VERIFY
++    uint16_t want[PIE_LANES];
+     for (int i = 0; i < nb * 8; i++) {
+       const int t = T[i];
+       want[i] = t <= 0 ? blk[i] : t >= 256 ? __builtin_bswap16(C[i]) : blendLanesSw(lanesSw(blk[i]), lanes565(C[i]), t);
+@@ -2518,7 +2513,7 @@
+   const uint8_t *a0 = f.a0, *a1 = f.a1; const uint16_t *c0 = f.c0, *c1 = f.c1;
+   const int w00 = f.w00, w10 = f.w10, w01 = f.w01, w11 = f.w11, scaleT = f.scaleT;
+   int p0 = f.p0, p1 = f.p1, q0 = f.q0, q1 = f.q1, nIn = f.nIn;
+-  uint32_t *const row = f.ds->row;   // covT << 16 | colour, 0 = nothing
++  uint32_t row[FRAC_RUN_MAX];   // covT << 16 | colour, 0 = nothing
+   LiquidMemo memo;
+   while (n > 0) {
+     const int m = n < FRAC_RUN_MAX ? n : FRAC_RUN_MAX, mIn = nIn < m ? nIn : m;
