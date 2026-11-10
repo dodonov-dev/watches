@@ -9,6 +9,8 @@
 # $LW_TUBES, else 2 (3 = + the seconds tube, -DTUBE_COUNT=3). Prints the board tag it builds (`v` reports the same).
 # $LW_PORT picks the board as in device.py: COMx = Windows side, else a Linux tty (e.g. /dev/ttyACM1). With several
 # boards attached it is required (refused otherwise): they share the USB IDs, nothing tells which one is "first".
+# env lcd316 always flashes through flash-win.sh (also on a Linux tty): its DC-aware bootloader (bootloader-dc/) must
+# stay at 0x0, and `pio run -t upload` would write Arduino's instead (pio_pkgdir.py refuses that). --full goes there too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENV="${LW_BOARD:-amoled191}"; RES="${LW_RES:-}"; TUBES="${LW_TUBES:-2}"
@@ -32,5 +34,5 @@ up() {
 PORT="${LW_PORT:-$(python3 tools/device.py --find-port)}"   # device.py's choice: refuses none / several attached
 case "$PORT" in
     COM*) win "$@" "$PORT" ;;
-    *) up "$PORT" "$@" ;;
+    *) if [ "$ENV" = lcd316 ]; then win "$@" "$PORT"; else up "$PORT" "$@"; fi ;;
 esac

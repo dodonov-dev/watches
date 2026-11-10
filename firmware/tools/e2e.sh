@@ -101,11 +101,19 @@ if [ -n "$REF" ]; then
     # The worktree's flash scripts may predate $LW_PORT and the width suffix of a res tag: route the chosen board here
     # (they cd into its firmware/), the res as -D flags, LW_RES as plain rows (they add -DRENDER_H from it).
     REF_ENV=(env LW_RES="${RES:+$(python3 tools/boardtag.py flags "$RES" "$TUBES" | sed 's/^-DRENDER_H=\([0-9]*\).*/\1/')}" PLATFORMIO_BUILD_FLAGS="$FLAGS $TUBE_FLAGS $RES_FLAGS")
-    case "${LW_PORT:-}" in
-        COM*) "${REF_ENV[@]}" "$WT/firmware/tools/flash-win.sh" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$LW_PORT" ;;
-        ?*) (. tools/pkgdir.sh; cd "$WT/firmware" && "${REF_ENV[@]}" ~/.platformio/penv/bin/pio run -s -e "$ENV" -t upload --upload-port "$LW_PORT") ;;   # pkgdir.sh: lcd316's own packages dir
-        *) "${REF_ENV[@]}" "$WT/firmware/tools/flash.sh" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} ;;
-    esac
+    if [ "$ENV" = lcd316 ]; then
+        # Built in the worktree, flashed by this tree's guarded flash-win.sh (app only, after checking that 0x0 holds
+        # bootloader-dc): the ref commit's own scripts may not check it, and pio's upload would replace it.
+        (. tools/pkgdir.sh; cd "$WT/firmware" && "${REF_ENV[@]}" ~/.platformio/penv/bin/pio run -s -e "$ENV")   # pkgdir.sh: lcd316's own packages dir
+        tools/flash-win.sh --env "$ENV" --app-bin "$WT/firmware/.pio/build/$ENV/firmware.bin" "$LW_PORT"
+    else
+        case "${LW_PORT:-}" in
+            COM*) "${REF_ENV[@]}" "$WT/firmware/tools/flash-win.sh" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} "$LW_PORT" ;;
+            ?*) (. tools/pkgdir.sh; cd "$WT/firmware" && "${REF_ENV[@]}" ~/.platformio/penv/bin/pio run -s -e "$ENV" &&
+                 ~/.platformio/penv/bin/python -m esptool --chip esp32s3 --port "$LW_PORT" write-flash 0x10000 ".pio/build/$ENV/firmware.bin") ;;   # app only, as on COMx
+            *) "${REF_ENV[@]}" "$WT/firmware/tools/flash.sh" ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} ;;
+        esac
+    fi
     sleep 4
     check_tag "ref $REF_SHA" || exit 4
     bench "$LABEL ref $REF_SHA"

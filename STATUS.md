@@ -1,6 +1,19 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-06 (LCD 3 tubes 10-8-6: 27.6 fps in motion at 80 MHz, BLE window + fast mode)_
+_Last update: 2026-11-09 (LCD: flash + PSRAM 120 MHz in HPM dummy-cycle mode is the default, DC-aware bootloader)_
+
+## LCD 120 MHz by default (2026-11-09, uncommitted; docs/hang-investigation-plan.md H2.7)
+
+- env lcd316: flash + PSRAM 120 MHz, in spec on the XMC XM25QH128C via HPM dummy-cycle mode (platformio.ini). lcd-1105,
+  fast mode: pinned 48.3 fps (80 MHz 40.6), step swing 31.2 (26.8), smooth swing 33.9 (29.0); parity 0 > 12/255;
+  30 / 30 restarts of every kind clean (tested build ef8b7a8b).
+- Needs the DC-aware bootloader: firmware/bootloader-dc/ + tools/bootloader-dc.sh (byte-identical to the tested image).
+  flash-win.sh `--full` writes and verifies it; app-only flashes refuse a board whose 0x0 differs; `pio run -t upload`
+  refused for lcd316; `v` / banner: `boot-dc 1`, a loud warning on a mismatch.
+- The old "wedges": out-of-spec flash plus a dead USB CDC after CPU-only resets (fixed: diag.cpp USB re-enumeration;
+  the port drops ~0.1 s on r / B0 / B1 / window end; device.py / rloop.py re-open).
+- Board check of the normal flash path (ELF 49217b75, app-only onto bootloader-dc): flash and bootloader verify OK, then
+  `v` silent after the reset; open.
 
 ## LCD 3 tubes 10-8-6 mm: faster in motion, BLE window + fast mode (2026-11-05/06; docs/lcd316-3tube-perf.md)
 
@@ -14,8 +27,8 @@ _Last update: 2026-11-06 (LCD 3 tubes 10-8-6: 27.6 fps in motion at 80 MHz, BLE 
   reboot into fast mode (BLE memory released, seconds tube + fizz masks internal, heap ~25 KB); `B0` / `B1` / `B`, `s`
   shows temp and ble on|off; bench.py switches to fast mode. BLE connect tested in the window (heap 9 KB connected).
   Same on the AMOLED (shared code).
-- Shelved: flash + PSRAM 120 MHz (48.5 / 31.8 fps, but the chip wedged at resets; BACKLOG), GDMA bounce refill
-  (docs/lcd316-refill-dma.patch), ESP-IDF's PSRAM temperature retuning (wedged once).
+- Shelved: flash + PSRAM 120 MHz (48.5 / 31.8 fps, but the chip wedged at resets; default since 2026-11-09, above), GDMA
+  bounce refill (docs/lcd316-refill-dma.patch), ESP-IDF's PSRAM temperature retuning (wedged once).
 - Host checks identical to HEAD (render frames, stepped sequences 80 presets); TUBE_VERIFY / PUSH_VERIFY bad 0;
   AMOLED builds (76256 B, as before). Faster boards surveyed: docs/devkit-survey.md (ESP32-P4 kits first).
 

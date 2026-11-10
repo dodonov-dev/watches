@@ -7,6 +7,10 @@ The user allows for this task: memory made dynamic again where needed, free inte
 **State 2026-11-06 (committed):** 80 MHz, pinned 40.7 / swinging 27.6 fps (baseline 31.5 / 22.9). The user accepts ~27
 for now; 120 MHz (48.5 / 31.8) is shelved until its reset wedges are understood (BACKLOG "Firmware / ESP-IDF").
 
+**State 2026-11-09:** 120 MHz is the default (in-spec HPM-DC flash + DC-aware bootloader, firmware/bootloader-dc/):
+pinned 48.3 / step swing 31.2 / smooth swing 33.9 fps (80 MHz 40.6 / 26.8 / 29.0). Goal (>= 30 in motion) met. See
+"Wedges at 120 MHz" below.
+
 ## Baseline (2026-11-05, live `f`, board in use)
 fps 25.3, render 37.8 ms (cores h 21.9 / m 24.15, of it seconds 10.6), push 23.55 ms (three strips), frame-p95 43,
 phys 1.98 x (0.26 + 0.28), rest 0.95; heap with BLE 96 B.
@@ -106,7 +110,11 @@ Heap (`s`) boot 440-600 B vs 504-668, after a swing 190-360 vs 256-400; static +
 - BLE on the board: window -> bleak connect (MTU 247, heap 9.0 KB connected) -> disconnect -> fast mode 15 s later; fast
   mode heap 24.9 KB with the seconds tube + fizz masks internal.
 
-### Wedges at 120 MHz (open; investigate before any further 120 MHz A/B)
+### Wedges at 120 MHz (closed 2026-11-09: docs/hang-investigation-plan.md H2.7)
+- Cause: the XMC XM25QH128C read at 120 MHz with 6 dummy cycles (rated 108 MHz), and after CPU-only resets a USB CDC
+  whose IN endpoint never drained (app running, no output: looked like a wedge). Fix: HPM dummy-cycle mode
+  (SPI_FLASH_HPM_ENA, the DC-aware bootloader of firmware/bootloader-dc/) and a USB re-enumeration after CPU-only
+  resets (src/diag.cpp). 30 / 30 restarts clean; the default since then. History below.
 - Three hangs, all at flash + PSRAM 120 MHz, all around a reset: the GDMA-refill build at boot; g1 (retuning task) after a
   bench; h1-120 at bench.py's `B0` (esp_restart into fast mode). Never in steady running (h1 ran for hours); none at
   80 MHz so far. Symptom: no serial at all, esptool's USB-JTAG reset into download fails ("No serial data received");

@@ -790,7 +790,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - IDF log level ERROR hides the boot's HPM / MSPI-tuning warnings ("High performance mode of this flash model hasn't been
   supported"): read the state into `v` rather than raising the log level.
 - flash-win.sh --full writes the merged factory image from 0x0: the NVS gap at 0x9000 is probably overwritten (params
-  reset). Unverified.
+  reset). Unverified. (lcd316 since 2026-11-09: separate images, NVS not written; the AMOLED still takes the factory bin.)
 - No direct "did it reboot?" field: `s` going `ble off` -> `ble on` (fast mode lasts one boot) is the only tell. Uptime in `s`.
 - Arduino's `Print::printf` mallocs (and frees) for any line of 64 B or more, and silently drops it if malloc fails:
   `s`, `f`, the `x` LAYOUT / state lines and the `X` frame lines do this every call. diag_printf (src/diag.cpp) is the
@@ -803,3 +803,18 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   Only worth it with a "host is reading" signal (OUT traffic, DTR).
 - The CPU-only-reset USB re-enumeration (src/diag.cpp diag_usb_reenum) is LCD-only, like the rest of diag; the AMOLED
   uses the same USB-Serial-JTAG and could take it once it has the RAM / code budget (none of it is RAM).
+
+## 120 MHz default (2026-11-09)
+- pio's lcd316 `firmware.factory.bin` still carries Arduino's bootloader (merge-bin also patches its header to DIO):
+  unused now, a trap if flashed by hand. `board_build.arduino.custom_bootloader` + a "keep" merge would fix it.
+- e2e.sh --ref onto a commit before the 120 MHz switch: its custom_sdkconfig differs, so the shared libs rebuild twice
+  (~6 min each) per A/B.
+- boot-dc only warns. The app could clear the flash DC bits in a shutdown handler before esp_restart, so a wrong bootloader
+  survived software restarts (not panics / watchdogs).
+- The banner after a re-enumeration only reaches a host that re-opens within setup()'s 2.5 s `Serial` wait; a slower
+  re-open loses it (rloop then reports 0 banners).
+- bootloader-dc.sh pins SOURCE_DATE_EPOCH to the tested image's compile time; a rebuilt bootloader needs a new pin or
+  COMPILE_TIME_DATE off.
+- `codex exec "<prompt>"` from a non-tty shell blocks on "Reading additional input from stdin": give it `< /dev/null`.
+- device.py's Windows bridge prints a SerialException traceback when a plain talk (no reopen) hits a handle staled by a
+  re-enumeration (bench.py's first `s` after `B0`); harmless (bench.py re-opens), noisy.

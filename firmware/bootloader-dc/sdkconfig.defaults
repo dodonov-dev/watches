@@ -1,0 +1,14 @@
+# env lcd316's 2nd-stage bootloader (README.md here; built by tools/bootloader-dc.sh). Every line below except the two
+# marked "app" changes the image; Arduino's cache / CPU / RTC-clock choices were checked and do not.
+# Flash: XMC XM25QH128C, 16 MB, QIO.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+# app: 120 MHz in HPM dummy-cycle mode (the app sets the DC bits; the image header stays 80m either way).
+CONFIG_ESPTOOLPY_FLASHFREQ_120M=y
+CONFIG_SPI_FLASH_HPM_ENA=y
+# Reset the flash at boot, clearing the volatile DC bits a CPU-only reset leaves set; the ROM loads this image in DOUT.
+CONFIG_BOOTLOADER_FLASH_DC_AWARE=y
+# As the Arduino libs sdkconfig (platformio.ini custom_sdkconfig) has them.
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP=y

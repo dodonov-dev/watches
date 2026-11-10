@@ -9,6 +9,8 @@
 #include "esp_rom_spiflash.h"
 #include "esp_app_desc.h"
 #include "esp_core_dump.h"
+#include "esp_flash.h"
+#include "esp_app_format.h"
 #include "esp_private/panic_internal.h"
 #include "esp_private/spi_flash_os.h"
 #include "esp_private/startup_internal.h"
@@ -162,6 +164,42 @@ void diag_usb_reenum() {
   recSeal();
 }
 
+// Bootloader pairing check (platformio.ini env lcd316, bootloader-dc/README.md). With HPM-DC the app sets the flash's
+// volatile dummy-cycle bits; only a DC-aware bootloader resets the flash at boot, any other one cannot read it after a
+// CPU-only reset (esp_restart, a panic, a watchdog): the board wedges. Nothing in RAM says which bootloader ran, so its
+// image at 0x0 is read once at boot (header, segment headers, the appended SHA-256: ~100 B, three small flash reads)
+// and its digest compared with bootloader-dc's (tools/bootloader-dc.sh checks the file's sha256; esptool image-info
+// prints this one as "Validation hash"). IDF builds a DC-aware bootloader with a DOUT header, so another DOUT image is
+// reported as unverified rather than wrong. Stack buffers only, nothing allocated.
+static const uint8_t BOOT_DC_DIGEST[32] = {0x61, 0x53, 0xb1, 0x70, 0x38, 0x40, 0x40, 0x2b, 0xc2, 0xc8, 0x4c, 0xef, 0x6f, 0x89, 0xbd, 0xed,
+                                           0x2c, 0xd7, 0x8d, 0xdb, 0xce, 0xa1, 0x08, 0x17, 0x2c, 0xc5, 0xf7, 0x55, 0x15, 0x0c, 0xab, 0x53};
+enum : int8_t { BOOT_UNREADABLE = -1, BOOT_NOT_DC = 0, BOOT_DC = 1, BOOT_DOUT_UNKNOWN = 2 };
+static int8_t bootDc = BOOT_UNREADABLE;
+static int8_t bootDcCheck() {
+  esp_image_header_t h;
+  if (esp_flash_read(nullptr, &h, 0, sizeof h) != ESP_OK || h.magic != ESP_IMAGE_HEADER_MAGIC || h.segment_count > ESP_IMAGE_MAX_SEGMENTS)
+    return BOOT_UNREADABLE;
+  uint32_t off = sizeof h;
+  for (int i = 0; i < h.segment_count; i++) {
+    esp_image_segment_header_t sh;
+    if (esp_flash_read(nullptr, &sh, off, sizeof sh) != ESP_OK || sh.data_len > 0x10000) return BOOT_UNREADABLE;   // 0x10000: the app offset
+    off += sizeof sh + sh.data_len;
+  }
+  off = (off + 16) & ~15u;   // the checksum byte ends the 16-byte padding; the digest follows it
+  uint8_t d[32];
+  if (h.hash_appended == 1 && esp_flash_read(nullptr, d, off, sizeof d) == ESP_OK && memcmp(d, BOOT_DC_DIGEST, sizeof d) == 0) return BOOT_DC;
+  return h.spi_mode == ESP_IMAGE_SPI_MODE_DOUT ? BOOT_DOUT_UNKNOWN : BOOT_NOT_DC;
+}
+static const char *bootDcName() {
+  const bool hpm = spi_flash_hpm_dummy_adjust();
+  switch (bootDc) {
+    case BOOT_DC: return "1";
+    case BOOT_DOUT_UNKNOWN: return "dout-unverified";
+    case BOOT_NOT_DC: return hpm ? "0-MISMATCH" : "0";
+    default: return "unreadable";
+  }
+}
+
 // The last coredump in flash, read once at boot (its IDF calls allocate temporarily: boot only, by design).
 static esp_core_dump_summary_t coreSum;
 static bool coreValid = false;
@@ -207,6 +245,14 @@ void diag_boot(Print &out) {
   out.println();
   coreValid = esp_core_dump_image_check() == ESP_OK && esp_core_dump_get_summary(&coreSum) == ESP_OK;
   diag_print_core(out);
+  bootDc = bootDcCheck();
+  if (spi_flash_hpm_dummy_adjust() && bootDc != BOOT_DC) {
+    diag_printf(out, "!!! WARNING: flash in HPM dummy-cycle mode, bootloader at 0x0 %s (boot-dc %s) !!!\n",
+                bootDc == BOOT_NOT_DC ? "is NOT DC-aware" : bootDc == BOOT_DOUT_UNKNOWN ? "is not bootloader-dc (unverified)" : "unreadable",
+                bootDcName());
+    if (bootDc == BOOT_NOT_DC)
+      out.println("!!! the next CPU reset (r, B0/B1, BLE window end, panic, watchdog) wedges the board: tools/flash.sh --env lcd316 --full !!!");
+  }
   shutdownOk = esp_register_shutdown_handler(shutLast) == ESP_OK;   // registered first: runs last
   rec.stage = DIAG_SETUP; rec.upMs = millis(); recSeal();
 }
@@ -240,7 +286,7 @@ void diag_print_v(Print &out) {
              (unsigned long)REG_READ(SPI_MEM_DIN_MODE_REG(0)), (unsigned long)REG_READ(SPI_MEM_DIN_NUM_REG(0)),
              (unsigned long)REG_READ(SPI_MEM_TIMING_CALI_REG(0)), (unsigned long)REG_READ(SPI_MEM_SPI_SMEM_TIMING_CALI_REG(0)),
              (unsigned long)REG_READ(SPI_MEM_SPI_SMEM_DIN_MODE_REG(0)), (unsigned long)REG_READ(SPI_MEM_SPI_SMEM_DIN_NUM_REG(0)));
-  diag_printf(out, " usb-reenum %u %u ms", rec.usbReenum, rec.usbWaitMs);
+  diag_printf(out, " usb-reenum %u %u ms boot-dc %s", rec.usbReenum, rec.usbWaitMs, bootDcName());
   diag_printf(out, " wdt %08lx/%08lx/%08lx coredump %s shutdown %s", (unsigned long)REG_READ(TIMG_WDTCONFIG0_REG(0)),
              (unsigned long)REG_READ(TIMG_WDTCONFIG0_REG(1)), (unsigned long)REG_READ(RTC_CNTL_WDTCONFIG0_REG),
              coreValid ? "yes" : "no", shutdownOk ? "ok" : "FULL");
