@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Honey",
   "material": {
     "ior": 1.49,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 4.75,
-    "digitParallax": 4.75,
     "tubeBack": "#0c0703",
     "tubeBack2": "#1c1208",
     "tubeBackGradient": 1,

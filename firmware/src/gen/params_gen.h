@@ -21,6 +21,7 @@ struct Params {
   float glassRim;
   float glassWall;
   float glassWallGlow;
+  float liquidIor;
   float wallWet;
   float rimLight;
   uint32_t rimTint;
@@ -137,7 +138,8 @@ struct Params {
   float digitDryLens;
   float topLens;
   float topParallax;
-  float digitParallax;
+  float rearParallax;
+  float rearParallaxSettle;
   float liquidTransparency;
   float markContrast;
   bool digitsLeadingZero;
@@ -182,8 +184,8 @@ struct Params {
   float ambientLight;
 };
 
-#define PARAMS_NUM_FIELDS 176
-#define PARAMS_SCHEMA_CRC 0xee478e2cu  // field names+types; guards the NVS blob
+#define PARAMS_NUM_FIELDS 178
+#define PARAMS_SCHEMA_CRC 0x6c236b52u  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
 // dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
@@ -207,6 +209,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"glassRim", 'f', (uint16_t)offsetof(Params, glassRim), 0},
   {"glassWall", 'f', (uint16_t)offsetof(Params, glassWall), 1},
   {"glassWallGlow", 'f', (uint16_t)offsetof(Params, glassWallGlow), 0},
+  {"liquidIor", 'f', (uint16_t)offsetof(Params, liquidIor), 0},
   {"wallWet", 'f', (uint16_t)offsetof(Params, wallWet), 0},
   {"rimLight", 'f', (uint16_t)offsetof(Params, rimLight), 0},
   {"rimTint", 'c', (uint16_t)offsetof(Params, rimTint), 0},
@@ -323,7 +326,8 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"digitDryLens", 'f', (uint16_t)offsetof(Params, digitDryLens), 0},
   {"topLens", 'f', (uint16_t)offsetof(Params, topLens), 0},
   {"topParallax", 'f', (uint16_t)offsetof(Params, topParallax), 1},
-  {"digitParallax", 'f', (uint16_t)offsetof(Params, digitParallax), 1},
+  {"rearParallax", 'f', (uint16_t)offsetof(Params, rearParallax), 1},
+  {"rearParallaxSettle", 'f', (uint16_t)offsetof(Params, rearParallaxSettle), 0},
   {"liquidTransparency", 'f', (uint16_t)offsetof(Params, liquidTransparency), 0},
   {"markContrast", 'f', (uint16_t)offsetof(Params, markContrast), 0},
   {"digitsLeadingZero", 'b', (uint16_t)offsetof(Params, digitsLeadingZero), 0},
@@ -387,6 +391,7 @@ static const Params PRESET_1 = {
   0.4f, // glassRim
   4.0f, // glassWall
   0.25f, // glassWallGlow
+  1.333f, // liquidIor
   1.0f, // wallWet
   0.0f, // rimLight
   0x000000, // rimTint
@@ -503,7 +508,8 @@ static const Params PRESET_1 = {
   -0.4f, // digitDryLens
   0.0f, // topLens
   0.0f, // topParallax
-  3.0f, // digitParallax
+  4.75f, // rearParallax
+  1.5f, // rearParallaxSettle
   0.17f, // liquidTransparency
   0.0f, // markContrast
   false, // digitsLeadingZero

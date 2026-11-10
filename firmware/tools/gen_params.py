@@ -19,7 +19,7 @@ SHEETS = [
 FIELDS = [
  ('v','int'),
  ('tubeHeight','float'),('hoursY','float'),('minutesY','float'),
- ('liquid','rgb'),('liquidHi','rgb'),('liquidLo','rgb'),('tubeBack','rgb'),('tubeBack2','rgb'),('tubeBackGradient','float'),('glassHi','rgb'),('glassBody','float'),('glassHiBright','float'),('glassReflect','float'),('glassRim','float'),('glassWall','float'),('glassWallGlow','float'),('wallWet','float'),('rimLight','float'),('rimTint','rgb'),('glassOverLiquid','float'),('lens','float'),('lensCurve','float'),('bubbleRim','rgb'),
+ ('liquid','rgb'),('liquidHi','rgb'),('liquidLo','rgb'),('tubeBack','rgb'),('tubeBack2','rgb'),('tubeBackGradient','float'),('glassHi','rgb'),('glassBody','float'),('glassHiBright','float'),('glassReflect','float'),('glassRim','float'),('glassWall','float'),('glassWallGlow','float'),('liquidIor','float'),('wallWet','float'),('rimLight','float'),('rimTint','rgb'),('glassOverLiquid','float'),('lens','float'),('lensCurve','float'),('bubbleRim','rgb'),
  ('remaining','bool'),('vertical','bool'),('highlightH','float'),('highlightInset','float'),('highlightBright','float'),('highlightSharp','float'),('shadeDepth','float'),('liquidThin','float'),('contactAngle','float'),
  ('contactHyst','float'),('contactDyn','float'),('capLength','float'),('meniscusLens','float'),
   ('meniscusK','float'),('meniscusDamp','float'),('meniscusInertia','float'),('wetFilm','float'),('traces','bool'),('traceAmount','float'),('traceDry','float'),('traceDrain','float'),('traceStain','float'),('traceFilm','float'),('edgeSoft','float'),
@@ -34,7 +34,7 @@ FIELDS = [
  ('digits','bool'),('digitColor','rgb'),('digitColor2','rgb'),('digitShadow','bool'),('digitShadowColor','rgb'),('digitShadowStrength','float'),('digitShadowOffset','float'),
  ('digitTint','rgb'),('digitTintAmount','float'),('digitTone','float'),('digitFont','float'),
  ('digitScaleX','float'),('digitScaleY','float'),('digitScaleXMin','float'),('digitScaleYMin','float'),
- ('digitBottomMin','float'),('digitBottom','float'),('digitsOnTop','bool'),('bottomLens','float'),('digitDryLens','float'),('topLens','float'),('topParallax','float'),('digitParallax','float'),
+ ('digitBottomMin','float'),('digitBottom','float'),('digitsOnTop','bool'),('bottomLens','float'),('digitDryLens','float'),('topLens','float'),('topParallax','float'),('rearParallax','float'),('rearParallaxSettle','float'),
  ('liquidTransparency','float'),('markContrast','float'),('digitsLeadingZero','bool'),
  ('digitMinuteStep','float'),('digitHourStep','float'),('digitHourStart','float'),('digitMinuteStart','float'),('digitsLastOnlyH','bool'),('digitsLastOnlyM','bool'),
  ('freeLiquid','bool'),('freeGain','float'),('freeDamp','float'),('freeBounce','float'),('freeHomeK','float'),

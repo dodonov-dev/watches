@@ -167,6 +167,7 @@ after the palette inversion (below).
 | `ambientLight` | 0. The legacy `ambientize` desaturates bright colours toward white as a stand-in for room reflections; the derived highlight, rim and thin-chord colours already contain the white light, so applying it again turned tinted rims grey (cola came out beige). |
 | `liquidBright`, `brightness` | `liquidBright = 1`; emissive: 1.3 with the derived encoded `liquid`/`liquidHi`/`liquidLo` ÷ 1.3 (the palette scales encoded values, so the product is unchanged). `brightness` design. |
 | `tickLens`, `bottomLens` | Depth warp of rear marks seen through the liquid cylinder grows with its index: `min(1, 0.45·(ior − 1)/0.333)` (water 0.45, oil 0.63). The dry-side and rod fields are design (rod calibration). |
+| `liquidIor` (**new legacy Param**, mirrored in `render.cpp` / `gen_params.py` / presets) | The contents' index `ior` (gas / plasma 1). The rear wall's view-angle parallax behind the contents is the behind-air one (`rearParallax`, design) / `liquidIor`: the ray through the front vertex bends to 1/n of its angle (along the tube a slab; across it the cylinder, whose lens is already the source-row warp). Legacy presets 1.333 (water). |
 | `bubbleRim` | `enc255(min(1, E_s·Tr(r) + 0.35·C⁰(0)))` with the backing-free body `C⁰`, `E_s = exposure·(ambient + 0.25·lightIntensity)` (the side-light irradiance of the rim term) and `Tr(r)` the Kubelka–Munk transmission over half the bore (the side light is filtered by the liquid on its way to the bubble: a tinted liquid's bubbles carry its colour, a colourless one's stay white). A bubble's rim totally reflects the light inside the liquid, not the backing behind it: it reads darker than a light backing and brighter than a dark one (the former `0.65·white` made bubbles vanish on white). The renderer shades the ring by the liquid's body lighting at that row (not the composited row: backing, surface highlight and glass do not light a bubble), so on a dark backing a bubble is lighter than the liquid. Frizzante: luma 219 on #ffffff, 181 on #000000. `bubbleDark = 1 − (1 − F)²`, `F = ((n − 1)/(n + 1))²`: the core is a clear window that loses only the reflection at its two surfaces (water 0.04, oil 0.07; the former `0.25 + 0.5·(1 − T)` drew dark cores). |
 
 ## Edge and glow
@@ -226,7 +227,7 @@ the coherence ranges. `x_μ = log10 μ_eff`; class thresholds at `x_μ = 0.398` 
 ## Ownership of every legacy `Params` key
 
 - **Design pass-through** (schema `design.allow`): `tubeHeight hoursY minutesY remaining vertical cornerR lens
-  lensCurve meniscusLens topLens topParallax tickDryLens digitDryLens tickParallax digitParallax tubeBack
+  lensCurve meniscusLens topLens topParallax tickDryLens digitDryLens tickParallax rearParallax rearParallaxSettle tubeBack
   tubeBack2 tubeBackGradient` all `tick*` (except `tickLens`) `ticksOnTop tickEmboss` all `digit*`
   `digitsOnTop freeLiquid freeHomeK readTiltStart readTiltEnd playHold brightness tickBright digitBright`,
   `markContrast` (the rear marks' legibility floor: bounded by the realism rules at `120·T`, clear ≥ 16; derived
@@ -235,7 +236,7 @@ the coherence ranges. `x_μ = log10 μ_eff`; class thresholds at `x_μ = 0.398` 
   policy until 2026-09-26; the presets pin the former values 0.5 / 0.3 / 0.7 / 0.6 / 1.25 / 1.05).
 - **Derived** (tables above): `liquid liquidHi liquidLo liquidTransparency liquidThin shadeDepth
   highlightH highlightBright highlightSharp glassHi glassHiBright glassReflect glassRim glassWall
-  glassWallGlow wallWet glassBody glassOverLiquid lightPhys lightAngle ambientLight liquidBright
+  glassWallGlow wallWet liquidIor glassBody glassOverLiquid lightPhys lightAngle ambientLight liquidBright
   tickLens bottomLens bubbleRim bubbleDark edgeGlow glowStrength frontBright edgeLightGain edgeSoft
   surfaceFill surfaceBlick contactAngle contactHyst contactDyn capLength freeDamp freeBounce meniscusK
   meniscusDamp meniscusInertia angleTiltGain angleGyroGain angleMax wetFilm traces traceAmount traceDry

@@ -295,6 +295,31 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, floa
   s.edgeLight += (clampf(sloshAlong, -1, 1) - s.edgeLight) * fminf(1, 5 * dt);
   s.acrossTilt += (clampf(across, -1, 1) - s.acrossTilt) * fminf(1, 5 * dt);
 
+  // Rear parallax (sim stepTube): the tilt high-passed over rearParallaxSettle, times the rear wall's depth, / liquidIor
+  // behind liquid; quantised to 1/16 px here (JS Math.round), so the render and the `x` dump carry integers.
+  if (!s.rearInit) { s.rearLpAlong = s.rearSmAlong = along; s.rearLpAcross = s.rearSmAcross = across; s.rearInit = true; }
+  const float rearA = fminf(1, dt / fmaxf(0.05f, p.rearParallaxSettle));
+  s.rearLpAlong += (along - s.rearLpAlong) * rearA;
+  s.rearLpAcross += (across - s.rearLpAcross) * rearA;
+  // the gate (sim stepTube): no motion while swinging, full parallax on slow tilts / settling, eased both ways
+  const float smA = fminf(1, dt / REAR_RATE_S), pA = s.rearSmAlong, pC = s.rearSmAcross;
+  s.rearSmAlong += (along - s.rearSmAlong) * smA;
+  s.rearSmAcross += (across - s.rearSmAcross) * smA;
+  const float dA = s.rearSmAlong - pA, dC = s.rearSmAcross - pC, rate = sqrtf(dA * dA + dC * dC) / dt;
+  s.rearAct += (rate - s.rearAct) * fminf(1, rate > s.rearAct ? dt * REAR_ACT_ATTACK : dt / REAR_ACT_DECAY_S);
+  if (s.rearAct >= REAR_GATE_HI) s.rearLatch = true;
+  s.rearQuiet = s.rearAct < REAR_GATE_LO ? s.rearQuiet + dt : 0;
+  if (s.rearQuiet >= REAR_QUIET_S) s.rearLatch = false;
+  const float gu = clampf((s.rearAct - REAR_GATE_LO) / (REAR_GATE_HI - REAR_GATE_LO), 0, 1);
+  const float gate = s.rearLatch ? 0 : 1 - gu * gu * (3 - 2 * gu);
+  const float ease = fminf(1, dt / REAR_EASE_S);
+  s.rearSx += (gate * -p.rearParallax * (along - s.rearLpAlong) - s.rearSx) * ease;
+  s.rearSy += (gate * -p.rearParallax * (across - s.rearLpAcross) - s.rearSy) * ease;
+  const float rearDx = s.rearSx, rearDy = s.rearSy;
+  const float rearInv = 1.0f / fmaxf(1, p.liquidIor);
+  s.rearX16 = (int)floorf(rearDx * 16 + 0.5f); s.rearY16 = (int)floorf(rearDy * 16 + 0.5f);
+  s.rearX16w = (int)floorf(rearDx * rearInv * 16 + 0.5f); s.rearY16w = (int)floorf(rearDy * rearInv * 16 + 0.5f);
+
   // Pinned contact lines: the tilt pressure moves each end's static lead (a held line that would end up
   // past θA / θR is re-seated on the band's edge — no line speed, the ring doesn't move on screen), then
   // the edge's travel this tick is taken up by the held ring until the lead reaches θA / θR; only the rest

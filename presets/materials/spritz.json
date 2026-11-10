@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Aperol spritz",
   "material": {
     "ior": 1.35,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 6,
-    "digitParallax": 5.5,
     "tubeBack": "#fbf7ee",
     "tubeBack2": "#000000",
     "tubeBackGradient": 0,

@@ -1033,6 +1033,31 @@ struct Mark {
   static inline uint32_t recipOf(int d) { return d > 0 ? 0xFFFFFFFFu / (uint32_t)d + 1 : 0; }
 };
 
+#define PIE_LANES 144     // a SIMD run's lanes: <= FRAC_RUN_MAX pixels plus <= 7 lanes before it, in whole 16-B blocks
+#define FRAC_RUN_MAX 130  // a run's part: a copy spans at most gw + 1 <= 129 columns (gw is capped at 128)
+// The digit kernels' scratch, one per Tube (both tubes render at once, one per core), allocated once by render_init,
+// 16-B aligned: internal RAM in LCD fast mode (the SIMD lanes are rewritten every run), else PSRAM (the BLE window, the
+// AMOLED). 1,119 B a tube with the alignment slack, 1,407 B with -DDIGIT_VERIFY. Never on the render tasks' stacks (4 KB,
+// several frames deep under these kernels).
+struct DigitScratch {
+  int16_t T[PIE_LANES] __attribute__((aligned(16)));    // SIMD lanes: coverage (PieRun)
+  uint16_t C[PIE_LANES] __attribute__((aligned(16)));   // SIMD lanes: colour (PieRun)
+  uint32_t row[FRAC_RUN_MAX];                           // scalar fractional run: covT << 16 | colour
+#ifdef DIGIT_VERIFY
+  uint16_t want[PIE_LANES];                             // -DDIGIT_VERIFY: the scalar blend PieRun::end compares with
+#endif
+};
+#if DIGIT_PIE
+// The last fractional run's taps (spriteRunFrac, SIMD path): under a magnifying lens neighbouring strip rows sample the
+// same source row, so a glyph row repeats the one before it with the same run and only the blend is new. Reset by
+// planLabels every frame (a memo within the digit pass, never across frames). Keyed on the tap weights too: the dry
+// and the wet copy take different ones.
+#define FRAC_MEMO_MAX FRAC_RUN_MAX
+struct FracMemo {
+  const uint8_t *a0, *a1; const uint16_t *cq; int m, nIn, p0, p1, q0, q1, scaleT, mode, w00, w10, w01, w11; bool valid;
+  int16_t T[FRAC_MEMO_MAX]; uint16_t C[FRAC_MEMO_MAX];
+};
+#endif
 #define LABELS_MAX 12   // a tube's labels: 12 h at step 1, 60 min at step 5 (the sliders' smallest); more over serial is cut
 struct Label { int x0, y; char text[3]; int len; int adv[2]; };   // y: panel row of the first glyph's top
 struct Labels {
@@ -1042,19 +1067,38 @@ struct Labels {
   // Vertical watch: glyphs turned to read upright, a label's digits advance across the tube (panel y) from
   // Label::y, Label::x0 is where the glyph body starts along it; bw x bh stay the glyph as read (sim Labels).
   bool vertical = false;
-  float wetDx = 0, wetDy = 0;   // fractional refraction shift of the columns behind liquid (digitParallax); 0 behind air / on top
-  // cache key: everything above is a function of (params gen, H) plus these motion-derived ints (the shifts
-  // are applied at draw time; only floor(wetDy) enters the key, through the wet row span)
-  uint32_t gen = 0; int H = 0, bottomOff = 0, first = -1, keyWetDy = 0; bool valid = false, have = false;
-  // Sprite digits behind liquid move by whole px (sim DigitHold): wetDx / wetDy rounded, kept until the shift is more
-  // than 0.7 px away, so a shift resting near x.5 does not flicker between two px. Render state across frames, per
-  // tube (holdWhole, once a frame the digit layer is drawn; render_digit_shift for the `x` dump).
-  int wholeDx = 0, wholeDy = 0; bool wholeHeld = false;
-  void holdWhole() {
-    auto hold = [&](float v, int &w) { if (!wholeHeld || fabsf(v - (float)w) > 0.7f) w = (int)jround(v); };
-    hold(wetDx, wholeDx); hold(wetDy, wholeDy); wholeHeld = true;
-  }
+  // View-angle parallax of the rear wall (sim Labels): behind air (d) and behind liquid (w, / liquidIor), 1/16 px, x along
+  // the panel, y in rows down; 0 on top. Set every frame (shiftTap takes the taps).
+  int sx16d = 0, sx16w = 0, sy16d = 0, sy16w = 0;
+  // cache key: everything above is a function of (params gen, H) plus these motion-derived ints (the parallax enters
+  // only through the row spans: whole rows and overhang of the dry and the wet copy)
+  uint32_t gen = 0; int H = 0, bottomOff = 0, first = -1, keyRowD = 0, keyRowW = 0; bool valid = false, have = false;
 };
+// The rear parallax of a column of wet share k (1/256; sim shiftTap): the dry shift d16 moved toward the wet one w16 (1/16
+// px) by k, as whole px i and the far tap's weight w1 (1/256; destination c samples source c - i - w1/256). 1/4096 px ints.
+// Premultiplied bilinear colour of a resampled pixel (sim mix565): each 565 channel of the four taps weighted by its
+// tap's alpha x weight m, divided by the pixel's coverage a = (sum m + 32768) >> 16 (1..255) through a reciprocal table
+// (no divide: ((S + 128) >> 8) * floor(2^24 / a), rounded >> 32, clamped). One tap at full weight gives its own colour.
+struct MixRecip { uint32_t v[256]; constexpr MixRecip() : v() { for (int a = 1; a < 256; a++) v[a] = (1u << 24) / (uint32_t)a; } };
+static constexpr MixRecip MIX_RECIP{};
+static inline uint32_t mixCh(uint32_t S, uint64_t R, uint32_t mx) {
+  const uint32_t v = (uint32_t)(((uint64_t)((S + 128) >> 8) * R + (1ull << 31)) >> 32);
+  return v > mx ? mx : v;
+}
+static inline uint16_t mix565(uint32_t m00, uint32_t m10, uint32_t m01, uint32_t m11, uint32_t c00, uint32_t c10, uint32_t c01, uint32_t c11, int a) {
+  const uint64_t R = MIX_RECIP.v[a];
+  const uint32_t r = mixCh(m00 * (c00 >> 11) + m10 * (c10 >> 11) + m01 * (c01 >> 11) + m11 * (c11 >> 11), R, 31);
+  const uint32_t g = mixCh(m00 * ((c00 >> 5) & 63) + m10 * ((c10 >> 5) & 63) + m01 * ((c01 >> 5) & 63) + m11 * ((c11 >> 5) & 63), R, 63);
+  const uint32_t b = mixCh(m00 * (c00 & 31) + m10 * (c10 & 31) + m01 * (c01 & 31) + m11 * (c11 & 31), R, 31);
+  return (uint16_t)(r << 11 | g << 5 | b);
+}
+struct ShiftTap { int i, w1; };
+static inline ShiftTap shiftTap(int d16, int w16, int k) {
+  const int v = d16 * 256 + (w16 - d16) * k;
+  ShiftTap t; t.i = v >> 12; t.w1 = ((v & 4095) + 8) >> 4;
+  if (t.w1 == 256) { t.i++; t.w1 = 0; }
+  return t;
+}
 
 // Cylinder warp of an independently warped mark (sim markWarp): |row offset from the axis| 0..1 -> the source's.
 struct MarkWarp {
@@ -1282,7 +1326,8 @@ struct Tube {
   uint32_t tubeProf[TU_N] = {};           // -DTUBE_PROF: accumulated until render_tube_profile_reset
 #endif
 #ifdef DIGIT_PROF
-  // frac px and slow (band) px / cycles stay 0 since step 8 of the LCD perf plan (whole-px sprite digits, no band)
+  // slow (band) px / cycles stay 0 since step 8 of the LCD perf plan (no band over sprite digits); frac px count the
+  // sub-pixel parallax runs (rear parallax, 2026-11-06)
   mutable uint32_t prof[11] = {};     // per frame: glyphs, rows, int px plain, int px liquid, frac px plain, frac px liquid, slow px, runs; us: layoutLabels, rear ticks, rear digits
   mutable uint32_t profCyc[3] = {};   // CPU cycles: plain runs, band (slow) runs, ramp columns
 #endif
@@ -1319,6 +1364,10 @@ struct Tube {
   uint16_t traceRaw[TUBE_LENGTH_PX];                          // render-frame residue copy, input to the taper blur
   uint16_t *traceLut = nullptr;                               // traceFillRow's per-row colour table, TRACE_LUT entries (one per tube: both cores render), PSRAM, render_init
   MarkPlan *plan = nullptr;                                   // the marks' per-frame plans (step 9), PSRAM, render_init
+#if DIGIT_PIE
+  FracMemo *fracMemo = nullptr;                               // the digits' last fractional run (spriteRunFracPie), PSRAM, render_init
+#endif
+  DigitScratch *scratch = nullptr;                            // the digit kernels' lanes and rows (16-B aligned), render_init: internal (LCD fast mode) / PSRAM
   // The fizz's per-frame constants (planFizz, read per bubble row): surface band veil opacity, receding pulls,
   // fizzBlick, the mirrored liquid frame's x map; per row the veil bounds (DiscRow veilLo / veilHi).
   float fzVeilA = 0, fzPullR = 0, fzPullL = 0, fzBlickK = 0; int fzXsI = 0, fzL = 0; bool fzMir = false;   // per row: FizzLook veilLo / veilHi
@@ -1375,7 +1424,7 @@ struct Tube {
   void buildBandRows(PalCache &pc) const;
   void buildPalette(const Params &p, float lightDeg, Palette &pal, const PalCache &pc) const;
   ScaledGlyph *scaledGlyphs(int sheetIdx, int bw, int bh, float brightness, uint32_t tintHex, float tintAmt, float tone, int shadow, float shadowA, int shadowOff, float transK, bool rot, float floorC, uint16_t floorR);
-  bool layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float acrossTilt, float edgeLight, float fill, Labels &lb);
+  bool layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, const TubeState &st, float fill, Labels &lb);
   void spriteRowFacts(int y0, const Labels &lb, const Mark &mark, int r0, int r1) const;
   void spriteGlyphRows(const struct GlyphPlan &gp, int y0, const Labels &lb, const Warp &warp, const Mark &mark, int r0, int r1) const;
   // Step 9: the marks planned once a frame (planTicks / planLabels / planFizz, before the band loop: they read no
@@ -1869,16 +1918,20 @@ ScaledGlyph *Tube::scaledGlyphs(int sheetIdx, int bw, int bh, float brightness, 
 }
 
 
-bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float acrossTilt, float edgeLight, float fill, Labels &lb) {
+bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, const TubeState &st, float fill, Labels &lb) {
+  const float acrossTilt = st.acrossTilt;
   bool minutes = ticksN == 60;
   int every = (int)fmx(1, jround(minutes ? p.digitMinuteStep : p.digitHourStep));
   // Motion-dependent parts of the layout, folded into the cache key.
   int bottomOff = p.digitsOnTop ? (int)jround(acrossTilt * p.topParallax) : 0;
-  // Liquid refracts the rear wall: the wet columns slide with tilt (same sign convention as the ticks).
-  // Fractional: the wet copy is resampled at draw time so it glides rather than steps.
-  lb.wetDx = p.digitsOnTop ? 0 : -edgeLight * p.digitParallax;
-  lb.wetDy = p.digitsOnTop ? 0 : acrossTilt * p.digitParallax;
-  int wetDy = (int)ffloor(lb.wetDy);
+  // View-angle parallax (sim layoutLabels): the rear wall's shift behind air and behind liquid, 1/16 px, quantised by the
+  // physics step (TubeState rearX16 … rearY16w).
+  {
+    const bool rear = !p.digitsOnTop;
+    lb.sx16d = rear ? st.rearX16 : 0; lb.sy16d = rear ? st.rearY16 : 0; lb.sx16w = rear ? st.rearX16w : 0; lb.sy16w = rear ? st.rearY16w : 0;
+  }
+  const ShiftTap tyD = shiftTap(lb.sy16d, lb.sy16w, 0), tyW = shiftTap(lb.sy16d, lb.sy16w, 256);
+  const int keyRowD = tyD.i * 2 + (tyD.w1 ? 1 : 0), keyRowW = tyW.i * 2 + (tyW.w1 ? 1 : 0);
   int start = (int)jround(minutes ? p.digitMinuteStart : p.digitHourStart); if (start <= 0) start = every;
   int first = start, last = ticksN - 1;
   if (minutes ? p.digitsLastOnlyM : p.digitsLastOnlyH) {
@@ -1886,8 +1939,8 @@ bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float
     int s = minutes ? every : 1; first = last = (int)f / s * s;
     if (first == 0) first = 1;
   }
-  if (lb.valid && lb.gen == gen && lb.H == H && lb.bottomOff == bottomOff && lb.first == first && lb.keyWetDy == wetDy) return lb.have;
-  lb.valid = true; lb.gen = gen; lb.H = H; lb.bottomOff = bottomOff; lb.first = first; lb.keyWetDy = wetDy; lb.have = false;
+  if (lb.valid && lb.gen == gen && lb.H == H && lb.bottomOff == bottomOff && lb.first == first && lb.keyRowD == keyRowD && lb.keyRowW == keyRowW) return lb.have;
+  lb.valid = true; lb.gen = gen; lb.H = H; lb.bottomOff = bottomOff; lb.first = first; lb.keyRowD = keyRowD; lb.keyRowW = keyRowW; lb.have = false;
   if (!p.digits) return false;
   float kx = minutes ? p.digitScaleXMin : p.digitScaleX, ky = minutes ? p.digitScaleYMin : p.digitScaleY;
   float bottom = (minutes ? p.digitBottomMin : p.digitBottom) + bottomOff;
@@ -1937,12 +1990,15 @@ bool Tube::layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, float
   }
   int sourceRy0 = (V ? yMin : yTop) - y0, sourceRy1 = (V ? yMax : yBase) - y0 + (shadow >= 0 ? shadowOff : 0);
   lb.ry0 = H; lb.ry1 = -1; lb.dryRy0 = H; lb.dryRy1 = -1;
+  // a copy's rows: its source rows before the vertical shift, one more for a fractional overhang (sim rowSpan)
+  const int loW = sourceRy0 + tyW.i, hiW = sourceRy1 + tyW.i + (tyW.w1 ? 1 : 0);
+  const int loD = sourceRy0 + tyD.i, hiD = sourceRy1 + tyD.i + (tyD.w1 ? 1 : 0);
   for (int ry = 0; ry < H; ry++) {
-    if (lb.sourceRows[ry] >= sourceRy0 + wetDy && lb.sourceRows[ry] <= sourceRy1 + wetDy + 1) {   // +1: fractional overhang
+    if (lb.sourceRows[ry] >= loW && lb.sourceRows[ry] <= hiW) {
       if (ry < lb.ry0) lb.ry0 = ry;
       if (ry > lb.ry1) lb.ry1 = ry;
     }
-    if (lb.drySourceRows[ry] >= sourceRy0 && lb.drySourceRows[ry] <= sourceRy1) {
+    if (lb.drySourceRows[ry] >= loD && lb.drySourceRows[ry] <= hiD) {
       if (ry < lb.dryRy0) lb.dryRy0 = ry;
       if (ry > lb.dryRy1) lb.dryRy1 = ry;
     }
@@ -1977,59 +2033,50 @@ struct SpriteSampler {
   int aw(int cx, int cy) const { return g.aw[cy * g.w + cx]; }
   uint16_t cw(int cx, int cy) const { return g.cw[cy * g.w + cx]; }
 };
-// A shift within 1/512 px below a whole px rounds its far tap's weight to 256 (the pinned bench scene: acrossTilt
-// settles at -0.000000x): the kernel reads that tap alone, the image at the next whole shift. Take that shift instead,
-// so the whole-px path draws it (pixel-identical: the heaviest tap is that tap, its coverage the tap's own).
-static inline void wholeTap(int &i, int &w1) { if (w1 == 256) { i++; w1 = 0; } }
-// One destination column xd across the meniscus (0 < wet share k < 256; sim drawGlyph): every tube row, its
-// source row blended from the dry warp toward the wet one by k, the refraction shift scaled by k, bilinear
-// taps (weights 1/65536) of the plane the Mark picks per pixel, the colour of the heaviest tap. xg: the copy's
-// panel x (glyph x plus the shadow offset). Only the columns under a meniscus take this per-pixel path.
-// whole (sprite digits): the column's share of the held whole-px shift (Labels::holdWhole), rounded to whole px.
-// The column's shift and taps (both drawRampColumn and rampColumnRows): false = the column shows nothing of the glyph.
-struct RampTap { int ix, iy, cx, wx1, wy1, sourceTop; };
-static inline bool rampTap(int sw, int xg, int xd, int k, int y0, int yTop, const Labels &lb, bool shadowPass, bool whole, RampTap &t) {
-  const int off = shadowPass ? lb.shadowOff : 0; t.sourceTop = yTop - y0 + off;
-  const float kf = k * (1 / 256.0f);
-  const float sx = whole ? jround(lb.wholeDx * kf) : lb.wetDx * kf, sy = whole ? jround(lb.wholeDy * kf) : lb.wetDy * kf;
-  t.ix = (int)ffloor(sx); t.iy = (int)ffloor(sy);
-  t.wx1 = (int)((sx - t.ix) * 256 + 0.5f); t.wy1 = (int)((sy - t.iy) * 256 + 0.5f);
-  wholeTap(t.ix, t.wx1); wholeTap(t.iy, t.wy1);
-  t.cx = xd - xg - t.ix;
-  return t.cx >= 0 && t.cx <= sw;
-}
+// One destination column xd across the meniscus (0 < wet share k < 256; sim drawGlyph): every tube row, its source row
+// blended from the dry warp toward the wet one by k, the parallax likewise (shiftTap), bilinear taps (weights 1/65536)
+// of the plane the Mark picks per pixel: coverage and premultiplied colour (mix565). xg: the copy's panel x (glyph x plus
+// the shadow offset). Only the columns under a meniscus take this per-pixel path.
 // Tube rows [r0, r1) only (step 9: band by band; 0, lb.H = every row).
 template <class S>
 static void __attribute__((noinline)) drawRampColumn(const S &s, int xg, int xd, int k, int y0, int yTop, const Labels &lb, const Mark &mark, bool shadowPass,
-                                                     bool whole, int r0, int r1) {
-  RampTap t;
-  if (!rampTap(s.w, xg, xd, k, y0, yTop, lb, shadowPass, whole, t)) return;
-  const int sourceTop = t.sourceTop, iy = t.iy, cx = t.cx;
-  const int wx0 = 256 - t.wx1, wy0 = 256 - t.wy1;
-  const int w00 = wx0 * wy0, w10 = t.wx1 * wy0, w01 = wx0 * t.wy1, w11 = t.wx1 * t.wy1;
+                                                     int r0, int r1) {
+  const ShiftTap tx = shiftTap(lb.sx16d, lb.sx16w, k), ty = shiftTap(lb.sy16d, lb.sy16w, k);
+  const int cx = xd - xg - tx.i; if (cx < 0 || cx > s.w) return;
+  const int sourceTop = yTop - y0 + (shadowPass ? lb.shadowOff : 0) + ty.i;
+  auto covOf = [&](int a) { return shadowPass ? LUT_alphaT16[a] * lb.shadowT >> 8 : LUT_alphaT16[a]; };
+  if (!tx.w1 && !ty.w1) {   // whole px: the one tap
+    if (cx >= s.w) return;
+    for (int ry = r0; ry < r1; ry++) {
+      const int cy = blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k) - sourceTop; if (cy < 0 || cy >= s.h) continue;
+      const bool L = mark.inLiquid(xd, ry);
+      const int a = L ? s.aw(cx, cy) : s.a(cx, cy); if (!a) continue;
+      mark(xd, y0 + ry, shadowPass ? (uint16_t)lb.shadow : L ? s.cw(cx, cy) : s.c(cx, cy), covOf(a));
+    }
+    return;
+  }
+  const int wx0 = 256 - tx.w1, wy0 = 256 - ty.w1;
+  const int w00 = wx0 * wy0, w10 = tx.w1 * wy0, w01 = wx0 * ty.w1, w11 = tx.w1 * ty.w1;
   for (int ry = r0; ry < r1; ry++) {
-    const int cy = blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k) - sourceTop - iy; if (cy < 0 || cy > s.h) continue;
+    const int cy = blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k) - sourceTop; if (cy < 0 || cy > s.h) continue;
     const bool L = mark.inLiquid(xd, ry);
-    auto tap = [&](int tx, int ty) -> int { return tx < 0 || ty < 0 || tx >= s.w || ty >= s.h ? 0 : L ? s.aw(tx, ty) : s.a(tx, ty); };
+    auto tap = [&](int u, int v) -> int { return u < 0 || v < 0 || u >= s.w || v >= s.h ? 0 : L ? s.aw(u, v) : s.a(u, v); };
+    auto col = [&](int m, int u, int v) -> uint32_t { return m ? (L ? s.cw(u, v) : s.c(u, v)) : 0; };   // a weighted tap lies inside
     const int a00 = tap(cx, cy) * w00, a10 = tap(cx - 1, cy) * w10, a01 = tap(cx, cy - 1) * w01, a11 = tap(cx - 1, cy - 1) * w11;
     const int a = (a00 + a10 + a01 + a11 + 32768) >> 16; if (!a) continue;
-    uint16_t c;
-    if (shadowPass) c = (uint16_t)lb.shadow;
-    else {
-      int m = a00; if (a10 > m) m = a10; if (a01 > m) m = a01; if (a11 > m) m = a11;
-      const int tx = m == a00 || m == a01 ? cx : cx - 1, ty = m == a00 || m == a10 ? cy : cy - 1;
-      c = L ? s.cw(tx, ty) : s.c(tx, ty);
-    }
-    mark(xd, y0 + ry, c, shadowPass ? LUT_alphaT16[a] * lb.shadowT >> 8 : LUT_alphaT16[a]);
+    const uint16_t c = shadowPass ? (uint16_t)lb.shadow
+      : mix565(a00, a10, a01, a11, col(a00, cx, cy), col(a10, cx - 1, cy), col(a01, cx, cy - 1), col(a11, cx - 1, cy - 1), a);
+    mark(xd, y0 + ry, c, covOf(a));
   }
 }
 // The rows drawRampColumn can draw for this column (its row test alone), widened into [lo, hi].
 static void __attribute__((noinline)) rampColumnRows(int sw, int sh, int xg, int xd, int k, int y0, int yTop, const Labels &lb, bool shadowPass,
-                                                     bool whole, int16_t &lo, int16_t &hi) {
-  RampTap t;
-  if (!rampTap(sw, xg, xd, k, y0, yTop, lb, shadowPass, whole, t)) return;
+                                                     int16_t &lo, int16_t &hi) {
+  const ShiftTap tx = shiftTap(lb.sx16d, lb.sx16w, k), ty = shiftTap(lb.sy16d, lb.sy16w, k);
+  const int cx = xd - xg - tx.i; if (cx < 0 || cx > sw || (cx == sw && !tx.w1)) return;
+  const int sourceTop = yTop - y0 + (shadowPass ? lb.shadowOff : 0) + ty.i;
   for (int ry = 0; ry < lb.H; ry++) {
-    const int cy = blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k) - t.sourceTop - t.iy; if (cy < 0 || cy > sh) continue;
+    const int cy = blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k) - sourceTop; if (cy < 0 || cy > sh || (cy == sh && !ty.w1)) continue;
     if (ry < lo) lo = (int16_t)ry;
     if (ry > hi) hi = (int16_t)ry;
   }
@@ -2043,41 +2090,47 @@ struct GlyphPlan {
   int16_t x, yTop;                      // the glyph's panel x (sprite: after the vertical margin), its label row
   int16_t rampLo, rampHi, rampR0, rampR1;   // ramp columns [rampLo, rampHi] (none: rampLo > rampHi), their rows [rampR0, rampR1]
   int16_t dA0, dA1, dB0, dB1, w0, w1;   // sprite: the copies' glyph columns
-  int16_t xg, ix, iy, wx1, wy1;         // bitmap: the copy's panel x, the wet copy's shift and its taps
+  int16_t xg;                           // bitmap: the copy's panel x
+  int16_t ixD, iyD, wxD, wyD, ixW, iyW, wxW, wyW;   // the dry / wet copy's parallax taps (shiftTap at share 0 / 256)
   uint32_t dcol[5], wcol[5];            // bitmap: glyph columns 0..128 the dry / wet copy draws
 };
 static inline bool bit(const uint32_t *m, int i) { return (m[i >> 5] >> (i & 31)) & 1; }
 // The plan of one bitmap glyph pass (drawGlyph's set-up). A glyph (see sim drawGlyph): a panel column shows one image,
-// chosen by its wet share: behind air (0) the dry copy, unshifted; behind liquid (256) the wet copy at the fractional
-// refraction shift (wetDx, wetDy), bilinearly resampled (weights in 1/256) so it glides with tilt instead of stepping a
-// whole pixel; across the meniscus drawRampColumn. A resampled pixel's colour comes from the tap contributing the most
-// coverage. Rows outer (glyph memory is row-major); every pixel is written at most once.
+// chosen by its wet share: behind air (0) the dry copy (digitDryLens rows) at the dry parallax, behind liquid (256) the
+// wet copy (bottomLens rows) at the wet one, sub-pixel parallax bilinearly resampled (weights 1/256: coverage and
+// premultiplied colour, mix565) so it glides; across the meniscus drawRampColumn. Rows outer (glyph memory is
+// row-major); every pixel is written at most once.
+// The dry and the wet copy's parallax taps (share 0 / 256).
+static inline void planTaps(const Labels &lb, GlyphPlan &gp) {
+  const ShiftTap dx = shiftTap(lb.sx16d, lb.sx16w, 0), dy = shiftTap(lb.sy16d, lb.sy16w, 0);
+  const ShiftTap wx = shiftTap(lb.sx16d, lb.sx16w, 256), wy = shiftTap(lb.sy16d, lb.sy16w, 256);
+  gp.ixD = (int16_t)dx.i; gp.wxD = (int16_t)dx.w1; gp.iyD = (int16_t)dy.i; gp.wyD = (int16_t)dy.w1;
+  gp.ixW = (int16_t)wx.i; gp.wxW = (int16_t)wx.w1; gp.iyW = (int16_t)wy.i; gp.wyW = (int16_t)wy.w1;
+}
 template <class S>
 static void planGlyph(const S &s, int x, int y0, int yTop, const Labels &lb, const Warp &warp, bool shadowPass, GlyphPlan &gp) {
   // the shadow copy sits down-right as read: a vertical watch's down is the panel's left
   const int off = shadowPass ? lb.shadowOff : 0, xg = x + (lb.vertical ? -off : off);
   const int gw = s.w > 128 ? 128 : s.w;
-  int ix = (int)ffloor(lb.wetDx), iy = (int)ffloor(lb.wetDy);
-  int wx1 = (int)((lb.wetDx - ix) * 256 + 0.5f), wy1 = (int)((lb.wetDy - iy) * 256 + 0.5f);
-  wholeTap(ix, wx1); wholeTap(iy, wy1);
   gp.g = nullptr; gp.pass = shadowPass ? 1 : 2; gp.x = (int16_t)x; gp.yTop = (int16_t)yTop; gp.xg = (int16_t)xg;
-  gp.ix = (int16_t)ix; gp.iy = (int16_t)iy; gp.wx1 = (int16_t)wx1; gp.wy1 = (int16_t)wy1;
+  planTaps(lb, gp);
   memset(gp.dcol, 0, sizeof(gp.dcol)); memset(gp.wcol, 0, sizeof(gp.wcol));
   bool anyDry = false, anyWet = false;
-  for (int cx = 0; cx <= gw; cx++) {
-    if (cx < gw && warp(xg + cx) == 0) { gp.dcol[cx >> 5] |= 1u << (cx & 31); anyDry = true; }
-    if (warp(xg + ix + cx) == 256) { gp.wcol[cx >> 5] |= 1u << (cx & 31); anyWet = true; }
-  }
+  // copy column c lies at panel xg + i + c; one more for a fractional overhang
+  for (int cx = 0, n = gw + (gp.wxD ? 1 : 0); cx < n; cx++)
+    if (warp(xg + gp.ixD + cx) == 0) { gp.dcol[cx >> 5] |= 1u << (cx & 31); anyDry = true; }
+  for (int cx = 0, n = gw + (gp.wxW ? 1 : 0); cx < n; cx++)
+    if (warp(xg + gp.ixW + cx) == 256) { gp.wcol[cx >> 5] |= 1u << (cx & 31); anyWet = true; }
   gp.anyDry = anyDry; gp.anyWet = anyWet;
   gp.rampLo = 1; gp.rampHi = 0; gp.rampR0 = (int16_t)lb.H; gp.rampR1 = -1;
   if (warp.all()) return;
-  const int xr1 = xg + gw + (lb.wetDx > 0 ? (int)fceil(lb.wetDx) : 0);
-  for (int xd = xg + (ix < 0 ? ix : 0); xd <= xr1; xd++) {
+  const int xr1 = xg + gw + (gp.ixD > gp.ixW ? gp.ixD : gp.ixW);
+  for (int xd = xg + (gp.ixD < gp.ixW ? gp.ixD : gp.ixW); xd <= xr1; xd++) {
     const int k = warp(xd);
     if (!(k > 0 && k < 256)) continue;
     if (gp.rampLo > gp.rampHi) gp.rampLo = (int16_t)xd;
     gp.rampHi = (int16_t)xd;
-    rampColumnRows(s.w, s.h, xg, xd, k, y0, yTop, lb, shadowPass, false, gp.rampR0, gp.rampR1);
+    rampColumnRows(s.w, s.h, xg, xd, k, y0, yTop, lb, shadowPass, gp.rampR0, gp.rampR1);
   }
 }
 // A planned bitmap glyph pass over tube rows [r0, r1).
@@ -2088,61 +2141,52 @@ static void drawGlyphRows(const S &s, const GlyphPlan &gp, int y0, const Labels 
   auto covT = [&](int a) { return shadowPass ? LUT_alphaT16[a] * lb.shadowT >> 8 : LUT_alphaT16[a]; };   // shadow copy at its own opacity
   const int gw = s.w > 128 ? 128 : s.w;
   const bool anyDry = gp.anyDry, anyWet = gp.anyWet;
-  const int ix = gp.ix, iy = gp.iy, wx1 = gp.wx1, wy1 = gp.wy1;
-  const int wx0 = 256 - wx1, wy0 = 256 - wy1;
-  const int w00 = wx0 * wy0, w10 = wx1 * wy0, w01 = wx0 * wy1, w11 = wx1 * wy1;
   // Plane per PIXEL: the behind-liquid plane (aw/cw) exactly where the Mark composites through the liquid,
-  // the behind-air plane elsewhere. The column's wet share above decides which image (warp and shift) it
-  // shows; the meniscus makes rows of one column differ, and there the Mark's per-row test picks the plane.
+  // the behind-air plane elsewhere. The column's wet share above decides which image (warp and parallax) it shows;
+  // the meniscus makes rows of one column differ, and there the Mark's per-row test picks the plane.
   auto A = [&](bool L, int cx, int cy) -> int { return L ? s.aw(cx, cy) : s.a(cx, cy); };
   auto Cc = [&](bool L, int cx, int cy) -> uint16_t { return L ? s.cw(cx, cy) : s.c(cx, cy); };
   auto tap = [&](bool L, int cx, int cy) -> int { return cx < 0 || cy < 0 || cx >= s.w || cy >= s.h ? 0 : A(L, cx, cy); };
+  // One copy's glyph row: copy column c at panel xg + ix + c samples source (c - fx, cy - fy) (taps at columns c / c-1,
+  // rows cy / cy-1); whole px: the one tap with its own colour.
+  auto copyRow = [&](const uint32_t *cols, int ix, int wx1, int wy1, int cy, int ry, int y) {
+    if (!wx1 && !wy1) {
+      if (cy >= s.h) return;
+      for (int cx = 0; cx < gw; cx++) {
+        if (!bit(cols, cx)) continue;
+        const bool L = mark.inLiquid(xg + ix + cx, ry); int a = A(L, cx, cy); if (!a) continue;
+        mark(xg + ix + cx, y, shadowPass ? (uint16_t)lb.shadow : Cc(L, cx, cy), covT(a));
+      }
+      return;
+    }
+    const int wx0 = 256 - wx1, wy0 = 256 - wy1;
+    const int w00 = wx0 * wy0, w10 = wx1 * wy0, w01 = wx0 * wy1, w11 = wx1 * wy1;
+    for (int cx = 0, n = gw + (wx1 ? 1 : 0); cx < n; cx++) {
+      if (!bit(cols, cx)) continue;
+      const bool L = mark.inLiquid(xg + ix + cx, ry);
+      int a00 = tap(L, cx, cy) * w00, a10 = tap(L, cx - 1, cy) * w10;
+      int a01 = tap(L, cx, cy - 1) * w01, a11 = tap(L, cx - 1, cy - 1) * w11;
+      int a = (a00 + a10 + a01 + a11 + 32768) >> 16; if (!a) continue;
+      auto col = [&](int m, int u, int v) -> uint32_t { return m ? Cc(L, u, v) : 0; };   // a weighted tap lies inside
+      const uint16_t c = shadowPass ? (uint16_t)lb.shadow
+        : mix565(a00, a10, a01, a11, col(a00, cx, cy), col(a10, cx - 1, cy), col(a01, cx, cy - 1), col(a11, cx - 1, cy - 1), a);
+      mark(xg + ix + cx, y, c, covT(a));
+    }
+  };
   int a0 = lb.dryRy0 < lb.ry0 ? lb.dryRy0 : lb.ry0, a1 = lb.dryRy1 > lb.ry1 ? lb.dryRy1 : lb.ry1;
   if (a0 < r0) a0 = r0; if (a1 > r1 - 1) a1 = r1 - 1;
   for (int ry = a0; ry <= a1; ry++) {
-    int y = y0 + ry;
-    int cyD = lb.drySourceRows[ry] - sourceTop;
-    if (anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && cyD < s.h) {
-      for (int cx = 0; cx < gw; cx++) {
-        if (!bit(gp.dcol, cx)) continue;
-        const bool L = mark.inLiquid(xg + cx, ry); int a = A(L, cx, cyD); if (!a) continue;
-        mark(xg + cx, y, shadowPass ? (uint16_t)lb.shadow : Cc(L, cx, cyD), covT(a));
-      }
-    }
-    int cy = lb.sourceRows[ry] - sourceTop - iy;
-    if (anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && cy <= s.h) {
-      // Integer refraction shift: only the current tap contributes, with its original colour.
-      if (wx1 == 0 && wy1 == 0) {
-        if (cy >= s.h) continue;
-        for (int cx = 0; cx < gw; cx++) {
-          if (!bit(gp.wcol, cx)) continue;
-          const bool L = mark.inLiquid(xg + ix + cx, ry); int a = A(L, cx, cy); if (!a) continue;
-          mark(xg + ix + cx, y, shadowPass ? (uint16_t)lb.shadow : Cc(L, cx, cy), covT(a));
-        }
-        continue;
-      }
-      for (int cx = 0; cx <= gw; cx++) {                    // one extra column: the fractional overhang
-        if (!bit(gp.wcol, cx)) continue;
-        // destination (cx, cy) samples source (cx - fx, cy - fy): taps at columns cx / cx-1, rows cy / cy-1
-        const bool L = mark.inLiquid(xg + ix + cx, ry);
-        int a00 = tap(L, cx, cy) * w00, a10 = tap(L, cx - 1, cy) * w10;
-        int a01 = tap(L, cx, cy - 1) * w01, a11 = tap(L, cx - 1, cy - 1) * w11;
-        int a = (a00 + a10 + a01 + a11 + 32768) >> 16; if (!a) continue;
-        uint16_t c;
-        if (shadowPass) c = (uint16_t)lb.shadow;
-        else {
-          int m = a00; if (a10 > m) m = a10; if (a01 > m) m = a01; if (a11 > m) m = a11;
-          c = m == a00 ? Cc(L, cx, cy) : m == a10 ? Cc(L, cx - 1, cy) : m == a01 ? Cc(L, cx, cy - 1) : Cc(L, cx - 1, cy - 1);
-        }
-        mark(xg + ix + cx, y, c, covT(a));
-      }
-    }
+    const int y = y0 + ry;
+    const int cyD = lb.drySourceRows[ry] - sourceTop - gp.iyD;
+    if (anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && cyD <= s.h) copyRow(gp.dcol, gp.ixD, gp.wxD, gp.wyD, cyD, ry, y);
+    const int cy = lb.sourceRows[ry] - sourceTop - gp.iyW;
+    if (anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && cy <= s.h) copyRow(gp.wcol, gp.ixW, gp.wxW, gp.wyW, cy, ry, y);
   }
   const int ra = r0 > gp.rampR0 ? r0 : gp.rampR0, rb = r1 < gp.rampR1 + 1 ? r1 : gp.rampR1 + 1;
   if (ra >= rb) return;
   for (int xd = gp.rampLo; xd <= gp.rampHi; xd++) {
     const int k = warp(xd);
-    if (k > 0 && k < 256) drawRampColumn(s, xg, xd, k, y0, gp.yTop, lb, mark, shadowPass, false, ra, rb);
+    if (k > 0 && k < 256) drawRampColumn(s, xg, xd, k, y0, gp.yTop, lb, mark, shadowPass, ra, rb);
   }
 }
 // ---------------------------------------------------------------------------------------------
@@ -2151,10 +2195,9 @@ static void drawGlyphRows(const S &s, const GlyphPlan &gp, int y0, const Labels 
 // The generic path classifies every texel on its own (edge test, band test, strip test, plane choice),
 // which is branchy enough to spill on Xtensa. Here a glyph row is cut once into runs on which every
 // decision is constant — top / behind air / behind liquid — and each run goes through a small loop.
-// Sprite digits differ from drawGlyph<SpriteSampler> in two look decisions (step 8 of the LCD perf plan,
-// 2026-10-30; sim drawGlyph / drawDigitLayer): the wet copy moves by whole px (Labels::holdWhole, no
-// fractional taps; the meniscus ramp's columns at their rounded share of it) and no surface band is
-// composited over them (drawDigitLayer), so no pixel needs the per-pixel compositor outside the ramp.
+// Sprite digits differ from drawGlyph<SpriteSampler> in one look decision (step 8 of the LCD perf plan,
+// 2026-10-30; sim drawDigitLayer): no surface band is composited over them, so no pixel needs the per-pixel
+// compositor outside the ramp.
 
 // MODE 0: on top or behind air (coverage scaled by scaleT: 256 on top, the row's dryT behind air).
 // MODE 1: behind liquid, transparency baked into the plane and no contrast floor: the texel colour as is.
@@ -2361,12 +2404,19 @@ static volatile uint32_t digitVerifyPx[2], digitVerifyBad[2];   // per core: bot
 static inline void digitVerify(int px, int bad) { const int k = esp_cpu_get_core_id() & 1; digitVerifyPx[k] += px; digitVerifyBad[k] += bad; }
 void render_digit_verify(uint32_t &px, uint32_t &bad) { px = digitVerifyPx[0] + digitVerifyPx[1]; bad = digitVerifyBad[0] + digitVerifyBad[1]; }
 #endif
-// A run's lanes for pieBlend: the whole 16-B blocks of its strip row around it, T = 0 outside the run.
-#define PIE_LANES 144   // a run of <= 128 pixels (gw) plus <= 7 lanes before it, in whole blocks
+// A run's lanes for pieBlend: the whole 16-B blocks of its strip row around it, T = 0 outside the run. The lanes are the
+// Tube's DigitScratch (never the stack).
 struct PieRun {
-  int16_t T[PIE_LANES] __attribute__((aligned(16)));
-  uint16_t C[PIE_LANES] __attribute__((aligned(16)));
+  int16_t *T; uint16_t *C;
+#ifdef DIGIT_VERIFY
+  uint16_t *want;
+#endif
   uint16_t *blk; int lead, nb;
+  explicit PieRun(DigitScratch &ds) : T(ds.T), C(ds.C) {
+#ifdef DIGIT_VERIFY
+    want = ds.want;
+#endif
+  }
   // fb: the run's first strip pixel, column px0, n pixels. false: its blocks would leave the strip row (scalar path).
   static inline bool fits(const uint16_t *fb, int px0, int n) {
     const int lead = (int)(((uintptr_t)fb & 15) >> 1), nb = (lead + n + 7) >> 3;
@@ -2382,7 +2432,6 @@ struct PieRun {
   }
   inline void end() {
 #ifdef DIGIT_VERIFY
-    uint16_t want[PIE_LANES];
     for (int i = 0; i < nb * 8; i++) {
       const int t = T[i];
       want[i] = t <= 0 ? blk[i] : t >= 256 ? __builtin_bswap16(C[i]) : blendLanesSw(lanesSw(blk[i]), lanes565(C[i]), t);
@@ -2398,10 +2447,11 @@ struct PieRun {
 #endif
 // fb: the run's first strip pixel (column px0), n pixels from glyph texel a / c on. scaleT: MODE 0's coverage scale.
 template <int MODE>
-static void __attribute__((noinline)) spriteRunInt(uint16_t *fb, int px0, int n, const uint8_t *a, const uint16_t *c, int scaleT, int T, int C) {
+static void __attribute__((noinline)) spriteRunInt(uint16_t *fb, int px0, int n, const uint8_t *a, const uint16_t *c, int scaleT, int T, int C,
+                                                   DigitScratch &ds) {
 #if DIGIT_PIE
   if (MODE < 2) {
-    PieRun r;
+    PieRun r(ds);
     if (r.begin(fb, px0, n)) {
       int16_t *t = r.T + r.lead; uint16_t *cc = r.C + r.lead;
       for (int i = 0; i < n; i++) {
@@ -2426,7 +2476,123 @@ static void __attribute__((noinline)) spriteRunInt(uint16_t *fb, int px0, int n,
   }
 }
 
-// One glyph row of one copy (dry: unshifted, wet: at the held whole shift): panel columns [px0, px1) map to glyph
+static inline int clampI(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+// Sub-pixel parallax (sprite digits): destination column cx samples taps (cx, cy), (cx-1, cy), (cx, cy-1),
+// (cx-1, cy-1) of one plane (weights 1/65536, taps outside the glyph are 0): coverage and premultiplied colour
+// (mix565, divide-free), as the generic path. The taps take their own pass over a run (the left taps' alphas and colours carried):
+// each pixel's coverage and colour, then the blend (SIMD lanes, or a scalar second pass). In one loop the weights,
+// carries, row pointers and the blend did not fit the register file and spilled every pixel.
+// Zero rows stand in for rows outside the glyph (a glyph is at most 128 columns wide in the draw, see gw).
+static const uint8_t ZERO_A[256] = {};
+static const uint16_t ZERO_C[256] = {};
+struct FracRun {
+  const uint8_t *a0, *a1;    // alpha rows cy, cy - 1 at the run's first column (ZERO_A outside the glyph)
+  const uint16_t *c0, *c1;   // their colours (ZERO_C outside the glyph)
+  int nIn;                   // columns whose own taps lie in the glyph (cx < w); the rest (the overhang) read 0
+  int p0, p1, q0, q1;        // the first column's left alphas and colours
+  int w00, w10, w01, w11, scaleT, T, C;
+  DigitScratch *ds;
+#if DIGIT_PIE
+  FracMemo *memo;
+#endif
+};
+// The taps of one destination column: its coverage (0 = nothing) and, when covered, its colour. p0 / p1 / q0 / q1 carry
+// the column's own taps to the next one as its left taps.
+template <int MODE>
+static inline __attribute__((always_inline)) int fracTap(int n0, int n1, uint32_t k0, uint32_t k1, int &p0, int &p1, int &q0, int &q1,
+                                                          int w00, int w10, int w01, int w11, int scaleT, uint16_t &col) {
+  const int a00 = n0 * w00, a10 = p0 * w10, a01 = n1 * w01, a11 = p1 * w11;
+  const int al = (a00 + a10 + a01 + a11 + 32768) >> 16;
+  int covT = al ? LUT_alphaT16[al] : 0;
+  if (MODE == 0) covT = covT * scaleT >> 8;
+  if (covT > 0) col = mix565(a00, a10, a01, a11, k0, (uint32_t)q0, k1, (uint32_t)q1, al);
+  p0 = n0; p1 = n1; q0 = (int)k0; q1 = (int)k1;
+  return covT;
+}
+#if DIGIT_PIE
+static_assert(FRAC_MEMO_MAX == FRAC_RUN_MAX, "FracMemo holds one run part");
+#endif
+// Scalar: the taps into the scratch row (covT << 16 | colour), then the blend. AMOLED, and runs the SIMD path does not take.
+template <int MODE>
+static void __attribute__((noinline)) spriteRunFracScalar(uint16_t *fb, int n, const FracRun &f) {
+  const uint8_t *a0 = f.a0, *a1 = f.a1; const uint16_t *c0 = f.c0, *c1 = f.c1;
+  const int w00 = f.w00, w10 = f.w10, w01 = f.w01, w11 = f.w11, scaleT = f.scaleT;
+  int p0 = f.p0, p1 = f.p1, q0 = f.q0, q1 = f.q1, nIn = f.nIn;
+  uint32_t *const row = f.ds->row;   // covT << 16 | colour, 0 = nothing
+  LiquidMemo memo;
+  while (n > 0) {
+    const int m = n < FRAC_RUN_MAX ? n : FRAC_RUN_MAX, mIn = nIn < m ? nIn : m;
+    uint32_t *o = row;
+    for (int i = 0; i < mIn; i++) {
+      uint16_t col = 0; const int covT = fracTap<MODE>(a0[i], a1[i], c0[i], c1[i], p0, p1, q0, q1, w00, w10, w01, w11, scaleT, col);
+      *o++ = covT > 0 ? (uint32_t)covT << 16 | col : 0;
+    }
+    for (int i = mIn; i < m; i++) {
+      uint16_t col = 0; const int covT = fracTap<MODE>(0, 0, 0, 0, p0, p1, q0, q1, w00, w10, w01, w11, scaleT, col);
+      *o++ = covT > 0 ? (uint32_t)covT << 16 | col : 0;
+    }
+    for (int i = 0; i < m; i++) {
+      const uint32_t v = row[i]; if (!v) continue;
+      const int covT = (int)(v >> 16); const uint16_t col = (uint16_t)(v & 0xffff);
+      if (MODE >= 2) {
+        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, col, cT, f.T, f.C, MODE == 3);
+        fb[i] = __builtin_bswap16(cT >= 256 ? cc : blend565T(bg, cc, cT));
+      } else fb[i] = covT >= 256 ? __builtin_bswap16(col) : blendLanesSw(lanesSw(fb[i]), lanes565(col), covT);
+    }
+    fb += m; a0 += m; a1 += m; c0 += m; c1 += m; n -= m; nIn -= mIn;
+  }
+}
+#if DIGIT_PIE
+// SIMD (MODE 0 / 1, one part): the taps straight into the lanes; a run repeating the last one's source row and
+// columns (FracMemo) takes its lanes from there and only blends. Memo hits: ~1/3 of the hours wet rows under the user
+// preset's bottomLens; hours run kernels 7.2 -> 6.4 ms (2026-10-29, same boot, memo off / on).
+template <int MODE>
+static void __attribute__((noinline)) spriteRunFracPie(uint16_t *fb, int px0, int n, const FracRun &f) {
+  const uint8_t *a0 = f.a0, *a1 = f.a1; const uint16_t *c0 = f.c0, *c1 = f.c1;
+  const int w00 = f.w00, w10 = f.w10, w01 = f.w01, w11 = f.w11, scaleT = f.scaleT, nIn = f.nIn;
+  int p0 = f.p0, p1 = f.p1, q0 = f.q0, q1 = f.q1;
+  PieRun r(*f.ds); r.begin(fb, px0, n);   // fits: checked by spriteRunFrac
+  FracMemo *mm = f.memo;
+  if (mm && mm->valid && mm->a0 == a0 && mm->a1 == a1 && mm->cq == c0 && mm->m == n && mm->nIn == nIn && mm->p0 == p0 && mm->p1 == p1
+      && mm->q0 == q0 && mm->q1 == q1 && mm->scaleT == scaleT && mm->mode == MODE && mm->w00 == w00 && mm->w10 == w10 && mm->w01 == w01 && mm->w11 == w11) {
+    memcpy(r.T + r.lead, mm->T, n * sizeof(int16_t)); memcpy(r.C + r.lead, mm->C, n * sizeof(uint16_t));
+#ifdef DIGIT_VERIFY
+    { int bad = 0;   // the taps again: the memo must equal them
+      for (int i = 0; i < n; i++) {
+        uint16_t col = 0;
+        const int covT = fracTap<MODE>(i < nIn ? a0[i] : 0, i < nIn ? a1[i] : 0, i < nIn ? c0[i] : 0, i < nIn ? c1[i] : 0, p0, p1, q0, q1,
+                                       w00, w10, w01, w11, scaleT, col);
+        const int want = covT > 0 ? covT : 0;
+        bad += r.T[r.lead + i] != want || (want && r.C[r.lead + i] != col);
+      }
+      digitVerify(n, bad); }
+#endif
+  } else {
+    if (mm) { mm->a0 = a0; mm->a1 = a1; mm->cq = c0; mm->m = n; mm->nIn = nIn; mm->p0 = p0; mm->p1 = p1; mm->q0 = q0; mm->q1 = q1;
+              mm->scaleT = scaleT; mm->mode = MODE; mm->w00 = w00; mm->w10 = w10; mm->w01 = w01; mm->w11 = w11; }
+    int16_t *t = r.T + r.lead; uint16_t *cc = r.C + r.lead;
+    for (int i = 0; i < nIn; i++) {
+      uint16_t col = 0; const int covT = fracTap<MODE>(a0[i], a1[i], c0[i], c1[i], p0, p1, q0, q1, w00, w10, w01, w11, scaleT, col);
+      t[i] = (int16_t)(covT > 0 ? covT : 0); if (covT > 0) cc[i] = col;
+    }
+    for (int i = nIn; i < n; i++) {
+      uint16_t col = 0; const int covT = fracTap<MODE>(0, 0, 0, 0, p0, p1, q0, q1, w00, w10, w01, w11, scaleT, col);
+      t[i] = (int16_t)(covT > 0 ? covT : 0); if (covT > 0) cc[i] = col;
+    }
+    if (mm) { memcpy(mm->T, r.T + r.lead, n * sizeof(int16_t)); memcpy(mm->C, r.C + r.lead, n * sizeof(uint16_t)); mm->valid = true; }
+  }
+  r.end();
+}
+#endif
+// fb: the run's first strip pixel (column px0), n pixels. The scalar row and the SIMD lanes are the Tube's scratch.
+template <int MODE>
+static inline void spriteRunFrac(uint16_t *fb, int px0, int n, const FracRun &f) {
+#if DIGIT_PIE
+  if (MODE < 2 && n <= FRAC_RUN_MAX && PieRun::fits(fb, px0, n)) { spriteRunFracPie<MODE>(fb, px0, n, f); return; }
+#endif
+  spriteRunFracScalar<MODE>(fb, n, f);
+}
+// One glyph row of one copy (dry or wet, each at its parallax): panel columns [px0, px1) map to glyph
 // columns from cx0; cut into runs and blit. run / plain inline into copies (one call per glyph row); seg is one
 // function for every mode (its four templated copies inlined three times made copies ~17 KB, more than the 16 KB
 // instruction cache).
@@ -2435,35 +2601,44 @@ struct SpriteRow {
   uint16_t *fb;          // strip row y
   const DigitRow *dr;    // this row's liquid interval
   int liqMode, Tuse;
-  int x, ix, dA0, dA1, dB0, dB1, w0, w1;   // the glyph's copies (planSpriteGlyph)
+  int xD, xW, dA0, dA1, dB0, dB1, w0, w1;   // the glyph's copies at their whole-px parallax (planSpriteGlyph)
+  // A copy's tap weights (1/65536: w00 own tap, w10 left, w01 above, w11 above-left; frac false: the one tap).
+  struct Taps { int w00, w10, w01, w11; bool frac; } tD, tW;
   void __attribute__((noinline)) copies(bool dry, int cyD, bool wet, int cy) const {
     if (dry) {
-      if (dA1 > dA0) run(x + dA0, x + dA1, dA0, cyD);
-      if (dB1 > dB0) run(x + dB0, x + dB1, dB0, cyD);
+      if (dA1 > dA0) run(xD + dA0, xD + dA1, dA0, cyD, tD);
+      if (dB1 > dB0) run(xD + dB0, xD + dB1, dB0, cyD, tD);
     }
-    if (wet) run(x + ix + w0, x + ix + w1, w0, cy);
+    if (wet) run(xW + w0, xW + w1, w0, cy, tW);
   }
-  inline __attribute__((always_inline)) void run(int px0, int px1, int cx0, int cy) const {
+  inline __attribute__((always_inline)) void run(int px0, int px1, int cx0, int cy, const Taps &tp) const {
     if (px0 < 0) { cx0 += -px0; px0 = 0; }
     if (px1 > PANEL_W) px1 = PANEL_W;
-    if (px0 < px1) plain(px0, px1, cx0, cy);
+    if (px0 < px1) plain(px0, px1, cx0, cy, tp);
   }
-  inline __attribute__((always_inline)) void plain(int px0, int px1, int cx0, int cy) const {
-    if (mark.onTop) { seg(0, px0, px1, cx0, cy, false, 256); return; }
+  inline __attribute__((always_inline)) void plain(int px0, int px1, int cx0, int cy, const Taps &tp) const {
+    if (mark.onTop) { seg(0, px0, px1, cx0, cy, false, 256, tp); return; }
     const int dT = t.pal.dryT[ry], Li = dr->Li, Hi = dr->Hi;
-    if (Hi <= Li || px1 <= Li || px0 >= Hi) { seg(0, px0, px1, cx0, cy, false, dT); return; }
-    if (px0 < Li) { seg(0, px0, Li, cx0, cy, false, dT); cx0 += Li - px0; px0 = Li; }
+    if (Hi <= Li || px1 <= Li || px0 >= Hi) { seg(0, px0, px1, cx0, cy, false, dT, tp); return; }
+    if (px0 < Li) { seg(0, px0, Li, cx0, cy, false, dT, tp); cx0 += Li - px0; px0 = Li; }
     const int e = Hi < px1 ? Hi : px1;
-    seg(liqMode, px0, e, cx0, cy, true, 256);
+    seg(liqMode, px0, e, cx0, cy, true, 256, tp);
     cx0 += e - px0; px0 = e;
-    if (px0 < px1) seg(0, px0, px1, cx0, cy, false, dT);
+    if (px0 < px1) seg(0, px0, px1, cx0, cy, false, dT, tp);
   }
   // A run on one plane (L: behind liquid) and compositor mode, clipped to the glyph row's covered columns.
-  void __attribute__((noinline)) seg(int mode, int px0, int px1, int cx0, int cy, bool L, int scaleT) const {
+  void __attribute__((noinline)) seg(int mode, int px0, int px1, int cx0, int cy, bool L, int scaleT, const Taps &tp) const {
     if (px0 >= px1) return;
     const uint8_t *aP = L ? g.aw : g.a; const uint16_t *cP = L ? g.cw : g.c;
+    const bool frac = tp.frac;
     if (const uint8_t *sp = g.span[L ? 1 : 0]) {   // clip to the columns that have coverage
-      const int s0 = sp[cy * 2], s1 = sp[cy * 2 + 1];
+      int s0 = 0, s1 = 0;
+      if (!frac) { s0 = sp[cy * 2]; s1 = sp[cy * 2 + 1]; }
+      else {   // destination cx draws taps cx and cx - 1 of rows cy and cy - 1: the union of their spans, one wider
+        s0 = 1 << 30; s1 = 0;
+        if (cy < g.h && sp[cy * 2 + 1] > sp[cy * 2]) { s0 = sp[cy * 2]; s1 = sp[cy * 2 + 1] + 1; }
+        if (cy > 0 && sp[cy * 2 - 1] > sp[cy * 2 - 2]) { if (sp[cy * 2 - 2] < s0) s0 = sp[cy * 2 - 2]; if (sp[cy * 2 - 1] + 1 > s1) s1 = sp[cy * 2 - 1] + 1; }
+      }
       if (s1 <= s0) return;
       const int lo = px0 + (s0 - cx0), hi = px0 + (s1 - cx0);
       if (lo > px0) { cx0 += lo - px0; px0 = lo; }
@@ -2471,18 +2646,39 @@ struct SpriteRow {
       if (px0 >= px1) return;
     }
 #ifdef DIGIT_PROF
-    t.prof[2 + (mode ? 1 : 0)] += px1 - px0; t.prof[7]++;
+    t.prof[(frac ? 4 : 2) + (mode ? 1 : 0)] += px1 - px0; t.prof[7]++;
 #endif
 #ifdef DIGIT_PROF
     const uint32_t c0 = esp_cpu_get_cycle_count();
 #endif
     uint16_t *const d = fb + px0; const int n = px1 - px0;
-    const uint8_t *a = aP + cy * g.w + cx0; const uint16_t *c = cP + cy * g.w + cx0;
-    switch (mode) {
-      case 0: spriteRunInt<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
-      case 1: spriteRunInt<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
-      case 2: spriteRunInt<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
-      default: spriteRunInt<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin); break;
+    if (!frac) {
+      const uint8_t *a = aP + cy * g.w + cx0; const uint16_t *c = cP + cy * g.w + cx0;
+      switch (mode) {
+        case 0: spriteRunInt<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        case 1: spriteRunInt<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        case 2: spriteRunInt<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        default: spriteRunInt<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+      }
+    } else {
+      const bool r0 = cy >= 0 && cy < g.h, r1 = cy >= 1 && cy - 1 < g.h;
+      const int wz = r0 || r1 ? g.w : 256;   // zero rows: any column reads 0
+      FracRun f;
+      f.a0 = (r0 ? aP + cy * g.w : ZERO_A) + cx0; f.a1 = (r1 ? aP + (cy - 1) * g.w : ZERO_A) + cx0;
+      f.c0 = (r0 ? cP + cy * g.w : ZERO_C) + cx0; f.c1 = (r1 ? cP + (cy - 1) * g.w : ZERO_C) + cx0;
+      f.nIn = clampI(wz - cx0, 0, n);
+      const bool left = cx0 >= 1 && cx0 - 1 < wz;
+      f.p0 = left ? f.a0[-1] : 0; f.p1 = left ? f.a1[-1] : 0; f.q0 = left ? f.c0[-1] : 0; f.q1 = left ? f.c1[-1] : 0;
+      f.w00 = tp.w00; f.w10 = tp.w10; f.w01 = tp.w01; f.w11 = tp.w11; f.scaleT = scaleT; f.T = Tuse; f.C = mark.Cin; f.ds = t.scratch;
+#if DIGIT_PIE
+      f.memo = t.fracMemo;
+#endif
+      switch (mode) {
+        case 0: spriteRunFrac<0>(d, px0, n, f); break;
+        case 1: spriteRunFrac<1>(d, px0, n, f); break;
+        case 2: spriteRunFrac<2>(d, px0, n, f); break;
+        default: spriteRunFrac<3>(d, px0, n, f); break;
+      }
     }
 #ifdef DIGIT_PROF
     t.profCyc[0] += esp_cpu_get_cycle_count() - c0;
@@ -2522,32 +2718,33 @@ void Tube::spriteRowFacts(int y0, const Labels &lb, const Mark &mark, int r0, in
 }
 // The plan of one sprite glyph (its column set-up): false = the glyph draws nothing.
 // Column ranges of the two copies from the wet shares (generic path: dcol / wcol): the dry copy on the columns before
-// the first and after the last one with any liquid, the wet copy on the shifted columns that are liquid on every row (an
+// the first and after the last one with any liquid, the wet copy on the columns that are liquid on every row (an
 // interval: the rows' intervals intersected). Every other column is under a meniscus and takes drawRampColumn (a share-0
 // column between two meniscus ones included: there it draws what the dry copy would). A column shows one image.
 static bool planSpriteGlyph(const ScaledGlyph &g, int x, int y0, int yTop, const Labels &lb, const Warp &warp, GlyphPlan &gp) {
   if (lb.vertical) x -= g.w - lb.bh;   // the baked shadow margin lies below the body as read: left of it on the panel
   const int gw = g.w > 128 ? 128 : g.w;
-  const int ix = lb.wholeDx;   // the wet copy's whole-px shift (Labels::holdWhole)
-  int dA0 = 0, dA1 = 0, dB0 = gw, dB1 = gw, w0 = 0, w1 = gw;
+  planTaps(lb, gp);
+  // copy columns c at panel x + i + c (each copy at its whole-px parallax), one more for a fractional overhang
+  const int xD = x + gp.ixD, xW = x + gp.ixW, gwD = gw + (gp.wxD ? 1 : 0), gwW = gw + (gp.wxW ? 1 : 0);
+  int dA0 = 0, dA1 = 0, dB0 = gwD, dB1 = gwD, w0 = 0, w1 = gwW;
   if (!warp.all()) {
-    while (dA1 < gw && warp(x + dA1) == 0) dA1++;
-    if (dA1 < gw) while (warp(x + dB0 - 1) == 0) dB0--;   // stops at dA1, whose share is > 0
-    int a = w0; while (a < w1 && warp(x + ix + a) != 256) a++;
-    int b = a; while (b < w1 && warp(x + ix + b) == 256) b++;
+    while (dA1 < gwD && warp(xD + dA1) == 0) dA1++;
+    if (dA1 < gwD) while (warp(xD + dB0 - 1) == 0) dB0--;   // stops at dA1, whose share is > 0
+    int a = w0; while (a < w1 && warp(xW + a) != 256) a++;
+    int b = a; while (b < w1 && warp(xW + b) == 256) b++;
     w0 = a; w1 = b;
   }
-  // under a meniscus: every column the scaled shift can reach that neither copy draws (shares strictly between,
-  // or 0 between two such columns)
-  const int xr0 = x + (ix < 0 ? ix : 0), xr1 = x + gw + (ix > 0 ? ix : 0);
-  auto ramp = [&](int xd, int k) { return k != 256 && (k != 0 || (xd - x >= dA1 && xd - x < dB0)); };
+  // under a meniscus: every column that neither copy draws (shares strictly between, or 0 between two such columns)
+  const int xr0 = x + (gp.ixD < gp.ixW ? gp.ixD : gp.ixW), xr1 = x + gw + (gp.ixD > gp.ixW ? gp.ixD : gp.ixW);
+  auto ramp = [&](int xd, int k) { return k != 256 && (k != 0 || (xd - xD >= dA1 && xd - xD < dB0)); };
   gp.rampLo = 1; gp.rampHi = 0; gp.rampR0 = (int16_t)lb.H; gp.rampR1 = -1;
   if (!warp.all()) for (int xd = xr0; xd <= xr1; xd++) {
     const int k = warp(xd);
     if (!ramp(xd, k)) continue;
     if (gp.rampLo > gp.rampHi) gp.rampLo = (int16_t)xd;
     gp.rampHi = (int16_t)xd;
-    rampColumnRows(g.w, g.h, x, xd, k, y0, yTop, lb, false, true, gp.rampR0, gp.rampR1);
+    rampColumnRows(g.w, g.h, x, xd, k, y0, yTop, lb, false, gp.rampR0, gp.rampR1);
   }
   const bool anyRamp = gp.rampLo <= gp.rampHi;
   const bool anyDry = dA1 > dA0 || dB1 > dB0, anyWet = w1 > w0;
@@ -2560,9 +2757,13 @@ static bool planSpriteGlyph(const ScaledGlyph &g, int x, int y0, int yTop, const
 void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const Warp &warp, const Mark &mark, int r0, int r1) const {
   const ScaledGlyph &g = *gp.g;
   const int x = gp.x, yTop = gp.yTop, sourceTop = yTop - y0;
-  const int ix = lb.wholeDx, iy = lb.wholeDy;
   const bool anyDry = gp.anyDry, anyWet = gp.anyWet;
-  SpriteRow r{*this, mark, g, 0, 0, nullptr, nullptr, !mark.bakedT ? 2 : mark.Cin <= 0 ? 1 : 3, mark.T, x, ix, gp.dA0, gp.dA1, gp.dB0, gp.dB1, gp.w0, gp.w1};
+  auto taps = [](int wx1, int wy1) {
+    const int wx0 = 256 - wx1, wy0 = 256 - wy1;
+    return SpriteRow::Taps{wx0 * wy0, wx1 * wy0, wx0 * wy1, wx1 * wy1, wx1 != 0 || wy1 != 0};
+  };
+  SpriteRow r{*this, mark, g, 0, 0, nullptr, nullptr, !mark.bakedT ? 2 : mark.Cin <= 0 ? 1 : 3, mark.T, x + gp.ixD, x + gp.ixW,
+              gp.dA0, gp.dA1, gp.dB0, gp.dB1, gp.w0, gp.w1, taps(gp.wxD, gp.wyD), taps(gp.wxW, gp.wyW)};
   int a0 = lb.dryRy0 < lb.ry0 ? lb.dryRy0 : lb.ry0, a1 = lb.dryRy1 > lb.ry1 ? lb.dryRy1 : lb.ry1;
   if (a0 < r0) a0 = r0; if (a1 > r1 - 1) a1 = r1 - 1;
   for (int ry = a0; ry <= a1; ry++) {
@@ -2571,9 +2772,9 @@ void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const 
 #ifdef DIGIT_PROF
     prof[1]++;
 #endif
-    const int cyD = lb.drySourceRows[ry] - sourceTop, cy = lb.sourceRows[ry] - sourceTop - iy;
-    const bool dry = anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && cyD < g.h;
-    const bool wet = anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && cy < g.h;
+    const int cyD = lb.drySourceRows[ry] - sourceTop - gp.iyD, cy = lb.sourceRows[ry] - sourceTop - gp.iyW;
+    const bool dry = anyDry && ry >= lb.dryRy0 && ry <= lb.dryRy1 && cyD >= 0 && (cyD < g.h || (cyD == g.h && gp.wyD));
+    const bool wet = anyWet && ry >= lb.ry0 && ry <= lb.ry1 && cy >= 0 && (cy < g.h || (cy == g.h && gp.wyW));
     if (!dry && !wet) continue;
     r.y = y; r.ry = ry; r.fb = FB + (y - baseY) * PANEL_W; r.dr = digitRows + ry;
     TCLIP(r.fb, PANEL_W);
@@ -2581,13 +2782,13 @@ void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const 
   }
   const int ra = r0 > gp.rampR0 ? r0 : gp.rampR0, rb = r1 < gp.rampR1 + 1 ? r1 : gp.rampR1 + 1;
   if (ra >= rb) return;
-  const int dA1 = gp.dA1, dB0 = gp.dB0;
-  auto ramp = [&](int xd, int k) { return k != 256 && (k != 0 || (xd - x >= dA1 && xd - x < dB0)); };
+  const int dA1 = gp.dA1, dB0 = gp.dB0, xD = x + gp.ixD;
+  auto ramp = [&](int xd, int k) { return k != 256 && (k != 0 || (xd - xD >= dA1 && xd - xD < dB0)); };
   const SpriteSampler ss(g);
 #ifdef DIGIT_PROF
   const uint32_t c0 = esp_cpu_get_cycle_count();
 #endif
-  for (int xd = gp.rampLo; xd <= gp.rampHi; xd++) { const int k = warp(xd); if (ramp(xd, k)) drawRampColumn(ss, x, xd, k, y0, yTop, lb, mark, false, true, ra, rb); }
+  for (int xd = gp.rampLo; xd <= gp.rampHi; xd++) { const int k = warp(xd); if (ramp(xd, k)) drawRampColumn(ss, x, xd, k, y0, yTop, lb, mark, false, ra, rb); }
 #ifdef DIGIT_PROF
   profCyc[2] += esp_cpu_get_cycle_count() - c0;
 #endif
@@ -3055,9 +3256,12 @@ void Tube::tickBand(int y0, const Mark &mark, int r0, int r1) const {
   if (mark.prof) mark.prof[TP_CYC] += esp_cpu_get_cycle_count() - f0;   // the band's share of the layer (the plan adds its own)
 #endif
 }
-// The digit layer's plan: every glyph (pass) in draw order (sim drawDigitLayer; Labels::holdWhole already ran).
+// The digit layer's plan: every glyph (pass) in draw order (sim drawDigitLayer).
 void Tube::planLabels(const Labels &lb, const Warp &warp, int y0) const {
   MarkPlan &mp = *plan;
+#if DIGIT_PIE
+  if (fracMemo) fracMemo->valid = false;   // the planes may have been rebaked since the last frame
+#endif
   mp.nGlyph = 0;
   int r0 = lb.dryRy0 < lb.ry0 ? lb.dryRy0 : lb.ry0, r1 = lb.dryRy1 > lb.ry1 ? lb.dryRy1 : lb.ry1;
   for (int i = 0; i < lb.n; i++) {
@@ -3997,7 +4201,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
 #ifdef DIGIT_PROF
   uint32_t profT = esp_timer_get_time();
 #endif
-  const bool haveLabels = layoutLabels(y0, p, gen, ticksN, st.acrossTilt, st.edgeLight, st.fillTarget, labels);
+  const bool haveLabels = layoutLabels(y0, p, gen, ticksN, st, st.fillTarget, labels);
 #ifdef DIGIT_PROF
   prof[8] = esp_timer_get_time() - profT;
 #endif
@@ -4019,7 +4223,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // (step 8 of the LCD perf plan, a look decision: the runs need no per-pixel band test). Bitmap digits keep it.
   if (haveLabels && labels.sprite) digitMark.edges.band = nullptr;
   const Warp digitWarp(p.digitsOnTop ? nullptr : wetShare);
-  if (haveLabels) { labels.holdWhole(); planLabels(labels, digitWarp, y0); }
+  if (haveLabels) planLabels(labels, digitWarp, y0);
   // 5: fizz — AA discs, pre-squashed by the local lens magnification (see sim step 5)
   if (p.fizz) {
     FZ_T0(fz0);
@@ -4917,6 +5121,22 @@ bool render_init(bool fast) {
       tb.plan = raw ? (MarkPlan *)((raw + 63) & ~(uintptr_t)63) : nullptr;
     }
     ok = ok && tb.plan;
+    {   // 16-B aligned by hand (never freed). LCD fast mode: internal RAM (the SIMD lanes are rewritten every run; in PSRAM they
+        // cost the pinned render ~1.5 ms, 2026-11-06); the BLE window and the AMOLED: PSRAM
+#ifdef BOARD_LCD316
+      const uint32_t scratchCaps = fast ? MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT : MALLOC_CAP_SPIRAM;
+#else
+      const uint32_t scratchCaps = MALLOC_CAP_SPIRAM;
+#endif
+      const uintptr_t raw = (uintptr_t)heap_caps_malloc(sizeof(DigitScratch) + 15, scratchCaps);
+      tb.scratch = raw ? (DigitScratch *)((raw + 15) & ~(uintptr_t)15) : nullptr;
+    }
+    ok = ok && tb.scratch;
+#if DIGIT_PIE
+    tb.fracMemo = (FracMemo *)heap_caps_malloc(sizeof(FracMemo), MALLOC_CAP_SPIRAM);
+    if (tb.fracMemo) tb.fracMemo->valid = false;
+    ok = ok && tb.fracMemo;
+#endif
     tb.look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
     if (tb.look) {
       FizzLook &fl = *tb.look;
@@ -5128,10 +5348,9 @@ bool tile_strip_clean(const uint16_t *strip) {
 }
 #endif
 bool render_seq_reset(uint32_t seed) {
-  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.labels.wholeHeld = false; if (t.foam) t.foam->nOrder = 0; }
+  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; if (t.foam) t.foam->nOrder = 0; }
   return fizzReseed(seed);
 }
-void render_digit_shift(int idx, int &dx, int &dy) { const Labels &lb = tubeAt(idx).labels; dx = lb.wholeDx; dy = lb.wholeDy; }
 #ifdef DIGIT_PROF
 const uint32_t *render_profile(int idx) { return tubeAt(idx).prof; }
 const uint32_t *render_profile_cycles(int idx) { return tubeAt(idx).profCyc; }

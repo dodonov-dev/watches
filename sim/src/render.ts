@@ -242,6 +242,18 @@ function pxa(x: number, y: number, c: number, t: number): void {
   const i = y * PANEL_W + x;
   fb[i] = t >= 1 ? c : blend565(fb[i], c, t);
 }
+/** Firmware blend565T exactly: each channel expanded to 8 bits, out = (a·256 + (b − a)·T + 128) >> 8, then its top
+ *  5 / 6 / 5 bits; T in 1/256 (<= 0 keeps a, >= 256 gives b). The marks blend with it (markFn), so a rear mark's
+ *  write equals the firmware's for equal inputs (two mark writes on one pixel no longer stack two rounding steps). */
+export function blend565T(a: number, b: number, T: number): number {
+  if (T <= 0) return a;
+  if (T >= 256) return b;
+  const ch = (x: number, y: number): number => (x * 256 + (y - x) * T + 128) >> 8;
+  const ar = a >> 11, ag = (a >> 5) & 63, ab = a & 31, br = b >> 11, bg = (b >> 5) & 63, bb = b & 31;
+  const r = ch((ar << 3) | (ar >> 2), (br << 3) | (br >> 2)), g = ch((ag << 2) | (ag >> 4), (bg << 2) | (bg >> 4));
+  const bl = ch((ab << 3) | (ab >> 2), (bb << 3) | (bb >> 2));
+  return ((r >> 3) << 11) | ((g >> 2) << 5) | (bl >> 3);
+}
 function px(x: number, y: number, c: number): void {
   if (x < 0 || y < 0 || x >= PANEL_W || y >= PANEL_H) return;
   fb[y * PANEL_W + x] = c;
@@ -452,6 +464,7 @@ function floorBake(p: Params): [number, number] {
 function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
+  const Tq = Math.max(0, Math.min(256, Math.floor(p.liquidTransparency * 256 + 0.5)));   // firmware Mark::T
   return (x, y, c, cov = 1, rel = 0) => {
     const ry = y - y0;
     if (ry < 0 || ry >= H || x < 0 || x >= PANEL_W) return;
@@ -493,6 +506,12 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         }
         // The glass-cut relief is on the rear wall too: it fades with the liquid's opacity (invisible
         // through an opaque liquid) while its colour still derives from the floored through-liquid body.
+        if (through === 1) {   // no band over the pixel: the firmware's integer steps (Mark::operator()) and its blend
+          let covT = Math.round(cov * 256);
+          if (rel !== 0) { covT = (covT * Tq) >> 8; if (covT <= 0) return; }
+          markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, covT);
+          return;
+        }
         if (rel !== 0) cov *= transK;
         cov *= through;
       } else if (under) {
@@ -513,11 +532,21 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         if (rel !== 0) M = rgb565to888(embossOf(q(M), rel));
         fb[i] = al >= 1 ? q(M) : q(mix(rgb565to888(fb[i]), M, al));
         return;
-      } else if (dryT) cov *= dryT[ry];
+      } else if (dryT) {   // rear marks vanish behind the wall band, in the firmware's 1/256 steps (pal.dryT)
+        const covT = (Math.round(cov * 256) * Math.floor(dryT[ry] * 256 + 0.5)) >> 8;
+        if (covT <= 0) return;
+        markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, covT);
+        return;
+      }
     }
-    if (rel !== 0) c = embossOf(c, rel);
-    pxa(x, y, c, cov);
+    markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, Math.round(cov * 256));
   };
+}
+/** A mark's write: coverage in 1/256 (the firmware's covT), blended as blend565T. */
+function markWrite(x: number, y: number, c: number, covT: number): void {
+  if (x < 0 || y < 0 || x >= PANEL_W || y >= PANEL_H || covT <= 0) return;
+  const i = y * PANEL_W + x;
+  fb[i] = covT >= 256 ? c : blend565T(fb[i], c, covT);
 }
 
 /** Stable integer hash shared with firmware: the texture must not shimmer between frames. */
@@ -532,8 +561,9 @@ interface Labels {
   list: Label[]; bw: number; bh: number; ry0: number; ry1: number; y0: number; yTop: number; sourceRows: Int16Array;
   /** Rear digits behind air (see `digitDryLens`); same as the wet tables for digits on top. */
   drySourceRows: Int16Array; dryRy0: number; dryRy1: number;
-  /** Refraction shift (px, fractional) of the columns behind liquid (`digitParallax`); 0 behind air and for digits on top. */
-  wetDx: number; wetDy: number;
+  /** View-angle parallax of the rear wall (TubeState rearX16 … rearY16w, quantised by the physics step), in 1/16 px:
+   *  behind air (`d`) and behind liquid (`w`, / liquidIor); x along the panel, y in rows down. 0 for digits on top. */
+  sx16d: number; sx16w: number; sy16d: number; sy16w: number;
   sprite: ScaledGlyph[] | null; font: Font; gap: number; rows: Uint16Array; shadow: number; shadowA: number; shadowOff: number;
   /** Vertical watch: glyphs are turned to read upright, a label's digits advance across the tube (panel y) from
    *  `Label.y`, and `Label.x0` is where the glyph body starts along it. bw x bh stay the glyph as read. */
@@ -601,7 +631,7 @@ export function tickFollow(p: Params, H: number): TickFollow {
 }
 
 /** Measure (but do not draw) the labels of one tube. Returns null when digits are off. */
-function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number, edgeLight: number, fill: number): Labels | null {
+function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number, st: TubeState, fill: number): Labels | null {
   if (!p.digits) return null;
   const minutes = ticksN === 60;
   const every = Math.max(1, Math.round(minutes ? p.digitMinuteStep : p.digitHourStep));
@@ -629,10 +659,12 @@ function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number,
   const H = tubeLayout(p).H;
   const sourceRows = p.digitsOnTop ? markSourceRows(H, p.topLens, p.lensCurve) : markSourceRows(H, p.bottomLens);
   const drySourceRows = p.digitsOnTop ? sourceRows : markSourceRows(H, p.digitDryLens);
-  // Liquid refracts the rear wall: the wet columns slide with tilt (same sign convention as the ticks).
-  // Fractional: the wet copy is resampled at draw time so it glides rather than steps.
-  const wetDx = p.digitsOnTop ? 0 : -edgeLight * p.digitParallax;
-  const wetDy = p.digitsOnTop ? 0 : acrossTilt * p.digitParallax;
+  // View-angle parallax (physics stepTube, quantised there to 1/16 px): the rear wall behind air, and behind liquid at
+  // its apparent depth (the ray through the front vertex bends to about 1/n of its angle in both directions: along the
+  // tube a slab, across it the cylinder, whose lens the source-row warp already is). Integers on both sides, so the
+  // renderers' taps agree exactly (shiftTap).
+  const rear = !p.digitsOnTop;
+  const sx16d = rear ? st.rearX16 : 0, sy16d = rear ? st.rearY16 : 0, sx16w = rear ? st.rearX16w : 0, sy16w = rear ? st.rearY16w : 0;
   const list: Label[] = [];
   const start = Math.round(minutes ? p.digitMinuteStart : p.digitHourStart) || every;
   const flip = scaleFlip(p);
@@ -658,13 +690,16 @@ function layoutLabels(y0: number, p: Params, ticksN: number, acrossTilt: number,
   if (minutes ? p.digitsLastOnlyM : p.digitsLastOnlyH) { const s = minutes ? every : 1, i = Math.floor(Math.min(ticksN - 1e-6, Math.max(0, fill) * ticksN) / s) * s; if (i > 0) push(i); }
   else for (let i = start; i < ticksN; i += every) push(i);
   const sourceRy0 = (V ? yMin : yTop) - y0, sourceRy1 = (V ? yMax : yBase) - y0 + (shadow >= 0 ? shadowOff : 0);
-  const rowSpan = (rows: Int16Array, shift: number): [number, number] => {
+  /** Rows whose source row (before the copy's vertical shift `k`'s taps) can reach the labels: one more for a
+   *  fractional overhang (the row below samples the last one through its upper tap). */
+  const rowSpan = (rows: Int16Array, k: number): [number, number] => {
+    const [iy, wy] = shiftTap(sy16d, sy16w, k), lo = sourceRy0 + iy, hi = sourceRy1 + iy + (wy ? 1 : 0);
     let a = H, b = -1;
-    for (let ry = 0; ry < H; ry++) if (rows[ry] >= sourceRy0 + Math.floor(shift) && rows[ry] <= sourceRy1 + Math.ceil(shift)) { a = Math.min(a, ry); b = Math.max(b, ry); }
+    for (let ry = 0; ry < H; ry++) if (rows[ry] >= lo && rows[ry] <= hi) { a = Math.min(a, ry); b = Math.max(b, ry); }
     return [a, b];
   };
-  const [ry0, ry1] = rowSpan(sourceRows, wetDy), [dryRy0, dryRy1] = rowSpan(drySourceRows, 0);
-  return { list, bw, bh, y0, yTop, ry0, ry1, sourceRows, drySourceRows, dryRy0, dryRy1, wetDx, wetDy, sprite, font, gap, rows: digitRowColors(p, bh), shadow, shadowA, shadowOff, vertical: V };
+  const [ry0, ry1] = rowSpan(sourceRows, 256), [dryRy0, dryRy1] = rowSpan(drySourceRows, 0);
+  return { list, bw, bh, y0, yTop, ry0, ry1, sourceRows, drySourceRows, dryRy0, dryRy1, sx16d, sx16w, sy16d, sy16w, sprite, font, gap, rows: digitRowColors(p, bh), shadow, shadowA, shadowOff, vertical: V };
 }
 
 /** Liquid column bounds per tube row in panel coordinates: liquid where lo <= x < hi. */
@@ -713,15 +748,26 @@ export function tickFollowRange(f: TickFollow, H: number, edge: number, share: n
 }
 /** Wet share of a column (see wetShare); 256 everywhere for digits on top. */
 type WarpFn = (x: number) => number;
-/** Sprite digits behind liquid move by whole px: the refraction shift (`wetDx`, `wetDy`) rounded, kept until the shift
- *  is more than 0.7 px away, so a shift resting near x.5 does not flicker between two px. Render state across frames,
- *  one per tube (firmware Labels::holdWhole); `setDigitHold` puts the one a board dump held (render-ref.ts). */
-interface DigitHold { dx: number; dy: number; held: boolean; }
-const digitHold: DigitHold[] = Array.from({ length: TUBE_COUNT }, () => ({ dx: 0, dy: 0, held: false }));
-export function setDigitHold(idx: number, dx: number, dy: number): void { if (idx >= 0 && idx < TUBE_COUNT) digitHold[idx] = { dx, dy, held: true }; }
-function holdWhole(h: DigitHold, lb: Labels): void {
-  const hold = (v: number, w: number): number => !h.held || Math.abs(v - w) > 0.7 ? Math.round(v) : w;
-  h.dx = hold(lb.wetDx, h.dx); h.dy = hold(lb.wetDy, h.dy); h.held = true;
+/** The rear parallax of a column of wet share k (1/256): the dry shift `d16` moved toward the wet one `w16` (both in
+ *  1/16 px) by k, as whole px `i` and the far tap's weight `w1` (1/256; destination c samples source c - i - w1/256).
+ *  Integer math (1/4096 px), mirrored by the firmware: both renderers take the same taps. */
+export function shiftTap(d16: number, w16: number, k: number): [number, number] {
+  const v = d16 * 256 + (w16 - d16) * k;
+  let i = Math.floor(v / 4096), w1 = ((v - i * 4096) + 8) >> 4;
+  if (w1 === 256) { i++; w1 = 0; }
+  return [i, w1];
+}
+/** Premultiplied bilinear colour of a resampled pixel (firmware mix565): each 565 channel of the four taps weighted by
+ *  its tap's alpha x weight m, divided by the pixel's coverage a = (sum m + 32768) >> 16 (1..255) through the
+ *  firmware's reciprocal table: ((S + 128) >> 8) * floor(2^24 / a), rounded >> 32, clamped (the product < 2^47: exact
+ *  in a double). One tap at full weight gives its own colour. */
+export function mix565(m00: number, m10: number, m01: number, m11: number, c00: number, c10: number, c01: number, c11: number, a: number): number {
+  const R = Math.floor(16777216 / a);
+  const ch = (sh: number, mask: number): number => {
+    const S = m00 * ((c00 >> sh) & mask) + m10 * ((c10 >> sh) & mask) + m01 * ((c01 >> sh) & mask) + m11 * ((c11 >> sh) & mask);
+    return Math.min(mask, Math.floor((((S + 128) >> 8) * R + 2147483648) / 4294967296));
+  };
+  return (ch(11, 31) << 11) | (ch(5, 63) << 5) | ch(0, 31);
 }
 /** Coverage (0..255) and colour of glyph pixel (cx, cy); both only defined inside w x h. */
 interface GlyphSampler {
@@ -730,18 +776,15 @@ interface GlyphSampler {
   aw: (cx: number, cy: number) => number; cw: (cx: number, cy: number) => number;
 }
 /** Draw one glyph. A panel column shows one image, chosen by its wet share (see wetShare): behind air (0)
- *  the dry copy, unshifted; behind liquid (256) the wet copy at the fractional refraction shift (`wetDx`,
- *  `wetDy`), bilinearly resampled so it glides with tilt instead of stepping a whole pixel at a time; across
- *  the meniscus (between) the image the column's share of the liquid's refraction gives — source rows blended
- *  from the dry warp to the wet one, the shift scaled — so a label the surface passes over warps gradually.
- *  A resampled pixel's colour comes from the tap contributing the most coverage. */
+ *  the dry copy (`digitDryLens` rows) at the dry parallax; behind liquid (256) the wet copy (`bottomLens` rows) at the
+ *  wet one; across the meniscus (between) the image the column's share of the liquid's refraction gives — source rows
+ *  blended from the dry warp to the wet one, the parallax likewise (shiftTap) — so a label the surface passes over
+ *  warps gradually. Sub-pixel parallax is bilinearly resampled (weights 1/256): coverage and premultiplied colour
+ *  (mix565), so both glide instead of stepping. */
 /** `inLiquid(x, ry)`: whether the mark at that pixel is composited through the liquid (the markFn test);
  *  null = never (digits on top). */
 type InLiquidFn = ((x: number, ry: number) => boolean) | null;
-/** `whole` (sprite digits, see DigitHold): the wet copy at that whole-px shift instead of the fractional one, the
- *  meniscus columns at their share of it rounded to whole px; null = the fractional shift (bitmap digits). */
-function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, withShadow: boolean, inLiquid: InLiquidFn,
-  whole: DigitHold | null = null): void {
+function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, withShadow: boolean, inLiquid: InLiquidFn): void {
   // Plane per PIXEL: the behind-liquid plane (aw/cw) exactly where markFn composites through the liquid,
   // the behind-air plane elsewhere. The column's share decides which image (warp and shift) it shows; the
   // meniscus makes rows of one column differ, and there the compositor's per-row test picks the plane.
@@ -758,56 +801,43 @@ function drawGlyph(s: GlyphSampler, x: number, yTop: number, lb: Labels, warp: W
     // shadow and body passes on one pixel stack that into two 565 steps between the renderers.
     const alphaT = (t: number): number => Math.floor(t * 256 + 0.5), shadowT = alphaT(lb.shadowA);
     const cov = (a: number): number => (shadow ? (alphaT(a / 255) * shadowT) >> 8 : alphaT(a / 255)) / 256;
-    /** Destination column xd at shift (sx, sy) px: its rows `rows(ry)` (source row before the vertical shift)
-     *  sample source (cx - fx, cy - fy), taps at columns cx / cx-1, rows cy / cy-1. */
-    const shifted = (xd: number, sx: number, sy: number, ry0: number, ry1: number, rows: (ry: number) => number): void => {
-      const ix = Math.floor(sx), fx = sx - ix, iy = Math.floor(sy), fy = sy - iy, cx = xd - xg - ix;
+    /** Destination column xd of wet share k over rows [ry0, ry1], their source rows `rows(ry)` before the shift:
+     *  taps at columns cx / cx-1, rows cy / cy-1 of the plane the compositor picks per pixel. */
+    const column = (xd: number, k: number, ry0: number, ry1: number, rows: (ry: number) => number): void => {
+      const [ix, wx1] = shiftTap(lb.sx16d, lb.sx16w, k), [iy, wy1] = shiftTap(lb.sy16d, lb.sy16w, k), cx = xd - xg - ix;
       if (cx < 0 || cx > s.w) return;
-      // The firmware weighs the taps in 1/256 steps; use the same weights for the coverage and for the colour,
-      // which comes from the heaviest tap, so near-ties resolve alike (a baked shadow puts a dark texel right
-      // next to a bright one, so a flipped tie is a visible pixel, not a rounding step).
-      const wx1 = Math.floor(fx * 256 + 0.5), wx0 = 256 - wx1, wy1 = Math.floor(fy * 256 + 0.5), wy0 = 256 - wy1;
-      const w00 = wx0 * wy0, w10 = wx1 * wy0, w01 = wx0 * wy1, w11 = wx1 * wy1;
+      const wx0 = 256 - wx1, wy0 = 256 - wy1, w00 = wx0 * wy0, w10 = wx1 * wy0, w01 = wx0 * wy1, w11 = wx1 * wy1;
       for (let ry = ry0; ry <= ry1; ry++) {
         const cy = rows(ry) - sourceTop - iy; if (cy < 0 || cy > s.h) continue;
         const L = inLiquid !== null && inLiquid(xd, ry);
+        // the firmware weighs the taps in 1/256 steps; coverage and premultiplied colour (mix565) in its integer math
         const t00 = tap(L, cx, cy), t10 = tap(L, cx - 1, cy), t01 = tap(L, cx, cy - 1), t11 = tap(L, cx - 1, cy - 1);
-        const m00 = t00 * w00, m10 = t10 * w10, m01 = t01 * w01, m11 = t11 * w11, m = Math.max(m00, m10, m01, m11);
+        const m00 = t00 * w00, m10 = t10 * w10, m01 = t01 * w01, m11 = t11 * w11;
         const a = (m00 + m10 + m01 + m11 + 32768) >> 16; if (!a) continue;
-        const c = shadow ? lb.shadow : m === m00 ? C(L, cx, cy) : m === m10 ? C(L, cx - 1, cy) : m === m01 ? C(L, cx, cy - 1) : C(L, cx - 1, cy - 1);
+        const col = (m: number, u: number, v: number): number => m ? C(L, u, v) : 0;   // a weighted tap lies inside
+        const c = shadow ? lb.shadow : mix565(m00, m10, m01, m11, col(m00, cx, cy), col(m10, cx - 1, cy), col(m01, cx, cy - 1), col(m11, cx - 1, cy - 1), a);
         mark(xd, lb.y0 + ry, c, cov(a));
       }
     };
-    for (let cx = 0; cx < s.w; cx++) {                        // behind air: the dry copy
-      const xd = xg + cx; if (warp(xd) !== 0) continue;
-      for (let ry = lb.dryRy0; ry <= lb.dryRy1; ry++) {
-        const cy = lb.drySourceRows[ry] - sourceTop; if (cy < 0 || cy >= s.h) continue;
-        const L = inLiquid !== null && inLiquid(xd, ry);
-        const a = A(L, cx, cy); if (!a) continue;
-        mark(xd, lb.y0 + ry, shadow ? lb.shadow : C(L, cx, cy), cov(a));
-      }
-    }
-    // behind liquid, and across the meniscus: every destination column the shifted glyph can reach
-    const wetRows = (ry: number): number => lb.sourceRows[ry];
-    const dx = whole ? whole.dx : lb.wetDx, dy = whole ? whole.dy : lb.wetDy;
-    const part = (v: number, k: number): number => whole ? Math.round(v * (k / 256)) : v * (k / 256);
-    const x0 = xg + Math.min(0, Math.floor(dx)), x1 = xg + s.w + Math.max(0, Math.ceil(dx));
-    for (let xd = x0; xd <= x1; xd++) {
-      const k = warp(xd); if (k === 0) continue;
-      if (k === 256) shifted(xd, dx, dy, lb.ry0, lb.ry1, wetRows);
-      else shifted(xd, part(dx, k), part(dy, k), 0, H - 1, (ry) => blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k));
+    // every destination column either copy can reach (one more for a fractional overhang)
+    const ixD = shiftTap(lb.sx16d, lb.sx16w, 0)[0], ixW = shiftTap(lb.sx16d, lb.sx16w, 256)[0];
+    for (let xd = xg + Math.min(ixD, ixW), x1 = xg + s.w + Math.max(ixD, ixW); xd <= x1; xd++) {
+      const k = warp(xd);
+      if (k === 0) column(xd, 0, lb.dryRy0, lb.dryRy1, (ry) => lb.drySourceRows[ry]);   // behind air: the dry copy
+      else if (k === 256) column(xd, 256, lb.ry0, lb.ry1, (ry) => lb.sourceRows[ry]);   // behind liquid: the wet copy
+      else column(xd, k, 0, H - 1, (ry) => blendRow(lb.drySourceRows[ry], lb.sourceRows[ry], k));   // across the meniscus
     }
   }
 }
-/** Image glyph: per-pixel coverage from the pre-scaled sheet, at the tube's held whole-px shift. */
-function drawSpriteGlyph(g: ScaledGlyph | undefined, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn, whole: DigitHold): void {
+/** Image glyph: per-pixel coverage from the pre-scaled sheet. */
+function drawSpriteGlyph(g: ScaledGlyph | undefined, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn): void {
   if (!g) return;
   if (lb.vertical) x -= g.w - lb.bh;   // the baked shadow margin lies below the body as read: left of it on the panel
   // the shadow is baked into the sprite (scaledGlyphs), so a single pass draws both
   drawGlyph({
     w: g.w, h: g.h, a: (cx, cy) => g.a[cy * g.w + cx], c: (cx, cy) => g.c[cy * g.w + cx],
     aw: (cx, cy) => g.aw[cy * g.w + cx], cw: (cx, cy) => g.cw[cy * g.w + cx],
-  }, x, yTop, lb, warp, mark, false, inLiquid, whole);
+  }, x, yTop, lb, warp, mark, false, inLiquid);
 }
 /** Bitmap glyph, nearest-neighbour scaled into bw x bh. */
 function drawBitmapGlyph(f: Font, d: number, x: number, yTop: number, lb: Labels, warp: WarpFn, mark: MarkFn, inLiquid: InLiquidFn): void {
@@ -834,15 +864,15 @@ function digitRowColors(p: Params, bh: number): Uint16Array {
   return out;
 }
 /** `edges` null = digits on top: everything uses the wet (whole-tube) tables. Otherwise wetShare holds
- *  these edges' shares (drawTube). `whole`: the tube's held shift (sprite digits). */
-function drawLabels(lb: Labels, _p: Params, edges: Edges | null, mark: MarkFn, whole: DigitHold): void {
+ *  these edges' shares (drawTube). */
+function drawLabels(lb: Labels, _p: Params, edges: Edges | null, mark: MarkFn): void {
   const warp: WarpFn = edges ? shareAt : () => 256;
   const inLiquid: InLiquidFn = edges ? (x, ry) => x >= edges.lo[ry] && x < edges.hi[ry] : null;
   for (const l of lb.list) {
     let x = l.x0, y = l.y;
     for (let i = 0; i < l.text.length; i++) {
       const d = l.text.charCodeAt(i) - 48;
-      if (lb.sprite) drawSpriteGlyph(lb.sprite[d], x, y, lb, warp, mark, inLiquid, whole);
+      if (lb.sprite) drawSpriteGlyph(lb.sprite[d], x, y, lb, warp, mark, inLiquid);
       else drawBitmapGlyph(lb.font, d, x, y, lb, warp, mark, inLiquid);
       if (lb.vertical) y += l.adv[i] + lb.gap; else x += l.adv[i] + lb.gap;
     }
@@ -1932,7 +1962,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H);
 
   // Scale marks, all before bubbles.
-  const labels = layoutLabels(y0, p, ticksN, state.acrossTilt, state.edgeLight, state.fillTarget);
+  const labels = layoutLabels(y0, p, ticksN, state.acrossTilt, state, state.fillTarget);
   const drawTickLayer = (onTop: boolean): void => {
     if (p.ticksOnTop === onTop) {
       const wetRows = markSourceRows(H, p.tickLens);
@@ -1950,9 +1980,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // Sprite digits take no surface band: its rim, blick and dish are not layered over them (a look decision, firmware
     // perf: their runs need no per-pixel band test). Bitmap digits keep it.
     const digitEdges: Edges = labels.sprite ? { lo: bounds.lo, hi: bounds.hi } : bounds;
-    holdWhole(digitHold[idx], labels);
-    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0),
-      digitHold[idx]);
+    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0));
   };
   drawTickLayer(false);
   drawDigitLayer(false);

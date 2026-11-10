@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Glow stick",
   "material": {
     "ior": 1.42,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 4.75,
     "tubeBack": "#020602",
     "tubeBack2": "#061006",
     "tubeBackGradient": 1,

@@ -20,7 +20,7 @@ import { rgb565, rgb565to888 } from '../../../spec/layout';
 export const DERIVED_KEYS = [
   'liquid', 'liquidHi', 'liquidLo', 'liquidTransparency', 'liquidThin', 'shadeDepth',
   'highlightH', 'highlightBright', 'highlightSharp', 'glassHi', 'glassHiBright', 'glassReflect', 'glassRim', 'glassWall',
-  'glassWallGlow', 'wallWet', 'rimLight', 'rimTint', 'glassBody', 'glassOverLiquid', 'lightPhys', 'lightAngle', 'ambientLight', 'liquidBright',
+  'glassWallGlow', 'wallWet', 'liquidIor', 'rimLight', 'rimTint', 'glassBody', 'glassOverLiquid', 'lightPhys', 'lightAngle', 'ambientLight', 'liquidBright',
   'tickLens', 'bottomLens', 'bubbleRim', 'bubbleDark', 'edgeGlow', 'glowStrength', 'frontBright', 'edgeLightGain', 'edgeSoft',
   'surfaceFill', 'surfaceBlick', 'contactAngle', 'contactHyst', 'contactDyn', 'capLength', 'freeDamp', 'freeBounce', 'meniscusK',
   'meniscusDamp', 'meniscusInertia', 'angleTiltGain', 'angleGyroGain', 'angleMax', 'wetFilm', 'traces', 'traceAmount', 'traceDry',
@@ -374,6 +374,7 @@ export function deriveReport(material: Material, design: Design): DeriveReport {
     liquidBright: emissive ? 1.3 : 1,
     tickLens: lens,
     bottomLens: lens,
+    liquidIor: m.ior,   // the rear wall's apparent depth behind the contents (rear parallax)
     edgeGlow: emissive ? Math.round(18 + 16 * Math.min(1, ELum)) : metal ? 0 : 19,
     glowStrength: emissive ? anchored(ELum, GLOW) : metal ? 0 : Math.min(0.25, 0.08 * m.lightIntensity * Tsnap),
     frontBright: metal ? 20 : emissive ? Math.round(16 * Math.min(1, ELum) + 4) : 0,

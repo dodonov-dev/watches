@@ -843,15 +843,12 @@ static void handleLine(char *line) {
       out.printf("LAYOUT %d %d %d %d %d %d\n", PANEL_W, PANEL_H, l.Hh, l.yH, l.yM, l.Hm);
 #endif
       auto dumpState = [&](const TubeState &t) {
-        out.printf(" %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f",
+        out.printf(" %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %d %d %d",
                    t.fillTarget, t.fillPos, t.angle, t.light, t.edgeLight, t.agitation,
                    t.acrossTilt, t.cap, t.filmFree, t.filmHome, t.slugPos, t.reading, t.pinFree, t.pinHome,
-                   t.lineVFree, t.lineVHome);
+                   t.lineVFree, t.lineVHome, t.rearX16, t.rearY16, t.rearX16w, t.rearY16w);   // the rear parallax as rendered (1/16 px)
       };
       out.print("STATE"); for (int t = 0; t < TUBE_COUNT; t++) dumpState(tubeOf(t)); out.println();
-      out.print("DIGITS");   // the digits' held whole-px shift per tube
-      for (int t = 0; t < TUBE_COUNT; t++) { int dx, dy; render_digit_shift(t, dx, dy); out.printf(" %d %d", dx, dy); }
-      out.println();
       char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
       auto dumpTrace = [&](const uint16_t *v) {
         if (v) for (int x = 0; x < TUBE_LENGTH_PX; x++) sprintf(thex + x * 4, "%04x", v[x]);

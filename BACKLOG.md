@@ -30,6 +30,10 @@ number (now angleTiltGain / angleMax; vertical mode uses the real tilt up to 45Â
 - Connection over Wi-Fi? How? Strich/QR displayed?
 - App? Or just BLE/Wi-Fi?
 - Softened metall ball to fill weight shift when tilting
+- Trim presets and bench looks heavily: store only what differs from the defaults, so a behaviour change stays
+  code-only (removing digitParallax touched 103 preset / bench files)
+- Rear-digit view-angle parallax (live 2026-11-06, latched swinging gate; swings within 0.4 fps of no motion): the sub-pixel cost
+  while it glides on a slow tilt is left (ramp bench 25.5 vs 33.8 fps: render cores +7-14 ms), plus ~0.7 fps pinned (code layout)
 
 ## Firmware / ESP-IDF
 - LCD flash + PSRAM 120 MHz: +25 % fps (3 tubes swinging 27.6 -> 31.8), but the chip wedged at resets (esp_restart,

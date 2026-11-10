@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Pinot noir",
   "material": {
     "ior": 1.35,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 6,
-    "digitParallax": 4.75,
     "tubeBack": "#f1e6cf",
     "tubeBack2": "#000000",
     "tubeBackGradient": 0,

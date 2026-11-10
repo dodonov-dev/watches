@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Aerated glycerine",
   "material": {
     "ior": 1.474,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 4.75,
-    "digitParallax": 4.75,
     "tubeBack": "#03060a",
     "tubeBack2": "#0f1822",
     "tubeBackGradient": 2,

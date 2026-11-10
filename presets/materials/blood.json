@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Blood",
   "material": {
     "ior": 1.35,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 4.75,
     "tubeBack": "#050203",
     "tubeBack2": "#0a0405",
     "tubeBackGradient": 1,

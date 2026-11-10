@@ -13,6 +13,15 @@
 #define FILL_SLOSH_MAX_DESIGN_PX 30.0f   // |fillPos| cap
 #define FILL_SLOSH_MAX_PX_AT(k) (FILL_SLOSH_MAX_DESIGN_PX * (k))
 #define ANGLE_HARD_MAX_DEG 20.0f
+// rear parallax gate (sim physics.ts REAR_*): rate smoothing s, activity attack /s and decay s, gate g/s (HI also latches
+// it shut), quiet s that releases the latch, ease s
+#define REAR_RATE_S 0.1f
+#define REAR_ACT_ATTACK 20.0f
+#define REAR_ACT_DECAY_S 1.0f
+#define REAR_GATE_LO 0.5f
+#define REAR_GATE_HI 1.0f
+#define REAR_QUIET_S 1.0f
+#define REAR_EASE_S 0.15f
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
 #define CAP_DYN_MAX_DESIGN_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
@@ -38,6 +47,14 @@ struct TubeState {
   // detection), retract = 0..1 through a wrap's retract (1 = none running), retractFrom = fillTarget at the wrap
   float clockPrev = 0, retract = 1, retractFrom = 0;
   float fillTarget = 0, fillPos = 0, fillVel = 0, angle = 0, angleVel = 0, light = 0, lightVel = 0, agitation = 0, edgeLight = 0, acrossTilt = 0;
+  // rear (view-angle) parallax (sim TubeState): the tilt low-passed over rearParallaxSettle; the shift quantised once
+  // here, 1/16 px, behind air (X16 / Y16) and behind liquid (w: / liquidIor), panel x / rows down. The render and the
+  // `x` dump take these integers.
+  float rearLpAlong = 0, rearLpAcross = 0;
+  float rearSmAlong = 0, rearSmAcross = 0, rearAct = 0, rearSx = 0, rearSy = 0;   // the gate (sim TubeState, physics.cpp REAR_*)
+  float rearQuiet = 0; bool rearLatch = false;   // latched shut by a swing, until REAR_QUIET_S of quiet
+  int rearX16 = 0, rearY16 = 0, rearX16w = 0, rearY16w = 0;
+  bool rearInit = false;
   // meniscus dynamics: surface centre leading the pinned contact lines (px, panel +x); trailing wet films 0..1
   float cap = 0, capVel = 0, filmFree = 0, filmHome = 0;
   // pinned contact lines per meniscus end (free = time edge, home = free slug's home edge), each in its

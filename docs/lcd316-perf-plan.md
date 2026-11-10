@@ -32,6 +32,9 @@ Native stays: lower canvases were compared side by side on the board and look wo
   tile slots). Same-session A/B on the fixed scene: 33.6 → 40.5 fps pinned, **25.2 → 31.5 swinging the tilt** (goal
   ≥ 30 met); push both strips 20.8 → 12.7 ms swinging. Free heap with BLE 8.8 → 4.4 KB. Reviewed (2026-10-30). **Next:** a BLE connection test at this heap (`ble-session.py`
   needs `bleak` on the Windows Python); further perf levers in KAIZEN (steps 7, 8).
+- **Superseded 2026-11-06** (issue 1): rear digits no longer take `digitParallax` (removed with `Labels::holdWhole`, the
+  `DIGITS` dump line and `setDigitHold`); see STATUS / KAIZEN for the current rear-digit model. The step-8 text and
+  numbers below are history.
 - **Done:** step 8 (simpler digits, Log), 2026-10-30, **not committed**: by-eye rounds done; the user took A (whole-px
   digit parallax, 0.7 px hysteresis) and E (no surface band over sprite digits), rejected D (the meniscus ramp stays),
   B / C not taken. A + E are the default sprite-digit look on both boards, mirrored in the sim (bitmap digits keep the
@@ -181,7 +184,7 @@ the strip's dirty lines back first (C2M, 0.11-0.22 ms probed). Exact: no look ch
   today's order (rear ticks, rear digits, fizz, bubble, top ticks, top digits). Per pixel the stage order and the
   bubble order stay the same, so the pixels are identical.
 - **Facts first:** what the marks read per row must exist before the band loop: wet share (`wetShare` / `wetRun`), label
-  layout (`layoutLabels`, `holdWhole` once a frame), mark bounds / band layer weights / strokes per row (bandFill /
+  layout (`layoutLabels`, `holdWhole` once a frame; holdWhole gone 2026-11-06), mark bounds / band layer weights / strokes per row (bandFill /
   bandBlick / bandRim, strokeR / L, boundLo / Hi: check which the band loop fills row by row), tick row facts
   (DigitRow). Per-frame state (holdWhole, TickMemo, fizz FizzFrame) is set once, not per tile.
 - **Row clip:** drawTicks / drawLabels / drawBubble (discRow) / the bubble spans take a row range; the writes go to the
@@ -672,6 +675,7 @@ the strip's dirty lines back first (C2M, 0.11-0.22 ms probed). Exact: no look ch
     With A the sprite wet copy is always whole, so the fractional sprite kernels (FracRun / fracTap /
     spriteRunFrac*, FracMemo in PSRAM) went; with E no sprite run takes the band compositor (spriteRunSlow, the
     footprint cut in SpriteRow::run went). Bitmap digits are unchanged (fractional shift, band).
+    - (2026-11-06: the hold, the `DIGITS` line and the seeding below were removed with `digitParallax`; history.)
     - Hysteresis: `Labels::holdWhole` (per Tube, so per core; static, no allocation): wetDx / wetDy rounded, kept
       until more than 0.7 px off; updated once a frame where the digit layer is drawn (both fonts, as the sim). The
       ramp columns take `jround(whole * k / 256)`. Sim: `DigitHold` per tube index, the same rule in drawDigitLayer.

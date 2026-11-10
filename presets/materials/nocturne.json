@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Nocturne",
   "material": {
     "ior": 1.4,
@@ -48,7 +48,6 @@
     "tickDryLens": 0,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 0,
     "tubeBack": "#6d7883",
     "tubeBack2": "#3c4652",
     "tubeBackGradient": 2,

@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Mercury",
   "material": {
     "ior": 1,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 4.75,
     "tubeBack": "#3a444c",
     "tubeBack2": "#6a7880",
     "tubeBackGradient": 2,

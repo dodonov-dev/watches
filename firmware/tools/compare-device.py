@@ -76,7 +76,7 @@ def main():
             dev[(Y0[t] + y) * W:(Y0[t] + y + 1) * W] = [int(r[i:i + 4], 16) for i in range(0, W * 4, 4)]
     f = list(map(float, st))
     key = ['fillTarget', 'fillPos', 'angle', 'light', 'edgeLight', 'agitation', 'acrossTilt', 'cap', 'filmFree', 'filmHome', 'slugPos', 'reading',
-           'pinFree', 'pinHome', 'lineVFree', 'lineVHome']
+           'pinFree', 'pinHome', 'lineVFree', 'lineVHome', 'rearX16', 'rearY16', 'rearX16w', 'rearY16w']
     n = len(f) // NT; key = key[:n]; tubes = [dict(zip(key, f[t * n:(t + 1) * n])) for t in range(NT)]  # render-ref fills the rest from newTube()
     for tag, key in (('TRACE ', 'trace'), ('WET ', 'traceWet')):  # dried-trace residue and its wet part, hex per tube (see render-ref.ts)
         tr = [l for l in lines if l.startswith(tag)]
@@ -84,8 +84,6 @@ def main():
         if len(parts) == NT:
             for t in range(NT): tubes[t][key] = parts[t]
     job = {'params': params, **dict(zip(names, tubes))}
-    dg = [l for l in lines if l.startswith('DIGITS ')]   # the sprite digits' held whole-px shift per tube (render-ref.ts)
-    if dg: v = list(map(int, dg[0].split()[1:1 + 2 * NT])); job['digitShift'] = [v[2 * t:2 * t + 2] for t in range(NT)]
     font = int(round(params['digitFont']))
     if font >= 5:
         name = SHEETS[font - 5]; base = os.path.join(SIM, 'public', 'assets', name + '.png')
@@ -118,7 +116,7 @@ def main():
         e = max(abs(A[k] - B[k]) for k in range(3)); big += e > 12
         dd.append((255, 255, 0) if e > 12 else (90, 0, 0))
     diff.putdata(dd); diff.save(os.path.join(a.out, 'diff.png'))
-    print('state ' + ' '.join(f'{k}={t}' for k, t in zip(names, tubes)) + (f' digitShift={job["digitShift"]}' if 'digitShift' in job else ''))
+    print('state ' + ' '.join(f'{k}={t}' for k, t in zip(names, tubes)))
     print(f'canvas {W}x{H} ({env["LW_BOARD"]}{"@" + env["LW_RES"] if env["LW_RES"] else ""}{"+t" + env["LW_TUBES"] if env.get("LW_TUBES", "2") != "2" else ""}),'
           f' tubes {" / ".join(map(str, TH))} px at y {" / ".join(map(str, Y0))}')
     print(f'mismatched pixels: {n} of {W * sum(TH)} ({100 * n / (W * sum(TH)):.2f}%), >12/255 off: {big}')

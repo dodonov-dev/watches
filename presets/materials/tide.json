@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Bioluminescent tide",
   "material": {
     "ior": 1.34,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 6,
-    "digitParallax": 5.5,
     "tubeBack": "#04070b",
     "tubeBack2": "#0a1219",
     "tubeBackGradient": 0,

@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Alpine spring",
   "material": {
     "ior": 1.333,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 4.75,
-    "digitParallax": 4.75,
     "tubeBack": "#f2eee5",
     "tubeBack2": "#f2eee5",
     "tubeBackGradient": 0,

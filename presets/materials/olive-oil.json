@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Olive oil",
   "material": {
     "ior": 1.47,
@@ -48,7 +48,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 6,
-    "digitParallax": 4.75,
     "tubeBack": "#110b03",
     "tubeBack2": "#000000",
     "tubeBackGradient": 0,

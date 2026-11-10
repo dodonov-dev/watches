@@ -247,10 +247,15 @@ export function migrateMaterial(o: Record<string, unknown>): Record<string, unkn
   if (isRecord(r.material)) r.material = { ...r.material };
   for (let v = from; v < MATERIAL_VERSION; v++) {
     switch (v) {
-      // case 1: // version 1 → 2: rename / convert r.material fields, and drop the keys version 2 removed:
-      //   r.material = keepKeys(r.material, (key) => key !== "removedInV2");
-      //   if (hasOwn(r, "provenance")) r.provenance = keepKeys(r.provenance, (key) => key !== "removedInV2");
-      //   break;
+      case 1: {
+        // version 1 → 2: the design key digitParallax (px per g of absolute tilt, behind liquid only) gave way to the
+        // view-angle rear parallax rearParallax (rear wall depth, px). Not a unit conversion: the old value is dropped
+        // and a design that set one takes the new default explicitly.
+        if (isRecord(r.design) && hasOwn(r.design, "digitParallax")) {
+          r.design = { ...keepKeys(r.design, (key) => key !== "digitParallax") as Record<string, unknown>, rearParallax: DEFAULT_PARAMS.rearParallax };
+        }
+        break;
+      }
       default:
         fail("material file", `no migration from version ${v}`);
     }

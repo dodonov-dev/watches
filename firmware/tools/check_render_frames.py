@@ -55,7 +55,8 @@ static void emit(int idx, const TubeState &s, const Params &scene, uint32_t gen)
 }
 
 // --- digit compositor edge cases -------------------------------------------------------------
-// Refraction shift targets (px): wetDx = -edgeLight * digitParallax, wetDy = acrossTilt * digitParallax.
+// Rear parallax targets (px behind air; behind liquid / liquidIor), as the physics step quantises them (TubeState rearX16 …): whole,
+// near-whole, half.
 static const float DX[]={0,0.02f,0.5f,0.98f,-0.02f,-0.5f,-0.98f,1,-1,2.5f,-3.75f};
 static const float DY[]={0,0.02f,-0.02f,0.5f,-0.5f,0.98f,-0.98f,6.5f,-9.9f};
 static const float SCALE[][2]={{0.5f,0.5f},{6,6},{0.5f,6},{6,0.5f},{2.25f,3.5f}};
@@ -76,9 +77,16 @@ static void setFill(Params &p, TubeState &s, int mode) {
   s.fillTarget=mode<6 ? FILL[mode%3] : p.remaining ? 0.62f : 0.38f;
   s.slugPos=p.freeLiquid ? (536-columnLen(s.fillTarget,p))*0.5f : 0;
 }
-static void setShift(Params &p, TubeState &s, float dx, float dy) {
-  float par=(dx>1||dx<-1||dy>1||dy<-1) ? 10 : 1;
-  p.digitParallax=par; s.edgeLight=-dx/par; s.acrossTilt=dy/par;
+static int q16(float v) { return (int)floorf(v*16+0.5f); }
+static void rear(TubeState &s, const Params &p, float dx, float dy) {
+  const float inv=1.0f/fmaxf(1,p.liquidIor);
+  s.rearX16=q16(dx); s.rearY16=q16(dy); s.rearX16w=q16(dx*inv); s.rearY16w=q16(dy*inv);
+}
+static void setShift(const Params &p, TubeState &s, float dx, float dy) {
+#ifndef REAR_ZERO
+  rear(s,p,dx,dy);
+#endif
+  s.edgeLight=-dx/10; s.acrossTilt=dy/10;
 }
 
 // One mutation per sequence phase: each touches a digit-path cache input (glyph set, labels, palette, row cache).
@@ -107,7 +115,7 @@ static void mutate(Params &p, int k) {
     case 20: p.markContrast=p.markContrast>0 ? 0 : 90; break;
     case 21: p.digitHourStep=2; p.digitHourStart=1; p.digitMinuteStep=10; p.digitMinuteStart=5; break;
     case 22: p.digitsLeadingZero=!p.digitsLeadingZero; break;
-    case 23: p.digitParallax=p.digitParallax>1 ? 0.5f : 7; break;
+    case 23: p.topParallax=p.topParallax ? 0 : 6; p.liquidIor=p.liquidIor>1.4f ? 1.333f : 1.6f; break;
     case 24: p.remaining=!p.remaining; break;
     case 25: p.cornerR+=3; break;
     case 26: p.digitsLastOnlyH=!p.digitsLastOnlyH; p.digitsLastOnlyM=!p.digitsLastOnlyM; break;
@@ -129,7 +137,7 @@ int main() {
     p.digitShadow=i%3 != 0; p.digitShadowOffset=1+i%4;
     p.digitScaleX=p.digitScaleXMin=0.5f+(i%12)*0.5f;
     p.digitScaleY=p.digitScaleYMin=0.5f+(i%23)*0.25f;
-    p.digitParallax=(i%13)-6; p.tickParallax=(i%31)-15;
+    p.tickParallax=(i%31)-15;
     p.tickMinorHeightH=p.tickMinorHeightM=i%40;
     p.tickMajorHeightH=p.tickMajorHeightM=i%31;
     p.tickMajorEveryH=3; p.tickMajorEveryM=5;
@@ -153,6 +161,9 @@ int main() {
     s.light=randf()*85; s.edgeLight=randf()*2-1; s.acrossTilt=randf()*2-1;
     if (i%4==0) s.edgeLight=s.acrossTilt=0;
     if (i%4==1) { s.edgeLight=1; s.acrossTilt=-1; }
+#ifndef REAR_ZERO
+    p.liquidIor=1+(i%9)*0.1f; if (i%4) { const float dx=randf()*12-6, dy=randf()*12-6; rear(s,p,dx,dy); }
+#endif
     s.filmFree=i%7 ? randf() : 0; s.filmHome=i%9 ? randf() : 0;
     s.trace=trace; s.traceLo=i%200; s.traceHi=536-i%99;
     for(int x=0;x<536;x++) trace[x]=x<s.traceLo||x>=s.traceHi ? 0 : (uint16_t)(randf()*TRACE_FULL);
@@ -193,7 +204,6 @@ int main() {
     base.digitScaleX=base.digitScaleXMin=1+(q%9)*0.5f; base.digitScaleY=base.digitScaleYMin=1+(q%7)*0.5f;
     base.tubeHeight=40+(q%5)*10; base.digitsLastOnlyH=base.digitsLastOnlyM=q%2;
     base.remaining=q%4==1; base.freeLiquid=q%4==2; base.topParallax=q%3==0 ? 6 : 0;
-    base.digitParallax=4;
     Params mut=base; mutate(mut,q%MUTATIONS);
     const Params *phase[3]={&base,&mut,&base};
     for(int ph=0;ph<3;ph++) {
@@ -202,7 +212,10 @@ int main() {
         TubeState s; s.fillTarget=0.18f+f*0.17f;
         s.slugPos=p.freeLiquid ? (536-columnLen(s.fillTarget,p))*0.4f : 0;
         s.light=f<2 ? 30 : 30+f*5;                                         // frames 0,1: palette hit
-        s.edgeLight=(-1.5f+f*0.74f)/4; s.acrossTilt=(1.25f-f*0.63f)/4;   // at parallax 4: wetDx 1.5 .. -1.46, wetDy 1.25 .. -1.27
+        s.edgeLight=(-1.5f+f*0.74f)/4; s.acrossTilt=(1.25f-f*0.63f)/4;
+#ifndef REAR_ZERO
+        rear(s,p,1.5f-f*0.74f,-1.25f+f*0.63f);   // floors crossed both ways, dry and wet
+#endif
         emit(0,s,p,gen); emit(1,s,p,gen);
       }
     }

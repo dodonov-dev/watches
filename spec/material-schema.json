@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "Material",
   "description": "Physical material, vessel and lighting properties of a Liquid Watch liquid. The simulator derives every legacy Params field from these (sim/src/material/derive.ts); nothing here is sent to firmware directly. All values at 20 °C and 1 atm unless a preset's provenance says otherwise.",
   "fields": [
@@ -373,7 +373,8 @@
       "tickDryLens",
       "digitDryLens",
       "tickParallax",
-      "digitParallax",
+      "rearParallax",
+      "rearParallaxSettle",
       "tubeBack",
       "tubeBack2",
       "tubeBackGradient",

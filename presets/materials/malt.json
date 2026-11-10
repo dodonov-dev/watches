@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Single malt",
   "material": {
     "ior": 1.36,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 4.75,
     "tubeBack": "#0a0603",
     "tubeBack2": "#160e05",
     "tubeBackGradient": 1,

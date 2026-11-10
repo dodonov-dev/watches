@@ -64,7 +64,7 @@ assert(delta(flatA, flatB) <= 17, 'flattening surface must not pop at half a pix
 const clean = render('band-disabled', { surfaceBand: 0, traces: true, traceAmount: 2 }, {}, base, true);
 const faint = render('band-faint', { surfaceBand: 0.005, traces: true, traceAmount: 2 }, {}, base, true);
 assert(delta(clean, faint) <= 9, 'faint band must not cut a hole in residue');
-const marks = { digits: true, digitFont: 0, digitParallax: 4, liquidTransparency: 0 };
+const marks = { digits: true, digitFont: 0, liquidTransparency: 0 };
 const marksOff = render('marks-disabled', { ...marks, surfaceBand: 0 });
 const marksFaint = render('marks-faint', { ...marks, surfaceBand: 0.005 });
 assert(delta(marksOff, marksFaint) <= 9, 'faint band must not switch rear marks to a different plane');
@@ -286,9 +286,23 @@ for (const remaining of [false, true]) for (const edgeGlow of [0, 5]) {
 // already so before the wet share (see KAIZEN), neither to do with the warp.
 const across = { ...base, liquidTransparency: 0.4, markContrast: 0, surfaceBand: 0,
   ticksH: true, tickStepH: 1, ticksOnTop: false, tickLens: 0.6, tickDryLens: -0.4, tickParallax: 5,
-  digits: true, digitsOnTop: false, digitHourStep: 1, bottomLens: 0.6, digitDryLens: -0.4, digitParallax: 5 };
+  digits: true, digitsOnTop: false, digitHourStep: 1, bottomLens: 0.6, digitDryLens: -0.4 };
 for (const digitFont of [0, 6]) for (const slugPos of [120, 127, 134]) for (const remaining of [false, true])
   render(`marks-across-${digitFont}-${slugPos}-${remaining}`, { digitFont, remaining }, { slugPos, edgeLight: 0.4, acrossTilt: 0.3, angle: 2 }, across);
+// Rear (view-angle) parallax: the dry and the wet copy at their own shifts (whole, fractional in x and / or y; the wet
+// one / liquidIor), the meniscus columns between, the slug edges over the labels, over the rear ticks (a resampled digit
+// pixel on a tick's antialiased / embossed edge: two mark writes on one pixel, each the firmware's exactly since markFn
+// takes Mark::operator()'s integer coverage steps and blend565T).
+for (const digitFont of [0, 6]) for (const slugPos of [120, 127, 134]) for (const remaining of [false, true])
+  // [rearX16, rearY16, rearX16w, rearY16w] (1/16 px, as the physics step quantises them): fractional, whole, half px,
+  // and taps on rounding boundaries (an odd 1/16 split by the meniscus share, a far weight carried to the next px)
+  for (const [rearX16, rearY16, rearX16w, rearY16w] of [[22, -13, 16, -10], [-42, 37, -26, 23], [48, -32, 48, -32], [6, 0, 4, 0],
+    [8, -8, 6, -6], [15, 1, 16, 0], [-1, 23, 0, 17], [38, 1, 28, 1]])
+    render(`marks-rear-${digitFont}-${slugPos}-${remaining}-${rearX16}-${rearY16}-${rearX16w}-${rearY16w}`, { digitFont, remaining },
+      { slugPos, edgeLight: 0.4, acrossTilt: 0.3, angle: 2, rearX16, rearY16, rearX16w, rearY16w }, across);
+for (const digitFont of [0, 6]) for (const slugPos of [120, 134])
+  render(`marks-rear-vertical-${digitFont}-${slugPos}`, { digitFont, vertical: true, digitScaleX: 2.5, digitScaleY: 2, digitBottom: 3, ticksH: false },
+    { slugPos, edgeLight: 0.4, acrossTilt: 0.3, angle: 2, rearX16: -27, rearY16: 19, rearX16w: -20, rearY16w: 14 }, across);
 // Vertical watch: digits turned to read upright (bitmap with its shadow pass, sprite with a baked one), one- and
 // two-digit labels advancing across the tube, the scale from either end (`remaining` flips the scale there, the
 // liquid stays put), the slug edges over the labels.

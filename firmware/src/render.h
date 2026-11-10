@@ -64,9 +64,10 @@ inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &p
 // Draw one tube (0 = hours, 1 = minutes, 2 = seconds: the minutes tube's ticks and digits) into `strip`: H x PANEL_W
 // RGB565, byte-swapped, representing panel rows from y0 on (-1: the tube's own params' row, yH / yM of tubeLayout; a
 // three-tube face passes faceLayout's top(idx)). Everything else on the panel stays as is.
-// Allocates the fixed render pools (once, at boot). False = PSRAM allocation failed.
-// fast: this boot has the internal RAM BLE would hold (main.cpp, ble.h fast mode): the shared fizz masks (LCD) and the
-// seconds tube's state (LCD, three tubes) go there; else to PSRAM (slower fizz and seconds tube, room for BLE).
+// Allocates the fixed render pools (once, at boot). False = an allocation failed (PSRAM, or internal RAM in fast mode).
+// fast: this boot has the internal RAM BLE would hold (main.cpp, ble.h fast mode): the shared fizz masks (LCD), the
+// seconds tube's state (LCD, three tubes) and each tube's digit-kernel scratch (LCD, DigitScratch: 1,119 B a tube, 1,407 B
+// with -DDIGIT_VERIFY) go there; else to PSRAM (slower fizz, seconds tube and digit runs, room for BLE).
 bool render_init(bool fast = true);
 // gen: params generation counter (bumped by main on every param write / preset load / NVS restore);
 // all param-only tables inside the renderer are keyed on it.
@@ -74,10 +75,7 @@ bool render_init(bool fast = true);
 // applied to the strip; *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
 // the next render of this tube; nullptr = no lens), for a push that remaps rows anyway (display_lcd316.cpp).
 void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr, int y0 = -1);
-// The whole-px shift the sprite digits of tube idx were last drawn at (render.cpp Labels::holdWhole: held across
-// frames), for the `x` dump: the sim renders a dumped state at the same shift (sim setDigitHold).
-void render_digit_shift(int idx, int &dx, int &dy);
-// Start of a deterministic sequence (seq.h, the `X` command): no bubbles, spring clocks at 0, digit shifts not held,
+// Start of a deterministic sequence (seq.h, the `X` command): no bubbles, spring clocks at 0,
 // the fizz draws reseeded. false: this build draws from esp_random (AMOLED), the fizz is not reproducible.
 bool render_seq_reset(uint32_t seed);
 #ifdef DIGIT_PROF

@@ -5,6 +5,19 @@ import { DESIGN_MM_PER_PX, DESIGN_TUBE_HEIGHT_MAX, mmPerPxAt, TUBE_HEIGHT_MAX, T
 
 export const PHYS_HZ = 50;
 export const PHYS_DT = 1 / PHYS_HZ;
+// Rear parallax gate (stepTube): the shift acts on slow tilts and while settling, and holds still (eases to straight-on)
+// while the wrist keeps swinging. Tilt smoothed over REAR_RATE_S for its rate (g/s); activity = that rate with a fast
+// attack (REAR_ACT_ATTACK /s) and a slow decay (REAR_ACT_DECAY_S); the gate closes smoothly from REAR_GATE_LO to
+// REAR_GATE_HI g/s. Reaching REAR_GATE_HI latches it shut, and only REAR_QUIET_S of activity continuously below
+// REAR_GATE_LO releases it: a sustained swing's reversals (where the rate passes zero) cannot reopen it. The shift
+// eases toward gate x the high-passed shift over REAR_EASE_S (no snaps either way).
+export const REAR_RATE_S = 0.1;
+export const REAR_ACT_ATTACK = 20;
+export const REAR_ACT_DECAY_S = 1;
+export const REAR_GATE_LO = 0.5;
+export const REAR_GATE_HI = 1;
+export const REAR_QUIET_S = 1;
+export const REAR_EASE_S = 0.15;
 const PLAY_STROKE_G = 0.35; // substantial change in filtered gravity (~20° near horizontal)
 const PLAY_REVERSAL_S = 2;  // opposite strokes must be close together to count as play
 
@@ -79,6 +92,27 @@ export interface TubeState {
   agitation: number;   // 0..1, gyro energy with fast attack / slow decay: fizz speed, edge glow
   edgeLight: number;   // -1..1, slow along-tilt follower — brightens/dims the fill edge (render only)
   acrossTilt: number;  // -1..1, slow across-tilt follower — meniscus sag toward the low wall (render only)
+  // Rear (view-angle) parallax, an approximation driven by tilt: with the head still, turning the wrist changes the
+  // viewing angle, read here as the change of in-plane gravity, high-passed so the shift settles back after a turn
+  // (artificial: a held wrist angle does not really become straight-on). `rearLp*` = the tilt low-passed over
+  // rearParallaxSettle. The shift, quantised once here (1/16 px; render and `x` dump take these integers, so the sim
+  // and the firmware render the same taps): `rearX16`/`rearY16` the rear wall behind air (panel x / rows down),
+  // `rearX16w`/`rearY16w` behind liquid (/ liquidIor).
+  rearLpAlong: number;
+  rearLpAcross: number;
+  rearInit: boolean;
+  // the gate (REAR_* above): the tilt smoothed for its rate, the swinging activity (g/s), the eased shift behind air (px)
+  rearSmAlong: number;
+  rearSmAcross: number;
+  rearAct: number;
+  rearLatch: boolean;  // the gate held shut by a swing (REAR_GATE_HI reached), until REAR_QUIET_S of quiet
+  rearQuiet: number;   // s of activity continuously below REAR_GATE_LO
+  rearSx: number;
+  rearSy: number;
+  rearX16: number;
+  rearY16: number;
+  rearX16w: number;
+  rearY16w: number;
   // Meniscus wobble: the wall contact lines are pinned by capillarity, the free surface between
   // them is not. `cap` = px the surface centre leads the contact lines in +x (panel frame): an
   // impulse bulges it ahead (inertia) and it rings at the surface spring.
@@ -124,6 +158,7 @@ export interface TubeState {
 
 export function newTube(): TubeState {
   return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, light: 0, lightVel: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
+    rearLpAlong: 0, rearLpAcross: 0, rearInit: false, rearSmAlong: 0, rearSmAcross: 0, rearAct: 0, rearLatch: false, rearQuiet: 0, rearSx: 0, rearSy: 0, rearX16: 0, rearY16: 0, rearX16w: 0, rearY16w: 0,
     cap: 0, capVel: 0, pinFree: 0, pinHome: 0, lineVFree: 0, lineVHome: 0, filmFree: 0, filmHome: 0,
     trace: new Uint16Array(TUBE_LENGTH_PX), traceWet: new Uint16Array(TUBE_LENGTH_PX), traceLo: TUBE_LENGTH_PX, traceHi: 0, xtPrev: 0, xhPrev: 0, traceInit: false,
     slugPos: 0, slugVel: 0, reading: 1, playTimer: 0, playWindow: 0,
@@ -415,6 +450,35 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt: number, k:
   // end (edge glows brighter), -1 = drains away from it (edge dims). Consumed by the renderer.
   s.edgeLight += (Math.max(-1, Math.min(1, sloshAlong)) - s.edgeLight) * Math.min(1, 5 * dt);
   s.acrossTilt += (Math.max(-1, Math.min(1, across)) - s.acrossTilt) * Math.min(1, 5 * dt);
+
+  // Rear parallax, an approximate tilt-driven one: the eye stays put while the face turns, so the viewing direction
+  // in the watch frame turns with the face; for an eye roughly above the face that is minus the change of in-plane
+  // gravity. A rear wall `rearParallax` px deep then shifts toward the eye's side by about depth · Δg (rows down: an
+  // across-tilt raising the top edge moves it up); behind liquid by that / liquidIor (its apparent depth, the
+  // small-angle approximation). The tilt is high-passed (time constant rearParallaxSettle), so the shift settles
+  // back after a turn: artificial settling, as parallax wallpapers do.
+  if (!s.rearInit) { s.rearLpAlong = s.rearSmAlong = along; s.rearLpAcross = s.rearSmAcross = across; s.rearInit = true; }
+  const rearA = Math.min(1, dt / Math.max(0.05, p.rearParallaxSettle));
+  s.rearLpAlong += (along - s.rearLpAlong) * rearA;
+  s.rearLpAcross += (across - s.rearLpAcross) * rearA;
+  // the gate: no motion while swinging (activity above REAR_GATE_HI), full parallax on slow tilts / settling
+  const smA = Math.min(1, dt / REAR_RATE_S), pA = s.rearSmAlong, pC = s.rearSmAcross;
+  s.rearSmAlong += (along - s.rearSmAlong) * smA;
+  s.rearSmAcross += (across - s.rearSmAcross) * smA;
+  const dA = s.rearSmAlong - pA, dC = s.rearSmAcross - pC, rate = Math.sqrt(dA * dA + dC * dC) / dt;
+  s.rearAct += (rate - s.rearAct) * Math.min(1, rate > s.rearAct ? dt * REAR_ACT_ATTACK : dt / REAR_ACT_DECAY_S);
+  if (s.rearAct >= REAR_GATE_HI) s.rearLatch = true;
+  s.rearQuiet = s.rearAct < REAR_GATE_LO ? s.rearQuiet + dt : 0;
+  if (s.rearQuiet >= REAR_QUIET_S) s.rearLatch = false;
+  const gu = Math.max(0, Math.min(1, (s.rearAct - REAR_GATE_LO) / (REAR_GATE_HI - REAR_GATE_LO)));
+  const gate = s.rearLatch ? 0 : 1 - gu * gu * (3 - 2 * gu);
+  const ease = Math.min(1, dt / REAR_EASE_S);
+  s.rearSx += (gate * -p.rearParallax * (along - s.rearLpAlong) - s.rearSx) * ease;
+  s.rearSy += (gate * -p.rearParallax * (across - s.rearLpAcross) - s.rearSy) * ease;
+  const rearDx = s.rearSx, rearDy = s.rearSy;
+  const rearInv = 1 / Math.max(1, p.liquidIor);
+  s.rearX16 = Math.round(rearDx * 16); s.rearY16 = Math.round(rearDy * 16);
+  s.rearX16w = Math.round(rearDx * rearInv * 16); s.rearY16w = Math.round(rearDy * rearInv * 16);
 
   // Pinned contact lines (contact-angle hysteresis): the tilt pressure moves each end's static lead — a
   // held line that would end up past θA / θR is re-seated on the band's edge, which moves nothing on

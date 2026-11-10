@@ -20,6 +20,7 @@ export interface Params {
   glassRim: number;      // 0..1 grazing reflection across the wall band, brightest at the silhouette
   glassWall: number;     // px wall thickness at the top/bottom silhouette: dry rows behind it show no tube back (only the grazing reflection), rear marks fade out there
   glassWallGlow: number; // 0..1 the dry wall band lit by light piped along the glass (visible on a black tube back; over the liquid the band shows the liquid); plateau across the band under the grazing rim
+  liquidIor: number;     // refractive index of the contents (material ior; 1.333 water): the rear wall's apparent depth behind liquid is depth / liquidIor
   wallWet: number;       // 0..1 share of the wall band the contents fill (seen out to n·r) and frustrate the glow piped along it: 1 a liquid reaching the silhouette (no glow over it), less = the contents end inside the band and the empty tube's band is beyond, 0 a gas
   rimLight: number;      // 0..4 gain: side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls
   rimTint: string;       // colour of that rim light (8-bit, scaled by brightness)
@@ -146,7 +147,8 @@ export interface Params {
   digitDryLens: number;  // -1..1 depth warp for rear digits behind air; negative stretches the edges
   topLens: number;       // -1..1 pre-distortion for digits printed on top; negative compensates physical glass magnification
   topParallax: number;   // px across-shift of top digits per g of across-tilt; counters the apparent shift under the physical lens
-  digitParallax: number; // px shift of rear digits behind the liquid per g of tilt (along → along the tube, across → across it); behind air none
+  rearParallax: number;  // design px: depth of the rear wall (rear digits) behind the front; a view-angle change of sin θ shifts it by depth · sin θ behind air, by depth · sin θ / liquidIor behind liquid
+  rearParallaxSettle: number; // s: the view-angle change is approximated by the tilt high-passed with this time constant (artificial settling: a held wrist angle does not really become straight-on)
   liquidTransparency: number; // 0..1 how much of ticks/digits shows through the liquid (0 = opaque liquid)
   markContrast: number;  // min luma difference a tick/digit must keep from the liquid behind it (0 = off)
   digitsLeadingZero: boolean; // minutes as 05,10,... instead of 5,10,...
@@ -219,6 +221,7 @@ export const DEFAULT_PARAMS: Params = {
   glassRim: 0.4,
   glassWall: 4,
   glassWallGlow: 0.25,
+  liquidIor: 1.333,
   wallWet: 1,
   rimLight: 0,
   rimTint: '#000000',
@@ -315,7 +318,8 @@ export const DEFAULT_PARAMS: Params = {
   digitDryLens: -0.4,
   topLens: 0,
   topParallax: 0,
-  digitParallax: 3,
+  rearParallax: 4.75,
+  rearParallaxSettle: 1.5,
   liquidTransparency: 0.17,
   markContrast: 0,
   digitsLeadingZero: false,
@@ -407,7 +411,7 @@ export const MODERN_BASE: Partial<Params> = {
   digitTint: '#827c40', digitTintAmount: 0.9, digitTone: -0.4,
   digitScaleX: 3.5, digitScaleY: 3.25, digitBottom: 15, digitHourStep: 1, digitHourStart: 0, digitsLastOnlyH: false,
   digitScaleXMin: 2.5, digitScaleYMin: 2.75, digitBottomMin: 13, digitMinuteStep: 5, digitMinuteStart: 0, digitsLeadingZero: false, digitsLastOnlyM: false,
-  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.52, markContrast: 0,
   freeLiquid: true, freeGain: 570, freeDamp: 0.8, freeBounce: 0.15, freeHomeK: 150,
   fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6, angleTiltGain: 5.5, angleGyroGain: 0.37, angleMax: 6,
@@ -647,7 +651,7 @@ export const PRESET_GLOW: Partial<Params> = {
  *  glow past the column end, bold print. */
 export const PRESET_XENON: Partial<Params> = {
   ...MODERN_BASE, ...LAYOUT_WIDE,
-  contactAngle: 100, contactHyst: 0, contactDyn: 0, wallWet: 0,
+  contactAngle: 100, contactHyst: 0, contactDyn: 0, wallWet: 0, liquidIor: 1,
   liquid: '#5a30d8', liquidHi: '#d9c8ff', liquidLo: '#1a0570', tubeBack: '#05020c', tubeBack2: '#0a0418', bubbleRim: '#d8ccff',
   glassHi: '#a394d8', glassBody: 0.1, glassHiBright: 0.5, glassReflect: 0.2, glassRim: 0.6, glassOverLiquid: 0.4,
   highlightH: 14, highlightBright: 0.7, highlightSharp: 1.5, shadeDepth: 0.42,
@@ -732,7 +736,7 @@ const PRESET_OLIVE_OIL: Partial<Params> = {
   digitTint: '#2a1c09', digitTintAmount: 0, digitTone: 0.05,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75,
   digitBottomMin: 21, digitBottom: 22, digitsOnTop: false,
-  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.39, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0,
   digitsLastOnlyH: false, digitsLastOnlyM: false,
@@ -770,7 +774,7 @@ const PRESET_PINOT: Partial<Params> = {
   digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 6, digitTint: '#3a1a08', digitTintAmount: 0.5,
   digitTone: -0.3, digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75,
   digitBottomMin: 21, digitBottom: 22, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35,
-  topParallax: -10, digitParallax: 4.75, liquidTransparency: 0.12, markContrast: 0, digitsLeadingZero: false,
+  topParallax: -10, liquidTransparency: 0.12, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0,
   readTiltStart: 0, readTiltEnd: 1, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -807,7 +811,7 @@ const PRESET_SPRITZ: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 9, digitTint: '#1d2b4f', digitTintAmount: 0.85, digitTone: -0.2,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21,
   digitBottom: 22, digitsOnTop: false, bottomLens: 0.5, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 5.5, liquidTransparency: 0.22, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
+  liquidTransparency: 0.22, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
   digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false,
   freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1,
   playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6, angleTiltGain: 6.5,
@@ -843,7 +847,7 @@ const PRESET_CUVEE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 7, digitTint: '#503719', digitTintAmount: 0.6, digitTone: -0.3,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21,
   digitBottom: 22, digitsOnTop: false, bottomLens: 0.4, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 4.75, liquidTransparency: 0.48, markContrast: 0, digitsLeadingZero: false,
+  liquidTransparency: 0.48, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 150,
   readTiltStart: 20, readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -879,7 +883,7 @@ const PRESET_NOCTURNE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 5, digitTint: '#bfcddd', digitTintAmount: 0.25, digitTone: 0.1,
   digitScaleX: 3.6, digitScaleY: 3.2, digitScaleXMin: 2.8, digitScaleYMin: 2.8, digitBottomMin: 14,
   digitBottom: 13, digitsOnTop: true, bottomLens: 0.4, digitDryLens: 0.1, topLens: 0.0, topParallax: 0,
-  digitParallax: 0, liquidTransparency: 0.06, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 10,
+  liquidTransparency: 0.06, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 10,
   digitHourStep: 2, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false,
   freeLiquid: true, freeGain: 700, freeDamp: 4, freeBounce: 0.05, freeHomeK: 150, readTiltStart: 20,
   readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6,
@@ -917,7 +921,7 @@ const PRESET_TIDE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 5, digitTint: '#7fd6dd', digitTintAmount: 0.5, digitTone: -0.1,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21,
   digitBottom: 22, digitsOnTop: false, bottomLens: 0.5, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 5.5, liquidTransparency: 0.4, markContrast: 30, digitsLeadingZero: false,
+  liquidTransparency: 0.4, markContrast: 30, digitsLeadingZero: false,
   digitMinuteStep: 15, digitHourStep: 3, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0,
   readTiltStart: 0, readTiltEnd: 1, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -1000,7 +1004,6 @@ export function bigLens(p: Partial<Params>): Partial<Params> {
     Object.assign(out, { tickMinorHeightH: 21, tickMinorHeightM: 16, digitScaleYMin: 3, digitBottom: 25, digitBottomMin: 26 });
     // rear ticks sit on the rear digits' wall: same lens behind liquid and behind air
     if (!base.ticksOnTop) Object.assign(out, { tickLens: base.bottomLens, tickParallax: 3.75, tickDryLens: base.digitDryLens, tickEmboss: 0.25 });
-    if (!base.digitsOnTop) Object.assign(out, { digitParallax: 3.75 });
   } else {
     const k = 72 / base.tubeHeight;
     for (const key of ['tickMinorHeightH', 'tickMajorHeightH', 'tickMinorHeightM', 'tickMajorHeightM', 'digitBottom', 'digitBottomMin'] as const)
@@ -1065,7 +1068,7 @@ const PRESET_ABSINTHE: Partial<Params> = {
   digitShadowStrength: 1, digitShadowOffset: 1, digitFont: 7, digitTint: '#827c40', digitTintAmount: 0.9,
   digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 3.25, digitScaleXMin: 2.5, digitScaleYMin: 2.75,
   digitBottomMin: 30, digitBottom: 27, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35,
-  topParallax: -10, digitParallax: 5, liquidTransparency: 0.15, markContrast: 62, digitsLeadingZero: false,
+  topParallax: -10, liquidTransparency: 0.15, markContrast: 62, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 570, freeDamp: 0.8, freeBounce: 0.2, freeHomeK: 150,
   readTiltStart: 20, readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -1097,7 +1100,7 @@ const PRESET_CHARTREUSE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 7, digitTint: '#827c40', digitTintAmount: 0.9, digitTone: -0.4,
   digitScaleX: 3.5, digitScaleY: 3.25, digitScaleXMin: 2.5, digitScaleYMin: 2.75, digitBottomMin: 13,
   digitBottom: 15, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 6, liquidTransparency: 0.52, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
+  liquidTransparency: 0.52, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
   digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false,
   freeLiquid: true, freeGain: 570, freeDamp: 0.8, freeBounce: 0.2, freeHomeK: 150, readTiltStart: 20,
   readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6,
@@ -1128,7 +1131,7 @@ const PRESET_BOTTLE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 7, digitTint: '#664e1a', digitTintAmount: 0.9, digitTone: 0.15,
   digitScaleX: 3.25, digitScaleY: 3.75, digitScaleXMin: 2.25, digitScaleYMin: 3, digitBottomMin: 28,
   digitBottom: 26, digitsOnTop: false, bottomLens: 0.35, digitDryLens: 0.15, topLens: 1, topParallax: -5.25,
-  digitParallax: 3.75, liquidTransparency: 0.48, markContrast: 0, digitsLeadingZero: false,
+  liquidTransparency: 0.48, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 10, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 570, freeDamp: 2.5, freeBounce: 0.1, freeHomeK: 150,
   readTiltStart: 20, readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -1160,7 +1163,7 @@ const PRESET_CLARET: Partial<Params> = {
   digitShadowStrength: 0.8, digitShadowOffset: 1, digitFont: 9, digitTint: '#2a1c09', digitTintAmount: 0.15,
   digitTone: -0.25, digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75,
   digitBottomMin: 21, digitBottom: 22, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35,
-  topParallax: -10, digitParallax: 4.75, liquidTransparency: 0.1, markContrast: 0, digitsLeadingZero: false,
+  topParallax: -10, liquidTransparency: 0.1, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 1300, freeDamp: 2.2, freeBounce: 0, freeHomeK: 150,
   readTiltStart: 20, readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -1192,7 +1195,7 @@ const PRESET_OLIVE_WHITE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 7, digitTint: '#2a1c09', digitTintAmount: 0.6, digitTone: -0.25,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21,
   digitBottom: 22, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 4.75, liquidTransparency: 0.17, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
+  liquidTransparency: 0.17, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
   digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false,
   freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 150, readTiltStart: 20,
   readTiltEnd: 50, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6,
@@ -1224,7 +1227,7 @@ const PRESET_MENTHE: Partial<Params> = {
   digitShadowOffset: 1, digitFont: 7, digitTint: '#3a2308', digitTintAmount: 0.65, digitTone: -0.4,
   digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21,
   digitBottom: 22, digitsOnTop: false, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
-  digitParallax: 4.75, liquidTransparency: 0.74, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
+  liquidTransparency: 0.74, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5,
   digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false,
   freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1,
   playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207, angleDamp: 17.6, angleTiltGain: 6.5,
@@ -1255,7 +1258,7 @@ const PRESET_LIME: Partial<Params> = {
   digitShadow: true, digitShadowColor: '#121212', digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 7,
   digitTint: '#3a2308', digitTintAmount: 0.65, digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 2.75,
   digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 20, digitBottom: 19, digitsOnTop: false,
-  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.55, markContrast: 26, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 570, freeDamp: 0.8873, freeBounce: 0.3197, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1,
@@ -1286,7 +1289,7 @@ const PRESET_PATRICK: Partial<Params> = {
   digitColor2: '#20312f', digitShadow: true, digitShadowColor: '#101010', digitShadowStrength: 1,
   digitShadowOffset: 1, digitFont: 9, digitTint: '#ffea00', digitTintAmount: 1, digitTone: 0.2, digitScaleX: 3,
   digitScaleY: 2.5, digitScaleXMin: 2.25, digitScaleYMin: 2, digitBottomMin: 31, digitBottom: 27,
-  digitsOnTop: true, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  digitsOnTop: true, bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 1110, freeDamp: 1.7, freeBounce: 0.4, freeHomeK: 150, readTiltStart: 20, readTiltEnd: 50,
@@ -1318,7 +1321,7 @@ const PRESET_SELTZER: Partial<Params> = {
   digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 7, digitTint: '#3a2308', digitTintAmount: 0.65,
   digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 2.75, digitScaleXMin: 3, digitScaleYMin: 2.75,
   digitBottomMin: 21, digitBottom: 22, digitsOnTop: false, bottomLens: 0.5, digitDryLens: 0.1, topLens: 0.35,
-  topParallax: -10, digitParallax: 5.5, liquidTransparency: 0.92, markContrast: 0, digitsLeadingZero: false,
+  topParallax: -10, liquidTransparency: 0.92, markContrast: 0, digitsLeadingZero: false,
   digitMinuteStep: 5, digitHourStep: 1, digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false,
   digitsLastOnlyM: false, freeLiquid: true, freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0,
   readTiltStart: 0, readTiltEnd: 1, playHold: 5, fillK: 756, fillDamp: 40, fillSloshGain: 5.5, angleK: 207,
@@ -1350,7 +1353,7 @@ const PRESET_GLYCEROL: Partial<Params> = {
   digitShadowColor: '#121212', digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 7,
   digitTint: '#3a2308', digitTintAmount: 0.65, digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 2.75,
   digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21, digitBottom: 22, digitsOnTop: false,
-  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.45, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.81, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 840, freeDamp: 7, freeBounce: 0, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1, playHold: 5,
@@ -1383,7 +1386,7 @@ const PRESET_GLYCEROL_DARK: Partial<Params> = {
   digitShadow: true, digitShadowColor: '#121212', digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 7,
   digitTint: '#3a2308', digitTintAmount: 0.65, digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 2.75,
   digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21, digitBottom: 22, digitsOnTop: false,
-  bottomLens: 0.6405, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.6405, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.65, markContrast: 36, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 570, freeDamp: 6.8074, freeBounce: 0, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1, playHold: 5,
@@ -1415,7 +1418,7 @@ const PRESET_PROSECCO: Partial<Params> = {
   digitShadowColor: '#121212', digitShadowStrength: 0.5, digitShadowOffset: 1, digitFont: 7,
   digitTint: '#3a2308', digitTintAmount: 0.65, digitTone: -0.4, digitScaleX: 3.5, digitScaleY: 2.75,
   digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 21, digitBottom: 22, digitsOnTop: false,
-  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.55, markContrast: 0, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 570, freeDamp: 0.9718, freeBounce: 0.1686, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1,
@@ -1449,7 +1452,7 @@ const PRESET_SUBTLE_SODA: Partial<Params> = {
   digitShadow: true, digitShadowColor: '#5c5c5c', digitShadowStrength: 0.7, digitShadowOffset: 2, digitFont: 7,
   digitTint: '#483c0f', digitTintAmount: 0.6, digitTone: -0.6, digitScaleX: 3.5, digitScaleY: 2.75,
   digitScaleXMin: 3, digitScaleYMin: 2.75, digitBottomMin: 20, digitBottom: 19, digitsOnTop: false,
-  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10, digitParallax: 4.75,
+  bottomLens: 0.473, digitDryLens: 0.1, topLens: 0.35, topParallax: -10,
   liquidTransparency: 0.67, markContrast: 26, digitsLeadingZero: false, digitMinuteStep: 5, digitHourStep: 1,
   digitHourStart: 0, digitMinuteStart: 0, digitsLastOnlyH: false, digitsLastOnlyM: false, freeLiquid: true,
   freeGain: 570, freeDamp: 0.8873, freeBounce: 0.3197, freeHomeK: 0, readTiltStart: 0, readTiltEnd: 1,
@@ -1528,7 +1531,7 @@ export const PX_KEYS = [
   'tickMinorHeightH', 'tickMajorHeightH', 'tickMinorWidthH', 'tickMajorWidthH',
   'tickMinorHeightM', 'tickMajorHeightM', 'tickMinorWidthM', 'tickMajorWidthM', 'tickParallax',
   'digitShadowOffset', 'digitScaleX', 'digitScaleY', 'digitScaleXMin', 'digitScaleYMin', 'digitBottomMin', 'digitBottom',
-  'topParallax', 'digitParallax', 'freeGain', 'fillSloshGain', 'angleGyroGain',
+  'topParallax', 'rearParallax', 'freeGain', 'fillSloshGain', 'angleGyroGain',
 ] as const satisfies readonly ParamKey[];
 /** The PX_KEYS that are whole pixels by design (positions and sizes on a 1 px slider step): rounded after scaling,
  *  so a preset's rows, ticks, baselines and offsets stay on the pixel grid (the renderer takes them as integers). */
@@ -1588,8 +1591,9 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   // older presets: same warp behind air as behind liquid, as before
   if (!('tickDryLens' in r) && typeof r.tickLens === 'number') r.tickDryLens = r.tickLens;
   if (!('digitDryLens' in r) && typeof r.bottomLens === 'number') r.digitDryLens = r.bottomLens;
-  // older presets: rear digits refract like the rear ticks
-  if (!('digitParallax' in r) && typeof r.tickParallax === 'number') r.digitParallax = r.tickParallax;
+  // digitParallax (px per g of absolute tilt, behind liquid only) gave way to the view-angle rear parallax rearParallax
+  // (a rear-wall depth, behind air and behind liquid): not a unit conversion, so the old value is dropped (default)
+  delete r.digitParallax;
   if (from < 2) {
     // v1 counted "major every N-th minor tick"; v2 counts units (hours / minutes).
     for (const [every, step] of [['tickMajorEveryH', 'tickStepH'], ['tickMajorEveryM', 'tickStepM']] as const) {
@@ -1653,6 +1657,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   glassRim: { help: 'Grazing reflection across the wall band: brightest at the silhouette, fading inward. The outer surface reflects it, so it is the same over the liquid.', group: 'Glass', label: 'wall rims', min: 0, max: 1, step: 0.01 },
   glassWall: { help: 'Wall thickness at the top/bottom silhouette in px. Behind it the empty tube shows no tube back (only the rim reflection) and rear marks fade out; the liquid reaches the silhouette.', group: 'Glass', label: 'wall thickness', min: 0, max: 10, step: 0.5 },
   glassWallGlow: { help: 'Light piped along the dry glass lights the wall band itself, so the walls read on a black tube back; over the liquid the band shows the liquid (grazing rim only). Plateau across the band, the grazing rim on top.', group: 'Glass', label: 'wall glow', min: 0, max: 1, step: 0.01 },
+  liquidIor: { help: 'Refractive index of the contents (from the material). Behind liquid the rear wall appears at depth / index, so its view-angle parallax is that much smaller.', group: 'Glass', label: 'liquid index', min: 1, max: 2, step: 0.001 },
   wallWet: { help: 'Share of the wall band the contents fill: they are seen out to n·r (n their index, r the bore). 1 a liquid reaching the silhouette with no wall glow over it (a wall up to (1 − 1/n) of the radius: a quarter for water); less, the column ends inside the band and the band beyond is the empty tube\'s (silvery wall); 0 a gas, the band over the column looks like the empty tube (wall only, glowing).', group: 'Glass', label: 'wall wetting', min: 0, max: 1, step: 0.01 },
   rimLight: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls (a gain 0..4; the sum clamps at 255).', group: 'Glass', label: 'rim light', min: 0, max: 4, step: 0.01 },
   rimTint: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls.', group: 'Glass', label: 'rim tint' },
@@ -1776,8 +1781,9 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   digitsOnTop: { help: 'Printed on the glass, opaque and excluded from the whole-tube lens. Off: behind the liquid, seen through it and depth-warped.', group: 'Digits', label: 'print on top of liquid' },
   bottomLens: { help: 'Depth warp for digits behind the liquid.', group: 'Digits', label: 'rear lens', min: 0, max: 1, step: 0.05 },
   digitDryLens: { help: 'Depth warp for rear digits where the tube is empty, chosen per pixel column. Negative stretches the edges instead of magnifying the middle.', group: 'Digits', label: 'rear lens behind air', min: -1, max: 1, step: 0.05 },
+  rearParallax: { help: 'Approximate view-angle parallax of the rear digits, driven by tilt: the rear wall\'s depth behind the front (design px). Turning the wrist (the head holds still) shifts them by about depth · Δtilt (g) behind air and by that / liquidIor behind liquid (small-angle), then they settle back (artificially). 0 = off.', group: 'Digits', label: 'rear depth px', min: 0, max: 20, step: 0.25 },
+  rearParallaxSettle: { help: 'Seconds the rear parallax takes to settle back after a turn of the wrist (high-pass time constant of the tilt).', group: 'Digits', label: 'rear parallax settle s', min: 0.2, max: 10, step: 0.1 },
   topParallax: { help: 'Across-shift of top digits per g of across-tilt, countering the apparent shift under the physical lens. Sign flips direction.', group: 'Digits', label: 'front parallax px/g', min: -10, max: 10, step: 0.25 },
-  digitParallax: { help: 'Rear digits seen through the liquid slide with tilt (along-tilt along the tube, across-tilt across it) while those behind air stay put, so a label straddling the fill edge breaks at it. Same scale as the tick parallax.', group: 'Digits', label: 'rear parallax px/g', min: 0, max: 10, step: 0.25 },
   // digits — hours tube
   digitHourStep: { help: 'Label every N hours.', group: 'Digits · hours', label: 'label every N h', min: 1, max: 6, step: 1 },
   digitsLastOnlyH: { help: 'Show only the last passed hour.', group: 'Digits · hours', label: 'last passed only' },

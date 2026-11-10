@@ -8,9 +8,26 @@
 ## Visual / layout
 - Tilt pose currently uses the two in-plane gravity axes; face-down horizontal is indistinguishable
   from face-up. Carry signed normal gravity through the input pipeline if upside-down release is wanted.
-- Rear ticks still round their parallax to whole pixels (each tick at its own depth, so the ladder steps one tick at a time); the digits now glide sub-pixel. The same bilinear placement would smooth the ticks.
-- `digitParallax` shifts a rear label as a block; the ticks bow through the rear-half depth. A per-row depth factor
-  (digits are ~centre row on every preset, so ≈1) would only matter for digits pushed toward a wall.
+- Rear ticks still round their parallax to whole pixels (each tick at its own depth, so the ladder steps one tick at a time). The same bilinear placement would smooth the ticks.
+- `tickParallax` has no physical basis (2026-11-06 verdict that removed `digitParallax`: with the eye fixed to the watch the liquid
+  fills the bore and gravity does not change the path behind a full column). The digits' gated view-angle model
+  (`rearParallax`, TubeState rearX16 … rearY16w) covers digits only; adapting it to ticks is a separate, later topic (issue 3).
+  Until then rear ticks slide with absolute tilt against labels that move only on slow tilts.
+- Under the meniscus the liquid wedge is a prism: a rear mark there would shift along the tube with the surface's slope.
+  The renderer only blends dry → wet rows by wet share there; not modelled.
+- sim markFn takes Mark::operator()'s integer coverage steps and blend565T (2026-11-06: a sub-pixel digit over a tick's AA /
+  emboss edge stacked to 17/255). Left in float: the band-footprint branch (bandMark mirrors it in float) and the baked
+  contrast-floor branch (cov / a vs the firmware's covT * 256 / T): each still one 565 step apart at worst.
+- LCD board vs sim, presets/1.json, the board lying flat after a bench (compare-device, 2026-11-06): 66 px > 12/255 in column 0 of
+  the tubes (rear tick 0 just below x = 0 under tickParallax), plus (685,12) at 17/255 (red only: device 49 vs sim 66; unchanged with
+  digits off) and (69,140) at 16. All three already on the pre-issue HEAD build in the same state with its own sim. Host renders of
+  the dumped job (strip, tiles, -mfma) equal the sim in column 0: something board-only (TICK_IRAM / SIMD / dump path?).
+- compare-device.py compiles render-ref into sim/node_modules/.cache/render-ref and recompiles only when a source is newer than the
+  .js: a worktree with a symlinked node_modules silently renders with the other tree's sim. Key the cache on the sim's path, or
+  compile into the worktree.
+- e2e.sh straight after swing.py ("bridge did not exit, killed"): esptool found COM7 busy (Access denied) and exited 2; free
+  seconds later. flash-win.sh could wait / retry the port.
+- `npm run check:presets` runs `node_modules/.cache/check-presets/tools/check-presets.js`, but tsc writes `.../sim/tools/`; the script fails (MODULE_NOT_FOUND).
 - Rear-mark compositors index row bounds before checking that the row is in range; clip `ry` first in sim and firmware.
 - Even if hour has passed, edge might be before it, example is 06:01
 - Empty space at the top and bottom of the real screen? Move tubes further away from one another?
@@ -442,8 +459,9 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
   bogus diffs (TubeState layout mismatch). The tool could copy the reference into its tempdir itself.
 - Rear ticks and rear digits share one wall, yet their lenses are separate keys (tickLens/bottomLens,
   tickDryLens/digitDryLens). Presets were aligned by hand (2026-09-26); nothing keeps them aligned — a
-  coherenceIssues rule (or one dry-lens key derived from the vessel) would. Same for tickParallax vs digitParallax
-  (6 vs 4.75 / 5.5 in olive-oil, pinot, spritz, cuvee, tide): ticks slide against the digits under tilt.
+  coherenceIssues rule (or one dry-lens key derived from the vessel) would. Parallax: rear digits take the gated view-angle
+  shift (`rearParallax`), rear ticks absolute tilt (`tickParallax`): they slide against each other (issue 3). Was: none since
+  2026-11-06 (`digitParallax` removed); rear ticks still slide with `tickParallax` against them (issue 3).
 - Tick heights at digit positions were clamped by a throwaway script (2026-09-26): ≥2 source rows and ≥1 screen
   row clear of the digit (incl. shadow) under both lenses. check-presets could assert the same so new presets
   and design edits can't reintroduce ticks running into digits.
@@ -490,7 +508,7 @@ _Added 2026-08-21 with Transport 0 (Web Serial)._
 - Vertical: leather overlay lighting/gloss just rotates with the panel; calibration / hello faces on the board stay landscape.
 - Vertical: labels are centred across the tube with no offset knob (`digitBottom*` unused); two-digit labels can sit on long ticks or clip in narrow tubes.
 - Vertical mode could switch by itself from the IMU pose (auto / hysteresis) instead of a param.
-- Vertical: rear ticks and digits still have separate parallax (`tickParallax` depth-scaled in panel rows, `digitParallax` in source rows): a hard across-tilt can close the tick–label gap by a pixel or two.
+- Vertical: rear ticks slide with absolute across-tilt (`tickParallax`), rear digits only with slow view-angle changes (`rearParallax`): a hard across-tilt can close the tick–label gap by a few px.
 - Landscape: `tickLens` ≠ `bottomLens` (or the dry pair) can still slide ticks onto labels behind liquid only; same one-wall remap would fix it but changes existing presets' look.
 - Vertical: a tick takes one wet share (its centre column) while a label takes one per column; under a steep meniscus the two can sit a share apart over a wide label.
 - Rear tick ends are whole rows: across the meniscus an end travelling N rows (strong lenses: 6 at H=37) moves in N one-row steps, the first as early as share 1/256 when the dry end sits on a row centre (2.9 % of a sweep). Not a table→remap seam (remap at share 0 = dry table, checked). Sub-row coverage on the end row would smooth it — both modes, changes the dry look.

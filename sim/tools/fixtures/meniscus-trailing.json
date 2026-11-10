@@ -118,7 +118,6 @@
   "digitDryLens": 0.1,
   "topLens": 0.35,
   "topParallax": -10,
-  "digitParallax": 4.75,
   "liquidTransparency": 0.26,
   "markContrast": 0,
   "digitsLeadingZero": false,

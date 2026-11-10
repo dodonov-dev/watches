@@ -347,7 +347,7 @@ accepts('design: tubeBack #AbCdEf (hex any case)', () => validateDesign({ tubeBa
   rejects('envelope: legacy Params JSON', () => parseMaterialEnvelope(JSON.stringify(presetParams(PRESETS[0]))), 'legacy Params export');
   rejects('envelope: kind liquid-watch-physical', () => parseMaterialEnvelope({ kind: 'liquid-watch-physical', version: 1, material: DEFAULT_MATERIAL, design: {} }), 'kind must be "liquid-watch-material"');
   rejects('envelope: no kind', () => parseMaterialEnvelope({ version: 1, material: DEFAULT_MATERIAL, design: {} }), 'kind must be');
-  rejects('envelope: version 2 (newer)', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 2, material: DEFAULT_MATERIAL, design: {} }), 'newer than this simulator');
+  rejects('envelope: version current + 1 (newer)', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: MATERIAL_VERSION + 1, material: DEFAULT_MATERIAL, design: {} }), 'newer than this simulator');
   rejects('envelope: version 0', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 0, material: DEFAULT_MATERIAL, design: {} }), 'unsupported version 0');
   rejects('envelope: version "1"', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: '1', material: DEFAULT_MATERIAL, design: {} }), 'unsupported version "1"');
   rejects('envelope: not JSON', () => parseMaterialEnvelope('{kind:'), 'not JSON');
@@ -357,17 +357,35 @@ accepts('design: tubeBack #AbCdEf (hex any case)', () => validateDesign({ tubeBa
   rejects('envelope: provenance guessed', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 1, material: DEFAULT_MATERIAL, design: {}, provenance: { ior: 'guessed' } }), 'ior must be one of');
 
   // strict import: a current-version file keeps every key, so an unknown one is rejected by name (keys are
-  // dropped only by an explicit older-version migration step, of which version 1 has none)
-  const old = { kind: 'liquid-watch-material', version: 1, material: { ...DEFAULT_MATERIAL, colour: 3 }, design: { tubeHeight: 40 }, extra: true, provenance: { ior: 'measured', colour: 'estimated' } };
+  // dropped only by an explicit older-version migration step)
+  const old = { kind: 'liquid-watch-material', version: MATERIAL_VERSION, material: { ...DEFAULT_MATERIAL, colour: 3 }, design: { tubeHeight: 40 }, extra: true, provenance: { ior: 'measured', colour: 'estimated' } };
   const mig = migrateMaterial(old);
-  report('migrate v1 (current): passes every key through, drops nothing', deepEqual(mig, old) ? [] : [JSON.stringify(mig)], []);
-  report('migrate v1: input untouched', 'colour' in old.material && 'extra' in old ? [] : ['input mutated'], []);
+  report('migrate current version: passes every key through, drops nothing', deepEqual(mig, old) ? [] : [JSON.stringify(mig)], []);
+  report('migrate current version: input untouched', 'colour' in old.material && 'extra' in old ? [] : ['input mutated'], []);
+  // version 1 → 2: digitParallax (px per g of absolute tilt) is dropped, not converted; a design that set it takes
+  // rearParallax's default explicitly. A real pre-change export (Alpine, schema 1) still imports.
+  const v1 = { kind: 'liquid-watch-material', version: 1, material: DEFAULT_MATERIAL, design: { tubeHeight: 40, digitParallax: 4.75 } };
+  const m1 = migrateMaterial(v1) as { version: number; design: Record<string, unknown> };
+  report('migrate v1 → current: digitParallax dropped, rearParallax default, the rest kept',
+    m1.version === MATERIAL_VERSION && !('digitParallax' in m1.design) && m1.design.rearParallax === DEFAULT_PARAMS.rearParallax && m1.design.tubeHeight === 40
+      && 'digitParallax' in v1.design ? [] : [JSON.stringify(m1)], []);
+  accepts('migrate v1 without digitParallax: imports', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 1, material: DEFAULT_MATERIAL, design: { tubeHeight: 40 } }));
+  {
+    const fs = require('fs'), path = require('path');
+    const text = fs.readFileSync(path.join(process.cwd(), 'tools', 'fixtures', 'material-v1-alpine.json'), 'utf8');
+    let got: string[] = [];
+    try {
+      const env = parseMaterialEnvelope(text);
+      if ('digitParallax' in env.design || env.design.rearParallax !== DEFAULT_PARAMS.rearParallax) got = [JSON.stringify(env.design)];
+    } catch (error) { got = [(error as Error).message]; }
+    report('import a schema-1 export (fixtures/material-v1-alpine.json, with digitParallax)', got, []);
+  }
   const base1 = { kind: 'liquid-watch-material', version: 1, material: DEFAULT_MATERIAL, design: {} };
   rejects('strict import: unknown envelope key', () => parseMaterialEnvelope({ ...base1, extra: true }), 'unknown field(s) extra');
   rejects('strict import: unknown material key', () => parseMaterialEnvelope({ ...base1, material: { ...DEFAULT_MATERIAL, colour: 3 } }), 'unknown field(s) colour');
   rejects('strict import: unknown provenance key', () => parseMaterialEnvelope({ ...base1, provenance: { ior: 'measured', colour: 'estimated' } }), 'unknown material field(s) colour');
   rejects('strict import: all three at once (first reported)', () => parseMaterialEnvelope(old), 'unknown field(s)');
-  rejects('migrate: version 2 (newer)', () => migrateMaterial({ ...old, version: 2 }), 'newer than this simulator');
+  rejects('migrate: version current + 1 (newer)', () => migrateMaterial({ ...old, version: MATERIAL_VERSION + 1 }), 'newer than this simulator');
 }
 
 // ---------------------------------------------------------------------------------------------

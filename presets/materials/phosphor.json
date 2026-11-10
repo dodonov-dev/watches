@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Phosphor sample",
   "material": {
     "ior": 1.34,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 0,
-    "digitParallax": 4.75,
     "tubeBack": "#f4f2ec",
     "tubeBack2": "#e4e0d6",
     "tubeBackGradient": 1,

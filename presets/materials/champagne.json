@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 1,
+  "version": 2,
   "name": "Champagne",
   "material": {
     "ior": 1.35,
@@ -47,7 +47,6 @@
     "tickDryLens": 0.1,
     "digitDryLens": 0.1,
     "tickParallax": 4.75,
-    "digitParallax": 4.75,
     "tubeBack": "#080602",
     "tubeBack2": "#161004",
     "tubeBackGradient": 1,
