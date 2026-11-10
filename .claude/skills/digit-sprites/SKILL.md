@@ -28,10 +28,10 @@ Rules that make the cutter work:
 ## 2. Cut into a sprite sheet
 
 ```bash
-python3 sim/tools/make-digit-sprites.py images/digits/digits-<style>-sheet.png sim/public/assets/digits-<style>.png 64
+python3 sim/tools/make-digit-sprites.py images/digits/digits-<style>-sheet.png sim/public/assets/digits-<style>.png 64 100
 ```
 
-Writes the 64 px-high RGBA sheet plus `digits-<style>.json` (`{cellW, cellH, widths[10]}`). Needs Pillow + numpy (`pip install --break-system-packages numpy` if missing).
+Writes one RGBA sheet per cell height — `digits-<style>.png` (64 rows) and `digits-<style>-100.png` — each with a `.png.json` (`{cellW, cellH, widths[10]}`). The heights are the values of `SPRITE_CELL_H` (`spec/layout.h`): a canvas with a tube wider than design size uses the 100-row cut. Needs Pillow + numpy (`pip install --break-system-packages numpy` if missing).
 If it asserts `expected 10 glyphs, found N`: glyphs touch (N<10) or a glyph has a detached piece / stray speck (N>10). Fix by regenerating, or lightly edit the sheet with ImageMagick (e.g. `convert in.png -fuzz 8% -fill black -opaque '#101010' out.png` to kill noise near black).
 
 ## 3. Register in the sim
@@ -39,6 +39,7 @@ If it asserts `expected 10 glyphs, found N`: glyphs touch (N<10) or a glyph has 
 - `sim/src/render.ts`: append `'digits-<style>'` to `SPRITE_SHEETS` (index = `digitFont` value − `SPRITE_FONT`).
 - `sim/src/params.ts`: bump `digitFont` meta `max` and extend the label (`… · 8 <style>`); update the comment on the `digitFont` field.
 - `sim/src/render.ts`: append the sheet name to `SPRITE_SHEETS` and extend the `digitFont` comment in `sim/src/params.ts`.
+- Firmware: append the name to `SHEETS` in `firmware/tools/spritesheets.py`, then `python3 firmware/tools/gen_params.py presets/1.json` (embeds both heights in `firmware/src/gen/sprites_gen.h`).
 
 ## 4. Verify
 
@@ -48,10 +49,11 @@ cd sim && npx vite --port 5173 &   # if not already running
   --window-size=1200,700 --screenshot=/tmp/claude-1000/shot.png \
   "http://localhost:5173/?p.digitFont=<N>&p.digitScaleX=3&p.digitScaleY=2.6"
 ```
+Add `board=lcd316&res=320w10-8-6&tubes=3` to see the 100-row cut (`board=amoled191` to go back).
 Read the screenshot. Greyscale sheets can be recoloured with `p.digitTint=%23cd7f32&p.digitTintAmount=1` — prefer a neutral steel-style sheet + tint over generating every colour variant. Dark sheets (oxidised copper) may need `brightness` up.
 
 ## 5. Commit
 
-`git add images/digits sim/public/assets sim/src docs && git commit -m "sim: <style> digit sprite font"`.
+`git add images/digits sim/public/assets sim/src firmware/tools firmware/src/gen docs && git commit -m "<style> digit sprite font"`.
 
-Hardware note: sprites are pre-scaled offline to RGB565+A8 tables per (sheet, hours box, minutes box) at Phase 3 — no runtime scaling in firmware, so any sheet that works in the sim works on the board.
+Hardware note: the firmware embeds the same sheets and box-filters them on the device exactly as the sim does, so any sheet that works in the sim works on the board. Source sheets need glyphs at least ~2x the largest cell height (200 px+).

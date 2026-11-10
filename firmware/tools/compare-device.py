@@ -14,15 +14,11 @@ import argparse, json, os, subprocess, sys, time
 from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device import Device
+from spritesheets import job_sprites
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SIM = os.path.join(ROOT, 'sim')
 W, H = 536, 240   # canvas, replaced by the dump's LAYOUT line
-SHEETS = [
-    'digits-steel', 'digits-brass-steampunk', 'digits-copper-gauge',
-    'digits-forged-iron', 'digits-ivory-enamel', 'digits-carved-slate',
-    'digits-amber-resin',
-]
 
 def talk(s, cmd, end=b'\n', timeout=10, ok=None):
     return s.talk(cmd, end.decode(), timeout, ok)
@@ -84,12 +80,8 @@ def main():
         if len(parts) == NT:
             for t in range(NT): tubes[t][key] = parts[t]
     job = {'params': params, **dict(zip(names, tubes))}
-    font = int(round(params['digitFont']))
-    if font >= 5:
-        name = SHEETS[font - 5]; base = os.path.join(SIM, 'public', 'assets', name + '.png')
-        im = Image.open(base).convert('RGBA'); meta = json.load(open(base + '.json'))
-        rgba = os.path.join(a.out, 'sheet.rgba'); open(rgba, 'wb').write(im.tobytes())
-        job['sprite'] = {'i': font - 5, 'w': im.width, 'h': im.height, 'cellW': meta['cellW'], 'cellH': meta['cellH'], 'widths': meta['widths'], 'rgbaFile': rgba}
+    sprites = job_sprites(params['digitFont'], a.out)   # the sheet at every cell height: render-ref takes its canvas's
+    if sprites: job['sprites'] = sprites
     jobf = os.path.join(a.out, 'job.json'); json.dump(job, open(jobf, 'w'))
     outdir = os.path.join(SIM, 'node_modules', '.cache', 'render-ref')
     # tsc only when a source is newer than the compiled render-ref.js (saves ~10 s per run)

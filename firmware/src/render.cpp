@@ -937,6 +937,9 @@ static const int SPRITE_FONT = NUM_FONTS;
 // below, two planes (behind air / behind liquid) when the shadow is baked in; scale and offset are design px, so the wider tube's px scale (PX_SCALE_MAX) grows both sides (rounded up).
 // A set that does not fit (values pushed past the sliders over serial) drops the glyphs past the budget
 // (visible, not silent).
+// The sheet the glyphs are filtered from has SPRITE_CELL_H rows (layout.h): at least the texels per pixel of the design
+// (64 rows at px scale 1) on the widest tube.
+static_assert(SPRITE_CELL_H >= 64 * PX_SCALE_MAX, "digit sprite sheets too small for the widest tube (layout.h SPRITE_CELL_H)");
 #define GLYPH_CEIL(v) ((int)(v) + ((float)(int)(v) < (v)))
 #define GLYPH_OFF_PX GLYPH_CEIL(DIGIT_SHADOW_OFFSET_MAX * PX_SCALE_MAX)
 #define GLYPH_POOL_PX (10 * 2 * (GLYPH_CEIL(GLYPH_EM_W * DIGIT_SCALE_MAX * PX_SCALE_MAX) + GLYPH_OFF_PX) * (GLYPH_CEIL(GLYPH_EM_H * DIGIT_SCALE_MAX * PX_SCALE_MAX) + GLYPH_OFF_PX))

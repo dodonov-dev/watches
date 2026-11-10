@@ -1,5 +1,5 @@
-// Headless reference render: reads a JSON {params, hours, minutes, seconds?, sprite:{i,w,h,cellW,cellH,widths,rgbaFile}}
-// from argv[2], renders one frame exactly as the browser sim would (fizz must be off), writes the
+// Headless reference render: reads a JSON {params, hours, minutes, seconds?, sprites:[{i,w,h,cellW,cellH,widths,rgbaFile}]}
+// (the digit sheet at each cell height: the canvas's is used, SPRITE_CELL_H; `sprite`: one sheet) from argv[2], renders one frame exactly as the browser sim would (fizz must be off), writes the
 // PANEL_W x PANEL_H RGB565 framebuffer (little-endian u16) to argv[3]. Used by firmware/tools/compare-device.py.
 // Board: LW_BOARD / LW_RES / LW_TUBES (spec/layout.ts), as the device reports it (`v`); params are the device's (design px).
 // Three tubes: `seconds` is the seconds tube's state (required then).
@@ -9,11 +9,13 @@ const fs = require('fs'); declare const process: any; declare const Buffer: any;
 import { renderFrame, fb, setSprite } from '../src/render';
 import { newTube, type TubeState } from '../src/physics';
 import { tubeParams } from '../src/params';
-import { TUBE_COUNT, TUBE_LENGTH_PX } from '@spec/layout';
+import { TUBE_COUNT, TUBE_LENGTH_PX, SPRITE_CELL_H } from '@spec/layout';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (job.sprite) {
-  const sp = job.sprite;
+const sheets: any[] = job.sprites ?? (job.sprite ? [job.sprite] : []);
+if (sheets.length) {
+  const sp = sheets.find((s) => s.cellH === SPRITE_CELL_H);
+  if (!sp) throw new Error(`render-ref: the job has no digit sheet of ${SPRITE_CELL_H} rows (has ${sheets.map((s) => s.cellH).join(', ')})`);
   const data = new Uint8ClampedArray(fs.readFileSync(sp.rgbaFile));
   setSprite(sp.i, { cellW: sp.cellW, cellH: sp.cellH, widths: sp.widths, data, w: sp.w, h: sp.h });
 }

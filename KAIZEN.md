@@ -818,3 +818,12 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - `codex exec "<prompt>"` from a non-tty shell blocks on "Reading additional input from stdin": give it `< /dev/null`.
 - device.py's Windows bridge prints a SerialException traceback when a plain talk (no reopen) hits a handle staled by a
   re-enumeration (bench.py's first `s` after `B0`); harmless (bench.py re-opens), noisy.
+- Digit sheets (2026-11-10): `gen/sprites_gen.h` is 7.1 MB of tracked decimal text (both cell heights; render.cpp host
+  compile ~6 s). A binary blob per height (`.incbin` / embed_files) would keep git and the compile light.
+- Digit sheets: a middle cell height (80 rows) would save ~0.6 MB of flash on faces up to 1.25 x (288f, 8 mm); two
+  heights kept for fewer assets.
+- Digit box filter (scaledGlyphs) snaps its box to whole sheet texels: below ~2 texels per pixel the strokes go uneven
+  (preset 1 at scale 6 x 5 sits at 1.4 to 1.9 on every board). Fractional box weights would fix it at any sheet size.
+- `digits-steel-sheet.png` has the least source resolution (176 px of glyph height; brass 206, the rest 244+): the first
+  to regenerate if a cut above ~128 rows is ever needed.
+- check_meniscus.py decodes every `digits-*.png` (now also the -100 cuts) though the AMOLED side only reads the 64-row ones.

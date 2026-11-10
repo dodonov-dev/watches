@@ -137,6 +137,11 @@ export const PX_SCALE_MAX = Math.max(...TUBE_PX_SCALE);
 /** The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so every tube
  *  draws it at the widest tube's scale (params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²). */
 export const PX_SCALE_FIZZ = PX_SCALE_MAX;
+/** Digit sprite sheets (public/assets digits-*.png, firmware gen/sprites_gen.h): the cell rows of the sheet this
+ *  canvas's glyphs are filtered from. 64 at design size (`<name>.png`); a face with a tube drawn larger takes the 100-row
+ *  cut (`<name>-100.png`, good to 100 / 64 = 1.56 x; the 10 mm tube is 1.52 x), so a glyph keeps the sheet texels per
+ *  pixel it has on the AMOLED (layout.h). */
+export const SPRITE_CELL_H = PX_SCALE_MAX > 1 ? 100 : 64;
 /** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f`, `lcd316@320fh` (see resTag); a
  *  three-tube face adds `+t3` (`amoled191+t3`, `lcd316@320fh+t3`). */
 export const BOARD_TAG = (BOARD === 'lcd316' ? `lcd316@${RES_TAG}` : BOARD) + (TUBE_COUNT === 3 ? '+t3' : '');

@@ -126,6 +126,11 @@
 // The liquid's px scale: the fizz is the liquid's (its size and rise speed do not depend on the bore), so both tubes draw
 // it at the wider tube's scale (sim params.ts FIZZ_PX_KEYS); a narrower tube holds fewer bubbles (its volume, bore²).
 #define PX_SCALE_FIZZ      PX_SCALE_MAX
+// Digit sprite sheets (gen/sprites_gen.h, sim public/assets digits-*.png): the cell rows of the sheet this build's
+// glyphs are filtered from. 64 at design size; a face with a tube drawn larger takes the 100-row cut (good to 100 / 64 =
+// 1.56 x; the 10 mm tube is 1.52 x), so a glyph keeps the sheet texels per pixel it has on the AMOLED. A float compare,
+// as PX_MIXED.
+#define SPRITE_CELL_H      (PX_SCALE_MAX > 1.0f ? 100 : 64)
 #define TUBE_LENGTH_PX     PANEL_W   // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params
 // tubeHeight / hoursY / minutesY (design px, scaled).

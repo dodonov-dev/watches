@@ -4,7 +4,7 @@
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
   rgb565, rgb565to888, mmPerPxAt, TUBE_COUNT, TUBE_PX_SCALE, PX_SCALE_FIZZ,
-  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H,
+  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
@@ -293,14 +293,14 @@ const FONT_6x8B: Font = { name: '6x8 bold', w: 6, h: 8, g: [
 export const FONTS: Font[] = [FONT_3x5, FONT_4x6, FONT_5x7, FONT_7SEG, FONT_6x8B];
 export const SPRITE_FONT = FONTS.length; // digitFont value that selects the image-based glyphs
 
-/** Image-based glyph sheet (AI-generated metal digits, see tools/make-digit-sprites.py).
- *  Firmware equivalent: one pre-scaled RGB565+A8 table per tube size, generated offline. */
+/** Image-based glyph sheet (AI-generated metal digits, see tools/make-digit-sprites.py), cut at each cell height
+ *  SPRITE_CELL_H takes; the firmware embeds the same sheets (gen/sprites_gen.h) and filters them the same way. */
 export interface SpriteSheet { cellW: number; cellH: number; widths: number[]; data: Uint8ClampedArray; w: number; h: number; }
 /** w x h texels (body plus the baked shadow margin); `adv` is the body width the layout advances by. a = 0..255 coverage.
  *  c/a: the glyph as drawn behind air; cw/aw: as drawn behind liquid (the shadow composite depends on the liquid's
  *  transparency, see bakeShadow). Without a shadow both pairs are the same arrays. */
 interface ScaledGlyph { w: number; h: number; adv: number; c: Uint16Array; a: Uint8Array; cw: Uint16Array; aw: Uint8Array; }
-/** Sheet names in digitFont order starting at SPRITE_FONT (files live in public/assets/<name>.png[.json]). */
+/** Sheet names in digitFont order starting at SPRITE_FONT (files live in public/assets/, see spriteFile). */
 export const SPRITE_SHEETS = [
   'digits-steel',
   'digits-brass-steampunk',
@@ -310,12 +310,14 @@ export const SPRITE_SHEETS = [
   'digits-carved-slate',
   'digits-amber-resin',
 ];
+/** The file of a sheet at this canvas's cell height: `<name>.png` (64 rows) or `<name>-<rows>.png`, + `.json`. */
+export const spriteFile = (name: string): string => `${name}${SPRITE_CELL_H === 64 ? '' : `-${SPRITE_CELL_H}`}.png`;
 const sprites: (SpriteSheet | null)[] = SPRITE_SHEETS.map(() => null);
 const scaledCache = new Map<string, ScaledGlyph[]>();
 /** Inject a decoded sheet directly (headless tests / node reference renders). */
 export function setSprite(i: number, sheet: SpriteSheet): void { sprites[i] = sheet; scaledCache.clear(); }
 export function loadSprites(base: string): void {
-  SPRITE_SHEETS.forEach((n, i) => loadSprite(base + n + '.png').then(sh => { sprites[i] = sh; scaledCache.clear(); })
+  SPRITE_SHEETS.forEach((n, i) => loadSprite(base + spriteFile(n)).then(sh => { sprites[i] = sh; scaledCache.clear(); })
     .catch(e => console.warn('digit sprite not loaded', n, e)));
 }
 function loadSprite(url: string): Promise<SpriteSheet> {

@@ -1,6 +1,24 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-09 (LCD: flash + PSRAM 120 MHz in HPM dummy-cycle mode is the default, DC-aware bootloader)_
+_Last update: 2026-11-10 (digit sprite sheets in two cell heights, picked at compile time by the tube px scale)_
+
+## Digit sheets per tube size (2026-11-10)
+
+- Was: every canvas filtered its glyphs from the 64-row sheets. On the 10 mm tube a glyph is up to 64 px tall (preset 1:
+  46 x 53 from a 43 x 64 cell), so the box filter point-sampled or stretched: stair-stepped strokes.
+- Now two cuts of each source sheet (Lanczos, `sim/tools/make-digit-sprites.py <sheet> <out> 64 100`): `<name>.png`
+  (64 rows, unchanged bytes) and `<name>-100.png`. `SPRITE_CELL_H` (layout.h / layout.ts) = 100 when a tube is drawn
+  larger than design size (PX_SCALE_MAX > 1), else 64: the AMOLED's sheet texels per glyph pixel or more everywhere.
+- Sim: `spriteFile` loads the canvas's sheet. Firmware: `gen/sprites_gen.h` holds both sets, SPRITE_SHEETS takes the
+  build's, the other is not linked. lcd316@320w10-8-6+t3 firmware.bin 1.62 -> 2.65 MB (app slot 6.4 MB); AMOLED, narrow
+  LCD and 240f unchanged (712 KB of sheets).
+- Tools: `firmware/tools/spritesheets.py` (sheet names, cell heights, render-ref job entry `sprites`: every height, the
+  reference renderer takes its canvas's); gen_params.py / compare-device.py / check_board_render.py read it.
+- Checked on the host: check_board_render lcd316 320w10-8-6 t3 75 / 77 as before (molten-big, pinot: 1 px at 17, known);
+  amoled191 output identical; check:meniscus 439 scenes; check_mirrors.
+- Board (lcd316@320w10-8-6+t3, elf 4c36ab9e): flashed, 38.9 fps; compare-device at rest 46 px off, 0 > 12/255.
+- No regeneration: the source sheets hold 176 (steel) to 281 px of glyph height, a 100-row cut looks the same as the
+  full-size source at these glyph sizes.
 
 ## LCD 120 MHz by default (2026-11-09, uncommitted; docs/hang-investigation-plan.md H2.7)
 

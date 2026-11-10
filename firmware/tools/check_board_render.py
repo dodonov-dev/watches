@@ -16,11 +16,10 @@ from pathlib import Path
 from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import boardtag
+from spritesheets import job_sprites
 
 ROOT = Path(__file__).resolve().parents[2]
 SIM = ROOT / 'sim'
-SHEETS = ['digits-steel', 'digits-brass-steampunk', 'digits-copper-gauge', 'digits-forged-iron',
-          'digits-ivory-enamel', 'digits-carved-slate', 'digits-amber-resin']
 STATE = {'hours': {'fillTarget': 0.42, 'light': 20.0}, 'minutes': {'fillTarget': 0.71, 'light': 20.0}, 'seconds': {'fillTarget': 0.5, 'light': 20.0}}
 TUBES = ('hours', 'minutes', 'seconds')
 
@@ -118,13 +117,8 @@ def main():
             if not isinstance(params, dict) or 'tubeHeight' not in params: continue
             params = {**params, 'fizz': False}
             job = {'params': params, **{t: STATE[t] for t in names}}
-            font = int(round(params.get('digitFont', 0)))
-            if font >= 5:
-                base = SIM / 'public/assets' / (SHEETS[font - 5] + '.png')
-                im = Image.open(base).convert('RGBA'); meta = json.load(open(str(base) + '.json'))
-                rgba = tmp / (SHEETS[font - 5] + '.rgba')
-                if not rgba.exists(): rgba.write_bytes(im.tobytes())
-                job['sprite'] = {'i': font - 5, 'w': im.width, 'h': im.height, 'cellW': meta['cellW'], 'cellH': meta['cellH'], 'widths': meta['widths'], 'rgbaFile': str(rgba)}
+            sprites = job_sprites(params.get('digitFont', 0), tmp)   # the sheet at every cell height: render-ref takes its canvas's
+            if sprites: job['sprites'] = sprites
             jf = tmp / f'job{len(jobs)}.json'; jf.write_text(json.dumps(job))
             jobs.append((path, jf))
             script += [f'P {k}={fmt(v)}' for k, v in params.items() if k != 'v']
