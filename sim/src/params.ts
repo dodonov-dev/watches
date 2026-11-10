@@ -18,7 +18,7 @@ export interface Params {
   glassHiBright: number; // 0..1 strength of the specular band (same rows as the liquid highlight)
   glassReflect: number;  // 0..1 faint second reflection on the lower wall
   glassRim: number;      // 0..1 grazing reflection across the wall band, brightest at the silhouette
-  glassWall: number;     // px wall thickness at the top/bottom silhouette: dry rows behind it show no tube back (only the grazing reflection), rear marks fade out there
+  glassWall: number;     // px wall thickness at the top/bottom silhouette: dry rows behind it show no tube back (only the grazing reflection), rear marks fade out there (rear ticks behind the liquid: past its edge, wallWet)
   glassWallGlow: number; // 0..1 the dry wall band lit by light piped along the glass (visible on a black tube back; over the liquid the band shows the liquid); plateau across the band under the grazing rim
   liquidIor: number;     // refractive index of the contents (material ior; 1.333 water): the rear wall's apparent depth behind liquid is depth / liquidIor
   wallWet: number;       // 0..1 share of the wall band the contents fill (seen out to n·r) and frustrate the glow piped along it: 1 a liquid reaching the silhouette (no glow over it), less = the contents end inside the band and the empty tube's band is beyond, 0 a gas

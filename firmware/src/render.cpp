@@ -904,6 +904,7 @@ struct PalCache {
   // back gradient and the body shading before the light mix
   float wall[TUBE_HEIGHT_MAX], wetRim[TUBE_HEIGHT_MAX], dryT[TUBE_HEIGHT_MAX]; RGB back[TUBE_HEIGHT_MAX], c0[TUBE_HEIGHT_MAX];
   float liqDry[TUBE_HEIGHT_MAX];   // weight of the empty tube's row over the contents: past their edge liqU (sim liqT)
+  uint16_t wetT[TUBE_HEIGHT_MAX];  // 1/256: how much of a row over the contents shows them (sim pal.wetT; all 256 at wallWet 1): fades rear ticks behind them
   // 3e concave band colours per row, a function of the palette and the row cache only (buildBandRows, rebuilt with the
   // palette): inner shoulder, the lens / body mix under the outer colour, the rim colour, the back's luma weight
   uint16_t bandInner[TUBE_HEIGHT_MAX], bandLensMix[TUBE_HEIGHT_MAX], bandRimC[TUBE_HEIGHT_MAX]; float bandBackK[TUBE_HEIGHT_MAX];
@@ -1004,6 +1005,7 @@ struct Mark {
   Tube &t; int y0; Edges edges; bool onTop; int T, C;   // T: transparency 1/256, C: contrast 1/1000
   int Cin;       // the floor inside the liquid: C, or 0 where it is baked into the plane (bakeFloor)
   bool bakedT;   // the mark's coverage already includes the liquid's transparency (sprite digits with a baked shadow, see bakeShadow)
+  const uint16_t *wetT = nullptr;   // rear ticks: behind the contents the mark fades as they do (PalCache::wetT, sim markFn wetT)
   Mark(Tube &t_, int y0_, Edges e, const Params &p, bool onTop_, float contrast, bool bakedT_ = false, bool floorBaked = false) : t(t_), y0(y0_), edges(e), onTop(onTop_), bakedT(bakedT_) {
     T = (int)(p.liquidTransparency * 256 + 0.5f); if (T < 0) T = 0; if (T > 256) T = 256;
     C = (int)(contrast * 1000 + 0.5f); Cin = floorBaked ? 0 : C;
@@ -1481,6 +1483,7 @@ inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const 
   if (inside) {
     c = wetColour(t.rd(x, y), c, covT);
     if (rel) { covT = covT * T >> 8; if (covT <= 0) return; }   // rear relief fades with the liquid's opacity (sim markFn)
+    if (wetT) { covT = covT * wetT[ry] >> 8; if (covT <= 0) return; }   // past the contents' edge the row is the empty tube's wall
   } else if (!onTop) { covT = covT * t.pal.dryT[ry] >> 8; if (covT <= 0) return; }   // rear marks vanish behind the wall band
   if (rel > 0) c = embossHi(c);
   else if (rel < 0) c = embossLo(c);
@@ -1518,18 +1521,19 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
   const float ab = fmn(1, b.blick[side][ry] * coverage * 4 * u * (1 - u));
   const float ar = fmn(1, b.rim[side][ry] * fmx(0, hi - fmx(lo, fmx(0, wEff - 1))));
   const float through = (1 - ab) * (1 - ar);
+  const float wallK = wetT ? wetT[ry] * (1 / 256.0f) : 1;   // sim wallQ / 256
   if (inside) {
     if (through >= 1) return false;   // nothing on top here: the plain body path, byte-identical
     c = wetColour(t.rd(x, y), c, covT);
     if (rel) covT = covT * T >> 8;
-    covT = (int)(covT * through + 0.5f); if (covT <= 0) return true;
+    covT = (int)(covT * through * wallK + 0.5f); if (covT <= 0) return true;
     if (rel > 0) c = embossHi(c); else if (rel < 0) c = embossLo(c);
     t.wr(x, y, covT >= 256 ? c : blend565T(t.rd(x, y), c, covT));
     return true;
   }
   const float wet = fmn(1, b.fill[side][ry] * coverage * (1 - b.pull[side] * us));
   const float cov = covT * (1 / 256.0f);
-  const float aw = cov * wet * (rel ? T * (1 / 256.0f) : 1), ad = cov * (1 - wet) * (t.pal.dryT[ry] * (1 / 256.0f));
+  const float aw = cov * wet * (rel ? T * (1 / 256.0f) : 1) * wallK, ad = cov * (1 - wet) * (t.pal.dryT[ry] * (1 / 256.0f));
   const float al = (aw + ad) * through;
   if (al < 1 / 255.0f) return true;
   const uint16_t bg = t.rd(x, y);
@@ -1603,6 +1607,7 @@ void Tube::buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const {
     const float gW = glow * (1 - wet); pc.wetRim[y] = gW + rim - gW * rim;
     pc.dryT[y] = p.glassWall <= 0 ? 1 : au >= wallU ? 0 : 1 - pc.dryExp[y];
     pc.liqDry[y] = p.glassWall <= 0 ? 0 : au >= liqU ? 1 : expf(-(liqU - au) / 0.04f);
+    pc.wetT[y] = (uint16_t)((wet < 1 ? 1 - pc.liqDry[y] : 1) * 256 + 0.5f);
     int gradient = (int)jround(p.tubeBackGradient);
     float backMix = gradient == 1 ? t : gradient == 2 ? 1 - fabsf(t * 2 - 1)
       : gradient == 3 ? fabsf(t * 2 - 1) : 0;
@@ -2813,7 +2818,7 @@ void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const 
 // order, the two ops of one pixel (plotF's edge columns: emboss, then body) in theirs. Byte-identical (check_render_frames).
 struct TickInk { uint16_t c, hi, lo; };   // a tick colour and its emboss highlight / shadow
 struct TickRows {
-  const Mark &mark; uint16_t *fb; DigitRow *rows; const uint16_t *dryT;   // fb: strip row of tick row 0
+  const Mark &mark; uint16_t *fb; DigitRow *rows; const uint16_t *dryT, *wetT;   // fb: strip row of tick row 0; wetT: Mark::wetT
   int y0, H, T, C, embT; float emb; bool rear, emboss;   // emb: tickEmboss clamped (plotF's edge-column shares)
   bool generic;   // every pixel through Mark::operator() (no row facts: render_init failed, or a baked mark)
   bool depth;     // rows[].depth holds the lens depth of every row (else computed per base row)
@@ -2823,10 +2828,10 @@ struct TickRows {
 #endif
 };
 // One tick op over the pixel behind bg (565) of a known kind: Mark::operator()'s colour and coverage (w: bg's colour
-// through the liquid, when wet). blend565T gives bg for a coverage <= 0, where Mark::operator() writes nothing.
+// through the liquid, when wet; dT: the row's fade for that kind, pal.dryT behind air, wetT behind the contents). blend565T gives bg for a coverage <= 0, where Mark::operator() writes nothing.
 static inline uint16_t tickOp(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t bg, uint16_t w, int covT, int rel) {
   uint16_t col; int cv = covT;
-  if (wet) { col = rel > 0 ? embossHi(w) : rel < 0 ? embossLo(w) : w; if (rel) cv = cv * k.T >> 8; }   // rear relief fades with the liquid's opacity
+  if (wet) { col = rel > 0 ? embossHi(w) : rel < 0 ? embossLo(w) : w; if (rel) cv = cv * k.T >> 8; cv = cv * dT >> 8; }   // rear relief fades with the liquid's opacity
   else { col = rel > 0 ? ink.hi : rel < 0 ? ink.lo : ink.c; if (k.rear) cv = cv * dT >> 8; }        // rear marks vanish behind the wall band
   return blend565T(bg, col, cv);
 }
@@ -2862,7 +2867,7 @@ static uint16_t __attribute__((noinline)) tickColumnRaw(const TickRows &k, const
 }
 // One op of a row that straddles the liquid's edge, a band footprint or the strip's ends: Mark::operator() given the
 // row's facts.
-TICK_IRAM static void __attribute__((noinline)) tickPx(const TickRows &k, const TickInk &ink, const DigitRow &r, int dT, uint16_t *row,
+TICK_IRAM static void __attribute__((noinline)) tickPx(const TickRows &k, const TickInk &ink, const DigitRow &r, int dT, int wT, uint16_t *row,
                                               int y, int px, int covT, int rel) {
   if (r.nb && ((px >= r.b0[0] && px < r.b1[0]) || (r.nb > 1 && px >= r.b0[1] && px < r.b1[1]))) { k.mark(px, y, ink.c, covT, rel); return; }
   if ((unsigned)px >= (unsigned)PANEL_W) return;
@@ -2872,6 +2877,7 @@ TICK_IRAM static void __attribute__((noinline)) tickPx(const TickRows &k, const 
   if (k.rear && px >= r.Li && px < r.Hi) {
     col = throughLiquid(bg, ink.c, k.T, k.C);
     if (rel) { col = rel > 0 ? embossHi(col) : embossLo(col); cv = cv * k.T >> 8; }   // rear relief fades with the liquid's opacity
+    cv = cv * wT >> 8;   // past the contents' edge the row is the empty tube's wall
   } else {
     if (k.rear) cv = cv * dT >> 8;   // rear marks vanish behind the wall band
     col = rel > 0 ? ink.hi : rel < 0 ? ink.lo : ink.c;
@@ -2900,7 +2906,8 @@ TICK_IRAM static void __attribute__((noinline)) tickRow(const TickRows &k, const
   uint16_t *const row = k.fb + ry * PANEL_W;
   TCLIP(row, PANEL_W);
   DigitRow &r = k.rows[ry];
-  const int dT = k.rear ? k.dryT[ry] : 256;
+  const int dT = k.rear ? k.dryT[ry] : 256, wT = k.rear ? k.wetT[ry] : 256;
+  if (dT <= 0 && wT <= 0) return;   // a rear tick row past the contents' edge: no pixel of it writes, wet or dry
   const int xa = emb ? x - 1 : x, xb = x + w - 1 + (fT ? 1 : 0) + (emb ? 1 : 0);   // the row's pixels, inclusive
   int kind = -1;   // 0: every pixel behind air (or on top), 1: every pixel behind liquid; -1: pixel by pixel
   if (xa >= 0 && xb < PANEL_W && !(r.nb && ((xa < r.b1[0] && xb >= r.b0[0]) || (r.nb > 1 && xa < r.b1[1] && xb >= r.b0[1])))) {
@@ -2912,22 +2919,23 @@ TICK_IRAM static void __attribute__((noinline)) tickRow(const TickRows &k, const
 #endif
   if (kind < 0) {
     if (!fT) {
-      if (emb) { tickPx(k, ink, r, dT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, row, y, x + w, eA, -1); }
-      for (int i = 0; i < w; i++) tickPx(k, ink, r, dT, row, y, x + i, 256, 0);
+      if (emb) { tickPx(k, ink, r, dT, wT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, wT, row, y, x + w, eA, -1); }
+      for (int i = 0; i < w; i++) tickPx(k, ink, r, dT, wT, row, y, x + i, 256, 0);
       return;
     }
     if (emb) {
-      tickPx(k, ink, r, dT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, row, y, x, eF, 1);
-      tickPx(k, ink, r, dT, row, y, x + w, eA, -1); tickPx(k, ink, r, dT, row, y, x + w + 1, eF, -1);
+      tickPx(k, ink, r, dT, wT, row, y, x - 1, eA, 1); tickPx(k, ink, r, dT, wT, row, y, x, eF, 1);
+      tickPx(k, ink, r, dT, wT, row, y, x + w, eA, -1); tickPx(k, ink, r, dT, wT, row, y, x + w + 1, eF, -1);
     }
-    tickPx(k, ink, r, dT, row, y, x, 256 - fT, 0);
-    for (int i = 1; i < w; i++) tickPx(k, ink, r, dT, row, y, x + i, 256, 0);
-    tickPx(k, ink, r, dT, row, y, x + w, fT, 0);
+    tickPx(k, ink, r, dT, wT, row, y, x, 256 - fT, 0);
+    for (int i = 1; i < w; i++) tickPx(k, ink, r, dT, wT, row, y, x + i, 256, 0);
+    tickPx(k, ink, r, dT, wT, row, y, x + w, fT, 0);
     return;
   }
   // Every pixel of the row is one column class of TickMemo: written from the memo when it shows the pixel behind the
   // memo was made for (along a row nearly all do, and the next ticks' rows too: same pixel behind, same fT), else on its own.
   const bool wet = kind;
+  const int sT = wet ? wT : dT;
   TickMemo &m = r.tm[kind];
   uint16_t *const d = row + x;
   const uint16_t raw0 = d[emb ? -1 : 0];
@@ -2935,13 +2943,13 @@ TICK_IRAM static void __attribute__((noinline)) tickRow(const TickRows &k, const
 #ifdef TICK_PROF
     const uint32_t f0 = esp_cpu_get_cycle_count();
 #endif
-    tickMemoFill(k, ink, m, wet, dT, raw0, fT, eA, eF);
+    tickMemoFill(k, ink, m, wet, sT, raw0, fT, eA, eF);
 #ifdef TICK_PROF
     if (k.prof) { k.prof[TP_FILLS]++; k.prof[TP_CYC_FILLS] += esp_cpu_get_cycle_count() - f0; }
 #endif
   }
   const uint16_t key = m.raw;
-#define TICK_PIX(q, i) do { const uint16_t rq = *(q); *(q) = rq == key ? m.o[i] : tickColumnRaw(k, ink, wet, dT, rq, i, fT, eA, eF); } while (0)
+#define TICK_PIX(q, i) do { const uint16_t rq = *(q); *(q) = rq == key ? m.o[i] : tickColumnRaw(k, ink, wet, sT, rq, i, fT, eA, eF); } while (0)
   if (emb) TICK_PIX(d - 1, 0);
   TICK_PIX(d, 1);
   for (int i = 1; i < w; i++) TICK_PIX(d + i, 2);
@@ -3223,7 +3231,7 @@ bool Tube::planTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
 void Tube::tickBand(int y0, const Mark &mark, int r0, int r1) const {
   const MarkPlan &mp = *plan;
   if (!mp.tickOn) return;
-  TickRows K{mark, FB + (y0 - baseY) * PANEL_W, digitRows, pal.dryT, y0, H, mark.T, mark.Cin, mp.tickEmbT, mp.tickEmb,
+  TickRows K{mark, FB + (y0 - baseY) * PANEL_W, digitRows, pal.dryT, mark.wetT, y0, H, mark.T, mark.Cin, mp.tickEmbT, mp.tickEmb,
              !mark.onTop, mp.tickEmboss, mp.tickGeneric, mp.tickDepth, r0, r1};
 #ifdef TICK_PROF
   K.prof = mark.prof;
@@ -4209,6 +4217,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   prof[8] = esp_timer_get_time() - profT;
 #endif
   Mark tickMark(*this, y0, bounds, p, p.ticksOnTop, p.markContrast * p.tickBright);
+  if (!p.ticksOnTop) tickMark.wetT = palCache->wetT;
 #ifdef TICK_PROF
   tickMark.prof = tickProf;
   const uint32_t tc0 = esp_cpu_get_cycle_count();

@@ -68,6 +68,7 @@ export interface Palette {
   body: number; tubeBack: number; bubbleRim: number; bubbleIn: Uint16Array;
   bubbleRimRows: Uint16Array; // H: fizz ring colour per row, dimmed by the cylinder's light (the scalar rim stays for the spirit bubble / pinpoint)
   dryT: Float32Array;    // H: what an empty tube transmits of the back per row (0 inside the glass wall band); fades rear marks behind air
+  wetT: Float32Array;    // H: how much of a row over the contents shows them (liqT: 0 past their edge liqU; all 1 at wallWet 1); fades rear ticks behind the contents
 }
 
 /** Ambient-light desaturation (params.ambientLight): a colour brighter than the diffuse body luma
@@ -141,7 +142,7 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
   // silhouette on both sides (`glassRim`). `glassWall` 0 keeps only a one-row rim.
   const wallU = 1 - 2 * Math.max(1, p.glassWall) / H;
   const glassEdge = scale(mix(ghi, [180, 190, 195], 0.72), p.brightness);
-  const dryT = new Float32Array(H);
+  const dryT = new Float32Array(H), wetT = new Float32Array(H);
   const rimW = (u: number): number => p.glassRim * Math.pow(Math.max(0, (Math.abs(u) - wallU) / (1 - wallU)), 2.5);
   // Wall glow: light piped along the wall (internal paths the cylinder trace omits) lights the band
   // itself, a plateau with a short ramp starting just inside the band; the grazing rim adds on top.
@@ -174,7 +175,7 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
     const back = mix(tubeBack, tubeBack2, backMix);
     const u = (y + 0.5 - H / 2) / (H / 2), rim = rimW(u), wall = wallW(u);
     const g = glowW(u) * (1 - wet), wetRim = g + rim - g * rim;   // over the contents: the glow they leave piped, the rim
-    dryT[y] = wallT(u);
+    dryT[y] = wallT(u); wetT[y] = wet < 1 ? liqT(u) : 1;
     // style shading: brightest around 1/3 from top, darkest at the bottom
     let c: [number, number, number];
     if (t < 0.33) c = mix(mix(body, lo, 0.25), body, t / 0.33);
@@ -226,7 +227,7 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
   for (let y = 0; y < H; y++) bubbleRimRows[y] = q(ambientize(scale(rimLit, 0.8 * rowL[y] / rowLMax), bodyL, ambAmt));
   return {
     rows, tubeBackRows, body: q(scale(body, br)), tubeBack: q(scale(tubeBack, p.brightness)),
-    bubbleRim: q(ambientize(scale(rimC, br), bodyL, ambAmt)), bubbleIn, bubbleRimRows, dryT,
+    bubbleRim: q(ambientize(scale(rimC, br), bodyL, ambAmt)), bubbleIn, bubbleRimRows, dryT, wetT,
   };
 }
 
@@ -453,6 +454,8 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
 }
 /** Mark compositor for one tube. `onTop` marks ignore the liquid and are drawn opaque. Rear marks
  *  behind air fade by `dryT` (invisible inside the glass wall band, like the tube back there).
+ *  `wetT` (the rear ticks): behind the contents a mark fades as they do (pal.wetT) — their image, the rear wall in it,
+ *  is magnified out to liqU; past it the row is the empty tube's wall, which shows no rear wall (as behind air).
  *  Emboss pixels derive from the body's through-liquid colour so the relief survives the contrast floor. */
 /** `bakedT`: the mark's coverage already includes the liquid's transparency (sprite digits with a baked shadow,
  *  see bakeShadow); behind liquid the contrast floor is applied at full glyph coverage (see below). */
@@ -463,10 +466,11 @@ function floorBake(p: Params): [number, number] {
   if (!(contrast > 0) || p.digitsOnTop || !(p.digitShadow && p.digitShadowStrength > 0)) return [0, 0];
   return [contrast, q(scale(hexToRgb(p.liquid), p.brightness * p.liquidBright))];
 }
-function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false): MarkFn {
+function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
   const Tq = Math.max(0, Math.min(256, Math.floor(p.liquidTransparency * 256 + 0.5)));   // firmware Mark::T
+  const wallQ = (ry: number): number => wetT ? Math.floor(wetT[ry] * 256 + 0.5) : 256;   // firmware pal.wetT
   return (x, y, c, cov = 1, rel = 0) => {
     const ry = y - y0;
     if (ry < 0 || ry >= H || x < 0 || x >= PANEL_W) return;
@@ -511,11 +515,12 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         if (through === 1) {   // no band over the pixel: the firmware's integer steps (Mark::operator()) and its blend
           let covT = Math.round(cov * 256);
           if (rel !== 0) { covT = (covT * Tq) >> 8; if (covT <= 0) return; }
+          covT = (covT * wallQ(ry)) >> 8; if (covT <= 0) return;
           markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, covT);
           return;
         }
         if (rel !== 0) cov *= transK;
-        cov *= through;
+        cov *= through * (wallQ(ry) / 256);
       } else if (under) {
         // Under the band past the body the rear wall is seen through the dish: the mark is liquid-tinted
         // as far as the fill is opaque there (its own per-pixel opacity — no threshold to jump), dry for
@@ -523,7 +528,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         // baked in and the wet part applies it itself. The wet/dry colour mix and the blend over the pixel
         // are taken in 888 and rounded ONCE (parity: each extra 565 rounding stacks between renderers).
         const i = y * PANEL_W + x;
-        const aw = cov * wet * (rel !== 0 ? transK : 1), ad = cov * (1 - wet) * (dryT ? dryT[ry] : 1);
+        const aw = cov * wet * (rel !== 0 ? transK : 1) * (wallQ(ry) / 256), ad = cov * (1 - wet) * (dryT ? dryT[ry] : 1);
         const al = (aw + ad) * through;
         if (al < 1 / 255) return;
         let M = rgb565to888(c);
@@ -1972,7 +1977,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const dx = onTop ? 0 : -state.edgeLight * p.tickParallax;
       const dy = onTop ? 0 : state.acrossTilt * p.tickParallax;
       drawTicks(y0, p, ticksN, wetRows, dryRows, onTop ? null : bounds,
-        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT), dx, dy,
+        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT, false, false, onTop ? null : pal.wetT), dx, dy,
         !onTop && rearTicksFollowDigits(p) ? tickFollow(p, H) : null);
     }
   };

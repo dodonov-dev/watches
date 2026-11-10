@@ -827,3 +827,8 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - `digits-steel-sheet.png` has the least source resolution (176 px of glyph height; brass 206, the rest 244+): the first
   to regenerate if a cut above ~128 rows is ever needed.
 - check_meniscus.py decodes every `digits-*.png` (now also the -100 cuts) though the AMOLED side only reads the 64-row ones.
+- Past the liquid's edge (`wallWet` < 1, 2026-11-10): rear ticks fade there (`wetT`), rear digits still do not (sprite
+  run kernels MODE 1-3 take no row scale); only a digit tall enough to reach the wall band shows it.
+- Tick heights count from the silhouette, so a thick wall hides `glassWall` px of every rear tick (claret: 25 px tick,
+  10 px wall). Count them from the bore edge?
+- Legacy presets pin `wallWet` 1 whatever `glassWall` (claret 10 px, olive-white 9): the optics give (n − 1)·r / wall.

@@ -1,6 +1,19 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-10 (digit sprite sheets in two cell heights, picked at compile time by the tube px scale)_
+_Last update: 2026-11-10 (rear ticks behind the liquid end at its edge, not at the silhouette)_
+
+## Rear ticks past the liquid's edge (2026-11-10)
+
+- Was: a rear tick behind the liquid ran to the silhouette, across the empty-tube wall rows past the contents' edge
+  (`wallWet` < 1; behind air it already faded in the wall band by `dryT`).
+- Now it fades as the contents do: `wetT` = liqT per row (all 1 at `wallWet` 1) — sim `Palette.wetT` / `markFn`,
+  firmware `PalCache::wetT` (PSRAM) / `Mark::wetT`, `bandMark`, `tickOp` / `tickPx`; a tick row with nothing to show is
+  skipped. Rear digits unchanged (KAIZEN).
+- First try faded wet ticks by `dryT` (bore edge): on the board's look (vertical, wall 9, tickMinorHeight 15) the lens
+  puts the whole wet tick inside the band, so none showed.
+- Host: check_board_render lcd316 320w10-8-6 +t3 --tiles 75 / 77 (molten-big, pinot: 1 px at 17, known), the board's
+  own params 0 > 12/255; amoled191 74 / 77 (the same three on HEAD); check_render_frames --tiles identical to strips.
+- Board (lcd316@320w10-8-6+t3, elf 97104e34): flashed; no bench, no compare-device.
 
 ## Digit sheets per tube size (2026-11-10)
 
