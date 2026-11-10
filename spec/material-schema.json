@@ -362,6 +362,8 @@
       "tubeHeight",
       "hoursY",
       "minutesY",
+      "tubeStack",
+      "tubeGap",
       "remaining",
       "vertical",
       "cornerR",

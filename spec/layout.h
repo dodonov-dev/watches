@@ -25,6 +25,8 @@
 // moves to the middle (render.h faceLayout); seconds draws with the minutes tube's ticks and digits. Its LCD width is
 // LCD_FILL_S (default LCD_FILL); res tags spell the wide tubes in h / m / s order (`320fs`, `320fhm`, ...) and the board
 // tag adds `+t3`.
+// Run-time (params): tubeStack puts the tubes next to each other, tubeGap mm apart (PX_PER_MM), the stack centred on the
+// face, instead of at hoursY / minutesY (render.h faceLayout).
 #pragma once
 
 #ifndef TUBE_COUNT
@@ -157,6 +159,13 @@
 // pitch per design px, so a scaled bore stays the same bore in mm and the meniscus keeps its shape on every board.
 #define DESIGN_MM_PER_PX   0.083f
 #define MM_PER_PX_AT(k)    (DESIGN_MM_PER_PX / (k))
+// Canvas px per mm on the glass (the panel's pitch; the LCD canvas at its share of the 320 rows): params in mm
+// (tubeGap) are placed with it, whatever the tubes' px scales.
+#ifdef BOARD_LCD316
+#define PX_PER_MM          (PX_SCALE_NARROW / DESIGN_MM_PER_PX)
+#else
+#define PX_PER_MM          (1.0f / DESIGN_MM_PER_PX)
+#endif
 
 #define RGB565(r,g,b)      ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 #define LIQUID_RGB565      RGB565(0x5D,0xCA,0xA5)   // 0x5E54

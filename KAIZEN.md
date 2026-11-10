@@ -832,3 +832,14 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Tick heights count from the silhouette, so a thick wall hides `glassWall` px of every rear tick (claret: 25 px tick,
   10 px wall). Count them from the bore edge?
 - Legacy presets pin `wallWet` 1 whatever `glassWall` (claret 10 px, olive-white 9): the optics give (n − 1)·r / wall.
+
+## Stacked tubes (2026-11-10)
+- `npm run check:presets` fails on HEAD: tsc writes `.cache/check-presets/sim/tools/check-presets.js` (it imports
+  `../../spec`), the script runs `.cache/check-presets/tools/…`. The compiled file run by hand passes.
+- The sim dev server (5190, up since before the edit) kept serving the old `spec/layout.ts` after it changed (new export
+  missing, page dead until vite restarts); `sim/src` edits were picked up. Vite does not seem to watch `../spec`.
+- `tubeStack` / `tubeGap` are per preset like `hoursY` / `minutesY`: loading a preset un-stacks. Glued rods are the
+  watch's, not the look's: a device-level setting (NVS next to `demo`, sim board bar) would survive presets.
+- The stack is always centred; no offset (rods glued off-centre).
+- Stacked at 0 mm the sim's leather still leaves a 4 px seam between tubes (`slotPad` -2 per slot).
+- check_board_render lcd316 320w8-8-8+t3: malt 1 px at 16 > 12/255 on HEAD too.

@@ -1,8 +1,10 @@
 {
-  "v": 27,
+  "v": 28,
   "tubeHeight": 56,
   "hoursY": 9,
   "minutesY": 180,
+  "tubeStack": false,
+  "tubeGap": 0,
   "remaining": false,
   "vertical": false,
   "liquid": "#1f602f",

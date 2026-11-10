@@ -14,7 +14,7 @@ OUT = os.path.join(ROOT, 'firmware', 'src', 'gen')
 # (name, ctype) — order defines the struct layout. Mirrors sim/src/params.ts `Params`.
 FIELDS = [
  ('v','int'),
- ('tubeHeight','float'),('hoursY','float'),('minutesY','float'),
+ ('tubeHeight','float'),('hoursY','float'),('minutesY','float'),('tubeStack','bool'),('tubeGap','float'),
  ('liquid','rgb'),('liquidHi','rgb'),('liquidLo','rgb'),('tubeBack','rgb'),('tubeBack2','rgb'),('tubeBackGradient','float'),('glassHi','rgb'),('glassBody','float'),('glassHiBright','float'),('glassReflect','float'),('glassRim','float'),('glassWall','float'),('glassWallGlow','float'),('liquidIor','float'),('wallWet','float'),('rimLight','float'),('rimTint','rgb'),('glassOverLiquid','float'),('lens','float'),('lensCurve','float'),('bubbleRim','rgb'),
  ('remaining','bool'),('vertical','bool'),('highlightH','float'),('highlightInset','float'),('highlightBright','float'),('highlightSharp','float'),('shadeDepth','float'),('liquidThin','float'),('contactAngle','float'),
  ('contactHyst','float'),('contactDyn','float'),('capLength','float'),('meniscusLens','float'),

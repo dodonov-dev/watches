@@ -32,6 +32,8 @@ export interface Params {
   tubeHeight: number;    // across-tube size, ≤ TUBE_HEIGHT_MAX
   hoursY: number;        // top row of the hours tube
   minutesY: number;      // top row of the minutes tube
+  tubeStack: boolean;    // tubes stacked tubeGap apart, the stack centred on the face (hoursY / minutesY not read)
+  tubeGap: number;       // mm of glass between two stacked tubes (0 = touching); a real distance on every board, not design px
   // --- shape ---
   remaining: boolean;    // true = liquid at the right end, draining as time passes; false = fills from the left
   vertical: boolean;     // watch worn upright, USB end down: liquid always at the bottom (left end), digits rotated to read upright; `remaining` then only flips the scale (1 at the top, the liquid shows what is left)
@@ -199,13 +201,15 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 27;
+export const PARAMS_VERSION = 28;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
   tubeHeight: 72,
   hoursY: 0,
   minutesY: 168,
+  tubeStack: false,
+  tubeGap: 0,
   remaining: false,
   vertical: false,
   liquid: '#346a2a',
@@ -1634,6 +1638,7 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   // v27: the artistic drain-back rate traceFollow gives way to the film's physical drain speed traceDrain,
   // here from the preset's own contact params (legacyTraceDrain)
   if (from < 27 && !('traceDrain' in r)) r.traceDrain = legacyTraceDrain({ ...DEFAULT_PARAMS, ...r } as Params);
+  if (from < 28) { r.tubeStack = DEFAULT_PARAMS.tubeStack; r.tubeGap = DEFAULT_PARAMS.tubeGap; }
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1670,6 +1675,8 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   tubeHeight: { help: 'Across-tube size, px.', group: 'Layout', label: 'tube height', min: 16, max: DESIGN_TUBE_HEIGHT_MAX, step: 1 },
   hoursY: { help: 'Top row of the hours tube, px.', group: 'Layout', label: 'hours tube y', min: 0, max: 224, step: 1 },
   minutesY: { help: 'Top row of the minutes tube, px.', group: 'Layout', label: 'minutes tube y', min: 0, max: 224, step: 1 },
+  tubeStack: { help: 'Tubes next to each other: stacked tube gap apart, the stack centred on the face. Hours / minutes tube y are not read.', group: 'Layout', label: 'stack tubes' },
+  tubeGap: { help: 'Stacked tubes: mm of glass between two tubes, 0 = touching (rods glued side by side). A real distance on every board; cut to the rows the face has left.', group: 'Layout', label: '· tube gap, mm', min: 0, max: 10, step: 0.1 },
   remaining: { help: 'On: liquid sits at the right end and drains as time passes. Off: fills from the left.', group: 'Shape', label: 'liquid = remaining' },
   vertical: { help: 'Watch worn upright, USB end down (hours tube on the left). The liquid always rests at the bottom and the digits are rotated to read upright. "liquid = remaining" then only flips the scale: off = digits run bottom to top and the liquid shows the time passed, on = digits run top to bottom and the liquid shows what is left. Digits are centred across the tube (digit bottom offsets do not apply). Digit scale X / Y swap roles (X stays along the tube).', group: 'Shape', label: 'vertical watch' },
   highlightH: { help: 'Height of the specular strip at the top of the column, px.', group: 'Shape', min: 0, max: 30, step: 1 },

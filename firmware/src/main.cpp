@@ -260,12 +260,8 @@ static FaceLayout currentLayout() { return faceLayout(effH, effM, effS); }
 static FaceLayout currentLayout() { return faceLayout(effH, effM); }
 #endif
 static const int16_t *lensRows[TUBE_COUNT] = {};   // per tube: the lens row map the push applies (display_row_map)
-#if TUBE_COUNT == 3
 static FaceLayout frameLayout;   // this frame's (renderBoth): the tubes' top rows for renderTube
 #define FRAME_TOP(idx) frameLayout.top(idx)
-#else
-#define FRAME_TOP(idx) -1          // each tube at its own params' row
-#endif
 static void renderOneTube(int idx, uint16_t *dst) {
 #ifdef AB_COMPARE   // A/B face: the native minutes tube on core 0 (top slot), the AB_COMPARE-row one here (bottom)
   if (idx == 0) renderTube(1, tubeM, effM, paramsGen, dst, &lensRows[0]);
@@ -443,9 +439,7 @@ static void renderBoth() {
     fb.fillScreen(0); display_push_frame(fb.buf);
     shownLayout = lay; dropPending();
   }
-#if TUBE_COUNT == 3
   frameLayout = lay;
-#endif
   uint32_t t0 = micros();
 #if TUBE_COUNT == 3
   if (!STAGGER_PUSH) display_wait_all();        // previous frame: seconds pushed last, from the hours strip
@@ -878,7 +872,7 @@ static void handleLine(char *line) {
       for (int t = 0; t < 3; t++) renderTube(t, tubeOf(t), effOf(t), paramsGen, strip[t], nullptr, l.top(t));
       out.printf("LAYOUT %d %d %d %d %d %d %d %d\n", PANEL_W, PANEL_H, l.Hh, l.yH, l.yM, l.Hm, l.yS, l.Hs);
 #else
-      renderTube(0, tubeH, effH, paramsGen, strip[0]); renderTube(1, tubeM, effM, paramsGen, strip[1]);
+      renderTube(0, tubeH, effH, paramsGen, strip[0], nullptr, l.yH); renderTube(1, tubeM, effM, paramsGen, strip[1], nullptr, l.yM);
       out.printf("LAYOUT %d %d %d %d %d %d\n", PANEL_W, PANEL_H, l.Hh, l.yH, l.yM, l.Hm);
 #endif
       auto dumpState = [&](const TubeState &t) {
@@ -924,7 +918,7 @@ static void handleLine(char *line) {
                                             &effS
 #endif
       };
-      int top[TUBE_COUNT]; for (int t = 0; t < TUBE_COUNT; t++) top[t] = TUBE_COUNT == 3 ? l.top(t) : -1;
+      int top[TUBE_COUNT]; for (int t = 0; t < TUBE_COUNT; t++) top[t] = l.top(t);
       uint32_t hash[TUBE_COUNT];
       seqRun(tubes, ps, paramsGen, strip, top, [&](int frame, int t, const uint16_t *s) {
         hash[t] = seqHash(s, l.rows(t) * PANEL_W);

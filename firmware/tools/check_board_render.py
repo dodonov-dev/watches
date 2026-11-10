@@ -62,7 +62,7 @@ int main() {
       const FaceLayout lay = faceLayout(p[0], p[1]);
 #endif
       for (int i = 0; i < TUBE_COUNT; i++) {
-        renderTube(i, st[i], p[i], gen, strip, nullptr, TUBE_COUNT == 3 ? lay.top(i) : -1);
+        renderTube(i, st[i], p[i], gen, strip, nullptr, lay.top(i));
         const int y0 = lay.top(i), rows = lay.rows(i);
         for (int k = 0; k < rows * PANEL_W; k++) canvas[y0 * PANEL_W + k] = __builtin_bswap16(strip[k]);
       }

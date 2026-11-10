@@ -8,6 +8,8 @@ struct Params {
   float tubeHeight;
   float hoursY;
   float minutesY;
+  bool tubeStack;
+  float tubeGap;
   uint32_t liquid;
   uint32_t liquidHi;
   uint32_t liquidLo;
@@ -184,8 +186,8 @@ struct Params {
   float ambientLight;
 };
 
-#define PARAMS_NUM_FIELDS 178
-#define PARAMS_SCHEMA_CRC 0x6c236b52u  // field names+types; guards the NVS blob
+#define PARAMS_NUM_FIELDS 180
+#define PARAMS_SCHEMA_CRC 0x44dafcf8u  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
 // dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
@@ -196,6 +198,8 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"tubeHeight", 'f', (uint16_t)offsetof(Params, tubeHeight), 2},
   {"hoursY", 'f', (uint16_t)offsetof(Params, hoursY), 2},
   {"minutesY", 'f', (uint16_t)offsetof(Params, minutesY), 2},
+  {"tubeStack", 'b', (uint16_t)offsetof(Params, tubeStack), 0},
+  {"tubeGap", 'f', (uint16_t)offsetof(Params, tubeGap), 0},
   {"liquid", 'c', (uint16_t)offsetof(Params, liquid), 0},
   {"liquidHi", 'c', (uint16_t)offsetof(Params, liquidHi), 0},
   {"liquidLo", 'c', (uint16_t)offsetof(Params, liquidLo), 0},
@@ -374,10 +378,12 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
 
 // from presets/1.json
 static const Params PRESET_1 = {
-  27, // v
+  28, // v
   72.0f, // tubeHeight
   0.0f, // hoursY
   168.0f, // minutesY
+  false, // tubeStack
+  0.0f, // tubeGap
   0x346A2A, // liquid
   0xB6FFA0, // liquidHi
   0x1E7515, // liquidLo

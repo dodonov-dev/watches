@@ -79,7 +79,7 @@ int main() {
 #else
   const FaceLayout lay = faceLayout(p[0], p[1]);
 #endif
-  for (int i = 0; i < TUBE_COUNT; i++) { s[i] = strip[i]; tb[i] = &st[i]; pp[i] = &p[i]; top[i] = TUBE_COUNT == 3 ? lay.top(i) : -1; }
+  for (int i = 0; i < TUBE_COUNT; i++) { s[i] = strip[i]; tb[i] = &st[i]; pp[i] = &p[i]; top[i] = lay.top(i); }
   uint32_t hash[TUBE_COUNT];
   seqRun(tb, pp, gen, s, top, [&](int frame, int i, const uint16_t *px) {   // the board's `X` line, + the fizz state
     hash[i] = seqHash(px, lay.rows(i) * PANEL_W);

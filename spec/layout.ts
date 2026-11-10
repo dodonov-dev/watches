@@ -6,7 +6,8 @@
 // reloads with the new choice.
 // Tubes, top to bottom: hours, minutes (two-tube face: hours top, minutes bottom); with TUBE_COUNT 3 (layout.h) a seconds
 // tube takes the bottom slot and minutes moves to the middle (render.ts faceLayout). The seconds tube draws with the
-// minutes tube's ticks and digits (0..60).
+// minutes tube's ticks and digits (0..60). Run-time (params): tubeStack puts the tubes next to each other, tubeGap mm
+// apart (PX_PER_MM), the stack centred on the face, instead of at hoursY / minutesY.
 // LCD res tag = rows + tube widths (layout.h LCD_FILL_H / LCD_FILL_M / LCD_FILL_S): no suffix all narrow (px params at
 // the AMOLED's physical size), `f` all wide (scaled with the canvas height), else `f` + the wide tubes' letters in
 // h / m / s order: `320fh` hours wide, `320fm` minutes wide; three tubes add `fs`, `fhm`, `fhs`, `fms`. A tube in mm
@@ -180,6 +181,9 @@ export const BG_RGB888 = 0x000000;
 export const DESIGN_MM_PER_PX = 0.083;
 /** mm per canvas px for the physical meniscus of a tube at px scale k: a scaled bore stays the same bore in mm (layout.h). */
 export const mmPerPxAt = (k: number): number => DESIGN_MM_PER_PX / k;
+/** Canvas px per mm on the glass (the panel's pitch; the LCD canvas at its share of the 320 rows): params in mm
+ *  (tubeGap) are placed with it, whatever the tubes' px scales (layout.h, float32). */
+export const PX_PER_MM = Math.fround((BOARD === 'lcd316' ? PX_SCALE_NARROW : 1) / Math.fround(DESIGN_MM_PER_PX));
 
 export function rgb565(r: number, g: number, b: number): number {
   return ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);

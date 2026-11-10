@@ -369,7 +369,7 @@ async function pushTime(): Promise<void> {
 $('settime').onclick = pushTime;
 
 // params panel
-const LAYOUT_KEYS: (keyof Params)[] = ['tubeHeight', 'hoursY', 'minutesY'];
+const LAYOUT_KEYS: (keyof Params)[] = ['tubeHeight', 'hoursY', 'minutesY', 'tubeStack', 'tubeGap'];
 /** Params changed outside a single edit (derive, preset, import): panel, top bar, cuff, grid. */
 function paramsReplaced(): void {
   panelUi.refresh(); syncView();

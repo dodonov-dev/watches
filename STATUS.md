@@ -1,6 +1,21 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-10 (BLE off at boot: fast mode by default, `B1` opens the BLE window)_
+_Last update: 2026-11-10 (stacked tubes: `tubeStack` / `tubeGap`)_
+
+## Stacked tubes (2026-11-10)
+
+- Params v28: `tubeStack` (bool) + `tubeGap` (mm, 0 = touching). On: the tubes lie `tubeGap` apart and the stack is
+  centred on the face; `hoursY` / `minutesY` are not read. Off (every preset): rows as before.
+- `tubeGap` is real mm on the glass (layout `PX_PER_MM`: 0.083 mm per AMOLED px, 0.0912 per LCD panel px), not design
+  px: the same distance at any tube width; cut to the rows the canvas has left.
+- Run-time, no cost: sim `faceLayout` / firmware render.h `faceLayout` + `stackGap`; a layout change wipes the panel
+  once (as `hoursY` did). Two-tube firmware now passes the face layout's rows to renderTube too.
+- Schema CRC changed: the board's NVS params are dropped at the next flash (`--preset` to restore).
+- Host: check:layout 72 configurations (stacked sweep: gap, centring, no overlap); check_board_render stacked 1 / malt /
+  claret at 0 and 1.3 mm = their unstacked figures on amoled191, lcd316 288f, 320w8-8-8+t3, 320w10-8-6+t3 --tiles.
+  Builds: lcd316@320w10-8-6+t3, amoled191.
+- Board: lcd316@320w8-8-8+t3 flashed (elf 7a33ed4f), look restored from `p?`, IMU dead until `r`; stacking off, no bench,
+  no compare-device. Flash variants: firmware/README.md.
 
 ## BLE off by default (2026-11-10)
 

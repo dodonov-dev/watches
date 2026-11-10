@@ -4,7 +4,7 @@
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
   rgb565, rgb565to888, mmPerPxAt, TUBE_COUNT, TUBE_PX_SCALE, PX_SCALE_FIZZ,
-  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H,
+  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
@@ -47,15 +47,32 @@ export interface FaceLayout { Hh: number; Hm: number; yH: number; yM: number; Hs
 export function tubeRows(l: FaceLayout, i: number): { y: number; H: number } {
   return i === 0 ? { y: l.yH, H: l.Hh } : i === 1 ? { y: l.yM, H: l.Hm } : { y: l.yS, H: l.Hs };
 }
+/** Stacked tubes: px between two of the `n` tubes taking `rows` rows together: tubeGap mm by the panel's pitch
+ *  (spec/layout PX_PER_MM, float32 as the firmware), cut to the rows the canvas has left. Firmware render.h stackGap. */
+function stackGap(p: Params, rows: number, n: number): number {
+  const f = Math.fround, g = f(f(p.tubeGap) * PX_PER_MM);
+  const room = PANEL_H > rows ? Math.floor((PANEL_H - rows) / (n - 1)) : 0, px = g >= PANEL_H ? PANEL_H : g > 0 ? Math.floor(f(g + f(0.5))) : 0;
+  return Math.min(px, room);
+}
 /** The tubes on the face, each from its own params (`ps`: params.ts tubeParams; rows from that tube's). Two tubes:
  *  hours at its hoursY, minutes at its minutesY. Three (layout TUBE_COUNT): hours at hoursY, seconds in the bottom slot
  *  (minutesY of its params), minutes centred in the gap between them; a gap shorter than the minutes tube spreads the
- *  three over the canvas (hours at the top edge, seconds at the bottom, the rows left split evenly). Firmware render.h. */
+ *  three over the canvas (hours at the top edge, seconds at the bottom, the rows left split evenly). Stacked (params
+ *  tubeStack): the tubes lie tubeGap mm apart and the stack is centred on the face; hoursY / minutesY are not read.
+ *  Firmware render.h. */
 export function faceLayout(ps: readonly Params[]): FaceLayout {
   const [pH, pM] = ps;
   const h = tubeLayout(pH), m = pM === pH ? h : tubeLayout(pM);
-  if (ps.length < 3) return { Hh: h.H, Hm: m.H, yH: h.yH, yM: m.yM, Hs: 0, yS: 0 };
+  if (ps.length < 3) {
+    if (!pH.tubeStack) return { Hh: h.H, Hm: m.H, yH: h.yH, yM: m.yM, Hs: 0, yS: 0 };
+    const g = stackGap(pH, h.H + m.H, 2), yH = Math.floor((PANEL_H - h.H - m.H - g) / 2);
+    return { Hh: h.H, Hm: m.H, yH, yM: yH + h.H + g, Hs: 0, yS: 0 };
+  }
   const pS = ps[2], s = pS === pM ? m : pS === pH ? h : tubeLayout(pS);
+  if (pH.tubeStack) {
+    const g = stackGap(pH, h.H + m.H + s.H, 3), yH = Math.floor((PANEL_H - h.H - m.H - s.H - 2 * g) / 2), yM = yH + h.H + g;
+    return { Hh: h.H, Hm: m.H, yH, yM, Hs: s.H, yS: yM + m.H + g };
+  }
   let yH = h.yH, yS = s.yM, yM: number;
   if (yS - (yH + h.H) >= m.H) yM = Math.floor((yH + h.H + yS - m.H + 1) / 2);
   else { yH = 0; yS = PANEL_H - s.H; yM = h.H + Math.floor((PANEL_H - h.H - m.H - s.H) / 2); }

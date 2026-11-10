@@ -226,7 +226,7 @@ the coherence ranges. `x_μ = log10 μ_eff`; class thresholds at `x_μ = 0.398` 
 
 ## Ownership of every legacy `Params` key
 
-- **Design pass-through** (schema `design.allow`): `tubeHeight hoursY minutesY remaining vertical cornerR lens
+- **Design pass-through** (schema `design.allow`): `tubeHeight hoursY minutesY tubeStack tubeGap remaining vertical cornerR lens
   lensCurve meniscusLens topLens topParallax tickDryLens digitDryLens tickParallax rearParallax rearParallaxSettle tubeBack
   tubeBack2 tubeBackGradient` all `tick*` (except `tickLens`) `ticksOnTop tickEmboss` all `digit*`
   `digitsOnTop freeLiquid freeHomeK readTiltStart readTiltEnd playHold brightness tickBright digitBright`,

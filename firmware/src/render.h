@@ -2,6 +2,7 @@
 // face; pixels are stored BYTE-SWAPPED (panel is big-endian; see PsramCanvas in main.cpp).
 #pragma once
 #include <stdint.h>
+#include <math.h>
 #include "gen/params_gen.h"
 #include "physics.h"
 
@@ -31,6 +32,8 @@ TubeLayout tubeLayout(const Params &p);
 // TUBE_COUNT 3 (layout.h): seconds (pS) in the bottom slot (minutesY of its params), minutes centred in the gap between
 // hours and seconds; a gap shorter than the minutes tube spreads the three over the canvas (hours at the top edge,
 // seconds at the bottom, the rows left split evenly; boardParams caps each at TUBE3_HEIGHT_MAX, so they fit).
+// Stacked (params tubeStack): the tubes lie tubeGap mm apart (canvas px by the panel's pitch, PX_PER_MM; a gap the canvas
+// has no rows for is cut to what it has) and the stack is centred on the face; hoursY / minutesY are not read.
 struct FaceLayout {
 #if TUBE_COUNT == 3
   int Hh, Hm, yH, yM, Hs, yS;
@@ -44,17 +47,31 @@ struct FaceLayout {
   int top(int i) const { return i == 0 ? yH : yM; }
 #endif
 };
+// Stacked tubes: px between two of the `n` tubes taking `rows` rows together (sim: stackGap).
+inline int stackGap(const Params &p, int rows, int n) {
+  const float g = p.tubeGap * PX_PER_MM;
+  const int room = PANEL_H > rows ? (PANEL_H - rows) / (n - 1) : 0, px = g >= (float)PANEL_H ? PANEL_H : g > 0.0f ? (int)floorf(g + 0.5f) : 0;
+  return px < room ? px : room;
+}
 inline FaceLayout faceLayout(const Params &pH, const Params &pM) {
   const TubeLayout h = tubeLayout(pH), m = &pM == &pH ? h : tubeLayout(pM);
 #if TUBE_COUNT == 3
   return {h.H, m.H, h.yH, m.yM, 0, 0};   // two tubes' rows only (the three-tube overload places the seconds tube)
 #else
+  if (pH.tubeStack) {
+    const int g = stackGap(pH, h.H + m.H, 2), yH = (PANEL_H - h.H - m.H - g) / 2;
+    return {h.H, m.H, yH, yH + h.H + g};
+  }
   return {h.H, m.H, h.yH, m.yM};
 #endif
 }
 #if TUBE_COUNT == 3
 inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &pS) {
   const TubeLayout h = tubeLayout(pH), m = &pM == &pH ? h : tubeLayout(pM), s = &pS == &pM ? m : &pS == &pH ? h : tubeLayout(pS);
+  if (pH.tubeStack) {
+    const int g = stackGap(pH, h.H + m.H + s.H, 3), yH = (PANEL_H - h.H - m.H - s.H - 2 * g) / 2, yM = yH + h.H + g;
+    return {h.H, m.H, yH, yM, s.H, yM + m.H + g};
+  }
   int yH = h.yH, yS = s.yM, yM;
   if (yS - (yH + h.H) >= m.H) yM = (yH + h.H + yS - m.H + 1) / 2;   // >= 0: JS Math.floor((n + 1) / 2)
   else { yH = 0; yS = PANEL_H - s.H; yM = h.H + (PANEL_H - h.H - m.H - s.H) / 2; }
@@ -62,8 +79,8 @@ inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &p
 }
 #endif
 // Draw one tube (0 = hours, 1 = minutes, 2 = seconds: the minutes tube's ticks and digits) into `strip`: H x PANEL_W
-// RGB565, byte-swapped, representing panel rows from y0 on (-1: the tube's own params' row, yH / yM of tubeLayout; a
-// three-tube face passes faceLayout's top(idx)). Everything else on the panel stays as is.
+// RGB565, byte-swapped, representing panel rows from y0 on: faceLayout's top(idx) (-1: the tube's own params' row, yH /
+// yM of tubeLayout: a two-tube face that is not stacked). Everything else on the panel stays as is.
 // Allocates the fixed render pools (once, at boot). False = an allocation failed (PSRAM, or internal RAM in fast mode).
 // fast: this boot has the internal RAM BLE would hold (main.cpp, ble.h fast mode): the shared fizz masks (LCD), the
 // seconds tube's state (LCD, three tubes) and each tube's digit-kernel scratch (LCD, DigitScratch: 1,119 B a tube, 1,407 B
