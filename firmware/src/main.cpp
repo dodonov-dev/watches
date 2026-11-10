@@ -19,8 +19,8 @@
 //      10:09:30)
 //   TUBE_COUNT 3 (layout.h): + the seconds tube (bottom; minutes in the middle), rendered on core 1 after minutes
 //   v  board and canvas: `board <name>[@<RENDER_H>] canvas <W>x<H> panel <W>x<H>` (tools pick the sim's layout by it)
-//   B0  reboot into fast mode (BLE off) now   B1  reboot into the BLE window   B  the mode (ble.h: every boot opens a
-//      BLE window, then reboots into fast mode)
+//   B0  reboot into fast mode (BLE off) now   B1  reboot into the BLE window   B  the mode (ble.h: every boot is fast mode;
+//      the B1 boot runs a BLE window, then reboots into fast mode)
 //   r  reboot
 #include <Arduino.h>
 #include <atomic>
@@ -962,7 +962,7 @@ static void handleLine(char *line) {
     case 'C': diag_print_core(out); break;   // the last coredump's summary, read at boot
     case 'B':
       if (arg[0] == '0') { out.println("rebooting into fast mode (BLE off)"); ble_request_fast(); }
-      else if (arg[0] == '1') { out.println("rebooting into the BLE window"); diag_stage(DIAG_RESTART_REQ); delay(50); ESP.restart(); }
+      else if (arg[0] == '1') { out.println("rebooting into the BLE window"); ble_request_window(); }
       else if (!ble_on()) out.println("mode fast (BLE off)");
       else { const int left = ble_window_left_s(); if (left < 0) out.println("mode ble (connected)"); else out.printf("mode ble (window: fast mode in %d s)\n", left); }
       break;

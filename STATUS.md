@@ -1,6 +1,11 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-10 (rear ticks behind the liquid end at its edge, not at the silhouette)_
+_Last update: 2026-11-10 (BLE off at boot: fast mode by default, `B1` opens the BLE window)_
+
+## BLE off by default (2026-11-10)
+
+- Every boot is fast mode; `B1` reboots into a BLE window for that one boot (180 s / 15 s grace, then fast mode).
+  Was: every boot opened the window. Temporary while BLE is unused; to be revisited. bench.py's IMU reboot keeps the mode.
 
 ## Rear ticks past the liquid's edge (2026-11-10)
 

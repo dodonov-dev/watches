@@ -25,9 +25,9 @@ check then (the override reads as all 0).
 --stages additionally turns rendering stages off one at a time (digits, ticks, fizz, glow, ...) and prints what
 each costs. --runs N repeats the whole measurement (base + stages) N times and reports, per line, the median
 across runs and the min-max spread across runs (fizz positions are random: ~±0.5 ms per run on heavy presets).
-Fast mode: firmware that reports `ble on|off` in `s` opens a BLE window after every boot (ble.h) with a slower memory
-layout; the bench first switches such a board to fast mode (`B0`, a reboot), the steady state. --ble-window benches the
-window as it is (no switch).
+Fast mode: firmware that reports `ble on|off` in `s` boots into fast mode, a BLE window (slower memory layout) only
+after `B1` (ble.h); a board found in its window is first switched to fast mode (`B0`, a reboot). --ble-window benches
+the window as it is (no switch).
 Every param it touched is restored from a `p?` snapshot at the end (not `p!`, which would also overwrite
 NVS-tuned params) and demo speed goes back to x1.
 """
@@ -182,7 +182,7 @@ def main():
         elif dead(tilt):
             print('bench.py: WARNING: IMU reads exactly 0 (along/across/gyro) - dead after flash? rebooting with `r`',
                   file=sys.stderr)
-            reboot('B0' if mode and mode.group(1) == 'off' else 'r')   # `r` would open the BLE window again
+            reboot('B1' if mode and mode.group(1) == 'on' else 'B0')   # keeps the mode it benches
             cur = dict(json.loads(talk('p?').splitlines()[-1]))   # NVS state after the reboot; restore target stays `snap`
             pin(); time.sleep(1)
             tilt = read_tilt()

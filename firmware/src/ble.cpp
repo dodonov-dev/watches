@@ -3,14 +3,16 @@
 #include "esp_system.h"
 // The boot's mode: a one-shot flag in RTC memory (survives the software reset, garbage after power-on). Read in
 // bleInUse(), which Arduino's initArduino calls before setup: false = it releases the BT controller's memory to the heap.
-RTC_NOINIT_ATTR static uint32_t fastBootMagic;
-static const uint32_t FAST_BOOT_MAGIC = 0x66617374;
+// Default fast mode: only a boot that B1 asked for opens the BLE window.
+RTC_NOINIT_ATTR static uint32_t bleBootMagic;
+static const uint32_t BLE_BOOT_MAGIC = 0x626c6577;   // "blew"
 static int8_t bootBle = -1;   // decided once, at the first ask
 static bool decideBle() {
-  if (bootBle < 0) { bootBle = fastBootMagic == FAST_BOOT_MAGIC ? 0 : 1; fastBootMagic = 0; }
+  if (bootBle < 0) { bootBle = bleBootMagic == BLE_BOOT_MAGIC ? 1 : 0; bleBootMagic = 0; }
   return bootBle;
 }
-void ble_request_fast() { fastBootMagic = FAST_BOOT_MAGIC; diag_stage(DIAG_RESTART_REQ); delay(50); esp_restart(); }
+void ble_request_fast() { bleBootMagic = 0; diag_stage(DIAG_RESTART_REQ); delay(50); esp_restart(); }
+void ble_request_window() { bleBootMagic = BLE_BOOT_MAGIC; diag_stage(DIAG_RESTART_REQ); delay(50); esp_restart(); }
 #ifdef NO_BLE   // perf-baseline build (see tools/e2e.sh --no-ble): USB serial only
 DualOut out;
 bool ble_on() { return false; }

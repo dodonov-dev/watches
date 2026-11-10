@@ -3,14 +3,15 @@
 #pragma once
 #include <Arduino.h>
 
-// BLE runs in a window after every boot: on until a central has stayed away BLE_WINDOW_S since boot, or BLE_GRACE_S
-// after a disconnect; then the board reboots into fast mode (BLE off: Arduino releases the BT controller's internal RAM
-// at boot, ~50 KB with the stack's own, which the face then uses). Fast mode lasts that one boot: any reset brings the
-// window back. `B0` (serial) asks for fast mode now, `B1` reboots into the window.
+// Every boot runs fast mode (BLE off: Arduino releases the BT controller's internal RAM at boot, ~50 KB with the stack's
+// own, which the face then uses). `B1` (serial) reboots into a BLE window for that one boot: on until a central has
+// stayed away BLE_WINDOW_S since boot, or BLE_GRACE_S after a disconnect; then the board reboots into fast mode. Any
+// other reset is fast mode again. `B0` asks for fast mode now.
 #define BLE_WINDOW_S 180
 #define BLE_GRACE_S 15
 bool ble_on();             // this boot runs BLE (decided before setup, see bleInUse in ble.cpp)
 void ble_request_fast();   // reboot into fast mode (BLE off) now
+void ble_request_window();   // reboot into the BLE window (this one boot)
 void ble_tick();           // loop(): the window's timeouts
 int ble_window_left_s();   // seconds until the window closes without a central (-1: connected / BLE off)
 void ble_init(const char *name);
