@@ -155,7 +155,9 @@ const setScale = () => {
     ? `translate(${padY * scale}px, ${(PANEL_W + padX) * scale}px) rotate(-90deg) scale(${scale})`
     : `translate(${padX * scale}px, ${padY * scale}px) scale(${scale})`;
   wrap.classList.toggle('smooth', scale < 2); // pixelated upscale only at ≥2; bilinear when shrinking
-  // Below 1: canvas backing store at on-screen size, CSS size stays 536x240 so the wrap transform maps 1:1.
+  // The wrap is the panel's CSS box: the leather (inset around it) must cover the whole board panel, not the AMOLED's 536x240.
+  wrap.style.width = `${PANEL_W}px`; wrap.style.height = `${PANEL_H}px`;
+  // Below 1: canvas backing store at on-screen size, CSS size stays PANEL_W x PANEL_H so the wrap transform maps 1:1.
   const ss = Math.min(1, scale);
   for (const c of [fbc, gridc]) {
     c.width = Math.ceil(PANEL_W * ss); c.height = Math.ceil(PANEL_H * ss);
