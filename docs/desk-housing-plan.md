@@ -127,4 +127,5 @@ Axes: X right (seen from the front), Y front → back (front face y = 0), Z up (
 - **Logo light (prototype):** translucent letter inlays (`cad/desk/out/logo-inlays.stl`), pressed into the cut-outs
   flush with the outside, with LEDs behind. No separate diffuser. Three sets, clearance 0.10 / 0.15 / 0.20 per side
   (1 / 2 / 3 dimples on the back of the E). Print flat, outer face down, in PLA/PETG Translucent white/natural.
-  Shell, lid and test strip: PLA Matte black (FDM), the shell upside down (top on the bed).
+  Shell, lid and test strip: PLA Matte, black or ivory (ivory: the rods may tint the chamfers; judge it on the test
+  strip in the same colour first). FDM, the shell upside down (top on the bed).
