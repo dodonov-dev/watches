@@ -56,5 +56,20 @@ loudly if a fit breaks.
    - magnet meat (4 mm walls or steel discs);
    - a 6 mm bit for the R3 cavity corners, ~95 deep;
    - square slot corners → R0.5.
-6. **Carrier / light box** are in the code (`PROTOTYPE = False`), with known fixes listed in
+6. **Wood version as three glued parts** (user, 2026-11-14), modelled once the print's fit is confirmed. Estimated
+   ~€110–280 one-off, against €200–450 for a solid one-piece shell.
+   - **U-body:** back + both sides, open at the front, top and bottom. A flat profile cut through (2.5D).
+   - **Г-piece:** front + top. A smooth curve between them, R ~8–15, machined from solid; a bent lamination (veneer
+     over a form) for a continuous "waterfall" grain is the nicer, costlier option. It **covers** the U's front and top
+     edges, so the front and top are one surface. Glue up first, then round over the outer edges across the seam (a
+     chamfer or a contrasting wood can make the seam deliberate).
+   - **Bottom lid** with magnets, as now.
+   - The split makes the inside machinable before gluing:
+     - a **thin-skin logo**: pocket the side panel from inside, leaving 0.6–1 mm of wood, no through-cut;
+     - **corner blocks** for the magnets;
+     - LED pocket and ledges, later the carrier rails.
+     - No deep pocket and no 95 mm-reach bit.
+   - Export one STEP per part, with its machining sides and glue faces, plus a drawing of the critical dimensions for
+     quotes.
+7. **Carrier / light box** are in the code (`PROTOTYPE = False`), with known fixes listed in
    `docs/desk-housing-reviews/4-cad-v1-fable-opus-critical.md`.
