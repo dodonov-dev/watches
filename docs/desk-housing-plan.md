@@ -117,3 +117,10 @@ Axes: X right (seen from the front), Y front → back (front face y = 0), Z up (
 - **Battery picked (user): 3000 mAh, 10 × 35 × 68, MX1.25 plug.** Taped upright behind the board, centred on its
   height (z 17.9..85.9). It clears the adapter below it. Even attached before the up-then-forward insertion, it leaves
   3.9 to the back wall (8.4 seated). Checked in the model.
+- **Test strip v2:** row 1 = the full-length width test (8.3 / 8.5 / 8.7 / 9.0, profile B). Row 2 = five short slots
+  (8.6 × 30) with the edge profiles from `cad/desk/out/profile-options.svg`, engraved S / A / B / C / D:
+  - S: straight;
+  - A: 45° to a 1.5 rim;
+  - B: 45° to 0 (chosen);
+  - C: concave to a 0.4 rim;
+  - D: round-over to 0.

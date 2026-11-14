@@ -136,6 +136,9 @@ TS_SLOTS = (8.3, 8.5, 8.7, 9.0)
 TS_REAL_PAIR = 1             # slots [i] and [i + 1] stand at TUBE_CC, so the bridge is the real one
 TS_PITCH = 20.46             # the other pairs (= TUBE_CC: every bridge is the real one)
 TS_MARGIN = 5.0
+# second row: one short slot per edge profile (docs: profile-options.svg), all SLOT_W wide, labelled on the face
+TS_PROFILES = ("S", "A", "B", "C", "D")   # straight, 45° to 1.5 rim, 45° to 0 (chosen), concave to 0.4 rim, round-over to 0
+TS_PROFILE_L, TS_PROFILE_PITCH, TS_LABEL_H, TS_LABEL_D = 30.0, 18.0, 5.0, 0.6
 
 # ---- derived -------------------------------------------------------------------------------------------------
 FRONT = SLOT_RIM if FRONT_FLAT else FRONT_T
@@ -524,10 +527,62 @@ def teststrip_layout():
     return xs, x0, x1, h
 
 
+def profile_g(name):
+    """Edge profile: (depth below the face, g(t) = how far the opening grows per side at depth t below the face)."""
+    F = FRONT
+    if name == "S":
+        return 0.0, lambda t: 0.0
+    if name == "A":
+        return F - 1.5, lambda t: (F - 1.5) - t
+    if name == "B":
+        return F, lambda t: F - t
+    if name == "C":                                    # concave, tangent to a 0.4 rim at the slot edge
+        d = F - 0.4
+        return d, lambda t: math.sqrt(max(d * d - t * t, 0.0))
+    if name == "D":                                    # convex round-over, vertical where it meets the glass
+        return F, lambda t: F - math.sqrt(max(F * F - (F - t) ** 2, 0.0))
+    raise ValueError(name)
+
+
+def profile_cutter(x, zc, w, l, name, steps=16):
+    """Slot w x l through the front plate, its face edge shaped by profile `name` (lofted sections)."""
+    cut = Pos(x, FRONT / 2, zc) * extrude(Plane.XZ * Rectangle(w, l), FRONT / 2 + 1, both=True)
+    d, g = profile_g(name)
+    if d <= 0:
+        return cut
+    ts = [d * i / steps for i in range(steps + 1)]
+    secs = [Pos(x, 0, zc) * (Plane.XZ.offset(0.5) * Rectangle(w + 2 * (g(0) + 0.5), l + 2 * (g(0) + 0.5)))]
+    for t in ts:
+        gg = max(g(t), 0.0)
+        if t >= d - 1e-6:
+            gg = 0.0
+        secs.append(Pos(x, 0, zc) * (Plane.XZ.offset(-t) * Rectangle(w + 2 * gg, l + 2 * gg)))
+    return cut + loft(secs, ruled=True)
+
+
 def make_teststrip():
-    """Front-wall coupon: same thickness, bevel and slot length; slot n carries n notches on the top edge."""
+    """Front-wall coupon. Row 1: full-length slots TS_SLOTS wide with the chosen edge (slot n carries n notches on
+    the top edge). Row 2: one short SLOT_W slot per edge profile TS_PROFILES, its letter engraved below it."""
     xs, x0, x1, h = teststrip_layout()
-    t = box(x0, x1, 0, FRONT, -h / 2, h / 2)
+    xc = (x0 + x1) / 2
+    span = (len(TS_PROFILES) - 1) * TS_PROFILE_PITCH
+    row2_h = TS_PROFILE_L + 2 * FRONT + TS_LABEL_H + 3 * TS_MARGIN / 2
+    px0, px1 = min(x0, xc - span / 2 - SLOT_W / 2 - FRONT - TS_MARGIN), max(x1, xc + span / 2 + SLOT_W / 2 + FRONT + TS_MARGIN)
+    t = box(px0, px1, 0, FRONT, -h / 2 - row2_h, h / 2)
+    z2 = -h / 2 - TS_MARGIN / 2 - FRONT - TS_PROFILE_L / 2
+    for i, name in enumerate(TS_PROFILES):
+        x = xc - span / 2 + i * TS_PROFILE_PITCH
+        t -= profile_cutter(x, z2, SLOT_W, TS_PROFILE_L, name)
+        zt = z2 - TS_PROFILE_L / 2 - FRONT - 1.0 - TS_LABEL_H / 2
+        try:
+            from build123d import Text
+            label = Plane.XZ * Pos(x, zt) * Text(name, font_size=TS_LABEL_H)
+            t -= extrude(label, TS_LABEL_D, dir=(0, 1, 0))
+        except Exception as e:                         # no font: fall back to i + 1 notches on the bottom edge
+            print(f"test strip label {name}: {e}; notches instead")
+            for k in range(i + 1):
+                xn = x + (k - i / 2) * 2.0
+                t -= box(xn - 0.5, xn + 0.5, -1, FRONT + 1, -h / 2 - row2_h - 1, -h / 2 - row2_h + 1.0)
     for i, (x, w) in enumerate(zip(xs, TS_SLOTS)):
         t -= slot_cutter(x, 0, w, SLOT_L)
         for k in range(i + 1):

@@ -18,7 +18,7 @@ logo         left (-X), letters 24.00 x 15.14, y 5.00..29.00, z 50.26..65.39 (ce
 light box    tray x -21.85..-17.98, z 43.26..72.39 (3.9 x 27.7 x 29.1); 0.30 to the button tips, 1.30 to the PCB edge
   diffuser     opal 26.26 x 18.94 x 2.0, x -20.77..-18.77: 1.22 air to the flat wall, 0.8 back plate behind; LED troughs 22.3 x 2.0 x 1.6 at its top and bottom edges
 test strip   86.0 x 85.5 x 3.0, slots 8.3, 8.5, 8.7, 9.0 at x 0.00, 20.46, 40.92, 61.38 (slots 2 and 3 at 20.46); n notches = slot n
-volumes cm3  shell 47.6, lid 5.0, teststrip 11.9
+volumes cm3  shell 47.6, lid 5.0, teststrip 23.7
 
 gaps along the insertion path, mm (swept body to what is fixed; 0.00 = it ends seated there):
   body             up: shell  light box   forward: shell  light box
