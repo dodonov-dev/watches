@@ -19,7 +19,7 @@ After it: log out and in (groups), replug the board. Check: `ls -l /dev/ttyACM0`
 | uv | pipx (`~/.local/bin/uv`) | |
 | Node 24.22.3 (nvm default) | `~/.nvm` | `sim/`: `npm ci` done |
 | Playwright 1.61.1 chromium-1228 | `~/.cache/ms-playwright` | run-sim skill |
-| build123d 0.13, OCP 8.0.1, pyvista/VTK 9.7, trimesh | `~/.venvs/cad` (Python 3.14) | `source ~/.venvs/cad/bin/activate`; add packages with `uv pip install --python ~/.venvs/cad/bin/python X` |
+| build123d 0.13, cadquery-ocp 8.0.1, pyvista/VTK 9.7, trimesh, svgelements 1.9, opencv-python-headless 5.0 | `~/.venvs/cad` (Python 3.14) | `source ~/.venvs/cad/bin/activate`; recreate: `uv venv ~/.venvs/cad && uv pip install --python ~/.venvs/cad/bin/python build123d pyvista trimesh svgelements opencv-python-headless` |
 
 ## lcd316: one-time packages dir (not done yet)
 The first lcd316 build copies `~/.platformio/packages` to `~/.platformio/packages-lcd316` and recompiles the Arduino

@@ -1,6 +1,15 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-10 (stacked tubes: `tubeStack` / `tubeGap`)_
+_Last update: 2026-11-14 (desk housing prototype, LCD pitch 0.0825, `m` measuring face)_
+
+## Desk housing + LCD pitch (2026-11-14), branch `desk-housing`
+
+- Desk housing for the LCD-3.16: the prototype CAD is ready to order. Start at `docs/desk-housing-handoff.md`.
+- LCD pitch: `LCD_MM_PER_PX` 0.0825 (Waveshare drawing, ruler-confirmed; was 0.0912). Narrow LCD tubes are ~10.5 %
+  wider in px. At 320 rows tubes over ~9.3 mm no longer compile (KAIZEN "LCD pitch 0.0825").
+- Firmware: the `m` serial command shows a measuring face (frame on the outermost pixels, px rulers, mm rulers at the
+  assumed pitch).
+- New machine (Ubuntu 26.04): `tools/setup/README.md`. PlatformIO must stay at 6.1.19 (6.2 breaks env lcd316).
 
 ## Stacked tubes (2026-11-10)
 
