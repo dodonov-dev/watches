@@ -25,7 +25,7 @@ Run: ~/.venvs/cad/bin/python cad/desk/housing.py   then   ~/.venvs/cad/bin/pytho
 """
 import json, math, pathlib
 import numpy as np
-from build123d import (Box, Cylinder, Cone, Pos, Plane, Rectangle, RectangleRounded, Polygon, Compound, Color,
+from build123d import (offset, Box, Cylinder, Cone, Pos, Plane, Rectangle, RectangleRounded, Polygon, Compound, Color,
                        extrude, fillet, chamfer, loft, export_step, export_stl, Axis, Align)
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common
 from OCP.BRepExtrema import BRepExtrema_DistShapeShape
@@ -138,6 +138,7 @@ TS_PITCH = 20.46             # the other pairs (= TUBE_CC: every bridge is the r
 TS_MARGIN = 5.0
 # second row: one short slot per edge profile (docs: profile-options.svg), all SLOT_W wide, labelled on the face
 TS_PROFILES = ("S", "A", "B", "C", "D")   # straight, 45° to 1.5 rim, 45° to 0 (chosen), concave to 0.4 rim, round-over to 0
+INLAY_CLRS = (0.10, 0.15, 0.20)   # translucent letter inlays pressed into the logo cut-outs: clearance per side, one set each
 TS_PROFILE_L, TS_PROFILE_PITCH, TS_LABEL_H, TS_LABEL_D = 30.0, 18.0, 5.0, 0.6
 
 # ---- derived -------------------------------------------------------------------------------------------------
@@ -560,6 +561,25 @@ def profile_cutter(x, zc, w, l, name, steps=16):
     return cut + loft(secs, ruled=True)
 
 
+def make_logo_inlays():
+    """Translucent letters pressed into the logo's cut-outs, flush with the outside: one E (with the slash) and one H
+    per clearance in INLAY_CLRS, WALL thick, lying flat with the outer face on z = 0 (print it face down). The set
+    with clearance index i carries i + 1 dimples (Ø0.8 x 0.4) on the back of one letter (the E), so the sets can be told apart."""
+    sets = []
+    for i, c in enumerate(INLAY_CLRS):
+        pieces = []
+        for poly in LETTERS:
+            f = offset(Polygon(*[(-u, v) for u, v in poly], align=None), -c)   # mirrored: outer face down on the bed
+            pieces.append(extrude(f, WALL))
+        h = max(pieces, key=lambda b: b.bounding_box().min.X)                   # the H (mirrored: on the left)
+        bb = h.bounding_box()
+        for k in range(i + 1):
+            h -= Pos(bb.center().X + (k - i / 2) * 1.6, bb.center().Y, WALL) * Cylinder(0.4, 0.8)
+        pieces = [h if p is max(pieces, key=lambda b: b.bounding_box().min.X) else p for p in pieces]
+        sets.append((c, Compound([Pos(0, -i * (LETTERS_H + 4), 0) * p for p in pieces])))
+    return sets
+
+
 def make_teststrip():
     """Front-wall coupon. Row 1: full-length slots TS_SLOTS wide with the chosen edge (slot n carries n notches on
     the top edge). Row 2: one short SLOT_W slot per edge profile TS_PROFILES, its letter engraved below it."""
@@ -723,6 +743,9 @@ if __name__ == "__main__":
 
     # ---- exports ----
     parts = {"shell": shell, "lid": lid, "teststrip": teststrip}
+    inlays = Compound([p for _, p in make_logo_inlays()])
+    export_step(inlays, str(OUT / "logo-inlays.step"))
+    export_stl(inlays, str(OUT / "logo-inlays.stl"), tolerance=0.01, angular_tolerance=0.1)
     if not PROTOTYPE:
         parts.update({"carrier": carrier, "lightbox": lightbox, "opal": opal})
     for n in ("carrier", "lightbox", "opal"):
