@@ -1,0 +1,6 @@
+# Espressif USB (VID 303a): ESP32-S3 native USB Serial/JTAG (303a:1001) and TinyUSB CDC.
+# Raw USB device: OpenOCD JTAG (esp32s3-builtin.cfg). tty: esptool / device.py / pio monitor.
+# uaccess: the logged-in seat user gets access at once; groups cover ssh / no-seat sessions.
+# ID_MM_*: keep ModemManager from probing the port (it sends AT commands and holds it).
+SUBSYSTEM=="usb", ATTR{idVendor}=="303a", MODE="0660", GROUP="plugdev", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", MODE="0660", GROUP="dialout", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1", ENV{ID_MM_PORT_IGNORE}="1"
