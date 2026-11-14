@@ -1,5 +1,34 @@
 # Desk housing: parts (verified links, 2026-11-13)
 
+## Current order list: prototype (2026-11-14)
+
+The authoritative list. Everything further down is history and alternatives.
+
+**Prints (FDM; files in `cad/desk/out/`):**
+
+| File | Material | Note |
+|---|---|---|
+| `shell.stl` | PLA Matte, black or ivory | print upside down (top on the bed) |
+| `lid.stl` | PLA Matte, same colour | flat plate, 4 magnet holes |
+| `teststrip.stl` | PLA Matte, same colour as the shell | judges the slot width, edge profile and chamfer light spill |
+| `logo-inlays.stl` | PLA/PETG Translucent, white/natural (or amber for contrast) | 3 clearance sets; print flat as it lies |
+
+**Components:**
+
+| Part | Status | Where / search | Must have |
+|---|---|---|---|
+| 90° USB-C adapter | user ordering | MOGOOD (Amazon) | bends over its flat side; listing: plug 8, body 7 × 12 × 21 (the model is built for it) |
+| Battery | user picked | 3000 mAh, 10 × 35 × 68 | plug MX1.25 / Molex 1.25 / Micro JST 1.25 2-pin (not PH 2.0, not GH); polarity: red to "+" |
+| Magnets Ø2 × 1 (8 used) | to order | supermagnete S-02-01-N (link below) or Amazon `Neodym Magnete 2x1 mm rund` | glued in, polarity by stacking |
+| Warm-white LEDs | to order | Amazon `vorverdrahtete LED warmweiß 3V` / `SMD LED 0603 mit Kabel warmweiß`, or Schönwitz 50058 (below) | ~100 Ω at 3.3 V if no resistor |
+| Kapton tape | to order | Amazon `Kapton Klebeband` | insulates the battery from the board's back |
+| Board tape | user has | – | small patches; the far-end strip ≤ 1.5 wide |
+| LED power cable (optional) | – | Amazon `JST SH 1.0 4 Pin Kabel` / Qwiic | 3V3 from the I2C/UART header, or solder to a 3V3 pad |
+| Diffuser film (optional) | only if the inlays don't diffuse enough | Amazon `Lichtstreufolie` | 0.2–0.5 mm opal |
+
+**Not needed for the prototype:** USB-C breakout, MX1.25 4-pin cable, USB-C panel extension, latching button,
+opal acrylic (wood stage), tesa 4965.
+
 Each link below was opened and checked. Prices include VAT and exclude shipping. Amazon.de could not be verified by the
 tools used (503), so there are no Amazon links. agy's first list was mostly wrong links; don't reuse it.
 
