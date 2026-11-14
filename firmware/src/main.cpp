@@ -1,6 +1,7 @@
 // Liquid Watch firmware — liquid face (port of the sim) + Phase 1 bring-up faces.
 // Serial commands (115200, USB CDC; same protocol over BLE Nordic UART Service, name "liquid-watch"):
 //   l  liquid face (default)          c  calibration face        h  hello / orientation test
+//   m  measuring face: full-panel frame, px rulers (white) and mm rulers at the assumed pitch (green)
 //   f  live fps + frame timing        i  toggle IMU stream (50 Hz CSV)
 //   g <along> <across> [gyroAlong gyroAcross]  tilt override in g / dps instead of the IMU (bench poses without
 //      touching the board; not persisted)   g  back to the IMU
@@ -573,6 +574,45 @@ static void face_calibration() {
   display_push_frame(fb.buf);
 }
 
+// Measuring face: a 1-px frame on the canvas's outermost pixels (= the panel's at full res), a px ruler along the top and
+// left edges (white: 10 / 50 / 100 px), an mm ruler at the assumed pitch (PX_PER_MM) along the bottom and right edges
+// (green: 1 / 5 / 10 mm), and a centre cross. Lay a steel ruler on the glass: if the green mm don't match, the pitch
+// is off (spec/layout.h LCD_MM_PER_PX).
+static void face_ruler() {
+  const uint16_t W = 0xFFFF, G = 0x07E0, D = 0x4208;
+  fb.fillScreen(0);
+  fb.drawFastHLine(0, PANEL_H / 2, PANEL_W, D); fb.drawFastVLine(PANEL_W / 2, 0, PANEL_H, D);
+  fb.drawRect(0, 0, PANEL_W, PANEL_H, W);
+  fb.setTextSize(2); fb.setTextColor(W);
+  for (int x = 10; x < PANEL_W; x += 10) {
+    const int len = x % 100 == 0 ? 24 : x % 50 == 0 ? 14 : 7;
+    fb.drawFastVLine(x, 0, len, W);
+    if (x % 100 == 0) { fb.setCursor(x + 3, 14); fb.print(x); }
+  }
+  for (int y = 10; y < PANEL_H; y += 10) {
+    const int len = y % 100 == 0 ? 24 : y % 50 == 0 ? 14 : 7;
+    fb.drawFastHLine(0, y, len, W);
+    if (y % 100 == 0) { fb.setCursor(14, y + 3); fb.print(y); }
+  }
+  fb.setTextColor(G);
+  for (int mm = 1; mm * PX_PER_MM < PANEL_W; mm++) {
+    const int x = (int)lroundf(mm * PX_PER_MM), len = mm % 10 == 0 ? 24 : mm % 5 == 0 ? 14 : 7;
+    fb.drawFastVLine(x, PANEL_H - len, len, G);
+    if (mm % 10 == 0) { fb.setCursor(x + 3, PANEL_H - 30); fb.print(mm); }
+  }
+  for (int mm = 1; mm * PX_PER_MM < PANEL_H; mm++) {
+    const int y = (int)lroundf(mm * PX_PER_MM), len = mm % 10 == 0 ? 24 : mm % 5 == 0 ? 14 : 7;
+    fb.drawFastHLine(PANEL_W - len, y, len, G);
+    if (mm % 10 == 0) { fb.setCursor(PANEL_W - 52, y + 3); fb.print(mm); }
+  }
+  fb.setTextColor(W); fb.setCursor(PANEL_W / 2 - 230, PANEL_H / 2 - 40);
+  fb.printf("%dx%d px  %.4f mm/px", PANEL_W, PANEL_H, 1.0f / PX_PER_MM);
+  fb.setCursor(PANEL_W / 2 - 230, PANEL_H / 2 + 20);
+  fb.printf("expect %.2f x %.2f mm", PANEL_W / PX_PER_MM, PANEL_H / PX_PER_MM);
+  fb.setTextSize(1); fb.setCursor(PANEL_W / 2 - 230, PANEL_H / 2 + 60); fb.print(BOARD_TAG);
+  display_push_frame(fb.buf);
+}
+
 // Live figures of whatever the loop is rendering (2 s rolling window, see liquid_tick).
 static void report_fps() {
   int foamH = 0, foamM = 0, slotsH = 0, slotsM = 0; const int fizzH = fizzCounts(0, foamH, slotsH), fizzM = fizzCounts(1, foamM, slotsM);
@@ -818,6 +858,7 @@ static void show(char m) {
   switch (m) {
     case 'h': face_hello(); break;
     case 'c': face_calibration(); break;
+    case 'm': face_ruler(); break;
     case 'l': liquid_start(); break;
   }
 }
@@ -827,7 +868,7 @@ static void handleLine(char *line) {
   char c = line[0]; char *arg = line + 1; while (*arg == ' ') arg++;
   diag_cmd(c);
   switch (c) {
-    case 'h': case 'c': case 'l': show(c); break;
+    case 'h': case 'c': case 'm': case 'l': show(c); break;
     case 'f': report_fps(); break;   // query only: does not change the face
     case 'i': imu_stream = !imu_stream; out.printf("imu stream %s\n", imu_stream ? "on (t_ms,ax,ay,az,gx,gy,gz)" : "off"); break;
     case 'g': {
