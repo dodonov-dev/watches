@@ -843,3 +843,32 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - The stack is always centred; no offset (rods glued off-centre).
 - Stacked at 0 mm the sim's leather still leaves a 4 px seam between tubes (`slotPad` -2 per slot).
 - check_board_render lcd316 320w8-8-8+t3: malt 1 px at 16 > 12/255 on HEAD too.
+
+## Desk housing (2026-11-13)
+- LCD-3.16 mm/px: the Waveshare drawing gives AA 26.40 × 67.65 mm → 0.0825 mm/px, but `spec/layout.h` uses 0.0912
+  (nominal 3.16" diagonal). tubeGap mm and every "mm on the glass" are off by ~10%. Caliper-check, then fix
+  PX_SCALE_NARROW / PX_PER_MM. See docs/lcd316-mechanical.md. (Taken: LCD_MM_PER_PX 0.0825, confirmed with a ruler.)
+
+## LCD pitch 0.0825 (2026-11-13)
+- At 320 rows a tube wider than 9.3 mm no longer builds: render.cpp `SPRITE_CELL_H >= 64 * PX_SCALE_MAX` (100-row cut,
+  k <= 1.5625), then MarkPlan int8 rows (TUBE_HEIGHT_MAX <= 127) and tiles.h TILE_MAX <= 32. `320w10-8-6+t3` (the
+  board's build, README / flash.sh / e2e.sh examples, STATUS) is refused at compile. The sim, boardtag.py and
+  check:layout (MM_TAGS 10-6, 10-10, 10-8-6, 10-f-10, 6-6-9.5 at 320) still take 3 to 10 mm at every row count: a
+  per-rows mm max in parseRes / boardtag, or a taller sheet cut + int16 MarkPlan rows + 64-bit tile masks.
+- Today's px on the board (old "10-8-6") is ≈ `320w9-7.2-5.4` in true mm.
+- lcd316@320 narrow is now px scale 1.006 > 1, so it takes the 100-row digit sheets (~+1 MB flash) for 0.6 % upscaling.
+  A threshold with a margin (e.g. > 1.02) would keep the 64-row cut there.
+- glycerol-dark now misses parity on lcd316@320 narrow (182 px > 12/255, worst 124) exactly as on amoled191: its tube
+  is 54 rows again, the same known gap (Boards / native LCD canvas). The 1-2 px at 16-17/255 class moves between
+  presets with the scale (240: 1, malt-big, glycerine; 288: cryo; 256 lost bottle, mercury).
+- pio here: pioarduino 6.2.0.post1 is back in ~/.platformio/penv, so env lcd316 dies on `SCons.Tool.FortranCommon` (see
+  New-machine setup; the 6.1.19 pin did not stick).
+
+## Linux machine setup (2026-11-13)
+- Port 5190 is held here by the user's `hub` (node hub.mjs): run-sim's "curl 200 → reuse" would screenshot Hub, and
+  vite's strictPort start fails. The check should look for the sim (e.g. `window.sim` / page title), or move the port.
+- npm 11 `allowScripts`: esbuild's postinstall is not approved in sim/; vite works without it (platform binary found).
+- FreeCAD is gone from Ubuntu 26.04 apt: snap (tools/setup/linux-sudo.sh).
+- agy (print mode) for shopping links: in `--mode plan` it stopped after its progress notes. When resumed, most URLs
+  were 404 or the wrong product, and it presented "verified specs" it had invented. Always re-verify its links
+  (WebFetch) before passing them on.

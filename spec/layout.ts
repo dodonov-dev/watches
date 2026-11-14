@@ -118,7 +118,13 @@ export const GLYPH_EM_W = 5;         // the nominal em of the sprite fonts, cell
 export const GLYPH_EM_H = 7;
 export const MARK_CONTRAST_MAX = 120;   // markContrast
 
+/** mm per design px (the AMOLED's pitch): params are derived / migrated with it (material layer, legacyTraceDrain). */
+export const DESIGN_MM_PER_PX = 0.083;
+
 export const LCD_PANEL_W = 820, LCD_PANEL_H = 320;
+/** The LCD's pixel pitch, mm (both axes): Waveshare's dimension drawing, active area 26.40 x 67.65 mm for 320 x 820 px
+ *  (docs/lcd316-mechanical.md); confirmed 2026-11-13 with a ruler on the measuring face (`m`). A new value goes here and in layout.h. */
+export const LCD_MM_PER_PX = 0.0825;
 export const PANEL_W = BOARD === 'lcd316' ? chosen.rows * LCD_PANEL_W / LCD_PANEL_H : 536;
 export const PANEL_H = BOARD === 'lcd316' ? chosen.rows : 240;
 /** LCD tube widths, one per tube ('f' wide, else mm); all narrow on the AMOLED. */
@@ -126,9 +132,10 @@ export const TUBE_WIDTHS: TubeWidths = chosen.widths;
 /** The LCD's res tag (`320f`, …); '' on the AMOLED. */
 export const RES_TAG = BOARD === 'lcd316' ? resTag(chosen.rows, chosen.widths) : '';
 /** Canvas px per design px of tube i (0 = hours, 1 = minutes, 2 = seconds; 1 on the AMOLED): params.ts boardParams
- *  scales every px param by it. LCD narrow: at the AMOLED's physical size (0.083 / 0.0912 mm per panel px, the float32
- *  of layout.h); wide: with the canvas height; mm: narrow x mm / 6 (layout.h PX_SCALE_MM, float32). */
-const PX_SCALE_NARROW = Math.fround(830 * PANEL_H / (912 * LCD_PANEL_H));
+ *  scales every px param by it. LCD narrow: at the AMOLED's physical size (DESIGN_MM_PER_PX / LCD_MM_PER_PX per panel
+ *  px, the ratio in double of the float32 pitches, rounded once as layout.h); wide: with the canvas height; mm: narrow x
+ *  mm / 6 (layout.h PX_SCALE_MM, float32). */
+const PX_SCALE_NARROW = Math.fround(Math.fround(DESIGN_MM_PER_PX) * PANEL_H / (Math.fround(LCD_MM_PER_PX) * LCD_PANEL_H));
 export const TUBE_PX_SCALE: readonly number[] = BOARD === 'lcd316'
   ? chosen.widths.map((w) => w === 'f' ? PANEL_H / DESIGN_H : w === NARROW_MM ? PX_SCALE_NARROW
     : Math.fround(PX_SCALE_NARROW * Math.fround(Math.fround(w) / 6)))
@@ -140,8 +147,8 @@ export const PX_SCALE_MAX = Math.max(...TUBE_PX_SCALE);
 export const PX_SCALE_FIZZ = PX_SCALE_MAX;
 /** Digit sprite sheets (public/assets digits-*.png, firmware gen/sprites_gen.h): the cell rows of the sheet this
  *  canvas's glyphs are filtered from. 64 at design size (`<name>.png`); a face with a tube drawn larger takes the 100-row
- *  cut (`<name>-100.png`, good to 100 / 64 = 1.56 x; the 10 mm tube is 1.52 x), so a glyph keeps the sheet texels per
- *  pixel it has on the AMOLED (layout.h). */
+ *  cut (`<name>-100.png`, good to 100 / 64 = 1.56 x: at 320 rows a tube up to 9.3 mm), so a glyph keeps the sheet
+ *  texels per pixel it has on the AMOLED (layout.h). */
 export const SPRITE_CELL_H = PX_SCALE_MAX > 1 ? 100 : 64;
 /** Short name of the canvas for labels: `amoled191`, `lcd316@320`, `lcd316@320f`, `lcd316@320fh` (see resTag); a
  *  three-tube face adds `+t3` (`amoled191+t3`, `lcd316@320fh+t3`). */
@@ -177,8 +184,6 @@ export const LIQUID_RGB888 = 0x5dcaa5;
 export const LIQUID_HI_RGB888 = 0x9fe1cb;
 export const BG_RGB888 = 0x000000;
 
-/** mm per design px (the AMOLED's pitch): params are derived / migrated with it (material layer, legacyTraceDrain). */
-export const DESIGN_MM_PER_PX = 0.083;
 /** mm per canvas px for the physical meniscus of a tube at px scale k: a scaled bore stays the same bore in mm (layout.h). */
 export const mmPerPxAt = (k: number): number => DESIGN_MM_PER_PX / k;
 /** Canvas px per mm on the glass (the panel's pitch; the LCD canvas at its share of the 320 rows): params in mm

@@ -6,7 +6,7 @@ _Last update: 2026-11-10 (stacked tubes: `tubeStack` / `tubeGap`)_
 
 - Params v28: `tubeStack` (bool) + `tubeGap` (mm, 0 = touching). On: the tubes lie `tubeGap` apart and the stack is
   centred on the face; `hoursY` / `minutesY` are not read. Off (every preset): rows as before.
-- `tubeGap` is real mm on the glass (layout `PX_PER_MM`: 0.083 mm per AMOLED px, 0.0912 per LCD panel px), not design
+- `tubeGap` is real mm on the glass (layout `PX_PER_MM`: 0.083 mm per AMOLED px, 0.0825 per LCD panel px, `LCD_MM_PER_PX`), not design
   px: the same distance at any tube width; cut to the rows the canvas has left.
 - Run-time, no cost: sim `faceLayout` / firmware render.h `faceLayout` + `stackGap`; a layout change wipes the panel
   once (as `hoursY` did). Two-tube firmware now passes the face layout's rows to renderTube too.

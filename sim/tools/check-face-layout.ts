@@ -7,7 +7,7 @@
 // Run: npm run check:layout (the parent spawns one child per configuration: spec/layout reads LW_* at import).
 const { execFileSync } = require('child_process'); declare const process: any; declare function require(m: string): any;
 declare const __filename: string;
-import { BOARD, BOARD_TAG, PANEL_H, LCD_PANEL_H, TUBE_COUNT, TUBE_PX_SCALE, LCD_RES, NARROW_MM, resTag, tube3HeightAt } from '@spec/layout';
+import { BOARD, BOARD_TAG, PANEL_H, LCD_PANEL_H, LCD_MM_PER_PX, TUBE_COUNT, TUBE_PX_SCALE, LCD_RES, NARROW_MM, resTag, tube3HeightAt } from '@spec/layout';
 import { DEFAULT_PARAMS, PRESETS, presetParams, tubeParams, type Params } from '../src/params';
 import { faceLayout, tubeLayout, tubeRows } from '../src/render';
 
@@ -37,7 +37,7 @@ for (let h = 4; h <= 80; h++) for (const hoursY of [0, 12, 100, 224]) for (const
 for (let h = 4; h <= 80; h += 4) for (const tubeGap of [0, 0.1, 0.5, 1, 2.5, 6, 10, 400, -3])
   cases.push([`h${h} stacked ${tubeGap} mm`, { ...DEFAULT_PARAMS, tubeHeight: h, hoursY: 12, minutesY: 100, tubeStack: true, tubeGap }]);
 // mm per canvas px, from the panels' pitches (not from spec/layout PX_PER_MM, which the layout under test reads)
-const MM_PER_PX = BOARD === 'lcd316' ? 0.0912 * LCD_PANEL_H / PANEL_H : 0.083;
+const MM_PER_PX = BOARD === 'lcd316' ? LCD_MM_PER_PX * LCD_PANEL_H / PANEL_H : 0.083;
 let fails = 0;
 for (const [name, p] of cases) {
   const ps = tubeParams(p), lay = faceLayout(ps), rows = ps.map((_, i) => tubeRows(lay, i));

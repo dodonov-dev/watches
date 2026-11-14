@@ -10,7 +10,7 @@
 //                  panel's aspect, RENDER_H rows (default 320 = native; 240 / 256 / 288 render fewer pixels and
 //                  are upscaled to the panel on push, display_lcd316.cpp). Tube width per tube: narrow (LCD_FILL_x
 //                  0, the default) = px params at the AMOLED's physical size (a design px = 0.083 mm, the LCD's
-//                  pitch 0.0912 mm: 0.910 panel px), the tube still the panel's full length, the rows it leaves
+//                  pitch LCD_MM_PER_PX 0.0825 mm: 1.006 panel px), the tube still the panel's full length, the rows it leaves
 //                  black; wide (1) = scaled with the canvas height (4/3 at native), filling the face as on the
 //                  AMOLED. LCD_FILL sets both tubes, LCD_FILL_H / LCD_FILL_M one each. The board tag (`v`, sim
 //                  ?res= / LW_RES) says which: lcd316@320 (both narrow), @320f (both wide), @320fh (hours wide),
@@ -52,6 +52,10 @@
 #ifdef BOARD_LCD316
 #define LCD_PANEL_W        820   // along the tubes (the LCD's 820 scan lines)
 #define LCD_PANEL_H        320   // across them (its 320-px lines)
+// The LCD's pixel pitch, mm (both axes): Waveshare's dimension drawing, active area 26.40 x 67.65 mm for 320 x 820 px
+// (docs/lcd316-mechanical.md); confirmed 2026-11-13 with a steel ruler on the measuring face (`m`). A new value goes here
+// (and in spec/layout.ts), every LCD scale below follows. (Not the nominal 3.16" diagonal: that gave 0.0912.)
+#define LCD_MM_PER_PX      0.0825f
 #ifndef RENDER_H
 #define RENDER_H           320
 #endif
@@ -73,7 +77,9 @@
 #define LCD_FILL_S         LCD_FILL   // seconds tube wide (TUBE_COUNT 3)
 #endif
 #define PX_SCALE_WIDE      ((float)PANEL_H / DESIGN_H)
-#define PX_SCALE_NARROW    ((float)(830 * RENDER_H) / (912 * LCD_PANEL_H))   // 0.083 / 0.0912 per panel px, exact ratio
+// Narrow: a design px (DESIGN_MM_PER_PX) in LCD panel px, at this canvas's share of the 320 rows; the ratio in double,
+// rounded to float once (spec/layout.ts does the same).
+#define PX_SCALE_NARROW    ((float)((double)DESIGN_MM_PER_PX * RENDER_H / ((double)LCD_MM_PER_PX * LCD_PANEL_H)))
 #define PX_SCALE_MM(mm)    (PX_SCALE_NARROW * ((float)(mm) / 6.0f))   // a tube of mm (LCD_MM_x): 6 = narrow
 #ifdef LCD_MM_H
 #define PX_SCALE_H         PX_SCALE_MM(LCD_MM_H)
@@ -130,8 +136,8 @@
 #define PX_SCALE_FIZZ      PX_SCALE_MAX
 // Digit sprite sheets (gen/sprites_gen.h, sim public/assets digits-*.png): the cell rows of the sheet this build's
 // glyphs are filtered from. 64 at design size; a face with a tube drawn larger takes the 100-row cut (good to 100 / 64 =
-// 1.56 x; the 10 mm tube is 1.52 x), so a glyph keeps the sheet texels per pixel it has on the AMOLED. A float compare,
-// as PX_MIXED.
+// 1.56 x: at 320 rows a tube up to 9.3 mm; render.cpp static_asserts it), so a glyph keeps the sheet texels per pixel it
+// has on the AMOLED. A float compare, as PX_MIXED.
 #define SPRITE_CELL_H      (PX_SCALE_MAX > 1.0f ? 100 : 64)
 #define TUBE_LENGTH_PX     PANEL_W   // full width; leather may mask the outer ~10px
 // Strip buffer rows: the largest preset tube at this scale. Defaults below; runtime values come from params

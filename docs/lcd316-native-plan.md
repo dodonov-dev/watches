@@ -91,7 +91,8 @@ the 240-px-tall canvas.
    scale table for the firmware, so both sides scale one list. Digits scale through `digitScaleX/Y` (fractional,
    nearest-neighbour). Rounded geometry (`tubeHeight`, `hoursY`, `minutesY`) rounds after scaling, with the alignment
    rule of A.2.
-2. `MM_PER_PX` per board (0.083 AMOLED, ≈0.0912 LCD): decide whether the physical meniscus and the material layer use
+2. `MM_PER_PX` per board (0.083 AMOLED, 0.0825 LCD: `spec/layout.h` LCD_MM_PER_PX, from Waveshare's drawing; the
+   nominal-diagonal ≈0.0912 used until 2026-11-13 was wrong): decide whether the physical meniscus and the material layer use
    the real pitch (honest physics: a bigger bore → flatter meniscus on the LCD) or the design canvas (same look on both).
    Recommendation: real pitch; it is what the material layer models.
 3. Alternative, not recommended: per-board preset sets migrated by a script — doubles every future preset change.

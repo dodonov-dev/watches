@@ -51,8 +51,8 @@ produce color separation at high-contrast boundaries, especially away from cente
 
 Separately, RGB emitters occupy different physical locations. A lens can reveal
 color structure without an objectionable visible pixel grid. Assuming equal RGB
-stripes, the nominal subpixel pitch would be 28–30 micrometres for the repository's
-0.083/0.0912 mm pixel pitches. Actual panel layout and its orientation relative to
+stripes, the nominal subpixel pitch would be 27.5–28 micrometres for the repository's
+0.083/0.0825 mm pixel pitches. Actual panel layout and its orientation relative to
 the cylinder must be inspected; this assumption is not an AMOLED specification.
 
 This model excludes surface grooves, internal index variations, coatings, stress,
