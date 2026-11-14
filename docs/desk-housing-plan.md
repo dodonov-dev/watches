@@ -114,3 +114,6 @@ Axes: X right (seen from the front), Y front → back (front face y = 0), Z up (
   tall**. Back hole 15 × 8.5 centred 7.5 above the rim. The adapter's socket face sits ~4.5 inside the back wall, so
   no extension. Assumed: the port face is flush with the PCB edge, and the port axis is ~2 mm in front of the back of
   the board stack. Check on the board.
+- **Battery picked (user): 3000 mAh, 10 × 35 × 68, MX1.25 plug.** Taped upright behind the board, centred on its
+  height (z 17.9..85.9). It clears the adapter below it. Even attached before the up-then-forward insertion, it leaves
+  3.9 to the back wall (8.4 seated). Checked in the model.

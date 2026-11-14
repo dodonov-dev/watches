@@ -98,7 +98,9 @@ CAR_T = 2.0
 CAR_TOP_GAP = 0.2            # carrier top to the cavity ceiling: the Z stop, smaller than the rods' end play
 LEG_X, LEG_W, LEG_GAP = 13.5, 3.0, 0.1   # legs outside the breakout cradle; gap to the lid plug
 SCREW_D, HEAD_D = 2.3, 3.9   # M2 countersunk (DIN 965: head 3.8), clearance hole
-BAT_W, BAT_H, BAT_T, BAT_Z0 = 29.5, 47.7, 9.9, 30.0       # BerryBase Soldered 103048, between the nut rows
+BAT_W, BAT_H, BAT_T, BAT_Z0 = 29.5, 47.7, 9.9, 30.0       # BerryBase Soldered 103048, between the nut rows (carrier)
+if PROTOTYPE:   # prototype: the user's pick, 3000 mAh 10 x 35 x 68, taped behind the board, upright, above the USB adapter
+    BAT_W, BAT_H, BAT_T, BAT_Z0 = 35.0, 68.0, 10.0, None
 RAIL_T, RAIL_CLR, RAIL_DEPTH = 1.2, 0.3, 6.0
 
 # logo: E+H letters (trace_logo.py) cut through a side wall
@@ -144,6 +146,8 @@ CAV_YC = FRONT + CAV_D / 2
 PLUG_TOP = PLUG_H
 PCB_Z0 = PCB_Z0_PROTO if PROTOTYPE else PLUG_TOP + CHIN
 PCB_Z1 = PCB_Z0 + PCB_H
+if BAT_Z0 is None:                                 # prototype battery: centred on the board's height
+    BAT_Z0 = PCB_Z0 + (PCB_H - BAT_H) / 2
 CAV_H = PCB_Z1 + CLEAR_TOP
 H_SHELL = CAV_H + TOP
 AA_ZC = PCB_Z0 + AA_Z_FROM_PCB_BOTTOM + AA_H / 2
@@ -335,11 +339,11 @@ check(INSERT_MAX - INSERT_SHIFT >= INSERT_SPARE_MIN,
       f"insertion: needs {INSERT_SHIFT:.2f} back, the cavity allows {INSERT_MAX:.2f}")
 check(CAV_W / 2 - PCB_W / 2 - PLUG_PROUD >= 1.0, "no room beside the PCB for the JST plugs")
 # carrier, battery
-check(BAT_Z0 - RAIL_T >= PCB_Z0 + NUT_INSET + HEAD_D / 2 + 1 and BAT_Z0 + BAT_H <= PCB_Z1 - NUT_INSET - HEAD_D / 2 - 1,
+check(PROTOTYPE or BAT_Z0 - RAIL_T >= PCB_Z0 + NUT_INSET + HEAD_D / 2 + 1 and BAT_Z0 + BAT_H <= PCB_Z1 - NUT_INSET - HEAD_D / 2 - 1,
       "battery (or its ledge) overlaps the screw heads")
-check(BAT_W / 2 + RAIL_CLR + RAIL_T <= PCB_W / 2, "battery rails wider than the carrier plate")
+check(PROTOTYPE or BAT_W / 2 + RAIL_CLR + RAIL_T <= PCB_W / 2, "battery rails wider than the carrier plate")
 check(NUT_INSET - HEAD_D / 2 >= 0.8 and PCB_W / 2 - NUT_DX / 2 - HEAD_D / 2 >= 0.8, "screw heads break the plate edge")
-check(RIB_TOP < BAT_Z0 - RAIL_T - 0.5, "ribs reach the battery ledge")
+check(PROTOTYPE or RIB_TOP < BAT_Z0 - RAIL_T - 0.5, "ribs reach the battery ledge")
 check(LEG_X - LEG_W / 2 >= BO_W / 2 + BO_CLR + BO_LIP + 0.3, "carrier legs stand in the breakout cradle")
 check(LEG_X + LEG_W / 2 <= PCB_W / 2, "carrier legs wider than the plate")
 # lid, magnets, USB

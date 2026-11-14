@@ -4,14 +4,14 @@ cavity       44.0 x 28.0 x 91.85, corners R3.0 (6 mm bit or corner drill in wood
 slots        8.6 x 69.45 at x +-10.23, z 19.10..88.55, corners R0.0; on the face 14.60 x 75.45
 face margins flat beside the bevels 3.47 (+ R4.0 edge), bridge 5.86 on the face / 11.86 at the rim, above 4.30 (+ R3.0 edge), below 16.10 to the rim (19.10 to the desk)
 rods         8.0 x 4.0 x 68.65; apex over the face 0.55..0.75, over the rim (slot edge) 3.55..3.75 (tape 0.05..0.25); in the slot 0.30 per side, 0.40 per end
-insertion    up at 4.50 further back (rod 4.0 + tape 0.25 + 0.25), then forward. The cavity allows 6.60: 2.10 spare behind the battery
-  up move      rods to the front wall 0.75, battery to the back wall 4.00, carrier to the ceiling n/a, plugs to the side wall 1.32; nearest to the light box n/a
+insertion    up at 4.50 further back (rod 4.0 + tape 0.25 + 0.25), then forward. The cavity allows 6.50: 2.00 spare behind the battery
+  up move      rods to the front wall 0.75, battery to the back wall 3.90, carrier to the ceiling n/a, plugs to the side wall 1.32; nearest to the light box n/a
   forward move rods in the slots 0.31, nearest to the light box n/a; no overlap anywhere on either move, also with the carrier up on its Z stop
-  lid move     straight up, no overlap; nearest: adapter to board 0.00, adapter to glass 1.12, adapter to rod-l 7.28
+  lid move     straight up, no overlap; nearest: adapter to board 0.00, adapter to glass 1.12, adapter to battery 5.43
 Z stops      legs 0.1 above the lid plug, carrier top 0.2 under the ceiling; rod end play 0.40
 magnets      4 x D2.0 x 1.0 in holes D2.1 x 1.2, wall round the hole 0.61; at (-22.30, 2.70), (-22.30, 31.30), (22.30, 2.70), (22.30, 31.30)
 USB          hole 15.0 x 8.5 R4.2 at z 7.50 (3.25 above the rim); adapter socket centre 5.00 below the PCB, its face ~4.5 inside the back wall; body 4.0 above the rim
-carrier      plate 33.35 x 2.0 x 79.15, legs at x +-13.5, battery z 30.0..77.7, screws M2 x 5 countersunk
+carrier      plate 33.35 x 2.0 x 79.15, legs at x +-13.5, battery z 17.924999999999997..85.925, screws M2 x 5 countersunk
 logo         left (-X), letters 24.00 x 15.14, y 5.00..29.00, z 50.26..65.39 (centre 57.83 = tubes' mid-height + 4.0)
   margins      1.00 to the ends of the 26 mm outer flat, 1.13 to the diffuser's edges in Y, 2.00 in Z
   strips       thinnest wall between the cuts 1.23 (target >= 1.2 print, 2 wood): slanted edges 1.23, horizontal edges 1.40, vertical edges 1.47
@@ -31,7 +31,7 @@ gaps along the insertion path, mm (swept body to what is fixed; 0.00 = it ends s
   button-slide          4.32        nan             4.32        nan
   plug-j5               1.32        nan             1.32        nan
   plug-i2c              1.32        nan             1.32        nan
-  battery               4.00        nan             4.00        nan
+  battery               3.90        nan             3.90        nan
 
 logo options (letters that fit with 1.0 mm to the flat's ends and to the diffuser's edges):
   R_IN  R_OUT  wood bit  letters W x H   limit      strip  magnet meat
