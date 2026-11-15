@@ -10,14 +10,20 @@ The authoritative list. Everything further down is history and alternatives.
 |---|---|---|
 | `shell.stl` | PLA Matte, black or ivory | print upside down (top on the bed) |
 | `lid.stl` | PLA Matte, same colour | flat plate, 4 magnet holes |
-| `teststrip.stl` | PLA Matte, same colour as the shell | judges the slot width, edge profile and chamfer light spill |
+| `teststrip.stl` | PLA Matte, same colour as the shell | 126.8 × 85.5; print it face up (the F pad stands 1 mm proud). Judges the slot width, edge profile, chamfer light spill and the flat slot ends |
 | `logo-inlays.stl` | PLA/PETG Translucent, white/natural (or amber for contrast) | 3 clearance sets; print flat as it lies |
+| `out-smooth/upright/shell.stl` + `lid.stl` | PLA Matte, black or ivory | smooth shell, upright; shell standing on its rim, lid flat |
+| `out-smooth/tilt15/shell.stl` + `lid.stl` | PLA Matte, black or ivory | smooth shell, 15°; same orientation; takes the 24 mm logo inlays |
+| `out-smooth/oval/shell.stl` + `lid.stl` | PLA Matte, black or ivory | oval shell; shell standing on its rim, lid flat |
+| `out-smooth/oval/teststrip.stl` | PLA Matte, same colour as the oval shell | front slice of the oval, 55 × 12 × 95; print standing like the shell |
+| `out-smooth/logo-inlays-small.stl` | PLA/PETG Translucent, white/natural | 14 mm letters for the upright and oval fronts; 3 clearance sets; print flat |
 
 **Components:**
 
 | Part | Status | Where / search | Must have |
 |---|---|---|---|
 | 90° USB-C adapter | user ordering | MOGOOD (Amazon) | bends over its flat side; listing: plug 8, body 7 × 12 × 21 (the model is built for it) |
+| USB-C extension, right-angle plug + socket (15° shell) | user ordering | Amazon `USB-C Verlängerung 90 Grad Winkel` | angled over the flat side, like the MOGOOD; head ≤ 12 × 7 × 21; cable ≤ 5 mm for the notch (or widen it) |
 | Battery | user picked | 3000 mAh, 10 × 35 × 68 | plug MX1.25 / Molex 1.25 / Micro JST 1.25 2-pin (not PH 2.0, not GH); polarity: red to "+" |
 | Magnets Ø2 × 1 (8 used) | to order | supermagnete S-02-01-N (link below) or Amazon `Neodym Magnete 2x1 mm rund` | glued in, polarity by stacking |
 | Warm-white LEDs | to order | Amazon `vorverdrahtete LED warmweiß 3V` / `SMD LED 0603 mit Kabel warmweiß`, or Schönwitz 50058 (below) | ~100 Ω at 3.3 V if no resistor |

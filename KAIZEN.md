@@ -872,3 +872,32 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - agy (print mode) for shopping links: in `--mode plan` it stopped after its progress notes. When resumed, most URLs
   were 404 or the wrong product, and it presented "verified specs" it had invented. Always re-verify its links
   (WebFetch) before passing them on.
+
+## WSL CAD setup (2026-11-14)
+- `cad/desk/housing.py` test-strip labels use `Text()` with the system default font (here fc-match Arial → Nimbus
+  Sans): teststrip.stl/.step differ per machine (volume 23670.89 vs 23670.55). Pin a font file in the repo.
+- Every rebuild rewrites the STEP header timestamp → 4 spurious diffs. Strip / fix the FILE_NAME date on export.
+
+## Desk housing v2 concept (2026-11-14)
+- Rod ends: the flat-cut half-rounds will read as cut bars, not as tubes (the renders draw domed test tubes). Try a
+  polished 30–45° bevel on a scrap piece, or clear SLA lenses with domed ends.
+- Concept renders: codex follows a clay massing view (`cad/desk/concept/`) for the shape, but drifts on the tube
+  position, the tube ends and the digits. Check every render against the clay.
+- Tilted housings (wedge 20–30°, yoke): fizz keeps rising along the tube when the face lies back (user, 2026-11-14).
+  Try `fizzEdgeRise` / `fizzFlatRise` at 30° and face-up before touching code; then a fizz pass if they don't cover it.
+
+## Desk housing smooth shells (2026-11-15)
+- tilt15 USB: cable through a rim notch for now. Later (user): a USB-C breakout or panel socket in the back wall.
+- tilt15 board height is set by the MOGOOD adapter's box (12 × 7 × 21). Set it from the real right-angle plug head.
+- Rear magnets: 0.51 of wall round the holes. Steel discs or local bosses would allow R7 cavity corners (~0.5 less depth).
+- Rod ends have 0.1 play per end; 0.11 off already collides in the model. Jig or more end play if prints come short.
+- Upright USB hole (15 × 8.5 R4.2) leaves ~0 for a square 12 × 6.5 overmould. Check the real plug, or R3 corners.
+- Ceiling joins (R2, R3) pass 45° over ~1.4 mm. Sharp joins if the print sags there.
+- `smooth.py` rebuild takes ~50 s and rewrites STEP timestamps, as v1 does.
+- Logo light: addressable RGB (SK6812 / WS2812, 2–3 behind the letters) instead of warm white: match the liquid
+  colour, time of day, charge state. One free GPIO + a small firmware addition; ~1 mA each when dark. Pin not checked.
+- Oval shell: only 2.88 of face between the slot openings (thick centre wall × 45°). Steeper inner bevels widen it.
+- Oval ceiling bridge is 14.45; a taller taper shortens it.
+- Preview STLs facet the R6 edge; a finer tessellation for renders only.
+- Small front logo: only 2.2 between the wall and the adapter on upright; rods sweep past at |x| ≥ 6.2. LEDs beside the adapter.
+- A slot coupon for upright / tilt15 printed standing like the shell (the v3 strip prints face up).

@@ -129,3 +129,60 @@ Axes: X right (seen from the front), Y front → back (front face y = 0), Z up (
   (1 / 2 / 3 dimples on the back of the E). Print flat, outer face down, in PLA/PETG Translucent white/natural.
   Shell, lid and test strip: PLA Matte, black or ivory (ivory: the rods may tint the chamfers; judge it on the test
   strip in the same colour first). FDM, the shell upside down (top on the bed).
+- **Test strip v3 (2026-11-14, flat slot ends):** row 1 gets a full-length pair E / F after the width slots, 20.46
+  apart, to lay over both lit tubes. Bevel 45° on the long sides only; the two ends are straight walls, so the cut end
+  of the rod is hidden and the tube reads as running into the body.
+  - Slot 8.6 × 66.85 for a rod cut to **66.65** (lit 67.65 − 1; 0.1 play per end): the slot ends inside the lit area,
+    so no black glass shows. The firmware draws the tube over the full lit length with no end cap
+    (`TUBE_LENGTH_PX = PANEL_W`, presets `cornerR` 0).
+  - **E:** 3 mm front, bevel to 0; the rod's crown is 0.55–0.75 over the face, so a sliver of the cut end still shows.
+  - **F:** 4 mm front (a pad 1 mm proud of the strip's face), bevel 3 mm deep to a 1 mm straight rim; the crown is
+    0.25–0.45 under the face. Same 14.6 opening on the face. The rim is what the wood version needs anyway.
+  - Strip now 126.8 × 85.5; print it face up. The shell is unchanged until the strip is judged.
+
+## Smooth shells (2026-11-15): build notes
+Model `cad/desk/smooth.py` → `cad/desk/out-smooth/{upright,tilt15}/` (shell, lid, assembly, `report.txt`, views).
+Rebuild: `~/.venvs/cad/bin/python cad/desk/smooth.py && ~/.venvs/cad/bin/python cad/desk/render_smooth.py`.
+- **Shape (user):** one-piece shell + flat 3 mm lid, v1's inside. Top roll R15, rear corners R10, R5 on all other
+  upper edges, back vertical. Width 50.
+  - upright: 50 × 30 × 110.
+  - tilt15: front leans back 15°, top level: 50 × 49.7 × 106.5 (footprint 47.4 deep, flat top 5.3 deep).
+- **Slot (user):** E: 3 mm front, 45° on the long sides to zero, straight ends, 8.6 × 66.85 for rods cut to 66.65.
+  `SLOT_TYPE = "F"` switches to the 4 mm front with a 1 mm rim.
+- **Assembly order (user):** the board with the rods on goes in first (4 mm back, up, the rods drop into the
+  openings); then the battery behind it; then the adapter or plug; then the lid. `--order=v1` (battery on the board:
+  32 / 53.5 deep) and `--order=rods-after` are switches.
+- **Depth limits:** upright: the adapter, 0.5 from the back wall. tilt15: the battery on its way in (0.83) and the
+  R10 corners meeting the top (49.5 is the shallowest on a 0.5 grid).
+- **Cavity:** front corners R4.5, rear R8.5 (R3 would leave 1.34 of wall inside R10). Ceiling: 45° ramp under the
+  roll, flat 5.9 / 4.5, 45° × 4 at the back; printed standing on the rim.
+- **Magnets:** wall round the holes 0.72–0.75 front, 0.51 rear. Glue them, do not press.
+- **USB:** upright keeps v1's hole and the MOGOOD adapter. tilt15: a notch 5.6 × 6 at the rim of the back wall and a
+  right-angle USB-C extension straight in the board's port (user's pick); the cable is laid in with the lid off.
+  Head, strain relief and bend of the real cable are not modelled: about 1 mm between the head and the lid.
+- **Logo (user, positions agreed):** tilt15: v1's 24 mm cut letters low on the left (v1's inlays fit). upright and
+  oval: one small logo cut through the front, centred under the tubes: letters 14.0 × 8.83, 3.4 above the rim and
+  1.4 below the glass, 0.72 between the letter cuts. Shared inlays `out-smooth/logo-inlays-small.stl` (3.0 thick,
+  clearances 0.10 / 0.15 / 0.20). LED room behind the letters is 2.2 deep on upright (the adapter); more beside it.
+- **Tipping (assumed masses):** upright ~19 gf at the top either way; tilt15 ~39 forwards, ~28 backwards.
+- **Reviews:** two Astra passes through the Codex CLI; geometry, walls, sweeps and STLs reproduced. Left for the
+  real parts: the tilt15 cable, battery tape stack and reach, the E slot's fit (test strip), the upright USB plug.
+
+## Oval shell (2026-11-15): build notes
+Third variant in `cad/desk/smooth.py` → `cad/desk/out-smooth/oval/`. The user's "shampoo bottle".
+- **Shape:** superellipse plan (W 56, D 36, n 2.8) extruded straight up, flat top with an R6 edge, flat flush lid:
+  56 × 36 × 110. Inside, assembly order and USB as the upright shell.
+- **Front:** curved outside, flat inside; 4.55 on the centre line. Across each slot 4.47 → 4.16 → 3.47 (inner edge,
+  centre, outer edge); the whole rod sits under the face, closest 0.38–0.58 behind it.
+- **Slots:** E adapted: 45° on the long sides from a zero rim out to the curved face, straight ends. The face
+  between the two openings is 2.76 wide (5.86 on the other shells); the check was lowered from 4.0 to 2.5.
+- **Cavity:** uniform 3 mm wall. Ceiling: 45° taper all round, 7 high, to a flat 36 × 14.45 (the bridge).
+- **Magnets:** in bosses Ø3.7 × 3 inside the rim; wall round the holes 0.75 (rim), 1.25 (lid).
+- **Logo:** as upright: 14 mm letters cut through the front under the tubes. A flat recess inside (x ±8) leaves
+  3.0 of wall on the centre line, so the shared 3.0 inlay fits; the face bows 0.13 across the letters.
+- **Test strip:** `out-smooth/oval/teststrip.stl`, the shell's front slice (in front of y 12, rim to 8 above the
+  slots, 55 × 12 × 95) with the logo cut-out; prints standing like the shell, lays over the lit glass.
+- **Exports:** the cavity plan as OCC offset curves lost its faces in STEP; now splines along the plan's normal.
+  Every STEP is re-imported on export; STLs use an absolute 0.01 deflection and are re-read.
+- **Tipping (assumed masses):** ~25 gf backwards, ~23 forwards.
+- **Review:** one Astra pass (found the broken STEP, the rod and bridge numbers, thin STL skin; all fixed), then a delta pass.

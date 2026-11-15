@@ -1,0 +1,20 @@
+Study the attached images first (they are also in your working folder).
+- clay-two-hero.png (three views: front-left, left, rear-right) and clay-two-ortho.png (front, left side, top-down): a clay massing model of a small desk clock housing. THIS IS THE GEOMETRY TO RENDER. Keep its proportions, the slope of its front and its part split exactly. The clay colours only code the parts:
+  ivory = the "ribbon": the sloping front face and the narrow top are ONE continuous band, 3 mm thick, that rolls from the slope onto the top in a soft curve (radius 12 mm) and shows its 3 mm edge on both sides;
+  brown = the "cradle": both sides and the back as one piece. The back is vertical, its two rear vertical corners are rounded (radius 10 mm). Each side is wedge-shaped: wide at the base, narrow at the top;
+  black = a 2 mm plinth, inset 2 mm all round, which reads as a shadow gap;
+  blue = the two tubes lying on the slope;
+  the amber rectangle on the left side = the position and the size of the logo.
+- 0-current-box.jpg: the PREVIOUS boxy design. Use it ONLY for the look of the liquid inside the tubes, the shape of the two logo letters E and H, and the scene (a wooden desk, soft warm daylight, a blurred plant behind). Do NOT copy its box shape, its rectangular bevelled window frames or its lid seam.
+
+Generate ONE photorealistic product photograph, portrait 2:3, three-quarter view from the front-left, slightly above (the first clay view), 85 mm lens look, the object sharp.
+
+Real size: 50 mm wide, 97 mm tall, 48 mm deep at the base and only about 14 mm deep at the top. The front slopes back 20 degrees from the vertical. The back is vertical.
+
+Must hold:
+1. Silhouette as in the clay: seen from the side it is a right-angled wedge that narrows towards the top. No seam or line anywhere on the sloping front or on the top. The only joint is the fine line on each side where the ribbon's 3 mm edge meets the cradle; it runs up the slope and round the top.
+2. A dark inset plinth: a thin shadow gap between the body and the desk. No feet, no screws, no buttons, no cable, no text other than the tube scales and the logo.
+3. Materials: the cradle is dark American walnut with a matte oil finish and vertical grain. The ribbon is a warm ivory, perfectly matte, uniform, no grain (a painted or resin-printed part). The two-tone joint line is crisp.
+4. Logo: only the two letters E and H, 20 mm wide, exactly where the amber rectangle is in the clay: low on the left walnut side, in its wide part, level with the desk. A soft amber glow through a paper-thin skin of walnut: no cut-outs, no hard edges.
+
+THE TUBES (the same in every design; get this right): each tube is a clear half-round acrylic rod, 8 mm wide and 4 mm high, lying flat on a display behind the face. Through it you see the display's picture of a glass tube of liquid: blue liquid with a level surface and a few tiny bubbles, a cream-white empty part above it, and a black printed scale with tick marks and digits (left tube: hours 1 to 11, liquid up to between 7 and 8; right tube: minutes 5 to 55, liquid up to between 25 and 30). Each rod lies in a V-shaped channel cut into the face: the two long sides of the channel slope down at 45 degrees to the rod, the two short ends are plain straight walls. The rod runs right up to those end walls, so the tube seems to continue into the body at both ends. NO tube ends are visible: no domed test-tube tops, no rounded glass bottoms, no caps, no rims, no straps. The rod's crown sits level with the face. The two tubes are slim and close together: each 8 mm wide and 67 mm long, 20.5 mm apart centre to centre.

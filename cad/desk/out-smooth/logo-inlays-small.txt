@@ -1,0 +1,4 @@
+LOGO INLAYS, small (front logo of upright and oval): letters 14 x 8.83, 3.0 thick, mirrored (outer face on the bed); clearance per side 0.1, 0.15, 0.2, set i has i + 1 dimples on the back of the H; 6 pieces, 13.8 x 34.2 overall
+strips between the letter cuts 0.72 (scaled from v1's 24 mm letters)
+files        [m] each STEP re-imported, each STL re-read:
+  logo-inlays-small STEP 6 solid(s), 184 faces, volume -0.0000 %, 678 kB; STL closed, 6836 triangles, volume +0.000 %, 334 kB

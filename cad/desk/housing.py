@@ -11,7 +11,8 @@ Parts (STEP + STL each, in out/):
              the side walls.
   lightbox   tray glued to the logo side wall: back plate, an opal sheet in front of it, LED troughs at the sheet's
              top and bottom edges. (opal: the sheet itself, as a cutting reference.)
-  teststrip  a plate as thick as the front with the same bevel and four slot widths.
+  teststrip  a plate as thick as the front with the same bevel and four slot widths, a flat-end slot pair (E, F) and
+             a row of edge profiles.
 Plus assembly.step / .stl with dummies (board, rods, battery, breakout, buttons, plugs), section STLs for render.py
 and report.txt.
 
@@ -140,6 +141,13 @@ TS_MARGIN = 5.0
 TS_PROFILES = ("S", "A", "B", "C", "D")   # straight, 45° to 1.5 rim, 45° to 0 (chosen), concave to 0.4 rim, round-over to 0
 INLAY_CLRS = (0.10, 0.15, 0.20)   # translucent letter inlays pressed into the logo cut-outs: clearance per side, one set each
 TS_PROFILE_L, TS_PROFILE_PITCH, TS_LABEL_H, TS_LABEL_D = 30.0, 18.0, 5.0, 0.6
+# flat-end slots (user, 2026-11-14): 45° on the long sides only, the two ends stay straight walls, so the tube's end
+# is hidden. The slot is as long as the rod, and that rod is cut 1 mm shorter than the lit area, so no black glass
+# shows at the ends. A full-length pair at TUBE_CC, to lay over both lit tubes:
+# (label, front thicker by, straight rim under the 45°). F: a 4 mm front, the rod's crown below the face.
+TS_FLAT = (("E", 0.0, 0.0), ("F", 1.0, 1.0))
+TS_FLAT_ROD_L = AA_H - 1.0
+TS_FLAT_PLAY = 0.2           # slot length over that rod, in total
 
 # ---- derived -------------------------------------------------------------------------------------------------
 FRONT = SLOT_RIM if FRONT_FLAT else FRONT_T
@@ -523,9 +531,33 @@ def teststrip_layout():
         bridge = xs[i] - xs[i - 1] - (TS_SLOTS[i] + TS_SLOTS[i - 1]) / 2 - 2 * BEVEL_W
         check(bridge >= 2.0, f"test strip: {bridge:.2f} between slots {i - 1} and {i}")
     x0 = xs[0] - TS_SLOTS[0] / 2 - BEVEL_W - TS_MARGIN
-    x1 = xs[-1] + TS_SLOTS[-1] / 2 + BEVEL_W + TS_MARGIN
+    x1w = xs[-1] + TS_SLOTS[-1] / 2 + BEVEL_W + TS_MARGIN            # where the width slots' part ends
+    xf = [xs[-1] + TS_PITCH + i * TUBE_CC for i in range(len(TS_FLAT))]   # the flat-end slots
+    gf = [flat_bevel(extra, rim)[1] for _, extra, rim in TS_FLAT]    # how far each opens on its face, per side
+    check(xf[0] - xs[-1] - (SLOT_W + TS_SLOTS[-1]) / 2 - gf[0] - BEVEL_W >= 2.0, "test strip: the first flat-end slot is too close to the width slots")
+    for i in range(1, len(xf)):
+        check(xf[i] - xf[i - 1] - SLOT_W - gf[i] - gf[i - 1] >= 2.0, f"test strip: {TS_FLAT[i - 1][0]} and {TS_FLAT[i][0]} too close")
+    check(TS_FLAT_ROD_L + TS_FLAT_PLAY <= AA_H, "flat-end slot longer than the lit area: black glass would show")
+    x1 = xf[-1] + SLOT_W / 2 + gf[-1] + TS_MARGIN
     h = SLOT_L + 2 * BEVEL_W + 2 * TS_MARGIN
-    return xs, x0, x1, h
+    return xs, x0, x1, h, xf, x1w
+
+
+def flat_bevel(extra, rim):
+    """Flat-end slot in a front FRONT + extra thick: (bevel depth, opening per side on its face)."""
+    d = FRONT + extra - rim
+    return d, d * math.tan(math.radians(BEVEL_DEG))
+
+
+def flat_end_cutter(x, zc, w, l, extra, rim):
+    """Slot w x l through a front FRONT + extra thick (the extra stands proud of the face, y < 0): bevelled on the
+    two long sides only, down to `rim` above the inner face; the two ends are straight walls."""
+    yf, over = -extra, 0.5
+    d, g = flat_bevel(extra, rim)
+    go = g * (d + over) / d
+    cut = box(x - w / 2, x + w / 2, yf - 1, FRONT + 1, zc - l / 2, zc + l / 2)
+    vee = Polygon((x - w / 2 - go, yf - over), (x + w / 2 + go, yf - over), (x + w / 2, yf + d), (x - w / 2, yf + d), align=None)
+    return cut + Pos(0, 0, zc - l / 2) * extrude(vee, l)
 
 
 def profile_g(name):
@@ -581,33 +613,48 @@ def make_logo_inlays():
 
 
 def make_teststrip():
-    """Front-wall coupon. Row 1: full-length slots TS_SLOTS wide with the chosen edge (slot n carries n notches on
-    the top edge). Row 2: one short SLOT_W slot per edge profile TS_PROFILES, its letter engraved below it."""
-    xs, x0, x1, h = teststrip_layout()
-    xc = (x0 + x1) / 2
+    """Front-wall coupon; print it with the face up. Row 1: full-length slots TS_SLOTS wide with the chosen edge (slot
+    n carries n notches on the top edge), then the flat-end pair TS_FLAT (bevel on the long sides only, straight ends,
+    as long as a rod cut to TS_FLAT_ROD_L), its letters engraved below; where TS_FLAT asks for a thicker front, a pad
+    stands proud of the face from the middle of the bridge to the strip's end. Row 2: one short SLOT_W slot per edge
+    profile TS_PROFILES, its letter engraved below it."""
+    xs, x0, x1, h, xf, x1w = teststrip_layout()
+    xc = (x0 + x1w) / 2
     span = (len(TS_PROFILES) - 1) * TS_PROFILE_PITCH
     row2_h = TS_PROFILE_L + 2 * FRONT + TS_LABEL_H + 3 * TS_MARGIN / 2
     px0, px1 = min(x0, xc - span / 2 - SLOT_W / 2 - FRONT - TS_MARGIN), max(x1, xc + span / 2 + SLOT_W / 2 + FRONT + TS_MARGIN)
-    t = box(px0, px1, 0, FRONT, -h / 2 - row2_h, h / 2)
+    zb = -h / 2 - row2_h                               # the strip's bottom edge
+    t = box(px0, px1, 0, FRONT, zb, h / 2)
+    for i, (x, (name, extra, rim)) in enumerate(zip(xf, TS_FLAT)):
+        if extra > 0:
+            t += box((x + (xf[i - 1] if i else xs[-1])) / 2, px1, -extra, 0, zb, h / 2)
     z2 = -h / 2 - TS_MARGIN / 2 - FRONT - TS_PROFILE_L / 2
+    zt = z2 - TS_PROFILE_L / 2 - FRONT - 1.0 - TS_LABEL_H / 2
+
+    def engrave(t, name, x, extra=0.0, notches=0):
+        try:
+            from build123d import Text
+            label = Plane.XZ.offset(extra) * Pos(x, zt) * Text(name, font_size=TS_LABEL_H)
+            return t - extrude(label, TS_LABEL_D, dir=(0, 1, 0))
+        except Exception as e:                         # no font: fall back to notches on the bottom edge
+            print(f"test strip label {name}: {e}; notches instead")
+            for k in range(notches):
+                xn = x + (k - (notches - 1) / 2) * 2.0
+                t -= box(xn - 0.5, xn + 0.5, -2, FRONT + 1, zb - 1, zb + 1.0)
+            return t
+
     for i, name in enumerate(TS_PROFILES):
         x = xc - span / 2 + i * TS_PROFILE_PITCH
         t -= profile_cutter(x, z2, SLOT_W, TS_PROFILE_L, name)
-        zt = z2 - TS_PROFILE_L / 2 - FRONT - 1.0 - TS_LABEL_H / 2
-        try:
-            from build123d import Text
-            label = Plane.XZ * Pos(x, zt) * Text(name, font_size=TS_LABEL_H)
-            t -= extrude(label, TS_LABEL_D, dir=(0, 1, 0))
-        except Exception as e:                         # no font: fall back to i + 1 notches on the bottom edge
-            print(f"test strip label {name}: {e}; notches instead")
-            for k in range(i + 1):
-                xn = x + (k - i / 2) * 2.0
-                t -= box(xn - 0.5, xn + 0.5, -1, FRONT + 1, -h / 2 - row2_h - 1, -h / 2 - row2_h + 1.0)
+        t = engrave(t, name, x, notches=i + 1)
     for i, (x, w) in enumerate(zip(xs, TS_SLOTS)):
         t -= slot_cutter(x, 0, w, SLOT_L)
         for k in range(i + 1):
             xn = x + (k - i / 2) * 2.0
             t -= box(xn - 0.5, xn + 0.5, -1, FRONT + 1, h / 2 - 1.0, h / 2 + 1)
+    for i, (x, (name, extra, rim)) in enumerate(zip(xf, TS_FLAT)):
+        t -= flat_end_cutter(x, 0, SLOT_W, TS_FLAT_ROD_L + TS_FLAT_PLAY, extra, rim)
+        t = engrave(t, name, x, extra=extra, notches=len(TS_PROFILES) + i + 1)
     return t
 
 
@@ -786,7 +833,7 @@ if __name__ == "__main__":
                 export_stl(c, str(OUT / f"section-{tag}-{n}.stl"), tolerance=0.03)
 
     # ---- report ----
-    xs_ts, x0_ts, x1_ts, h_ts = teststrip_layout()
+    xs_ts, x0_ts, x1_ts, h_ts, xf_ts, _ = teststrip_layout()
     side = "left (-X)" if LOGO_SIDE < 0 else "right (+X)"
     lbx = sorted(LOGO_SIDE * (CAV_W / 2 - t) for t in (LB_GLUE, T_IN))
     opx = sorted(LOGO_SIDE * (CAV_W / 2 - t) for t in (T_FRONT, T_BACK))
@@ -831,6 +878,10 @@ f"{LB_BTN_CLR:.2f} to the button tips, {CAV_W / 2 - T_IN - PCB_W / 2:.2f} to the
              f"{2 * (OPAL_HALF - LED_TROUGH_INSET):.1f} x {OPAL_T} x {LED_TROUGH_Z} at its top and bottom edges")
     R.append(f"test strip   {x1_ts - x0_ts:.1f} x {h_ts:.1f} x {FRONT}, slots {', '.join(str(w) for w in TS_SLOTS)} at x "
              f"{', '.join(f'{x:.2f}' for x in xs_ts)} (slots {TS_REAL_PAIR + 1} and {TS_REAL_PAIR + 2} at {TUBE_CC}); n notches = slot n")
+    R.append(f"  flat ends    {SLOT_W} x {TS_FLAT_ROD_L + TS_FLAT_PLAY:.2f} for a rod cut to {TS_FLAT_ROD_L:.2f} (lit {AA_H} - {AA_H - TS_FLAT_ROD_L:.1f}), 45 deg on the long sides only, straight ends, at x "
+             + ", ".join(f"{x:.2f}" for x in xf_ts) + f" ({TUBE_CC} apart): "
+             + "; ".join(f"{n} front {FRONT + e:.1f}, rim {r:.1f}, on the face {SLOT_W + 2 * flat_bevel(e, r)[1]:.1f} wide, "
+                         f"rod apex {ROD_H + TAPE[0] - (FRONT + e) - GASKET:+.2f}..{ROD_H + TAPE[1] - (FRONT + e) - GASKET:+.2f} to the face" for n, e, r in TS_FLAT))
     R.append("volumes cm3  " + ", ".join(f"{n} {p.volume / 1000:.1f}" for n, p in parts.items()))
     R.append("")
     R.append("gaps along the insertion path, mm (swept body to what is fixed; 0.00 = it ends seated there):")

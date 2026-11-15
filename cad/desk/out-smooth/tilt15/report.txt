@@ -1,0 +1,55 @@
+DESK HOUSING smooth / tilt15  (front leaning back 15 deg; front 3.0 with flat-end slots (E): 45 deg on the long sides to a 0.0 rim, straight ends)
+assembly     order 'battery-after': board + rods (no battery) in as v1 (back, up, forward); then the battery up behind the seated board, held BAT_HOLD further back, and forward onto the board (0.5); then the adapter / plug from below, then the lid
+[m] measured on the finished solids (OCC distances, sections, faces); [d] derived from the parameters
+outer        [m] 50.00 x 49.70 x 106.50 (W x D x H, shell + lid); shell 103.5 tall + lid 3.0; depth at the rim 49.5; flat top 5.26 deep (y 39.24..44.50), 21.77 back to the virtual front-top corner [d]; footprint 47.37 deep (toe R2.0)
+  edges      [d] roll R15.0 (turns 75 deg), rear vertical corners R10.0, R5.0 chain over the front edges / roll / top / top-rear, bottom break 0.5
+cavity       [d] 44.0 wide; front inner face at t 3.0, back inner y 46.5; corners: front R4.5 (inner flat 35.00 for the 31.2 glass), rear R8.5, ceiling side edges R3.0
+  ceiling    [d] 45 deg ramp under the roll from (27.60, 91.43) to (36.30, 100.12) (y, z), flat ceiling at z 100.12 (top wall 3.38 thick there); 45 deg x 4.0 down to the back wall; joins R2.0. The inner front face runs flat to s 94.92 (glass top 94.42, slot top 91.45)
+  bridge     [m] flat ceiling face 4.55 in Y (y 37.12..41.67) x 38.00 in X at z 100.12; the 45 deg ramp face spans y 27.98..35.71, z 91.81..99.54
+board        [d] PCB bottom s 16.70 along the face (adapter's lowest point 1.0 above the rim), AA centre s 58.03; battery s 17.70..85.70, t 12.60..22.60 (taped low: 1.0 above the adapter); [m] battery to the adapter 1.00, to the lid 11.25
+slots        [d] 8.6 x 66.85 for rods cut to 66.65 (lit 67.65), at x +-10.23, s 24.60..91.45 (world z 23.76..88.33); 0.40 inside the lit area per end; [m] on the face 14.60 x 66.85
+face margins [m] flat beside the bevels 2.47 (+ R5.0), bridge 5.86 on the face ([d] 11.86 at the rim), above the slots 4.19 to the roll's tangent line; [d] below 24.60 along the face to the rim
+rods         [d] 8.0 x 4.0 x 66.65; apex +0.55..+0.75 to the face (tape 0.05..0.25; + = proud); in the slot 0.30 per side, 0.10 per end
+insertion    board + rods: up along the face at 4.00 further back (rod 4.0 + tape 0.25 - gasket 0.5 + 0.25), then forward
+  depth      [m] smallest depth (0.5 steps) with 0.5 round the battery's own sweeps and 0.5 round the adapter: built 49.5, limited by the battery and outer shape (shallower, the rear corners swallow the top's straight sides) (battery 0.83, adapter 2.50; at 49.0: battery 0.40, adapter 2.50). Other orders: v1 53.5 (limited by the battery); rods-after 49.5 (limited by the battery and outer shape (shallower, the rear corners swallow the top's straight sides)). With R3.0 rear cavity corners (1.34 wall there) it would be 49.5
+  battery    [m] up 0.5 behind its seat, then forward: clearance to the shell 0.83 up, 0.87 forward; to the board / plugs 0.60 on the way up
+  up move    [m] clearance on the whole sweep (0.2 overshoot included): rods to the front wall 0.25, battery (own moves, below), plugs 1.32, buttons 4.32, glass 4.32
+  forward    [m] rods in the slots 0.10; the rods are 0.20 shorter than the slots, so they must line up within +-0.10: 0.11 off, a rod cuts 0.21 mm3 [m]
+  adapter    [m] plugged in along the face from below after the board: free; sweep to the board 0.00, glass 1.13, battery 1.00, shell 2.50
+  lid move   [m] straight up, free (swept as the prism of its largest outline, toe included); lid to the adapter 1.06, to the battery 11.25
+magnets      [m] 4 x D2.0 x 1.0 in holes D2.1 x 1.2 (shell rim and lid); wall round the hole: front 0.75, rear 0.51 (rim section at z 0 and lid section at z -1.2); (-21.82, 3.06) 0.75, (-20.76, 44.97) 0.51, (21.82, 3.06) 0.75, (20.47, 45.26) 0.51
+USB          [d] the adapter's socket faces back and 15 deg down; its face sits 21.61 inside the back wall's outer face along its axis (18.51 to the inner face). A v1 hole on that axis would sit at z -1.15 (bottom -5.40, below the rim): not built
+  built      cable notch 5.6 wide x 6.0 high (round top) in the back wall at x 0, open at the rim, the lid closes it; [d] 12.20 of flat back wall each side to the corner round, [m] 16.62 to the rear magnet holes
+  (a)        [d] straight plug (25 long, 6.5 thick) in the adapter's socket: its lower face meets the lid after 5.04 and its top end the back wall after 17.6 along the axis: does not fit
+  (b)        right-angle plug in the board's port (head = the adapter's box, 12 x 7 x 21, cable out of its far end): [m] far end to the back wall's inner face 16.6 horizontally, lowest edge 1.06 above the lid, head to the battery 1.00; [d] cable exit centre z 4.44, a straight D5 cable reaches the lid 7.8 after the head: it has to bend there and run on the lid to the notch. NOT VERIFIED: head, strain relief and bend of the real cable are not modelled
+  adapter    [m] nearest shell surface 2.50 (front wall's inner face); to the back wall's inner face 16.58
+logo         [d] left (-X), letters 24.00 x 15.14, y 13.81..37.81, z 7.43..22.57 (centre 18.00 above the desk); cut through, strips 1.23; v1's inlays fit
+  margins    [d] 1.69 (least) to the ends of the side flat (y 11.22..39.50 at the letters' top); inner wall flat y 13.81..38.00
+min wall     [m] between the cavity surface and the outer surface (exact; before slots, logo, magnets, USB; bottom break excluded): front 3.00, back 3.00, sides 3.00, roll R15 3.05, rear corners R10 3.10, R5 chain 3.12, top 3.38
+  minimum    [m] 3.00; by design thinner: slot rim 0.0, logo skin -, magnet meat 0.51
+print        shell standing on its rim (opening down), meant to print without supports (check the layer preview): front inner face 15 deg overhang, 45 deg ramp under the roll, [m] flat bridge 4.55 in Y, 45 deg at the back; slot ends bridge 8.6..14.6; notch round-topped; the R2 joins of the ceiling and its side blends pass 45 deg locally (about 1.4 wide). Lid: flat, top face down (the toe round and bottom break on top)
+volumes cm3  [m] shell 44.9, lid 7.2  (65 g at 1.24 g/cm3)
+tipping      [m+d] mass 150 g (print + board 30 g + battery 55 g, both assumed); centre of mass y 29.2, 49.1 above the desk; foot y 1.63..49.00
+  push       horizontal at the top (106.5 above the desk) that tips it: backwards 28 gf, forwards 39 gf; tips over when tilted 22 deg back / 29 deg forward
+files        [m] each STEP re-imported, each STL re-read:
+  shell            STEP 1 solid(s), 123 faces, volume +0.0000 %, 577 kB; STL closed, 12998 triangles, volume -0.012 %, 635 kB
+  lid              STEP 1 solid(s), 26 faces, volume +0.0000 %, 108 kB; STL closed, 10582 triangles, volume -0.005 %, 517 kB
+  assembly         STEP 13 solid(s), 219 faces, volume +0.0000 %, 882 kB
+open items (need the real parts):
+  - rods on the forward move: they must line up with the slots within +-0.10 along the face (0.11 off already cuts 0.21 mm3 per rod)
+  - magnets: glue them in, do not press: the rear ligament round the hole is 0.51
+  - cable: the plug head, its strain relief and the bend are not modelled; a straight D5 cable from the head reaches the lid after about 8 mm, so it has to bend there; check with the real right-angle plug
+  - board and battery masses, the port's position in the board stack, the adapter's real shape (all assumed, as in v1)
+
+clearances along the insertion path, mm, measured on the swept solids (0.00 = it ends seated there):
+  body                up   forward
+  glass              4.32      0.50
+  board              4.32      3.77
+  rod-l              0.25      0.10
+  rod-r              0.25      0.10
+  button-boot        4.32      4.30
+  button-rst         4.32      4.30
+  button-slide       4.32      4.30
+  plug-j5            1.32      1.32
+  plug-i2c           1.32      1.32
+  battery            0.83      0.87   (its own moves, 0.5 behind its seat)
