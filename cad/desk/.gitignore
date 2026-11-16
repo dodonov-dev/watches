@@ -7,3 +7,6 @@ out-smooth/*/dummy-*
 out-smooth/*/assembly.*
 out-smooth/*/focus.json
 concept/out-*/
+out-rolypoly/dummy-*
+out-rolypoly/keel-*.stl
+out-rolypoly/focus.json

@@ -901,3 +901,21 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Preview STLs facet the R6 edge; a finer tessellation for renders only.
 - Small front logo: only 2.2 between the wall and the adapter on upright; rods sweep past at |x| ≥ 6.2. LEDs beside the adapter.
 - A slot coupon for upright / tilt15 printed standing like the shell (the v3 strip prints face up).
+
+## Desk housing roly-poly (2026-11-15)
+- Magnetic breakaway USB-C tip in the back socket: the cable snaps off when the clock is rocked. Data not guaranteed.
+- Wireless charging: the coil's place is taken by steel ballast on a curved underside. A coil in the back wall?
+- Staggered tubes (one lower, both shorter) need a per-tube offset along the axis + a shorter tube in firmware. Dropped.
+- Study's alcove flare: its ~1 mm shoulder and the crease at the upper sides force a wider inner flare in CAD (thick wall under the logo's left end). Smooth the flare in the study.
+- Belly logo at x 32: its right end is turned 51° from the front. 12 mm letters at x ~31.5 keep it at ~46°.
+- `ThruSections` default degree → invalid face after a STEP round trip; `SetMaxDegree(3)` fixes it. A pole vertex closes cleanly.
+- Pole-vertex loft leaves a ±0.25° closing cone; a degree-2 cap would remove it.
+- OCC's integrated volume is unreliable on lofted faces (track A's checks and `housing.volume_common` use it).
+- Fore-aft limit needs the crest seen from the rest angle, not the first decrease from upright.
+- `rolypoly.py` takes ~8 min; cache the lofts.
+- Trim: tungsten putty instead of the high segment on the bulkhead; or cure the cast with the cup tilted so its centre sits right.
+- Stick-on segments standing on edge pack denser than flat (not tried).
+- Flat-cup tip crests are broad and faceted (ranges in the report); a finer support-function method would tighten them.
+- Service loops as a CAD sweep once the plugged board and the leads are measured.
+- Fore-aft crests move ±0.2° with tiny mass changes (faceted mesh): read the limits to ±0.3°.
+- `report.txt`'s first line still says "round 2".

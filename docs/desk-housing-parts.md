@@ -35,6 +35,36 @@ The authoritative list. Everything further down is history and alternatives.
 **Not needed for the prototype:** USB-C breakout, MX1.25 4-pin cable, USB-C panel extension, latching button,
 opal acrylic (wood stage), tesa 4965.
 
+## Roly-poly (track B), prototype (2026-11-15)
+
+Prints (FDM, files in `cad/desk/out-rolypoly/`; orientation and assembly in `build-sheet.txt` there):
+
+| File | Material | Note |
+|---|---|---|
+| `body.stl` | PLA Matte, ivory or white, 0.12 mm | seam ring on the bed, crown up; tree supports from the plate |
+| `cup-rock.stl` | same, 100 % infill | standing on its back, supports under the back |
+| `cup-flat.stl` | same | foot on the bed, no supports (stable variant) |
+| `door.stl` | PLA Matte black or PETG-CF black | face down on a smooth plate |
+| `arc-gauge.stl` | any PLA | R44 cradle to check and sand the rocking arc |
+
+Components, on top of the board, the battery (10 × 35 × 68), Kapton and the LEDs from the list above:
+
+| Part | Amount | Where / search | Must have |
+|---|---|---|---|
+| Magnets Ø3 × 2 | 12 (6 body + 6 per cup in use; 18 for both cups) | supermagnete S-03-02-N (below) | seam joint |
+| Magnets Ø2 × 1 | 8 | supermagnete S-02-01-N (below) | door |
+| Steel dowel pins Ø3 × 10 | 2 | Amazon `Zylinderstift 3x10` | glued into the body |
+| 304 stainless balls, 2–6 mm | ~119 g | the user's mixed set (2–10 mm, about 165 g of it is 2–6 mm) | ballast; non-magnetic |
+| Slow casting epoxy | ~11 ml mixed | Amazon `Gießharz` (slow, for thick pours) | two pours of ~8 mm |
+| Stick-on steel weights, 12 × 5 g strip | 1 strip (2 with the stable cup) | Amazon `Klebegewichte 5g Stahl` | trim; ballast of the stable cup |
+| USB-C breakout | 1 | Pololu 2585 (below) | 20.3 × 14 |
+| MX1.25 4-pin pigtail, ≥ 150 mm | 1 | Amazon `MX1.25 4 Pin Kabel` | J5 to the breakout; not yet sourced |
+| SH1.0 4-pin pigtail | 1 | BerryBase ADA4399 (below) | 3V3 for the two logo LEDs (~100 Ω each) |
+| Rods 8 × 4 half-round | 2, cut to 66.65 | as track A | |
+| Small suction cup | 1 | Amazon `Saugnapf Display` | pulls the door |
+
+Also needed: gel CA glue or 5-minute epoxy, a flat glass plate, a kitchen scale, 1 mm foam tape, OCA tape, 400 grit.
+
 Each link below was opened and checked. Prices include VAT and exclude shipping. Amazon.de could not be verified by the
 tools used (503), so there are no Amazon links. agy's first list was mostly wrong links; don't reuse it.
 

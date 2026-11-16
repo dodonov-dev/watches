@@ -186,3 +186,28 @@ Third variant in `cad/desk/smooth.py` → `cad/desk/out-smooth/oval/`. The user'
   Every STEP is re-imported on export; STLs use an absolute 0.01 deflection and are re-read.
 - **Tipping (assumed masses):** ~25 gf backwards, ~23 forwards.
 - **Review:** one Astra pass (found the broken STEP, the rod and bridge numbers, thin STL skin; all fixed), then a delta pass.
+
+## Roly-poly, track B (2026-11-15): build notes
+`cad/desk/rolypoly.py` → `cad/desk/out-rolypoly/`. Contract and numbers: `docs/desk-housing-rolypoly-handoff.md`.
+- **Shape:** the study's surface (outline `XOFF -5 Z2L 90 A2L 28.5 Z2R 102 A2R 34`) as lofts through section
+  splines, within 0.014 of the study's function. 86.5 × 49.9 × 128 on the rocking cup, 116 on the flat cup. Wall 2.4.
+- **Parts:** body (z ≥ 22), cup-rock, cup-flat (cut at z 12), door 42.5 × 82 × 3 with the E slots, arc gauge.
+- **Keel:** squarer in side view than the study (corner exponent 4.5 below z 28): falls forward at 31° instead of 25°.
+- **Rocking arc:** R44 through the pole, off by 0.005. Cup printed on its back so the layers follow the arc.
+- **Ballast:** cast of 304 balls 2–6 mm in epoxy, 25.65 cm³ → about 131 g; trim layer of up to 6 segments on top,
+  one more on the bulkhead's back on the right (the door and board sit 5 mm left).
+- **Inside:** board on the door; battery on its long edge on a bulkhead, in from below; breakout low at the back,
+  in through a bulkhead notch; logo LEDs behind a 0.8 skin on the belly's right front (14 mm letters at x 32, z 30).
+- **Joint:** 6 × Ø3 × 2 magnet pairs + 2 dowels at the seam; door on 4 × Ø2 × 1 pairs. Magnets glued flush.
+- **Rocking (masses assumed):** 339 g, centre of mass 10.1 mm under the rocking centre, 0.95 s, 0.59 mN·m/°.
+- **Review:** Astra through the Codex CLI. Pass 1 reproduced the numbers and found: no reserve at 25°, a flat at
+  the pole, a breakout that could not be inserted, magnet pockets too deep, a wrong trim formula. All fixed in round 2.
+  Pass 2 reproduced the round-2 numbers (rocking, arc, seam, fits, logo skin 0.79–0.81) and found no CAD
+  blocker: "ready to print" with a support cradle under the cup, cleaned-up holes and the gauge used unlined.
+  Round 3 fixed the build-sheet wording and hardened the asserts; the STLs are byte-identical to round 2.
+  Found there: the logo E's left end was not open straight into the cavity. Round 4 moved the logo from x 28
+  to x 32 (user: the E lay on the alcove's corner); only `body.stl` changed.
+  See `docs/desk-housing-reviews/5-rolypoly-cad-astra.md`.
+- **Print files:** copies in `cad/desk/to-print/rolypoly-*.stl`.
+- **Left for the print:** rocking duration and feel, the cable's pull, real masses and ball packing, magnet pull,
+  supports, the logo glow.

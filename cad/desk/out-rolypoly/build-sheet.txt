@@ -1,0 +1,97 @@
+ROLY-POLY: BUILD SHEET, round 2 (files in cad/desk/out-rolypoly/; numbers in report.txt)
+
+PRINT
+  body.stl        PLA Matte ivory/white, 0.12 mm, 4+ perimeters. Seam ring on the bed, crown up. Tree supports from the build
+                  plate only: they reach the crown's inside (881 mm2 steeper than 45 deg) and the door opening's top edge
+                  (a ~29 mm bridge between the R7 corners; or let the slicer bridge it and clean the edge). Tabs, bosses,
+                  bulkhead and ledges start on the bed or have 45 deg undersides. Check in the slicer preview that the 0.8 logo
+                  skin prints as two full perimeters. No brim on the seam ring.
+  cup-rock.stl    PLA Matte, same colour, 0.12 mm, 100 % infill. Standing on its BACK (the curved back down, seam ring vertical):
+                  every layer then draws the R44 arc. It cannot stand on its own footprint (13.6 x 5.8 mm at 0.12 above the
+                  bed, 25 x 11 at 0.6; its centre of mass is outside that): give it a broad support cradle from the build
+                  plate under the back and the bowl (1613 mm2 steeper than 45 deg in all, none on the rolling band),
+                  a brim on the supports, and no supports inside the magnet and dowel holes. Watch the first layers.
+                  Whether the rolling band needs sanding depends on the print: check it on the gauge (FINISH). (Rim-down would
+                  leave a 6.5 mm flat at the bottom from the last 0.12 layer and need the bowl ceiling supported.)
+  cup-flat.stl    same material, foot on the bed, no supports.
+  door.stl        PLA Matte black (or PETG-CF black), 0.12 mm, face DOWN on a smooth plate.
+  arc-gauge.stl   any PLA, flat side down: a concave R44 cradle.
+
+FINISH
+  cup-rock: remove the supports at the back, sand those spots. Sit the cup in arc-gauge.stl, unlined, against a light: it
+  checks the central profile (the line the cup rolls on); no light under the arc. Where there is a blob or a support stub,
+  sand that spot by hand and check again on the unlined gauge. Do not line the gauge with sandpaper to true the arc: paper of
+  thickness t makes its radius R44 - t. Holes: the magnet and dowel holes printed horizontally: check each with a magnet / a
+  pin, ream with a depth stop (D3.1 for the magnets, D3.2 for the dowels) before gluing. Break the seam ring's outer edge on
+  body and cup lightly with 400 so they meet without a lip.
+
+PARTS
+  12 magnets D3.0 x 2.0 (seam), 8 x D2.0 x 1.0 (door), 2 steel dowels D3.0 x 10.0, gel CA glue or
+  5-minute epoxy for the magnets, a flat plate (glass), the USB-C breakout (Pololu 2585 class), an MX1.25 4-pin pigtail >= 150 mm
+  for J5, two warm-white 0603 LEDs with leads >= 150 mm (resistor per LED, ~100 ohm at 3.3 V) and an SH1.0 4-pin pigtail for
+  3V3/GND from the I2C header, Kapton, 1 mm foam tape, 304 stainless balls 2-6 mm (~119 g used of the set), slow
+  casting epoxy (~11 ml mixed), stick-on balancing weights (one 12 x 5 g strip), 2 rods 8 x 4 half-round cut to 66.65,
+  OCA tape, a small phone-screen suction cup (to pull the door), a kitchen scale (0.1 g or 1 g).
+
+ASSEMBLY (in this order)
+  1. Magnets, flush: put a drop of glue in each pocket (the pocket is 0.1 deeper than the magnet), press the magnet in and hold
+     the face against a flat plate until the glue sets; check with a straightedge. Stack each pair first so every body magnet
+     attracts its cup magnet (mark faces); both cups use the same map. Door and tabs the same way.
+  2. Dowels: glue the two pins 5 mm deep into the BODY; the cups' holes are the sliding fit (ream to D3.2 if tight).
+  3. Joint proof test, before any ballast: put the empty cup on, hang 0.34 kg (twice the 172 g it will carry:
+     e.g. the ball set and a water bottle in a bag) from the cup, lift by the body's crown, hold 10 s, shake lightly: it must
+     stay closed. Then peel: push one end of the cup down with a thumb; it must come off by hand without loosening a magnet.
+  4. Breakout: solder the J5 pigtail (VBUS, D-, D+, GND; check the order on the board's silk) to the pads on the front edge, wires
+     standing up. Cup off, body upside down: bring the breakout up 2.5 mm in front of its seat (through the bulkhead's notch),
+     socket first towards the back, then slide it back: socket into the hole, the PCB's back edge into the wall pocket, its
+     sides onto the two ledges. Glue (hot glue or epoxy at the side strips). Run the pigtail up behind the bulkhead and over
+     its top. Do this before the battery (with the battery in, the way up is 0.4 mm from it).
+  5. LEDs: place the two LEDs in the checked room: 4.5-8.5 mm behind the logo's centre, along its normal
+     (dummy-led-room.stl), facing the letters; hold them with clear hot glue on their leads, bridged to the wall beside the
+     letters (reach in from below or through the opening). Run the leads up the right side to the battery's top.
+  6. Battery: Kapton on its front, foam tape on its back; from below push it up along the bulkhead to z 23.0 (1 mm above the seam
+     plane), centred (x -0.1); press. Its lead goes up to its top.
+  7. Wiring: lay the J5 pigtail, the battery lead and the LED leads as loops on the battery's top behind the board, each with
+     40 mm spare (route J5 -> breakout ~55 mm, LEDs -> I2C ~69 mm), so the door can come 40 mm
+     out with everything plugged. The 40 mm loop and the plugs' 4 mm protrusion are ASSUMED, not checked: measure the
+     plugged board (plugs, leads and their bends) first.
+     Dry fit before anything is glued: with the real pigtails, LED leads and battery lead in place, close the door, then
+     pull it 40 mm out with everything plugged. The loops must stay clear of the release tool's way (from below,
+     behind the door's lower edge) and of the trim segments and the bulkhead spots.
+  8. Door: face down; rods into the slots from behind (OCA on their flat), gasket tape on the glass's short-end borders, board
+     glass-down between the four corner ribs. Hold the door in front of the opening, plug the battery, J5 and the LED pigtail,
+     switch the board ON (the slide is not reachable when closed; no hole for it), push the loops in, set the door: the magnets
+     pull it home. To open: suction cup on the face, or a blunt tool from below on the door's back strip under the PCB.
+  9. Cast (cup-rock off the body; cure takes a day per pour):
+     - stand the cup upright and level (in a roll of tape or a bowl of rice; phone level on the seam ring); weigh the empty cup;
+     - pour 1: about 41 g of balls, up to 11.8 mm below the seam face (half the 15.5 mm depth; measure
+       down from the rim with a ruler; largest first, small ones into the gaps, tap to settle), then slow casting epoxy until it
+       just covers them; cure as the resin says (do not rush with heat);
+     - pour 2: balls up to the step 4.1 mm below the seam face (where the smooth bowl meets the terrace) until the cup has gained 119 g of
+       balls in all (110 g is still fine; if the step is reached first, stop and note the mass), epoxy to the step, level;
+       cure. Use a slow resin rated for this depth per pour; two half-depth pours keep the heat low without watching it.
+       The balls are 304 stainless: they do not stick to the magnets.
+  10. Trim layer: 6 segments fit on the cast (dummy-segments-rock.stl). The plan (nominal masses): stick
+      1 segment(s) standing on the bulkhead's back at x +28 (right of centre, from
+      z 27.5 up; dummy-trim-spots.stl shows both spots), leave out 1 of the trim layer
+       (x -25 y +1) and slide the rest 95 % of their rows' slack
+      to the right. The door and board sit 5 mm left: without the spot the clock leans left. Keep the second spot (x
+      +15) free for later. Do not peel the adhesive yet.
+  11. Cup on: pins find the holes, the magnets close the seam. Trim the fully wired clock (door closed, cables in) on the
+      table (below), then stick the segments down.
+
+TRIM
+  Level table, phone level on the flat door, everything wired and closed. The plan already uses about 95 % of
+  the rows' travel: the bulkhead spots are the coarse adjustment. Coarse: add or take a segment at the bulkhead spots (cup off,
+  from below). Fine:
+  slide a row of segments towards the high side, or move a segment across: 10 mm of
+  travel of one 5 g segment moves the lean by about 0.8 deg. With all segments in, sliding alone reaches
+  -0.80..-0.72 mm of centre-of-mass offset; leaving segments out reaches further. 0.5 mm of offset leans it
+  2.8 deg.
+
+STABLE VARIANT
+  cup-flat instead of cup-rock: 12 segments fit (about one strip); no cast, no trim needed.
+
+CHECK ON THE PRINT
+  rocking duration and feel; the USB cable leaning it (righting 0.59 mN m per degree); falling forward (beyond
+  31 deg, calculated); the size; the logo glow; the seam; the magnets' pull; the cast's real mass (weigh it).
