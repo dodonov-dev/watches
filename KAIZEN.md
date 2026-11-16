@@ -919,3 +919,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Service loops as a CAD sweep once the plugged board and the leads are measured.
 - Fore-aft crests move ±0.2° with tiny mass changes (faceted mesh): read the limits to ±0.3°.
 - `report.txt`'s first line still says "round 2".
+- OCC booleans on near-coincident faces (logo roofs): a roof starting exactly at the skin leaked the STL; a fuzzy cut (1e-4) works. Reuse for pocket features.
+- Slicer check as a repo tool: OrcaSlicer CLI + generic profile + G-code reader (recipe in `docs/desk-housing-reviews/6-rolypoly-slicer.md`; scripts were scratch).
+- Door opening's top edge (29.5 mm) is held by trees leaning in over the alcove; an arched or 45° top inside would print without them.
+- Orca prints `Not precalculated Placeable areas requested` on the body's tree supports; not looked into.

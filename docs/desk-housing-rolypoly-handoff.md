@@ -153,7 +153,7 @@ Still open:
   them yet.
 - Battery runtime: unknown, measure it.
 
-## CAD state (round 4, 2026-11-16)
+## CAD state (round 5, 2026-11-16)
 `~/.venvs/cad/bin/python cad/desk/rolypoly.py` (about 8 min) → `cad/desk/out-rolypoly/`: `body`, `cup-rock`,
 `cup-flat`, `door`, `arc-gauge` as STL + STEP, `report.txt`, `build-sheet.txt` (print, assembly, cast, trim),
 views (`render_rolypoly.py`). Every assert passes for the nominal masses and for a bad case (board 40 g, battery
@@ -187,20 +187,25 @@ reproduced the numbers below and the fits: no CAD blocker, ready to print. Print
   two LEDs 4.5–8.5 mm behind its centre, fed from the I2C header. Moved from x 28 in round 4: there the E sat on
   the alcove's flare. Now 2.05 mm past the flare; the face turns 18 / 30 / 51° from the front at the logo's left
   end / centre / right end. `logo-compare.png` shows both. More frontal: 12 mm letters at x 31.5 (about 46°).
+  The pockets' ceilings are 45° roofs (round 5), so the slicer puts no support in the letters; the top edges may
+  glow softer for it.
+- **Slicer check** (OrcaSlicer, generic 0.4 / 0.12 PLA profile): `docs/desk-housing-reviews/6-rolypoly-slicer.md`.
+  The skin prints as two lines; supports only at the USB hole, the opening's top edge and a cap in the crown; the
+  cup on its back rides on the slicer's support base. Body about 61 g and 6 h, rocking cup 21 g and 2.5 h.
 - **Door:** comes off with a suction cup on its face, or pushed from below with the cup off. Cables have 40 mm loops.
 - **Slots:** 8.6 × 66.85 for 66.65 rods (0.1 play per end, as track A). Board stack 9.0 as measured (drawing 9.3).
 - Round 3 changed no geometry (the STLs are byte-identical to round 2): build-sheet corrections after Astra's
   second pass, and harder asserts (pole continuity, logo skin and openness, LED and tool clearances, trim layouts).
 - Assumed, to check before gluing: the plugs stand 4 mm proud, and 40 mm of cable slack lets the door come out.
   The build sheet has a dry-fit step for it.
-- Not verified: real masses and ball packing, the J5 plug's height, magnet pull, slicer supports, epoxy heat.
+- Not verified: real masses and ball packing, the J5 plug's height, magnet pull, a real printer's profile, epoxy heat.
 
 ## Work steps
 0. **Check the ground:** `git status`; run `rolypoly.py` and compare its report with the table above.
 1. **Decisions:** settled above.
 2. **Liquid test (user, with the board):** hold the bare board upright and rock it by hand at about one swing per
    second, `vertical` on. Does the surface stay level, with how much lag? Board checks need the user present.
-3. **CAD (done, round 4):** `cad/desk/rolypoly.py`, outputs in `cad/desk/out-rolypoly/`.
+3. **CAD (done, round 5):** `cad/desk/rolypoly.py`, outputs in `cad/desk/out-rolypoly/`.
    - Take the shape functions from the study (`a_side`, `bf_of`, `bb_of`, the panel plane). Import the hardware
      numbers and `flat_end_cutter` from `cad/desk/housing.py`; do not edit it.
    - The organic shell: first try build123d, lofting 30–40 section wires into an outer and an inner solid and

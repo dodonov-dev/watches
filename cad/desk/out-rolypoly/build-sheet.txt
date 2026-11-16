@@ -4,8 +4,15 @@ PRINT
   body.stl        PLA Matte ivory/white, 0.12 mm, 4+ perimeters. Seam ring on the bed, crown up. Tree supports from the build
                   plate only: they reach the crown's inside (881 mm2 steeper than 45 deg) and the door opening's top edge
                   (a ~29 mm bridge between the R7 corners; or let the slicer bridge it and clean the edge). Tabs, bosses,
-                  bulkhead and ledges start on the bed or have 45 deg undersides. Check in the slicer preview that the 0.8 logo
-                  skin prints as two full perimeters. No brim on the seam ring.
+                  bulkhead and ledges start on the bed or have 45 deg undersides. The logo needs none: its pockets have 45 deg
+                  roofs; if the slicer still puts support there, block it (support blocker over the logo). Check in the
+                  slicer preview that the 0.8 logo skin prints as two full perimeters. No brim on the seam ring.
+                  Seen in one slicer run (OrcaSlicer 2.5, generic 0.4 nozzle profile, 0.12 layers, tree supports; a preview,
+                  not a real print): the opening's top edge (29.5 mm) is held by trees that stand in front of the body and
+                  lean in over the alcove; inside the crown only a cap of about 10 x 9 mm at the very top is supported;
+                  cup-rock on its back touches the bed with 11 x 5 mm, the slicer's own support base of about 60 x 30 mm
+                  carries it, and one of its eight seam holes gets a support tip (rim-down: all eight, and the last layer
+                  at the pole is 2.2 x 13 mm).
   cup-rock.stl    PLA Matte, same colour, 0.12 mm, 100 % infill. Standing on its BACK (the curved back down, seam ring vertical):
                   every layer then draws the R44 arc. It cannot stand on its own footprint (13.6 x 5.8 mm at 0.12 above the
                   bed, 25 x 11 at 0.6; its centre of mass is outside that): give it a broad support cradle from the build
@@ -86,7 +93,7 @@ TRIM
   from below). Fine:
   slide a row of segments towards the high side, or move a segment across: 10 mm of
   travel of one 5 g segment moves the lean by about 0.8 deg. With all segments in, sliding alone reaches
-  -0.80..-0.72 mm of centre-of-mass offset; leaving segments out reaches further. 0.5 mm of offset leans it
+  -0.80..-0.73 mm of centre-of-mass offset; leaving segments out reaches further. 0.5 mm of offset leans it
   2.8 deg.
 
 STABLE VARIANT

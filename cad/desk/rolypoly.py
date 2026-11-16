@@ -815,7 +815,12 @@ def make_body(S):
     for sx, zl in TABS:
         zt, _, _, xh = tab_spec(sx, zl)
         b = b - ycyl(xh, zt, (DOOR_MAG_D + MAG_CLR_D) / 2, Y_DOOR_BACK - 1, Y_DOOR_BACK + DOOR_MAG_H + MAG_CLR_H)
-    b = b - logo_pocket(S)
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut
+    op = BRepAlgoAPI_Cut()
+    op.SetFuzzyValue(1e-4)                                  # the roofed pocket: a plain cut misclassified it (round 5)
+    pk = logo_pocket(S)
+    b = b._bool_op((b,), (pk,), op)
+    check(len(b.solids()) == 1, f"body after the logo cut: {len(b.solids())} solids")
     return one_solid(b, "body"), shell_only
 
 
@@ -831,11 +836,68 @@ def logo_letters_prism(depth_out=1.0, depth_in=WALL + 4.0):
     return cut
 
 
+ROOF_STEP = 0.5                                        # sections along each roofed letter edge
+LOGO_LEDGE = 0.3                                       # a flat ceiling in the pockets may reach this far behind the skin
+ROOF_START = 0.12                                      # the roofs start this far behind the skin (a clean strip of ceiling; 0.08 made the cut fail)
+
+
 def logo_pocket(S):
+    """Letters cut from inside to the 0.8 skin. Round 5: every downward-facing face of the pocket rises 45 deg towards the
+    cavity (a slicer otherwise fills the pockets with support). Pocket = the straight prism along the logo's normal,
+    united with one wedge per letter edge that has wall above it and runs flatter than 45 deg: a ruled loft through
+    sections every ROOF_STEP along the edge, each starting exactly at the local skin depth (the skin's inner face lies
+    deeper or shallower along the normal as the surface turns) and rising 1:1 towards the cavity. At the skin the
+    outline is the straight prism's; floors stay flat."""
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+    from OCP.gp import gp_Lin
+    from build123d import Wire
     pr = logo_letters_prism()
     bb = pr.bounding_box()
-    band = S.band(LOGO_SKIN, bb.min.Z - 1.0, bb.max.Z + 1.0)
-    return pr & band
+    depth_out, depth_in = 1.0, WALL + 4.0
+    w_end = depth_out + depth_in
+    band = S.band(LOGO_SKIN, bb.min.Z - 1.0, bb.max.Z + w_end + 3.0)
+    p, n, xd = logo_frame()
+    up = np.cross(n, xd)
+    P0 = p + depth_out * n
+    si = IntCurvesFace_ShapeIntersector()
+    si.Load(band.wrapped, 1e-6)
+
+    def skin_depth(u, v):
+        si.Perform(gp_Lin(gp_Pnt(*map(float, P0 + u * xd + v * up)), gp_Dir(*map(float, -n))), 0.0, 20.0)
+        check(si.NbPnt() > 0, f"logo roof: no skin at ({u:.2f}, {v:.2f})")
+        return min(si.WParameter(i) for i in range(1, si.NbPnt() + 1))
+
+    def pt(u, v, w):
+        return tuple(map(float, P0 + u * xd + v * up - w * n))
+
+    eps, dl = 0.3, 0.2                                      # overlap into the letter, and in front of the skin (cut off)
+    tool, n_w = pr, 0
+    for poly in hw.letters_mm(LOGO_W):
+        P = np.asarray(poly)
+        area = 0.5 * (np.dot(P[:, 0], np.roll(P[:, 1], -1)) - np.dot(P[:, 1], np.roll(P[:, 0], -1)))
+        for a_, b_ in zip(P, np.roll(P, -1, 0)):
+            t = b_ - a_
+            L = np.linalg.norm(t)
+            if L < 1e-3:
+                continue
+            nrm = np.array([t[1], -t[0]]) / L * (1 if area > 0 else -1)          # outward of the letter
+            if nrm[1] <= math.sin(math.radians(45)) + 1e-6:                          # not a ceiling flatter than 45 deg
+                continue
+            secs = []
+            for f_ in np.linspace(0, 1, max(2, int(math.ceil(L / ROOF_STEP)) + 1)):
+                u, v = a_ + f_ * t
+                s0 = skin_depth(u, v - 0.05) + ROOF_START      # the roof starts just behind the skin: a line shared by
+                R_ = w_end - s0                                 # the roof, the ceiling and the skin made the mesh leak
+                secs.append(Wire.make_polygon([pt(u, v - eps, s0 - dl), pt(u, v - dl, s0 - dl), pt(u, v + R_, s0 + R_),
+                                               pt(u, v - eps, s0 + R_)], close=True))
+            wedge = Solid.make_loft(secs, ruled=True)
+            check(wedge.is_valid and vol(wedge) > 0, "logo roof wedge invalid")
+            tool = tool + wedge
+            n_w += 1
+    check(n_w >= 4 and len(tool.solids()) >= 1 and tool.is_valid, f"logo roofs: {n_w} wedges, tool valid {tool.is_valid}")
+    pocket = tool & band
+    check(len(pocket.solids()) >= 1 and pocket.is_valid, "logo pocket with roofs: invalid")
+    return pocket
 
 
 def door_part():
@@ -1576,6 +1638,84 @@ def logo_decal(S, x):
         LOGO_X = keep
 
 
+def logo_outline_check(S, body, off=0.15, step=0.3):
+    """The lit outline: just behind the skin's inner face (0.05), points `off` inside every letter edge are pocket (void)
+    and points `off` outside are material; top edges included. Returns the counts and the worst edge kind."""
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.TopAbs import TopAbs_IN, TopAbs_OUT
+    from OCP.gp import gp_Lin
+    p, n, xd = logo_frame()
+    up = np.cross(n, xd)
+    P0 = p + 1.0 * n
+    band = S.band(LOGO_SKIN, LOGO_ZC - 8, LOGO_ZC + 8)
+    si = IntCurvesFace_ShapeIntersector()
+    si.Load(band.wrapped, 1e-6)
+    bad, n_in, n_out, tops = [], 0, 0, 0
+    for poly in hw.letters_mm(LOGO_W):
+        P = np.asarray(poly)
+        area = 0.5 * (np.dot(P[:, 0], np.roll(P[:, 1], -1)) - np.dot(P[:, 1], np.roll(P[:, 0], -1)))
+        for a, b in zip(P, np.roll(P, -1, 0)):
+            L = np.linalg.norm(b - a)
+            if L < 2 * step:
+                continue
+            t = (b - a) / L
+            nrm = np.array([t[1], -t[0]]) * (1 if area > 0 else -1)          # outward in the letter's plane
+            for s_ in np.arange(step, L - step + 1e-9, step):
+                q = a + s_ * t
+                o = P0 + q[0] * xd + q[1] * up
+                si.Perform(gp_Lin(gp_Pnt(*map(float, o)), gp_Dir(*map(float, -n))), 0.0, 20.0)
+                if not si.NbPnt():
+                    continue
+                w = min(si.WParameter(i) for i in range(1, si.NbPnt() + 1)) + 0.05
+                for sign, want in ((-1, TopAbs_OUT), (1, TopAbs_IN)):
+                    qq = q + sign * off * nrm
+                    pt = P0 + qq[0] * xd + qq[1] * up - w * n
+                    c = BRepClass3d_SolidClassifier(body.wrapped, gp_Pnt(*map(float, pt)), 1e-6)
+                    st = c.State()
+                    if sign < 0:
+                        n_in += 1
+                    else:
+                        n_out += 1
+                    tops += nrm[1] > 0.7
+                    if st != want:
+                        bad.append((round(float(q[0]), 2), round(float(q[1]), 2), "inside" if sign < 0 else "outside"))
+    check(not bad, f"logo outline moved at the skin: {len(bad)} points, e.g. {bad[:4]}")
+    return dict(n_in=n_in, n_out=n_out, tops=tops, off=off)
+
+
+def logo_roof_check(S, path, slope_tol=1.0):
+    """On the exported body: faces in the logo's pockets that look down more steeply than 45 deg (+ slope_tol) lie
+    within LOGO_LEDGE of the skin (measured along the logo's normal to the skin's inner face). Returns the largest such
+    distance and the steepest downward slope found further in (should be the 45 deg roofs)."""
+    import pyvista as pv
+    from OCP.IntCurvesFace import IntCurvesFace_ShapeIntersector
+    from OCP.gp import gp_Lin
+    p, n, xd = logo_frame()
+    up = np.cross(n, xd)
+    m = pv.read(str(path)).compute_normals(cell_normals=True, point_normals=False, auto_orient_normals=False)
+    c = m.cell_centers().points
+    nn = m.cell_data["Normals"]
+    d = c - p
+    u, v, w = d @ xd, d @ up, -(d @ n)
+    reg = (np.abs(u) < LOGO_W / 2 + 0.5) & (v > -6) & (v < 6 + WALL + 4) & (w > 0.3) & (w < WALL + 5)
+    lim = -math.sin(math.radians(45 + slope_tol))
+    steep = reg & (nn[:, 2] < lim)
+    band = S.band(LOGO_SKIN, LOGO_ZC - 8, LOGO_ZC + 14)
+    si = IntCurvesFace_ShapeIntersector()
+    si.Load(band.wrapped, 1e-6)
+    far = 0.0
+    for q in c[steep]:
+        si.Perform(gp_Lin(gp_Pnt(*map(float, q)), gp_Dir(*map(float, n))), -5.0, 20.0)
+        if si.NbPnt():
+            far = max(far, min(abs(si.WParameter(i)) for i in range(1, si.NbPnt() + 1)))
+    down = reg & (nn[:, 2] < -0.5)
+    slope = float(np.degrees(np.arcsin(-nn[down, 2])).max()) if down.any() else 0.0
+    roof = reg & (nn[:, 2] < -0.5) & (nn[:, 2] >= lim)
+    check(far <= LOGO_LEDGE, f"logo pockets: a face steeper than 45 deg reaches {far:.2f} behind the skin (> {LOGO_LEDGE})")
+    return dict(n_steep=int(steep.sum()), far=far, n_roof=int(roof.sum()), steepest=slope)
+
+
 def logo_floor_check(body, outer_face, spacing=0.4, edge=0.25):
     """Rays along the logo's projection through a grid of points inside both letters (at least `edge` from their
     outlines): the first material is the skin (its normal thickness = the floor point's distance to the outer surface);
@@ -1864,6 +2004,8 @@ def build():
             for j in range(i):
                 check(overlap(b, boxes[j]) < EPS_V, f"{cn} trim layout: pieces {i} and {j} overlap")
     R["skin"] = logo_floor_check(body, f_out[0])
+    R["logo_outline"] = logo_outline_check(S, body)
+    R["logo_roof"] = logo_roof_check(S, OUT / "body.stl")
     R["logo_out"] = logo_outside(S)
     check(R["logo_out"]["clr"] >= LOGO_FLARE_CLR, f"logo {R['logo_out']['clr']:.2f} past the alcove's flare (< {LOGO_FLARE_CLR})")
     R["logo_out_old"] = logo_outside(S, LOGO_X_OLD)
@@ -1939,6 +2081,7 @@ def report(I):
       f"{M_BOARD:.0f} g, battery {M_BAT:.0f} g, misc {M_MISC:.0f} g, cast {RHO_CAST} g/cm3; bad case board {BAD['M_BOARD']:.0f}, battery "
       f"{BAD['M_BAT']:.0f}, cast {BAD['RHO_CAST']}")
     a("")
+    a("ROUND 5: the letter pockets get 45 deg roofs (a slicer filled them with support); lit outline, floors and skin unchanged")
     a(f"ROUND 4: the logo moved from x {LOGO_X_OLD:g} to x {LOGO_X:g} (off the alcove's flare onto the plain belly; same 14 mm, z "
       f"{LOGO_ZC:g}, glow-through); everything else as round 3")
     a("ROUND 3: checks and build-sheet text only, no geometry change (pole continuity, logo skin and openness over both letter "
@@ -1995,7 +2138,10 @@ def report(I):
     a(f"  trim spots [m] x " + ", ".join(f"{x:+.1f}" for x in TRIM_SPOTS) + f", z {TRIM_SPOT_Z0}..{TRIM_SPOT_Z0 + SEG[1]:.1f} on the bulkhead's back: no "
       "overlap with the body (they sit on the bulkhead: no overlap, not a clearance), >= 0.3 from the battery and the breakout; "
       "final trim layouts (left out, slid, spots) checked against body, cup, battery, breakout and wires for both cases")
-    a(f"  logo       [d] {LOGO_W:.0f} mm letters at x {LOGO_X}, z {LOGO_ZC}; [m] skin {R['skin']['lo']:.3f}..{R['skin']['hi']:.3f} normal "
+    a(f"  logo       [d] {LOGO_W:.0f} mm letters at x {LOGO_X}, z {LOGO_ZC}; [m] pockets with 45 deg roofs: lit outline within "
+      f"{R['logo_outline']['off']} at the skin ({R['logo_outline']['n_in']} points inside / {R['logo_outline']['n_out']} outside the edges, "
+      f"{R['logo_outline']['tops']} on top edges); faces steeper than 46 deg only within {R['logo_roof']['far']:.3f} of the skin "
+      f"({R['logo_roof']['n_steep']} facets), {R['logo_roof']['n_roof']} roof facets at 45 deg; skin {R['skin']['lo']:.3f}..{R['skin']['hi']:.3f} normal "
       f"to the surface over {R['skin']['n']} points on both letter floors; open to the cavity along the projection: "
       + ", ".join(f"{'EH'[k] if k < 2 else k} {v * 100:.0f} %" for k, v in sorted(R['skin']['open'].items())) +
       f" of the floor; outside, {R['logo_out']['clr']:.2f} past the end of the alcove's flare (x {R['logo_out']['x'][0]:.1f}.."
@@ -2089,8 +2235,15 @@ PRINT
   body.stl        PLA Matte ivory/white, 0.12 mm, 4+ perimeters. Seam ring on the bed, crown up. Tree supports from the build
                   plate only: they reach the crown's inside ({I['ov']['body']['crown']:.0f} mm2 steeper than 45 deg) and the door opening's top edge
                   (a ~29 mm bridge between the R7 corners; or let the slicer bridge it and clean the edge). Tabs, bosses,
-                  bulkhead and ledges start on the bed or have 45 deg undersides. Check in the slicer preview that the 0.8 logo
-                  skin prints as two full perimeters. No brim on the seam ring.
+                  bulkhead and ledges start on the bed or have 45 deg undersides. The logo needs none: its pockets have 45 deg
+                  roofs; if the slicer still puts support there, block it (support blocker over the logo). Check in the
+                  slicer preview that the 0.8 logo skin prints as two full perimeters. No brim on the seam ring.
+                  Seen in one slicer run (OrcaSlicer 2.5, generic 0.4 nozzle profile, 0.12 layers, tree supports; a preview,
+                  not a real print): the opening's top edge (29.5 mm) is held by trees that stand in front of the body and
+                  lean in over the alcove; inside the crown only a cap of about 10 x 9 mm at the very top is supported;
+                  cup-rock on its back touches the bed with 11 x 5 mm, the slicer's own support base of about 60 x 30 mm
+                  carries it, and one of its eight seam holes gets a support tip (rim-down: all eight, and the last layer
+                  at the pole is 2.2 x 13 mm).
   cup-rock.stl    PLA Matte, same colour, 0.12 mm, 100 % infill. Standing on its BACK (the curved back down, seam ring vertical):
                   every layer then draws the R44 arc. It cannot stand on its own footprint (13.6 x 5.8 mm at 0.12 above the
                   bed, 25 x 11 at 0.6; its centre of mass is outside that): give it a broad support cradle from the build

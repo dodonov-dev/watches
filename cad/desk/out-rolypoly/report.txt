@@ -1,6 +1,7 @@
 DESK HOUSING track B: roly-poly, FDM prototype, round 2  (outline: the study's XOFF -5.0 Z2L 90 A2L 28.5 Z2R 102 A2R 34; keel 'square' NC 4.5; wall 2.4; slot E)
 [m] measured on the exported files / solids; [d] designed; [calc] calculated from them with ASSUMED masses: nominal board 30 g, battery 55 g, misc 10 g, cast 5.1 g/cm3; bad case board 40, battery 60, cast 4.8
 
+ROUND 5: the letter pockets get 45 deg roofs (a slicer filled them with support); lit outline, floors and skin unchanged
 ROUND 4: the logo moved from x 28 to x 32 (off the alcove's flare onto the plain belly; same 14 mm, z 30, glow-through); everything else as round 3
 ROUND 3: checks and build-sheet text only, no geometry change (pole continuity, logo skin and openness over both letter floors, LED room / door tool minimums, final trim layouts, fore-aft from upright and from rest, tip ranges)
 
@@ -22,7 +23,7 @@ SIZE AND SURFACE
   seam       [d] z 22.0: body above, cups below, all cut from the one outer loft
 
 PARTS  [m] volume, mass (solid PLA 1.24), centroid
-  body             44.8 cm3   55.6 g   (-0.89, +5.09, 68.68)
+  body             44.8 cm3   55.6 g   (-0.90, +5.10, 68.70)
   cup-rock         13.3 cm3   16.5 g   (-0.06, +0.93, 11.44)
   cup-flat         10.0 cm3   12.5 g   (-0.03, +0.87, 16.10)
   door              5.8 cm3    7.1 g   (-5.00, -13.39, 63.86)
@@ -42,7 +43,7 @@ INSIDE
   breakout   [d] up from below 2.5 in front of its seat (through a bulkhead notch 22.6 wide, to z 34.6), then 2.5 back: socket into the hole, PCB edge into the wall pocket, side strips onto two ledges; glued
              [m] way up (PCB, socket, wire stubs): breakout 0.40, socket 0.35, wires 2.00; sliding in: no overlap (touching its seat allowed: this proves no overlap, not a clearance); with the battery already in: breakout 0.43, socket 6.00, wires 0.63
   trim spots [m] x +27.5, +15.0, z 27.5..46.5 on the bulkhead's back: no overlap with the body (they sit on the bulkhead: no overlap, not a clearance), >= 0.3 from the battery and the breakout; final trim layouts (left out, slid, spots) checked against body, cup, battery, breakout and wires for both cases
-  logo       [d] 14 mm letters at x 32.0, z 30.0; [m] skin 0.800..0.800 normal to the surface over 530 points on both letter floors; open to the cavity along the projection: E 100 %, H 100 % of the floor; outside, 2.05 past the end of the alcove's flare (x 25.4..37.7; at x 28 it was -3.33, on the flare); the surface turns 18 / 30 / 51 deg from the front at its left end / centre / right end; LEDs' room (4.5..8.5 behind the letters' centre) free: >= 6 from the battery's way up, >= 6 from the board's way in (asserted >= 3.0)
+  logo       [d] 14 mm letters at x 32.0, z 30.0; [m] pockets with 45 deg roofs: lit outline within 0.15 at the skin (248 points inside / 248 outside the edges, 114 on top edges); faces steeper than 46 deg only within 0.082 of the skin (77 facets), 139 roof facets at 45 deg; skin 0.800..0.800 normal to the surface over 530 points on both letter floors; open to the cavity along the projection: E 100 %, H 100 % of the floor; outside, 2.05 past the end of the alcove's flare (x 25.4..37.7; at x 28 it was -3.33, on the flare); the surface turns 18 / 30 / 51 deg from the front at its left end / centre / right end; LEDs' room (4.5..8.5 behind the letters' centre) free: >= 6 from the battery's way up, >= 6 from the board's way in (asserted >= 3.0)
   wiring     [d] J5 -> breakout 55 mm over the bulkhead + 40 service loop; I2C 3V3 -> LEDs 69 + 40; loops lie on the battery's top (z 58..61 behind the board)
 
 SEAM JOINT
@@ -56,13 +57,13 @@ BALLAST
   cup-flat   [m] z 13.40: 6, z 17.40: 6 = 12 segments (60 g); floor 1.40
 
 ROCKING, NOMINAL [calc]
-  plumb      ballast (cast + all 6 segments) centre needed at x +1.63 (non-ballast parts 178 g at x -1.47); plan: 1 segment(s) on the bulkhead's back at x +27.5, leave out 1 of the trim layer (x -24.5 y +1.0), slide the rest 95 % of their rows' slack to the right -> x +0.000; trim layer's reach with all in: -0.80..-0.72 mm
+  plumb      ballast (cast + all 6 segments) centre needed at x +1.64 (non-ballast parts 178 g at x -1.48); plan: 1 segment(s) on the bulkhead's back at x +27.5, leave out 1 of the trim layer (x -24.5 y +1.0), slide the rest 95 % of their rows' slack to the right -> x +0.000; trim layer's reach with all in: -0.80..-0.73 mm
   result     339 g; centre of mass z 33.91 (y +1.84): 10.09 under the rocking centre; period 0.95 s (ideal rocker); righting 0.59 mN m per deg
   sideways   rests only upright over the whole revolution (-0.25, +0.25 deg: the pole's 0.002 closing cone); crests at -176.0 deg
   fore-aft   rests at +0.02 deg (+ = back); crests found from the rest angle, sampled every 0.02 deg: forward 31.00 from upright (31.02 from rest), backward 31.54 from upright (31.52 from rest); needs 28 from upright
 ROCKING, BAD CASE [calc]
-  plumb      ballast (cast + all 6 segments) centre needed at x +2.04 (non-ballast parts 193 g at x -1.62); plan: 1 segment(s) on the bulkhead's back at x +27.5, leave out 2 of the trim layer (x -24.5 y +1.0, x -12.2 y +1.0), slide the rest 94 % of their rows' slack to the right -> x -0.000; trim layer's reach with all in: -0.93..-0.86 mm
-  result     341 g; centre of mass z 35.63 (y +1.61): 8.37 under the rocking centre; period 1.07 s (ideal rocker); righting 0.49 mN m per deg
+  plumb      ballast (cast + all 6 segments) centre needed at x +2.05 (non-ballast parts 193 g at x -1.62); plan: 1 segment(s) on the bulkhead's back at x +27.5, leave out 2 of the trim layer (x -24.5 y +1.0, x -12.2 y +1.0), slide the rest 94 % of their rows' slack to the right -> x -0.000; trim layer's reach with all in: -0.93..-0.86 mm
+  result     341 g; centre of mass z 35.63 (y +1.62): 8.37 under the rocking centre; period 1.07 s (ideal rocker); righting 0.49 mN m per deg
   sideways   rests only upright over the whole revolution (-0.25, +0.25 deg: the pole's 0.002 closing cone); crests at -176.0 deg
   fore-aft   rests at +0.02 deg (+ = back); crests found from the rest angle, sampled every 0.02 deg: forward 28.98 from upright (29.00 from rest), backward 30.26 from upright (30.24 from rest); needs 25 from upright
   what-if    [calc] battery upright on the door: 6.05 under, fore-aft 28 / 28 deg
@@ -71,12 +72,12 @@ STABLE CUP, nominal [calc] 234 g with 12 segments; centre of mass 32.1 over the 
 STABLE CUP, bad [calc] 249 g with 12 segments; centre of mass 32.9 over the desk; tips beyond 50-57 deg right, 42-44 left, 34-36 forward, 36-38 backward (a range where the crest is broad: within 0.005 of its top)
 
 PRINT ORIENTATION, overhangs steeper than 45 deg [m on the meshes]
-  body rim-down:    1078 mm2 in all (0 on the outside); inside the crown above z 100: 881; the opening's top edge: 96
+  body rim-down:    1046 mm2 in all (0 on the outside); inside the crown above z 100: 881; the opening's top edge: 96
   cup-rock on back: 1613 mm2 (680 outside, at the back's lower corner; the rolling band |y| < 12, z < 12: 0)
   cup-rock rim-down (round 1, not used): 2421 mm2, and a 6.5 mm flat at the pole from one 0.12 layer
 
 FILES  [m] each STEP re-imported (solids, valid, closed, triangulated volume), each STL re-read (closed, one body, volume vs 0.05 mesh)
-  body           STEP 1 solid, 155 faces, -0.0045 %, 12983 kB; STL 239608 triangles, +0.079 %, 11700 kB
+  body           STEP 1 solid, 220 faces, -0.0045 %, 15849 kB; STL 239590 triangles, +0.079 %, 11699 kB
   cup-rock       STEP 1 solid, 59 faces, -0.0060 %, 12755 kB; STL 328548 triangles, +0.029 %, 16043 kB
   cup-flat       STEP 1 solid, 63 faces, -0.0045 %, 10493 kB; STL 85780 triangles, +0.049 %, 4189 kB
   door           STEP 1 solid, 54 faces, -0.0000 %, 166 kB; STL 2676 triangles, +0.009 %, 131 kB

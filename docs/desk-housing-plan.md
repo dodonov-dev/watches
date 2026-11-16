@@ -207,6 +207,9 @@ Third variant in `cad/desk/smooth.py` → `cad/desk/out-smooth/oval/`. The user'
   Round 3 fixed the build-sheet wording and hardened the asserts; the STLs are byte-identical to round 2.
   Found there: the logo E's left end was not open straight into the cavity. Round 4 moved the logo from x 28
   to x 32 (user: the E lay on the alcove's corner); only `body.stl` changed.
+- **Slicer check:** OrcaSlicer from the command line on the five files (`docs/desk-housing-reviews/6-rolypoly-slicer.md`).
+  It found supports inside the logo letters; round 5 gave the pockets 45° roofs, re-sliced clean. Everything else
+  printable as the build sheet says; the cup on its back is the better orientation.
   See `docs/desk-housing-reviews/5-rolypoly-cad-astra.md`.
 - **Print files:** copies in `cad/desk/to-print/rolypoly-*.stl`.
 - **Left for the print:** rocking duration and feel, the cable's pull, real masses and ball packing, magnet pull,
