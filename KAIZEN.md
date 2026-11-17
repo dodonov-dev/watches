@@ -923,3 +923,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Slicer check as a repo tool: OrcaSlicer CLI + generic profile + G-code reader (recipe in `docs/desk-housing-reviews/6-rolypoly-slicer.md`; scripts were scratch).
 - Door opening's top edge (29.5 mm) is held by trees leaning in over the alcove; an arched or 45° top inside would print without them.
 - Orca prints `Not precalculated Placeable areas requested` on the body's tree supports; not looked into.
+
+## 2026-11-17 setup audit
+- `sim/` locked dependencies: `npm ci` reports two high-severity advisories; review separately from workstation setup.
+- pioarduino debug registry ZIPs are metadata; resolve with the platform installer and register its binary package to preserve the documented canonical paths.
+- Smooth shells' STLs (upright, tilt15) carry two zero-volume specks each near the top (x ±22, z ~101 / ~97): mesh export artefacts; slicers ignore or "repair" them.
+- Bambu Studio flatpak: blank web dialogs, WebKitWebProcess at 100 % CPU. Cause: `cache-12` fontconfig files in `~/.cache/fontconfig` (written by Chrome / Playwright Chromium) loop the runtime's WebKit (OrcaSlicer #16576, BambuStudio #12414). Fix: move the dir aside (done 2026-11-17, backup `~/.cache/fontconfig.bak-2026-11-17`); returns after the next Chromium run. Durable: a FONTCONFIG_FILE override for the flatpak without `/run/host/user-fonts-cache`. The WEBKIT_DISABLE_* overrides set first did not help.
