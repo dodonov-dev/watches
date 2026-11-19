@@ -226,7 +226,8 @@ complained about the external spool). Projects and photos: `cad/desk/to-print/*_
     shorter than the lit area (66.85 for rods cut to 66.65), as intended.
   - **Front E, 3 mm (or less):** F's 4 mm front hides the tube's 3D look; the rods should stand out. A thinner
     front than 3 is an open idea (it moves the glass and board: a full rebuild and recheck).
-  - The roly-poly door still has 8.6 slots (`rolypoly.py` takes `housing.SLOT_W`): change it at its next rebuild.
+  - The roly-poly door still has 8.6 slots with the E knife edge (`rolypoly.py` takes `housing.SLOT_W` and
+    `flat_end_cutter`): give it the smooth shells' land and width at its next rebuild (see round 3).
   - One inlay (24 mm set 1, the E) came off the plate early and turned to spaghetti: adhesion, not design.
   - **Logo coupons failed:** printed standing, the strips between the letters start in mid-air (the E's lower arm is
     a one-end cantilever that carries the divider, the slash and the upper arm; the H's upper strip is an island).
@@ -271,3 +272,19 @@ issues). Photos: `cad/desk/to-print/_2_second_plate_res/`, `_3_third_plate_res/`
 - **Next reprint (not prepared yet):** at least one smooth shell in Matte white with: a shallower pocket (thicker
   skin, ~1.0; maybe sloped sides), slots = measured rod + ~0.1, ironing on top surfaces; white vs black stencil
   chosen by the torch test. Also the roly-poly glow coupon in the same Matte.
+
+## Round 3 CAD: slot land, flared pocket (2026-11-19, built, not printed yet)
+Why: the E slots measured 9.0 for 8.2 designed (the bevel ended in a knife edge the 0.4 nozzle cannot print, ~0.4 lost
+per side); the pocket's 3.0 -> 0.6 step left a sink line. Rods measured exactly 8.0.
+- **Slots:** 8.1 wide, a straight **0.6 land** at the inner face, then 45° out to the face (`SLOT_LAND`, `SLOT_W`,
+  `ROD_PLAY_MIN` 0.1). Face opening 12.90 (oval 14.38); rod play ~0.06 per side.
+- **Pocket:** skin **1.0** (oval 1.0-1.19), left/right sides 45° from the floor to the inner face, top/bottom straight,
+  a 3 mm straight run into the cavity (tilt15: it notches the inner corner rounds, wall 2.88 there). Stencils 1.9
+  thick with matching 45° sides; white stencils preferred (user).
+- **Report:** each shell suggests ironing on top surfaces. Thinner front for more rod relief: skipped for now (user).
+- **Review:** Astra 6.2 (Codex CLI) re-measured the exports: no print-blocking issue. It showed four checks too weak
+  to catch their own faults (land by bounding box, skin passing a hole, tilt15 notch clearances, blank stencils);
+  all four rewritten and proven with its fault injections; the exported STLs unchanged (sha256).
+- **Possible later (user, 2026-11-19):** a small lip over the slot's long sides, covering the rod's edges, to hide the
+  moiré seen there; only if darkening and narrowing the drawn tube (firmware), a matte film or sanding the rod's
+  sides do not help.

@@ -1,5 +1,7 @@
-LOGO STENCILS, small (the front logo of upright and oval): letters 14 x 8.83; pocket 16.00 x 10.83 R1; stencil 15.80 x 10.43 x 2.30 (clearance 0.1 per side, 0.3 at the top: the pocket's ceiling is a bridge); mirrored, the face that meets the skin on the bed
+LOGO STENCILS, small (the front logo of upright and oval): letters 14 x 8.83; pocket 16.00 x 10.83 R1 at its floor (behind the 1.0 skin), its two vertical sides sloped 45 deg out to 20.00 x 10.83 at a 3.0 wall's inner face (the oval's is deeper), top and bottom straight
+stencil [d] 1.90 thick (3.0 wall - 1.0 skin - 0.1 inside the mouth); bed face 15.80 x 10.43 R0.9, its two vertical sides sloped 45 deg as the pocket's (a 45 deg overhang printed flat), top face 19.60 x 10.43; clearance 0.1 per side in its plane (0.07 normal to the sloped sides), 0.3 at the top (the pocket's ceiling is a bridge); mirrored, the face that meets the skin on the bed
 strip widths, first row to last (as printed, top to bottom in the slicer's top view): 0.72 (as designed), 1.00, 1.40
+apertures [m] on the bed face and the top face of each: one per letter, at the mirrored place (reads right from outside, through the skin), areas mm2: 46.72, 56.75; 40.95, 50.13; 33.11, 41.11
 paint them black (all faces); push into the pocket from inside, the reading direction checked from outside; a drop of glue
 files        [m] each STEP re-imported, each STL re-read:
-  logo-stencils-small STEP 3 solid(s), 166 faces, volume +0.0000 %, 625 kB; STL closed, 4620 triangles, volume -0.002 %, 226 kB
+  logo-stencils-small STEP 3 solid(s), 166 faces, volume +0.0000 %, 674 kB; STL closed, 4620 triangles, volume -0.001 %, 226 kB

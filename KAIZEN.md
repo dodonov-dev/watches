@@ -929,3 +929,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - pioarduino debug registry ZIPs are metadata; resolve with the platform installer and register its binary package to preserve the documented canonical paths.
 - Smooth shells' STLs (upright, tilt15) carry two zero-volume specks each near the top (x ±22, z ~101 / ~97): mesh export artefacts; slicers ignore or "repair" them.
 - Bambu Studio flatpak: blank web dialogs, WebKitWebProcess at 100 % CPU. Cause: `cache-12` fontconfig files in `~/.cache/fontconfig` (written by Chrome / Playwright Chromium) loop the runtime's WebKit (OrcaSlicer #16576, BambuStudio #12414). Fix: move the dir aside (done 2026-11-17, backup `~/.cache/fontconfig.bak-2026-11-17`); returns after the next Chromium run. Durable: a FONTCONFIG_FILE override for the flatpak without `/run/host/user-fonts-cache`. The WEBKIT_DISABLE_* overrides set first did not help.
+
+## 2026-11-19 smooth shells: slot land, flared logo pocket
+- Oval report still prints the cut-style `recess` and `bow ... inlay` lines; in stencil style the recess lies inside the pocket (no-op).
+- Oval pocket is 3.36 deep, stencils 1.9: the stencil sits 1.46 inside the mouth; an oval-specific thicker stencil would fill it.
+- (`to-print/oval-teststrip.stl` refreshed by the parent.)
+- tilt15 side pocket's mouth (30) is longer than the inner side flat (~24): it runs into both cavity corner rounds (short straight notches, 2.88 wall by the R5). A smaller side logo would keep it in the flat.
