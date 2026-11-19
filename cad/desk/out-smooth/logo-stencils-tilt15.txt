@@ -1,0 +1,5 @@
+LOGO STENCILS, tilt15 (the tilt15's side logo): letters 24 x 15.14; pocket 26.00 x 17.14 R1; stencil 25.80 x 16.74 x 2.30 (clearance 0.1 per side, 0.3 at the top: the pocket's ceiling is a bridge); mirrored, the face that meets the skin on the bed
+strip widths, first row to last (as printed, top to bottom in the slicer's top view): 1.23 (as designed), 1.60, 2.00
+paint them black (all faces); push into the pocket from inside, the reading direction checked from outside; a drop of glue
+files        [m] each STEP re-imported, each STL re-read:
+  logo-stencils-tilt15 STEP 3 solid(s), 200 faces, volume +0.0000 %, 760 kB; STL closed, 4756 triangles, volume -0.001 %, 232 kB

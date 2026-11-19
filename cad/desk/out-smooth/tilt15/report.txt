@@ -7,9 +7,9 @@ cavity       [d] 44.0 wide; front inner face at t 3.0, back inner y 46.5; corner
   ceiling    [d] 45 deg ramp under the roll from (27.60, 91.43) to (36.30, 100.12) (y, z), flat ceiling at z 100.12 (top wall 3.38 thick there); 45 deg x 4.0 down to the back wall; joins R2.0. The inner front face runs flat to s 94.92 (glass top 94.42, slot top 91.45)
   bridge     [m] flat ceiling face 4.55 in Y (y 37.12..41.67) x 38.00 in X at z 100.12; the 45 deg ramp face spans y 27.98..35.71, z 91.81..99.54
 board        [d] PCB bottom s 16.70 along the face (adapter's lowest point 1.0 above the rim), AA centre s 58.03; battery s 17.70..85.70, t 12.60..22.60 (taped low: 1.0 above the adapter); [m] battery to the adapter 1.00, to the lid 11.25
-slots        [d] 8.6 x 66.85 for rods cut to 66.65 (lit 67.65), at x +-10.23, s 24.60..91.45 (world z 23.76..88.33); 0.40 inside the lit area per end; [m] on the face 14.60 x 66.85
-face margins [m] flat beside the bevels 2.47 (+ R5.0), bridge 5.86 on the face ([d] 11.86 at the rim), above the slots 4.19 to the roll's tangent line; [d] below 24.60 along the face to the rim
-rods         [d] 8.0 x 4.0 x 66.65; apex +0.55..+0.75 to the face (tape 0.05..0.25; + = proud); in the slot 0.30 per side, 0.10 per end
+slots        [d] 8.2 x 66.85 for rods cut to 66.65 (lit 67.65), at x +-10.23, s 24.60..91.45 (world z 23.76..88.33); 0.40 inside the lit area per end; [m] on the face 14.20 x 66.85
+face margins [m] flat beside the bevels 2.67 (+ R5.0), bridge 6.26 on the face ([d] 12.26 at the rim), above the slots 4.19 to the roll's tangent line; [d] below 24.60 along the face to the rim
+rods         [d] 8.0 x 4.0 x 66.65; apex +0.55..+0.75 to the face (tape 0.05..0.25; + = proud); in the slot 0.10 per side, 0.10 per end
 insertion    board + rods: up along the face at 4.00 further back (rod 4.0 + tape 0.25 - gasket 0.5 + 0.25), then forward
   depth      [m] smallest depth (0.5 steps) with 0.5 round the battery's own sweeps and 0.5 round the adapter: built 49.5, limited by the battery and outer shape (shallower, the rear corners swallow the top's straight sides) (battery 0.83, adapter 2.50; at 49.0: battery 0.40, adapter 2.50). Other orders: v1 53.5 (limited by the battery); rods-after 49.5 (limited by the battery and outer shape (shallower, the rear corners swallow the top's straight sides)). With R3.0 rear cavity corners (1.34 wall there) it would be 49.5
   battery    [m] up 0.5 behind its seat, then forward: clearance to the shell 0.83 up, 0.87 forward; to the board / plugs 0.60 on the way up
@@ -23,18 +23,18 @@ USB          [d] the adapter's socket faces back and 15 deg down; its face sits 
   (a)        [d] straight plug (25 long, 6.5 thick) in the adapter's socket: its lower face meets the lid after 5.04 and its top end the back wall after 17.6 along the axis: does not fit
   (b)        right-angle plug in the board's port (head = the adapter's box, 12 x 7 x 21, cable out of its far end): [m] far end to the back wall's inner face 16.6 horizontally, lowest edge 1.06 above the lid, head to the battery 1.00; [d] cable exit centre z 4.44, a straight D5 cable reaches the lid 7.8 after the head: it has to bend there and run on the lid to the notch. NOT VERIFIED: head, strain relief and bend of the real cable are not modelled
   adapter    [m] nearest shell surface 2.50 (front wall's inner face); to the back wall's inner face 16.58
-logo         [d] left (-X), letters 24.00 x 15.14, y 13.81..37.81, z 7.43..22.57 (centre 18.00 above the desk); cut through, strips 1.23; v1's inlays fit
+logo         [d] left (-X), letters 24.00 x 15.14, y 13.81..37.81, z 7.43..22.57 (centre 18.00 above the desk); glow-through: one pocket from inside, 26.00 x 17.14 R1 (letters + 1 all round), y 12.81..38.81, z 6.43..23.57 (side flat y 11.49..39.50 at its top), [m] skin 0.60; stencils: out-smooth/logo-stencils-tilt15.*
   margins    [d] 1.69 (least) to the ends of the side flat (y 11.22..39.50 at the letters' top); inner wall flat y 13.81..38.00
 min wall     [m] between the cavity surface and the outer surface (exact; before slots, logo, magnets, USB; bottom break excluded): front 3.00, back 3.00, sides 3.00, roll R15 3.05, rear corners R10 3.10, R5 chain 3.12, top 3.38
-  minimum    [m] 3.00; by design thinner: slot rim 0.0, logo skin -, magnet meat 0.51
-print        shell standing on its rim (opening down), meant to print without supports (check the layer preview): front inner face 15 deg overhang, 45 deg ramp under the roll, [m] flat bridge 4.55 in Y, 45 deg at the back; slot ends bridge 8.6..14.6; notch round-topped; the R2 joins of the ceiling and its side blends pass 45 deg locally (about 1.4 wide). Lid: flat, top face down (the toe round and bottom break on top)
+  minimum    [m] 3.00; by design thinner: slot rim 0.0, logo skin 0.6, magnet meat 0.51
+print        shell standing on its rim (opening down), meant to print without supports (check the layer preview): front inner face 15 deg overhang, 45 deg ramp under the roll, [m] flat bridge 4.55 in Y, 45 deg at the back; slot ends bridge 8.2..14.2; notch round-topped; the R2 joins of the ceiling and its side blends pass 45 deg locally (about 1.4 wide). Lid: flat, top face down (the toe round and bottom break on top)
 volumes cm3  [m] shell 44.9, lid 7.2  (65 g at 1.24 g/cm3)
 tipping      [m+d] mass 150 g (print + board 30 g + battery 55 g, both assumed); centre of mass y 29.2, 49.1 above the desk; foot y 1.63..49.00
   push       horizontal at the top (106.5 above the desk) that tips it: backwards 28 gf, forwards 39 gf; tips over when tilted 22 deg back / 29 deg forward
 files        [m] each STEP re-imported, each STL re-read:
-  shell            STEP 1 solid(s), 123 faces, volume +0.0000 %, 577 kB; STL closed, 12998 triangles, volume -0.012 %, 635 kB
+  shell            STEP 1 solid(s), 83 faces, volume +0.0000 %, 424 kB; STL closed, 13352 triangles, volume -0.011 %, 652 kB
   lid              STEP 1 solid(s), 26 faces, volume +0.0000 %, 108 kB; STL closed, 10582 triangles, volume -0.005 %, 517 kB
-  assembly         STEP 13 solid(s), 219 faces, volume +0.0000 %, 882 kB
+  assembly         STEP 13 solid(s), 179 faces, volume +0.0000 %, 724 kB
 open items (need the real parts):
   - rods on the forward move: they must line up with the slots within +-0.10 along the face (0.11 off already cuts 0.21 mm3 per rod)
   - magnets: glue them in, do not press: the rear ligament round the hole is 0.51

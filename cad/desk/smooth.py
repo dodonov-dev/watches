@@ -57,7 +57,8 @@ BOTTOM_BREAK = 0.5
 LID_T, TOE_R = 3.0, 2.0                # lid; the tilted lid's toe round
 SLOT_TYPE = "E"                        # E: 3 mm front, 45 deg bevel to 0 (user, round 2); F: 4 mm front, bevel to a 1 mm rim
 FRONT_BY_SLOT = {"F": (4.0, 1.0), "E": (3.0, 0.0)}
-SLOT_W = hw.SLOT_W                     # 8.6
+SLOT_W = 8.2                           # user, 2026-11-18, after the X1E test strip: 8.6 left a visible gap beside the 8.0 rod
+ROD_PLAY_MIN = 0.2                     # slot width over the rod, at least (was 0.4 before the print test)
 ROD_L = hw.TS_FLAT_ROD_L               # 66.65: rods cut 1 mm shorter than the lit length
 SLOT_L = ROD_L + hw.TS_FLAT_PLAY       # 66.85
 FACE_TOP_FLAT_MIN = 3.0                # flat face between the slot's top end and the roll's tangent line
@@ -80,6 +81,17 @@ BAT_HOLD = 0.5                         # battery-after: how far behind its seat 
 BAT_SPARE_AFTER = 0.5                  # battery-after: clearance round the battery's sweep, at least
 LOGO_SKIN = 0.6                        # skin left over a pocketed (glow-through) logo
 LOGO_MARGIN = hw.LOGO_MARGIN
+# Logo style. "cut": the letters cut through the wall, translucent inlays pressed in (round 1). Printed standing, its
+# strips start in mid-air (cantilevers, islands): they failed on the coupons of 2026-11-17. "stencil": one plain
+# rounded-rectangle pocket from inside behind a LOGO_SKIN skin, and a flat-printed stencil of the logo (painted black)
+# pushed into it; the LEDs light the skin through the letters (user, 2026-11-18).
+LOGO_STYLE = "stencil"
+STENCIL_MARGIN = 1.0                   # pocket beyond the letters' box, all round
+STENCIL_R = 1.0                        # pocket corner radius, seen through the wall
+STENCIL_CLR = 0.10                     # stencil to pocket, per side (paint adds a few hundredths)
+STENCIL_CLR_TOP = 0.30                 # ... at the pocket's top: its ceiling is a bridge when printed standing, it may sag
+STENCIL_BACK = 0.10                    # the stencil's back face this far inside the pocket's mouth
+STENCIL_STRIPS = {"front": (None, 1.0, 1.4), "side": (None, 1.6, 2.0)}   # strip width per stencil (None: as designed)
 NOTCH_W, NOTCH_H = 5.6, 6.0            # cable notch (tilt15): for a cable up to 5, open at the rim, closed by the lid
 CABLE_D = 5.0
 PLUG_LEN_A, PLUG_T_A, PLUG_W_A = 25.0, 6.5, 12.0   # a straight USB-C plug with its overmould (typ.)
@@ -232,6 +244,10 @@ class Model:
 
     def wt(self, shape):
         return shape.rotate(Axis.X, -self.tilt) if self.tilt else shape
+
+    def front_out_y(self, x, z):
+        """World y of the outer front surface at (x, z), on its flat part (the oval overrides it)."""
+        return self.y_front(z)
 
     def y_front(self, z, t=0.0):
         """World y of the plane t (parallel to the front) at height z."""
@@ -421,15 +437,25 @@ class Model:
         zlo, zhi = FRONT_LOGO_RIM, self.GLASS_S0 - FRONT_LOGO_GLASS
         zc = (zlo + zhi) / 2
         pl = Plane(origin=(0, -3.0, zc), x_dir=(1, 0, 0), z_dir=(0, -1, 0))     # seen from the front: x right, z up
-        cut = None
-        for poly in hw.letters_mm(w):
-            e = extrude(pl * Polygon(*[(u, v) for u, v in poly], align=None), self.FRONT + 5.0, dir=(0, 1, 0))
-            cut = e if cut is None else cut + e
+        cut, floor, pocket = None, None, None
+        if LOGO_STYLE == "stencil":
+            # one rounded-rectangle pocket from inside; its flat floor LOGO_SKIN behind the outer surface where that
+            # comes closest (the oval's face curves back towards the sides: its skin is thicker on the centre line)
+            pw, ph = w + 2 * STENCIL_MARGIN, h + 2 * STENCIL_MARGIN
+            floor = LOGO_SKIN + max(self.front_out_y(x, z) for x in np.linspace(-pw / 2, pw / 2, 81)
+                                    for z in (zc - ph / 2, zc, zc + ph / 2))
+            pp = Plane(origin=(0, floor, zc), x_dir=(1, 0, 0), z_dir=(0, 1, 0))
+            cut = extrude(pp * RectangleRounded(pw, ph, STENCIL_R), self.FRONT + 1.0 - floor)
+            pocket = (pw, ph)
+        else:
+            for poly in hw.letters_mm(w):
+                e = extrude(pl * Polygon(*[(u, v) for u, v in poly], align=None), self.FRONT + 5.0, dir=(0, 1, 0))
+                cut = e if cut is None else cut + e
         recess = None
         if self.FRONT > FRONT_LOGO_T + 1e-6:
             m_ = FRONT_LOGO_RECESS
             recess = box(-w / 2 - m_, w / 2 + m_, FRONT_LOGO_T, self.FRONT + 1.0, zc - h / 2 - m_, zc + h / 2 + m_)
-        res = dict(w=w, h=h, zc=zc, z=(zc - h / 2, zc + h / 2), cut=cut, recess=recess,
+        res = dict(w=w, h=h, zc=zc, z=(zc - h / 2, zc + h / 2), cut=cut, recess=recess, floor=floor, pocket=pocket,
                    inner_y=FRONT_LOGO_T if recess is not None else self.FRONT)
         self._cache["flogo"] = res
         return res
@@ -440,6 +466,11 @@ class Model:
             return [fl["cut"]] + ([fl["recess"]] if fl["recess"] is not None else [])
         L = self.logo_layout()
         side = hw.LOGO_SIDE
+        if LOGO_STYLE == "stencil":                 # one rounded-rectangle pocket from inside, LOGO_SKIN under the side flat
+            pw, ph = L["w"] + 2 * STENCIL_MARGIN, L["h"] + 2 * STENCIL_MARGIN
+            x0 = side * (W / 2 - LOGO_SKIN)
+            f = Plane.YZ.offset(x0) * Pos(L["yc"], L["zc"]) * RectangleRounded(pw, ph, STENCIL_R)
+            return [extrude(f, -side * (WALL_MIN + 1.0 - LOGO_SKIN))]
         x0 = side * (W / 2 + 1) if self.cfg["LOGO_MODE"] == "cut" else side * (W / 2 - LOGO_SKIN)
         depth = (W / 2 + 1 - 12.0) if self.cfg["LOGO_MODE"] == "cut" else (W / 2 - LOGO_SKIN - 12.0)
         cuts = []
@@ -905,6 +936,23 @@ def front_logo_check(m, shell, lid, order):
         rb = fl["recess"].bounding_box()
         check(rb.max.Z <= m.GLASS_S0 - 0.2, f"recess top {rb.max.Z:.2f} reaches the glass ({m.GLASS_S0:.2f})")
         check(rb.min.Z >= 1.0, f"recess bottom {rb.min.Z:.2f} reaches the rim")
+    skin = (math.nan, math.nan)
+    if fl["pocket"] is not None:                 # stencil pocket: inside the band, clear of the R5 edges, skin measured
+        pw, ph = fl["pocket"]
+        check(fl["zc"] + ph / 2 <= m.GLASS_S0 - 0.2, f"logo pocket top {fl['zc'] + ph / 2:.2f} reaches the glass ({m.GLASS_S0:.2f})")
+        check(fl["zc"] - ph / 2 >= BOTTOM_BREAK + 1.0, f"logo pocket bottom {fl['zc'] - ph / 2:.2f} too close to the rim")
+        check(pw / 2 <= getattr(m, "W", W) / 2 - R_EDGE - 1.0, "logo pocket reaches the R5 edges")
+        floor_f = [f for f in shell.faces() if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().Y) - 1) < 1e-6
+                   and abs(f.center().Y - fl["floor"]) < 1e-6]
+        check(len(floor_f) == 1, f"logo pocket floor: {len(floor_f)} faces")
+        fb = floor_f[0].bounding_box()
+        outer = [f for f in shell.faces() if f.bounding_box().min.Y < fl["floor"] - 1e-3     # faces reaching in front of the floor
+                 and f.bounding_box().max.X > fb.min.X and f.bounding_box().min.X < fb.max.X
+                 and f.bounding_box().max.Z > fb.min.Z and f.bounding_box().min.Z < fb.max.Z]
+        d_min = dist_shapes(Compound(outer), floor_f[0])[0]
+        d_ctr = fl["floor"] - m.front_out_y(0.0, fl["zc"])
+        check(abs(d_min - LOGO_SKIN) < 0.01, f"logo skin measured {d_min:.3f}, want {LOGO_SKIN}")
+        skin = (d_min, d_ctr)
     seated = [(b.name, b.solid()) for b in m.moving_bodies()] + [("adapter", m.adapter().solid()), ("lid", lid)]
     sweeps = all_sweeps(m, order)
     for n, o in seated + sweeps:
@@ -933,7 +981,8 @@ def front_logo_check(m, shell, lid, order):
     d_ad.Perform()
     q = d_ad.PointOnShape2(1)
     rim_gap = min(gap(fl["cut"], f) for f in shell.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6 and abs(f.center().Z) < 1e-6)
-    return dict(w=w, h=h, z=(z0, z1), strip=strip, recess=fl["recess"], inner_y=fl["inner_y"], ad_y0=ad_y0,
+    return dict(w=w, h=h, z=(z0, z1), strip=strip, recess=fl["recess"], inner_y=fl["inner_y"], ad_y0=ad_y0, skin=skin,
+                pocket=fl["pocket"], floor=fl["floor"], zc=fl["zc"],
                 zoneA=(2 * xa, ad_y0 - 0.3 - fl["inner_y"], z1 - z0), gA=gA, beside_vol=beside.volume, beside_bb=bb_,
                 ad_near=(d_ad.Value(), face_name(shell, (q.X(), q.Y(), q.Z()))), rim_gap=rim_gap)
 
@@ -941,8 +990,12 @@ def front_logo_check(m, shell, lid, order):
 def front_logo_lines(m, F):
     R = [f"logo         [d] front, centred on x 0 under the tubes: {F['w']:g} x {F['h']:.2f} letters (widest <= {FRONT_LOGO_MAX_W:g} in 0.5 "
          f"steps between {FRONT_LOGO_RIM} above the rim and {FRONT_LOGO_GLASS} below the glass at z {m.GLASS_S0:.2f}; the same on upright "
-         f"and oval), cut through, z {F['z'][0]:.2f}..{F['z'][1]:.2f} ({F['z'][0] + LID_T:.2f}.. above the desk); strips {F['strip']:.2f} "
-         f"(accepted >= {FRONT_LOGO_STRIP_MIN} for this logo; v1 wants 1.2); inlays: out-smooth/logo-inlays-small.*"]
+         f"and oval), " + (f"cut through, z {F['z'][0]:.2f}..{F['z'][1]:.2f} ({F['z'][0] + LID_T:.2f}.. above the desk); strips {F['strip']:.2f} "
+         f"(accepted >= {FRONT_LOGO_STRIP_MIN} for this logo; v1 wants 1.2); inlays: out-smooth/logo-inlays-small.*" if F["pocket"] is None else
+         f"letters z {F['z'][0]:.2f}..{F['z'][1]:.2f} ({F['z'][0] + LID_T:.2f}.. above the desk), glow-through: one pocket from inside, "
+         f"{F['pocket'][0]:.2f} x {F['pocket'][1]:.2f} R{STENCIL_R:g} (letters + {STENCIL_MARGIN:g} all round), z {F['zc'] - F['pocket'][1] / 2:.2f}.."
+         f"{F['zc'] + F['pocket'][1] / 2:.2f}, flat floor at y {F['floor']:.2f}; [m] skin {F['skin'][0]:.2f} at its thinnest, "
+         f"{F['skin'][1]:.2f} on the centre line; stencils: out-smooth/logo-stencils-small.*")]
     if F["recess"] is not None:
         rb = F["recess"].bounding_box()
         R.append(f"  recess     [d] flat, on the inside, x {rb.min.X:.2f}..{rb.max.X:.2f}, z {rb.min.Z:.2f}..{rb.max.Z:.2f}, floor at y "
@@ -991,7 +1044,7 @@ def build(name, order=ORDER):
     L = m.logo_layout()
     _, CI = m.ceiling()
     ROD_FACE = [hw.ROD_H + t - m.FRONT - hw.GASKET for t in hw.TAPE]        # apex over (+) / under (-) the face
-    check(SLOT_W - hw.ROD_W >= 0.4 and SLOT_L - ROD_L >= 0.1, "rod clearance in the slot")
+    check(SLOT_W - hw.ROD_W >= ROD_PLAY_MIN - 1e-9 and SLOT_L - ROD_L >= 0.1, "rod clearance in the slot")
     check(SLOT_L <= hw.AA_H - 0.2, "slot longer than the lit area: black glass would show")
     check(-0.5 <= ROD_FACE[0] <= 0.8, "rod apex too far from the face")
     inner_flat = W - 2 * WALL - 2 * R_IN_FRONT
@@ -1033,9 +1086,18 @@ def build(name, order=ORDER):
             check(strip >= hw.STRIP_MIN, f"letter strips {strip:.2f} < {hw.STRIP_MIN}: use the skin")
         y_flat_in = (m.y_front(L["z"][1], m.FRONT + R_IN_FRONT), m.D - BACK - m.R_IN_REAR)   # inner side flat (3 mm wall)
         logo_in_flat = L["y"][0] >= y_flat_in[0] and L["y"][1] <= y_flat_in[1]
-        skin = logo_skin_measure(shell) if m.cfg["LOGO_MODE"] == "skin" else math.nan
-        if m.cfg["LOGO_MODE"] == "skin":
+        pocketed = m.cfg["LOGO_MODE"] == "skin" or LOGO_STYLE == "stencil"
+        skin = logo_skin_measure(shell) if pocketed else math.nan
+        if pocketed:
             check(abs(skin - LOGO_SKIN) < 0.01, f"logo skin measured {skin:.3f}")
+        side_pocket = None
+        if LOGO_STYLE == "stencil":               # the pocket's floor must lie under the outer side flat (constant skin)
+            pw, ph = L["w"] + 2 * STENCIL_MARGIN, L["h"] + 2 * STENCIL_MARGIN
+            f0 = m.y_front(L["zc"] + ph / 2) + R_EDGE / m.c
+            side_pocket = (pw, ph, L["yc"] - pw / 2, L["yc"] + pw / 2, L["zc"] - ph / 2, L["zc"] + ph / 2, f0, L["flat"][1])
+            check(side_pocket[2] >= f0 + 0.5 and side_pocket[3] <= L["flat"][1] - 0.5,
+                  f"logo pocket y {side_pocket[2]:.2f}..{side_pocket[3]:.2f} outside the side flat {f0:.2f}..{L['flat'][1]:.2f}")
+            check(side_pocket[4] >= BOTTOM_BREAK + 1.0, f"logo pocket bottom {side_pocket[4]:.2f} too close to the rim")
 
     # ---- walls, measured ----
     walls = wall_measure(m)
@@ -1240,13 +1302,17 @@ def build(name, order=ORDER):
                  (f" (shrunk from {m.cfg['LOGO_W']:g} to fit the {L['flat'][1] - L['flat'][0]:.1f} side flat; {m.cfg['LOGO_W']:g} would need "
                   f"depth {m.D + m.cfg['LOGO_W'] - L['w']:.1f})" if L['w'] < m.cfg['LOGO_W'] else "") + f", y {L['y'][0]:.2f}..{L['y'][1]:.2f}, z {L['z'][0]:.2f}..{L['z'][1]:.2f} "
                  f"(centre {L['zc'] + LID_T:.2f} above the desk); " +
-                 (f"cut through, strips {strip:.2f}; v1's inlays fit" + ("" if logo_in_flat else " (part of the letters over a thicker corner zone)")
+                 (f"glow-through: one pocket from inside, {side_pocket[0]:.2f} x {side_pocket[1]:.2f} R{STENCIL_R:g} (letters + {STENCIL_MARGIN:g} "
+                  f"all round), y {side_pocket[2]:.2f}..{side_pocket[3]:.2f}, z {side_pocket[4]:.2f}..{side_pocket[5]:.2f} (side flat y "
+                  f"{side_pocket[6]:.2f}..{side_pocket[7]:.2f} at its top), [m] skin {skin:.2f}; stencils: out-smooth/logo-stencils-tilt15.*"
+                  if side_pocket is not None else
+                  f"cut through, strips {strip:.2f}; v1's inlays fit" + ("" if logo_in_flat else " (part of the letters over a thicker corner zone)")
                   if m.cfg["LOGO_MODE"] == "cut" else f"pocketed from inside, [m] skin {skin:.2f}; cut through the strips would be {strip:.2f}"))
         R.append(f"  margins    [d] {L['margin']:.2f} (least) to the ends of the side flat (y {L['flat'][0]:.2f}..{L['flat'][1]:.2f} at the letters' top); "
                  f"inner wall flat y {y_flat_in[0]:.2f}..{y_flat_in[1]:.2f}")
     R.append("min wall     [m] between the cavity surface and the outer surface (exact; before slots, logo, magnets, USB; bottom break "
              "excluded): " + ", ".join(f"{k} {v:.2f}" for k, (v, p) in sorted(walls.items(), key=lambda kv: kv[1][0])))
-    R.append(f"  minimum    [m] {wmin:.2f}; by design thinner: slot rim {m.RIM}, logo skin {LOGO_SKIN if m.cfg['LOGO_MODE'] == 'skin' else '-'}, "
+    R.append(f"  minimum    [m] {wmin:.2f}; by design thinner: slot rim {m.RIM}, logo skin {LOGO_SKIN if m.cfg['LOGO_MODE'] == 'skin' or LOGO_STYLE == 'stencil' else '-'}, "
              f"magnet meat {min(meat_f, meat_r):.2f}")
     R.append(f"print        shell standing on its rim (opening down), meant to print without supports (check the layer preview): front inner face {'vertical' if not m.tilt else f'{m.tilt:.0f} deg overhang'}, "
              f"45 deg ramp under the roll, [m] flat bridge {bridge_y:.2f} in Y, 45 deg at the back; slot ends bridge {SLOT_W}..{FM['open_w']:.1f}; " +
@@ -1349,6 +1415,9 @@ class OvalModel(Model):
         self.H = OVAL["TOTAL"] - LID_T
         self.Z_RAMP = self.H - TOP_T - OVAL["RAMP"]          # where the taper under the top begins
         self._cache = {}
+
+    def front_out_y(self, x, z):
+        return oval_front_y(x)
 
     def plan(self, inset=0.0):
         """The plan as a periodic spline face; inset > 0: through points moved `inset` inwards along the exact normal (the
@@ -1508,7 +1577,7 @@ def build_oval(order=ORDER):
         check(min(ms, ml) >= MAG_MEAT_FRONT_MIN - 1e-6, f"oval: magnet at ({x:.2f}, {y:.2f}): {ms:.2f} in the rim, {ml:.2f} in the lid")
 
     # ---- front, slots, rods ----
-    check(SLOT_W - hw.ROD_W >= 0.4 and SLOT_L - ROD_L >= 0.1, "rod clearance in the slot")
+    check(SLOT_W - hw.ROD_W >= ROD_PLAY_MIN - 1e-9 and SLOT_L - ROD_L >= 0.1, "rod clearance in the slot")
     check(SLOT_L <= hw.AA_H - 0.2, "slot longer than the lit area")
     gl = [f for f in shell_core.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Y > 1 - 1e-6 and abs(f.center().Y - m.FRONT) < 1e-4]
     check(len(gl) == 1, f"flat inner front face: {len(gl)} found")
@@ -1725,7 +1794,7 @@ def build_oval(order=ORDER):
              f"glass, board, buttons, plugs, rods, battery or adapter seated")
     R.append("min wall     [m] between the cavity surface and the outer surface (exact; before slots, logo, magnets, USB; bottom break "
              "excluded): " + ", ".join(f"{k} {v:.2f}" for k, (v, p) in sorted(walls.items(), key=lambda kv: kv[1][0])))
-    R.append(f"  minimum    [m] {wmin:.2f}; by design thinner: slot rim 0, logo strips {FL['strip']:.2f}, magnet meat {min(min(a) for a in meats):.2f}")
+    R.append(f"  minimum    [m] {wmin:.2f}; by design thinner: slot rim 0, " + (f"logo skin {FL['skin'][0]:.2f}" if FL["pocket"] is not None else f"logo strips {FL['strip']:.2f}") + f", magnet meat {min(min(a) for a in meats):.2f}")
     R.append(f"print        shell standing on its rim (opening down), meant to print without supports (check the layer preview): walls "
              f"vertical, 45 deg taper under the top, [m] flat bridge {min(fb.size.X, fb.size.Y):.2f}; slot ends bridge {SLOT_W}.. the opening; "
              f"the USB hole's round top and the letters' tops are short local overhangs; bosses sit on the bed side. Lid: flat, top face down")
@@ -1773,6 +1842,55 @@ def build_inlays():
     print(text, flush=True)
 
 
+def make_stencils(w, strips):
+    """Logo stencils for the glow-through pocket: the pocket's outline less STENCIL_CLR (STENCIL_CLR_TOP at the top), the
+    letters as holes, WALL_MIN - LOGO_SKIN - STENCIL_BACK thick; mirrored so the face that meets the skin lies on the bed.
+    One per strip width in `strips` (None: the logo as designed; wider strips shrink the letters), in a column."""
+    from build123d import offset
+    h = hw.LETTERS_ASPECT * w
+    s0 = hw.STRIP_PER_MM * w
+    pw, ph = w + 2 * STENCIL_MARGIN, h + 2 * STENCIL_MARGIN
+    sw, sh = pw - 2 * STENCIL_CLR, ph - STENCIL_CLR - STENCIL_CLR_TOP
+    t = WALL_MIN - LOGO_SKIN - STENCIL_BACK
+    out, rows = [], []
+    for i, s in enumerate(strips):
+        s = s0 if s is None else s
+        check(s >= s0 - 1e-9, f"stencil strip {s} narrower than the logo's {s0:.2f}")
+        face = Pos(0, (STENCIL_CLR - STENCIL_CLR_TOP) / 2) * RectangleRounded(sw, sh, STENCIL_R - STENCIL_CLR)
+        for poly in hw.letters_mm(w):
+            hole = Polygon(*[(-u, v) for u, v in poly], align=None)
+            if s > s0 + 1e-9:
+                hole = offset(hole, -(s - s0) / 2)
+            face = face - hole
+        st = extrude(face, t)
+        check(st.is_valid and len(st.solids()) == 1, f"stencil {s:.2f}: not one valid solid")
+        out.append(Pos(0, -i * (ph + 4), 0) * st)
+        rows.append(s)
+    return Compound(out), dict(w=w, h=h, s0=s0, pocket=(pw, ph), size=(sw, sh), t=t, strips=rows)
+
+
+def build_stencils():
+    """Stencils for the small front logo (upright, oval) and the tilt15's side logo."""
+    for tag, w, kind, who in (("small", FRONT_LOGO_W, "front", "the front logo of upright and oval"),
+                              ("tilt15", VARIANTS["tilt15"]["LOGO_W"], "side", "the tilt15's side logo")):
+        c, S = make_stencils(w, STENCIL_STRIPS[kind])
+        n = len(c.solids())
+        base = OUT_ROOT / f"logo-stencils-{tag}"
+        st = write_step(c, base.with_suffix(".step"))
+        write_stl(c, base.with_suffix(".stl"))
+        ms = check_stl(c, base.with_suffix(".stl"), bodies=n)
+        text = "\n".join([
+            f"LOGO STENCILS, {tag} ({who}): letters {S['w']:g} x {S['h']:.2f}; pocket {S['pocket'][0]:.2f} x {S['pocket'][1]:.2f} R{STENCIL_R:g}; "
+            f"stencil {S['size'][0]:.2f} x {S['size'][1]:.2f} x {S['t']:.2f} (clearance {STENCIL_CLR} per side, {STENCIL_CLR_TOP} at the top: "
+            f"the pocket's ceiling is a bridge); mirrored, the face that meets the skin on the bed",
+            "strip widths, first row to last (as printed, top to bottom in the slicer's top view): " +
+            ", ".join(f"{s:.2f}" + (" (as designed)" if abs(s - S['s0']) < 1e-9 else "") for s in S["strips"]),
+            "paint them black (all faces); push into the pocket from inside, the reading direction checked from outside; a drop of glue",
+        ] + file_lines({f"logo-stencils-{tag}": (st, ms)}))
+        base.with_suffix(".txt").write_text(text + "\n")
+        print(text, flush=True)
+
+
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     order = ORDER
@@ -1784,8 +1902,10 @@ if __name__ == "__main__":
     check(order in ORDERS, f"unknown order {order}; one of {', '.join(ORDERS)}")
     names = args or list(VARIANTS)
     for n in names:
-        if n == "inlays":
+        if n in ("inlays", "stencils"):
             continue
         build_oval(order) if n == "oval" else build(n, order)
-    if "inlays" in names or any(VARIANTS[n]["LOGO_MODE"] == "front" for n in names if n in VARIANTS):
+    if LOGO_STYLE == "stencil":
+        build_stencils()
+    elif "inlays" in names or any(VARIANTS[n]["LOGO_MODE"] == "front" for n in names if n in VARIANTS):
         build_inlays()

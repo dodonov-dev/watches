@@ -214,3 +214,60 @@ Third variant in `cad/desk/smooth.py` → `cad/desk/out-smooth/oval/`. The user'
 - **Print files:** copies in `cad/desk/to-print/rolypoly-*.stl`.
 - **Left for the print:** rocking duration and feel, the cable's pull, real masses and ball packing, magnet pull,
   supports, the logo glow.
+
+## FDM round 1 on the Bambu X1E (2026-11-17/18)
+Printed on a Bambu Lab X1E (0.4 nozzle, textured PEI) with Bambu Studio (Orca could connect but not send; SD-card jobs
+complained about the external spool). Projects and photos: `cad/desk/to-print/*_plate*.3mf`, `_1_first_plate_res/`.
+- **Plate 1** (PLA Basic white, 0.12 Fine, 4 walls, seam back, Arachne, no supports): test strip v3, upright + tilt15
+  lids, both inlay sets, two standing logo coupons (`logo_coupons.py`: slices of the real shell walls).
+- **Results (user):**
+  - Flat parts printed clean. Slot openings good, but 8.6 is too wide for the 8.0 rod: a visible gap. **Slot 8.2**
+    (user; widen with a knife if tight): set in `smooth.py` (`SLOT_W`, rod play at least 0.2). Slots stay 1 mm
+    shorter than the lit area (66.85 for rods cut to 66.65), as intended.
+  - **Front E, 3 mm (or less):** F's 4 mm front hides the tube's 3D look; the rods should stand out. A thinner
+    front than 3 is an open idea (it moves the glass and board: a full rebuild and recheck).
+  - The roly-poly door still has 8.6 slots (`rolypoly.py` takes `housing.SLOT_W`): change it at its next rebuild.
+  - One inlay (24 mm set 1, the E) came off the plate early and turned to spaghetti: adhesion, not design.
+  - **Logo coupons failed:** printed standing, the strips between the letters start in mid-air (the E's lower arm is
+    a one-end cantilever that carries the divider, the slash and the upper arm; the H's upper strip is an island).
+    Inlays went in only by tearing strips. 0.08 layers would not help (no support at any layer height).
+  - Consulted Astra (Codex CLI) and Fable: both ranked glow-through first for a seamless white shell, a flat
+    badge for black bodies or a logo visible unlit, cut-through only for SLA / wood and glued, 0.08 last.
+- **Decision (user, 2026-11-18): glow-through with a stencil** (`LOGO_STYLE = "stencil"` in `smooth.py`): one
+  rounded-rectangle pocket from inside (letters + 1 mm, R1) behind a 0.6 skin; a flat-printed stencil (frame +
+  strips, letters open), painted black, pushed in from inside. Stencils in three strip widths each
+  (`out-smooth/logo-stencils-{small,tilt15}.*`): small 0.72 / 1.0 / 1.4, tilt15 1.23 / 1.6 / 2.0. Unlit the logo is
+  invisible on white. Expected: light bleed through the 3 mm wall round the logo (a black LED box behind it), LED
+  hot spots at the upright's 2.2 mm (oval 3.75) of room (fire sideways or diffuse).
+- **Plate 2 (not yet printed):** upright + tilt15 + **oval** shells, oval lid, the stencils; 0.08 High Quality,
+  4 walls; ~16 h. Matte PLA not yet available.
+- **Orders (user):** translucent PLA, black paint, casting epoxy (roly-poly). Bambu PLA Matte (ivory) for the
+  look prints and the roly-poly glow coupon (`to-print/rolypoly-logo-coupon.stl`, kept for Matte).
+- **Parked:** with an AMS and translucent filament, print the letters in translucent plastic inside the standing
+  wall (they carry the strips; flush, no assembly; ~1.5–3 h of filament changes).
+
+## FDM round 2: the three smooth shells (2026-11-19)
+Plate 2 (`second_plate_black_stencils.3mf`): the stencils in black PLA, 0.12. Plate 3 (`third_plate_15_and_upright.3mf`):
+upright, oval, tilt15 + oval lid, PLA Basic white, 0.08 HQ, ~15 h 44 (Astra 6.2 reviewed the plate first: no critical
+issues). Photos: `cad/desk/to-print/_2_second_plate_res/`, `_3_third_plate_res/`.
+- **Printed well:** all three shells without supports; slots clean; the curved roll looks decent.
+- **Stencils fit loosely** (0.1 per side): glue them (a drop of 5-min epoxy). 0.05 would push-fit.
+- **Logo pocket shows** from outside, lit and unlit, on PLA Basic at 0.6: a lighter rectangle, and two vertical marks
+  at its sides (likely the wall's line count changing from 4 to 1-2 there). It "looks good already" (user).
+  - Idea (user): a **white** stencil fills the pocket back to ~3 mm, so only the letters stay thin (as the wooden
+    LED cube clocks do); compare white vs black stencils with a torch. With Matte and a thicker skin (~1.0) black may
+    work too. Sloped (45°) pocket sides would soften the outline.
+- **Horizontal line on the right side at the slots' top** (layers of the slot-end bridges, probably; one side only,
+  perhaps the X1's left aux fan). User tries sanding; calipers above/below tell a ridge from a wider upper part.
+- **Rods hold in the 8.2 slots by friction** (cut to length). Plan: a dot of 5-min epoxy at each end (no CA near
+  acrylic: it frosts). Without OCA the board must press the glass against the rods (foam behind): check for an air
+  gap / reflections.
+- **Tops:** flat tops patchy on glossy Basic; next: Matte + ironing (top surfaces).
+- **Opening too wide for the rod:** the user wants a tight fit, bevel unchanged. Pending: the rods' measured width;
+  then `SLOT_W` = rod + ~0.1. The drawn tube's width is set in firmware (not a housing issue).
+- **Look:** the white Basic shells look "hospital-like" (user). Next colour: **Bambu PLA Matte white** (user picks it
+  up 2026-11-20); also a candidate for the roly-poly (pearl-like). Other options discussed: warm off-white + a dark
+  accent, earthy mid-tones, pastels (roly-poly), dark bodies (need the badge or translucent letters), two-tone by layer.
+- **Next reprint (not prepared yet):** at least one smooth shell in Matte white with: a shallower pocket (thicker
+  skin, ~1.0; maybe sloped sides), slots = measured rod + ~0.1, ironing on top surfaces; white vs black stencil
+  chosen by the torch test. Also the roly-poly glow coupon in the same Matte.
