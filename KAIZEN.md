@@ -935,3 +935,17 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Oval pocket is 3.36 deep, stencils 1.9: the stencil sits 1.46 inside the mouth; an oval-specific thicker stencil would fill it.
 - (`to-print/oval-teststrip.stl` refreshed by the parent.)
 - tilt15 side pocket's mouth (30) is longer than the inner side flat (~24): it runs into both cavity corner rounds (short straight notches, 2.88 wall by the R5). A smaller side logo would keep it in the flat.
+
+## Edge shade (2026-11-19)
+- liquidThin: no visible effect on the board's look (glassWall 10, wallWet 0.79, user 2026-11-19); unchecked.
+- Edge shade where the lens cannot stay with the push (`!shadeSrcOk`: a drawn row shown on two rows with different
+  factors, e.g. lens -0.4 / curve 0.6; -0.2 / 0.2 at ~55-66 LCD rows): strip lens + strip pass, no change record. A per-row factor in the push
+  (turn_rows) would keep it deferred.
+- After flash-win.sh the board stayed in ROM download mode (stub running, app silent); `esptool --before no-reset
+  --after watchdog-reset chip-id` started the app without BOOT + RST (port ACM0 -> ACM1).
+- The board went silent right after a ~2 min bench of the first edge-shade build (shade at 0.6 for half of it), after the
+  bench's restores: USB serial up, no reply, esptool's USB reset "No serial data received" / RTS ioctl EPROTO. Cause
+  unknown; not reproduced (cf. 2026-11-06, silent right after bench.py too).
+- The board's look before this flash was not the brief's saved look (subtle-soda with 9 changes, 42 keys off); both
+  JSONs are in the session scratchpad.
+- `npm run check:presets` still fails on its path (KAIZEN 2026-11-10); the compiled file run by hand passes.

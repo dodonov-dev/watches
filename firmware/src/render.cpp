@@ -1219,6 +1219,10 @@ struct RowCache {
   int16_t tickWet[TUBE_HEIGHT_MAX], tickDry[TUBE_HEIGHT_MAX];   // tick source-row warps
   bool tickFollow; float tickEdge[2][2];                         // sim TickFollow: on, and edge(h) per [minutes][major]
   int16_t lensSrc[TUBE_HEIGHT_MAX]; bool lensOn; bool lensPos;   // applyLens row map
+  // Edge shade: per shown row (after the lens) the blend toward black in 1/256 (0: row untouched); shadeSrc the same per
+  // drawn row for a lens the push applies (row s takes the factor of the shown rows lensSrc maps onto it; shadeSrcOk:
+  // they all have the same one, else the lens has to run on the strip first). Lens off: shadeSrc = shadeT.
+  uint16_t shadeT[TUBE_HEIGHT_MAX], shadeSrc[TUBE_HEIGHT_MAX]; bool shadeOn; bool shadeSrcOk;
   float mag[TUBE_HEIGHT_MAX];                                    // lensMagRows (fizz squash)
   int16_t capX0[TUBE_HEIGHT_MAX];                                // rounded-corner mask
   // edge profile terms (sim edgeCap): d = boreRow(row), u2 = d^2; boreR = bore radius (sim boreR)
@@ -1459,6 +1463,8 @@ struct Tube {
   inline float edgeXL(int ry, float xs, float tanA, const CapShape &c) const;
   void buildRowCache(const Params &p, uint32_t gen);
   void applyLens(const Params &p);
+  void edgeShade(int r0, int r1, const uint16_t *T);
+  uint16_t shadeLut[128]; int shadeLutT = -1;                 // edgeShade's channel tables for factor shadeLutT (32 R, 64 G, 32 B)
   const uint16_t *effectTable(EffectTable &T, const Params &p, const Palette &pal, uint32_t gen, float lightK, bool glow) const;
   void drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN);
   void traceBlur(const uint16_t *trace, bool mir, int a0, int a1, int c0, int c1, float filmV, int &aLo, int &aHi);
@@ -3970,6 +3976,31 @@ void Tube::buildRowCache(const Params &p, uint32_t gen) {
       rc.lensSrc[yd] = (int16_t)clampf(ffloor(H / 2.0f + s * H / 2.0f), 0, H - 1);
     }
   }
+  {   // edge shade (sim edgeShadeRows): doubles from the float params, as the sim (soft doubles here: nothing fuses)
+    const float pxmm = PX_PER_MM;
+    const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0, a = p.edgeShadeFrom, b = p.edgeShadeTo;
+    rc.shadeOn = k > 0;
+    for (int y = 0; y < H; y++) {
+      int T = 0;
+      if (rc.shadeOn) {
+        const double d = fabs(y + 0.5 - H / 2.0) / (double)pxmm;
+        double w;
+        if (b > a) { double t = (d - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
+        T = (int)floor(k * w * 256 + 0.5);
+      }
+      rc.shadeT[y] = (uint16_t)T;
+    }
+    rc.shadeSrcOk = true;
+    if (!rc.lensOn) memcpy(rc.shadeSrc, rc.shadeT, H * sizeof(uint16_t));
+    else {
+      for (int y = 0; y < H; y++) rc.shadeSrc[y] = 0xffff;
+      for (int y = 0; y < H; y++) {
+        uint16_t &t = rc.shadeSrc[rc.lensSrc[y]];
+        if (t == 0xffff) t = rc.shadeT[y]; else if (t != rc.shadeT[y]) rc.shadeSrcOk = false;
+      }
+      for (int y = 0; y < H; y++) if (rc.shadeSrc[y] == 0xffff) rc.shadeSrc[y] = 0;   // no shown row: never seen
+    }
+  }
   const float yc = (H - 1) / 2.0f;
   rc.boreR = boreR(p);
   // wall-band ease (sim boreRow): D = outer / bore radius, eased from a0 onto 1 at the outer edge
@@ -4014,6 +4045,41 @@ void Tube::applyLens(const Params &p) {
   } else {
     for (int yd = H / 2 - 1; yd >= 0; yd--) copyRow(yd);
     for (int yd = H / 2; yd < H; yd++) copyRow(yd);
+  }
+}
+
+// One row toward black by the channel tables of edgeShade (strip byte order: v = bswap(c), so R5 sits in bits 3..7,
+// G in bits 0..2 (high 3) and 13..15 (low 3), B5 in bits 8..12).
+TUBE_IRAM static void __attribute__((noinline)) shadeRow(uint16_t *row, int n, const uint16_t *lut) {
+  const uint16_t *const lr = lut, *const lg = lut + 32, *const lb = lut + 96;
+  for (int x = 0; x < n; x++) {
+    const uint32_t v = row[x];
+    row[x] = lr[(v >> 3) & 31] | lg[((v & 7) << 3) | (v >> 13)] | lb[(v >> 8) & 31];
+  }
+}
+// Edge shade over FB rows [r0, r1) of the tube, row ry blended toward black by T[ry] (rc.shadeT on shown rows, after
+// the lens and the top digits; rc.shadeSrc on drawn rows the push maps): sim applyEdgeShade, blend565T(c, 0, T) as
+// per-channel tables, the same integers: out8 = (in8 (256 - T) + 128) >> 8, in8 the channel expanded to 8 bits.
+void Tube::edgeShade(int r0, int r1, const uint16_t *T) {
+  for (int ry = r0; ry < r1; ry++) {
+    const int t = T[ry];
+    if (t == 0) continue;
+    uint16_t *const row = FB + (size_t)ry * PANEL_W;
+    TCLIP(row, PANEL_W);
+    if (t >= 256) { memset(row, 0, PANEL_W * 2); continue; }
+    if (t != shadeLutT) {
+      const int k = 256 - t;
+      for (int c = 0; c < 32; c++) {
+        const int o = (((c << 3) | (c >> 2)) * k + 128) >> 11;   // 5-bit channel out
+        shadeLut[c] = (uint16_t)(o << 3); shadeLut[96 + c] = (uint16_t)(o << 8);
+      }
+      for (int c = 0; c < 64; c++) {
+        const int o = (((c << 2) | (c >> 4)) * k + 128) >> 10;   // 6-bit
+        shadeLut[32 + c] = (uint16_t)((o >> 3) | ((o & 7) << 13));
+      }
+      shadeLutT = t;
+    }
+    shadeRow(row, PANEL_W, shadeLut);
   }
 }
 
@@ -4256,9 +4322,12 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   const float bx = xe - p.bubbleGap - s.edgeLight * p.bubbleTiltGain, by = (H - 1) * p.bubbleY - (H - 1) / 2.0f * s.acrossTilt * p.bubbleRollGain;
   const float brx = p.bubbleW / 2, bry = p.bubbleH / 2;
   const bool bubbleOn = p.bubble && bx - brx > xs + 2;
-  // The strip lens (applyLens) maps rows onto others: where it runs on the strip (digits printed over it), it and those
-  // digits stay after the band loop, on the strip; the push applies it otherwise (lensRowsOut).
-  const bool lensOut = lensRowsOut && !(haveLabels && p.digitsOnTop);
+  // The strip lens (applyLens) maps rows onto others: where it runs on the strip (digits printed over it, or an edge
+  // shade whose shown rows of one drawn row differ: !shadeSrcOk), it and those digits stay after the band loop, on the
+  // strip; the push applies it otherwise (lensRowsOut). The edge shade comes last: after the strip lens on the strip
+  // (shown rows), else in each band after its marks (drawn rows: rc.shadeSrc, the factor of the shown rows the push maps
+  // them onto), so the tiles hash and push the darkened rows.
+  const bool lensOut = lensRowsOut && !(haveLabels && p.digitsOnTop) && (!rc.shadeOn || rc.shadeSrcOk);
   const bool stripLens = !lensOut && rc.lensOn;
   TU_MARK(TU_LABELS);
   auto mapX = [&](int x) { return mir ? L - 1 - x : x; };
@@ -4333,7 +4402,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
 #define TILE_BAND_START(rb0) do { uint16_t *const t_ = tile_slot(laneOf(), tileSlot); const int e_ = (rb0) + TILE_ROWS < H ? (rb0) + TILE_ROWS : H; \
                                   FB = t_ - (rb0) * PANEL_W; bandLo = t_; bandHi = t_ + TILE_ROWS * PANEL_W; rowLo = baseY + (rb0); rowHi = baseY + e_; \
                                   TCLIP_SET(t_, t_ + (e_ - (rb0)) * PANEL_W); } while (0)
-#define TILE_BAND_MARKS(rb0, rb1) marks(rb0, rb1, !stripLens)
+#define TILE_BAND_MARKS(rb0, rb1) do { marks(rb0, rb1, !stripLens); if (rc.shadeOn && !stripLens) edgeShade(rb0, rb1, rc.shadeSrc); } while (0)
 #define TILE_BAND_END(rb0, rb1) do { tile_put(laneOf(), tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); TU_MARK(TU_TILE); \
                                      if (hashOn) tileHashes((const uint32_t *)tile_slot(laneOf(), tileSlot), (rb1) - (rb0), \
                                                             tileHash + (rb0) / TILE_ROWS * TILE_PAIRS, rec->bits[(rb0) / TILE_ROWS]); \
@@ -4735,9 +4804,10 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   TCLIP_SET(stripFB, stripFB + (size_t)H * PANEL_W);
   tile_end(laneOf());   // nothing touched the strip since tile_begin: every mark ran in the tiles
   TU_MARK(TU_TILE);
-  if (stripLens) {   // reads other rows: on the strip, then the digits printed over it (the push writes the lines back)
+  if (stripLens) {   // reads other rows: on the strip, then the digits printed over it and the edge shade (the push writes the lines back)
     applyLens(p);
     if (haveLabels && p.digitsOnTop) labelBand(y0, labels, digitWarp, digitMark, false, 0, H);
+    if (rc.shadeOn) edgeShade(0, H, rc.shadeT);
     TU_MARK(TU_TOP);
   }
   {
@@ -4756,6 +4826,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     marks(0, H, false);
     if (stripLens) applyLens(p);
     if (haveLabels && p.digitsOnTop) labelBand(y0, labels, digitWarp, digitMark, false, 0, H);
+    if (rc.shadeOn) edgeShade(0, H, stripLens ? rc.shadeT : rc.shadeSrc);
     uint32_t bad = 0;
     for (int i = 0; i < H * PANEL_W; i++) bad += tileVerifyStrip[i] != stripFB[i];
     tileVerify((uint32_t)H * PANEL_W, bad);
@@ -4768,6 +4839,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   marks(0, H, false);   // the strip path: every mark stage over the whole tube
   if (stripLens) applyLens(p);
   if (haveLabels && p.digitsOnTop) labelBand(y0, labels, digitWarp, digitMark, false, 0, H);
+  if (rc.shadeOn) edgeShade(0, H, lensOut ? rc.shadeSrc : rc.shadeT);   // the push maps the rows (lensOut): drawn rows
   TU_MARK(TU_TOP);
 #endif
   if (lensOut) *lensRowsOut = rc.lensOn ? rc.lensSrc : nullptr;   // the push applies it

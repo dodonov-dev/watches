@@ -27,6 +27,9 @@ export interface Params {
   glassOverLiquid: number; // 0..1 how much of the glass specular is laid over the liquid too
   lens: number;          // -1..1 vertical distortion; negative compresses, positive magnifies
   lensCurve: number;     // -3..3 profile; negative reverses the distortion direction
+  edgeShade: number;     // 0..1 darkening toward the tube's long edges in the shown rows (after the lens), hue kept: colour × (1 − edgeShade) at full depth; 0 = off
+  edgeShadeFrom: number; // mm on the glass from the tube's centre line where the darkening starts (PX_PER_MM: the same band of the rod at any tube width)
+  edgeShadeTo: number;   // mm where it reaches full depth, smoothstep between; ≤ edgeShadeFrom: a hard step at edgeShadeFrom
   bubbleRim: string;
   // --- layout (px) ---
   tubeHeight: number;    // across-tube size, ≤ TUBE_HEIGHT_MAX
@@ -201,7 +204,7 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 28;
+export const PARAMS_VERSION = 29;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
@@ -232,6 +235,9 @@ export const DEFAULT_PARAMS: Params = {
   glassOverLiquid: 0.4,
   lens: 0.6,
   lensCurve: 1,
+  edgeShade: 0,
+  edgeShadeFrom: 1.4,
+  edgeShadeTo: 1.9,
   bubbleRim: '#b0c7a9',
   highlightH: 11,
   highlightBright: 1,
@@ -1639,6 +1645,7 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   // here from the preset's own contact params (legacyTraceDrain)
   if (from < 27 && !('traceDrain' in r)) r.traceDrain = legacyTraceDrain({ ...DEFAULT_PARAMS, ...r } as Params);
   if (from < 28) { r.tubeStack = DEFAULT_PARAMS.tubeStack; r.tubeGap = DEFAULT_PARAMS.tubeGap; }
+  if (from < 29) { r.edgeShade = DEFAULT_PARAMS.edgeShade; r.edgeShadeFrom = DEFAULT_PARAMS.edgeShadeFrom; r.edgeShadeTo = DEFAULT_PARAMS.edgeShadeTo; }
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1667,6 +1674,9 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   rimLight: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls (a gain 0..4; the sum clamps at 255).', group: 'Glass', label: 'rim light', min: 0, max: 4, step: 0.01 },
   rimTint: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls.', group: 'Glass', label: 'rim tint' },
   glassOverLiquid: { help: 'How much of the glass specular is laid over the liquid too (not the grazing rim: that stays full).', group: 'Glass', label: 'specular over liquid', min: 0, max: 1, step: 0.01 },
+  edgeShade: { help: 'Darkens everything drawn in the tube toward both long edges, hue kept (colour × (1 − edge shade) at full depth): the rod magnifies the pixel rows there, so their stripes and rainbow show less. Applied to the rows the panel shows (after the lens). 0 = off.', group: 'Glass', label: 'edge shade', min: 0, max: 1, step: 0.01 },
+  edgeShadeFrom: { help: 'Edge shade: mm on the glass from the tube\'s centre line where the darkening starts. A real distance on every board (the same band of the rod at any tube width).', group: 'Glass', label: '· shade from, mm', min: 0, max: 5, step: 0.05 },
+  edgeShadeTo: { help: 'Edge shade: mm from the centre line where it reaches full depth (smooth in between; full beyond). At or below “shade from”: a hard step there.', group: 'Glass', label: '· shade to, mm', min: 0, max: 5, step: 0.05 },
   brightness: { help: 'Global panel dimmer (emulates cmd 0x51).', group: 'Colour', label: 'brightness (panel)', min: 0.1, max: 1, step: 0.01 },
   liquidBright: { help: 'Per-layer trim on top of brightness: liquid body, highlight, shade, bubble, fizz.', group: 'Colour', label: '· liquid trim', min: 0, max: 2, step: 0.01 },
   tickBright: { help: 'Per-layer trim on top of brightness: tick ladder only.', group: 'Colour', label: '· ticks trim', min: 0, max: 2, step: 0.01 },

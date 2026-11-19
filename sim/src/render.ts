@@ -2108,6 +2108,40 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
 
   // Front-facing marks are composited last, as on the physical display.
   drawDigitLayer(true);
+  applyEdgeShade(y0, H, p);
+}
+
+/** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
+ *  untouched; null = off. Symmetric about the tube's centre line (H / 2): mm from it by the panel's pitch (PX_PER_MM),
+ *  edgeShadeFrom → edgeShadeTo smoothstep to edgeShade (To ≤ From: a step at From). Doubles from the float32 params
+ *  (firmware render.cpp buildRowCache, the same operations: no fused multiply-add on either side). */
+let edgeShadeCache: { key: string; rows: Uint16Array | null } | null = null;
+export function edgeShadeRows(H: number, p: Params): Uint16Array | null {
+  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), a = f(p.edgeShadeFrom), b = f(p.edgeShadeTo);
+  const key = `${H}:${k}:${a}:${b}`;
+  if (edgeShadeCache && edgeShadeCache.key === key) return edgeShadeCache.rows;
+  let rows: Uint16Array | null = null;
+  if (k > 0) {
+    rows = new Uint16Array(H);
+    for (let y = 0; y < H; y++) {
+      const d = Math.abs(y + 0.5 - H / 2) / PX_PER_MM;
+      let w: number;
+      if (b > a) { const t = Math.max(0, Math.min(1, (d - a) / (b - a))); w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
+      rows[y] = Math.floor(k * w * 256 + 0.5);
+    }
+  }
+  edgeShadeCache = { key, rows };
+  return rows;
+}
+function applyEdgeShade(y0: number, H: number, p: Params): void {
+  const rows = edgeShadeRows(H, p);
+  if (!rows) return;
+  for (let y = 0; y < H; y++) {
+    const T = rows[y];
+    if (T === 0) continue;
+    const o = (y0 + y) * PANEL_W;
+    for (let x = 0; x < PANEL_W; x++) fb[o + x] = blend565T(fb[o + x], 0, T);
+  }
 }
 
 /** Magnification for a bubble of radius r centred at float row y: mean of the row table over the rows

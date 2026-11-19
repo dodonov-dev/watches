@@ -1,5 +1,5 @@
 {
-  "v": 28,
+  "v": 29,
   "tubeHeight": 54,
   "hoursY": 0,
   "minutesY": 185,
@@ -27,6 +27,9 @@
   "glassOverLiquid": 0.25,
   "lens": -0.2,
   "lensCurve": 0.2,
+  "edgeShade": 0,
+  "edgeShadeFrom": 1.4,
+  "edgeShadeTo": 1.9,
   "bubbleRim": "#3a0a10",
   "highlightH": 10,
   "highlightBright": 0.35,

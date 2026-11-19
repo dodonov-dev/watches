@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sim vs firmware render parity on any board / canvas, on the host (no device): every preset, one pinned scene.
 
-  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tubes 2|3] [--tiles] [--tolerance 12] [presets/x.json ...]
+  python3 firmware/tools/check_board_render.py [--board lcd316] [--res 320] [--tubes 2|3] [--tiles] [--push-lens] [--tolerance 12] [presets/x.json ...]
 
 Board: --board / --res (a res tag: rows + tube widths, 320 / 320f / 320fh / 320fm, tools/boardtag.py), else $LW_BOARD /
 $LW_RES, else lcd316 at 320 (amoled191 works too); --tubes / $LW_TUBES: 3 = + the seconds tube (-DTUBE_COUNT=3). The firmware side is render.cpp + physics.cpp built for that canvas with the ESP stubs,
@@ -9,7 +9,8 @@ params scaled by physics.h boardParams; the sim side is tools/render-ref.ts with
 boardParams). Presets default to presets/*.json and presets/physical/*.json (design px). Fizz off (random). Prints
 per preset the pixels off and those beyond the tolerance (RGB888 steps); exits 1 if any preset has one.
 --tiles: the firmware side renders through the tiled band loop (-DTILE_RENDER=1, host sink = memcpy) as the LCD board
-does; without it the host takes the strip path.
+does; without it the host takes the strip path. --push-lens: renderTube hands the whole-tube lens to the push where it
+can (main.cpp lensRows, the LCD's way) and the harness applies that row map when composing the canvas.
 """
 import argparse, glob, json, os, shutil, struct, subprocess, sys, tempfile
 from pathlib import Path
@@ -62,9 +63,11 @@ int main() {
       const FaceLayout lay = faceLayout(p[0], p[1]);
 #endif
       for (int i = 0; i < TUBE_COUNT; i++) {
-        renderTube(i, st[i], p[i], gen, strip, nullptr, lay.top(i));
+        const int16_t *map = nullptr;   // PUSH_LENS: the lens row map the push applies (main.cpp lensRows), else on the strip
+        renderTube(i, st[i], p[i], gen, strip, PUSH_LENS ? &map : nullptr, lay.top(i));
         const int y0 = lay.top(i), rows = lay.rows(i);
-        for (int k = 0; k < rows * PANEL_W; k++) canvas[y0 * PANEL_W + k] = __builtin_bswap16(strip[k]);
+        for (int r = 0; r < rows; r++)
+          for (int x = 0; x < PANEL_W; x++) canvas[(y0 + r) * PANEL_W + x] = __builtin_bswap16(strip[(map ? map[r] : r) * PANEL_W + x]);
       }
       fwrite(canvas, sizeof canvas, 1, stdout); fflush(stdout);
       design = PRESET_DEFAULT;
@@ -84,6 +87,7 @@ def main():
     ap.add_argument('--tubes', type=int, default=int(os.environ.get('LW_TUBES') or 2), choices=(2, 3))
     ap.add_argument('--tolerance', type=int, default=12)
     ap.add_argument('--tiles', action='store_true', help='firmware side through the tiled band loop (-DTILE_RENDER=1)')
+    ap.add_argument('--push-lens', action='store_true', help='the lens row map handed to the push (LCD: lensRows), applied when composing')
     ap.add_argument('--out', type=Path, help='write device / ref / diff PNGs of failing presets here')
     ap.add_argument('presets', nargs='*')
     a = ap.parse_args()
@@ -102,7 +106,7 @@ def main():
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), *boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else []),
+        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', *(['-DTILE_RENDER=1'] if a.tiles else []), f'-DPUSH_LENS={int(a.push_lens)}', *boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else []),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)
