@@ -1032,10 +1032,11 @@ static uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C) {
 }
 // The same on an edge-shaded row (m = 256 - the row's factor, < 256): bg and mark arrive darkened by m / 256, so every
 // constant of the floor is too (contrast, the near-black test, white): the result is the unshaded one darkened, up to
-// rounding (sim throughLiquidM, the same integers). markU: the mark's own colour before the shade. Where the shade made
-// mark and pixel behind one colour (no luma difference left), the floor's direction is the unshaded one's: markU's luma
-// against the pixel behind brought back up (lb 256 / m), else the darkened pair would pick its own (a reversed tick).
-static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t mark, int T, int C, int m, uint16_t markU) {
+// rounding (sim throughLiquidM, the same integers). u: the mark's own colour before the shade (low half) and its row's
+// unshaded body colour (high half). Where the shade made mark and pixel behind one colour (no luma difference left), the
+// floor's direction is the unshaded one's: exactly the unshaded floor's when the pixel behind is that body darkened (the
+// usual case: a mark over the liquid), else markU's luma against the pixel behind brought back up (lb 256 / m).
+static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t mark, int T, int C, int m, uint32_t u) {
   if (C <= 0) return blend565T(bg, mark, T);
   int Br, Bg, Bb, Mr, Mg, Mb;
   expand565(bg, Br, Bg, Bb); expand565(mark, Mr, Mg, Mb);
@@ -1045,9 +1046,17 @@ static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t m
   if (abs(d) >= Cm) return rgb565(cr, cg, cb);
   int dir = d != 0 ? (d > 0 ? 1 : -1) : (lb > dark ? -1 : 1);
   if (d == 0 && T > 0) {
+    const uint16_t markU = (uint16_t)u, bodyU = (uint16_t)(u >> 16);
     int Ur, Ug, Ub; expand565(markU, Ur, Ug, Ub);
-    const int e = 299 * Ur + 587 * Ug + 114 * Ub - lb * 256 / m;
-    if (e != 0) dir = e > 0 ? 1 : -1;
+    if (bg == blend565T(bodyU, 0, 256 - m)) {   // the unshaded floor's own test on the body
+      int Pr, Pg, Pb; expand565(bodyU, Pr, Pg, Pb);
+      const int lr = Pr + (((Ur - Pr) * T + 128) >> 8), lg = Pg + (((Ug - Pg) * T + 128) >> 8), lbb = Pb + (((Ub - Pb) * T + 128) >> 8);
+      const int lU = 299 * Pr + 587 * Pg + 114 * Pb, dU = 299 * lr + 587 * lg + 114 * lbb - lU;
+      dir = dU != 0 ? (dU > 0 ? 1 : -1) : (lU > 110000 ? -1 : 1);
+    } else {
+      const int e = 299 * Ur + 587 * Ug + 114 * Ub - lb * 256 / m;
+      if (e != 0) dir = e > 0 ? 1 : -1;
+    }
   }
   int target = lb + dir * Cm; if (target < 0) target = 0; if (target > top) target = top;
   if (dir < 0) {
@@ -1061,9 +1070,9 @@ static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t m
   if (cr > 255) cr = 255; if (cg > 255) cg = 255; if (cb > 255) cb = 255;
   return rgb565(cr, cg, cb);
 }
-// m: 256 = an unshaded row (the plain integers); markU: the mark's colour before the shade (throughLiquidM).
-static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, int m, uint16_t markU) {
-  return m < 256 ? throughLiquidM(bg, mark, T, C, m, markU) : throughLiquid(bg, mark, T, C);
+// m: 256 = an unshaded row (the plain integers); u: the mark's colour before the shade | its row's body << 16 (throughLiquidM).
+static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, int m, uint32_t u) {
+  return m < 256 ? throughLiquidM(bg, mark, T, C, m, u) : throughLiquid(bg, mark, T, C);
 }
 
 // rel = +1 / -1: emboss highlight / shadow of body colour c, derived after the liquid pass.
@@ -1092,16 +1101,16 @@ struct Mark {
 #endif
   // A rear mark within the concave surface band's footprint (see sim markFn); false when the pixel is outside
   // it, or inside the body where the band lets everything through — the plain paths then apply.
-  bool bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint16_t cU) const;
+  bool bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint32_t cU) const;
   // Whether the mark at (x, tube row ry) is composited through the liquid — the same test operator() applies.
   inline bool inLiquid(int x, int ry) const { return !onTop && x >= edges.lo[ry] && x < edges.hi[ry]; }
   // A mark pixel over the liquid: its colour through the liquid (contrast floor included); covT is updated.
-  inline uint16_t wetColour(uint16_t bg, uint16_t c, int &covT, int m = 256, uint16_t cU = 0) const { return wetColourT(bg, c, covT, T, Cin, bakedT, 0, m, cU); }
+  inline uint16_t wetColour(uint16_t bg, uint16_t c, int &covT, int m = 256, uint32_t cU = 0) const { return wetColourT(bg, c, covT, T, Cin, bakedT, 0, m, cU); }
   // bakedT: the texel as is without a floor; with one, the colour the glyph shows at full glyph coverage —
   // the texel over the liquid at a = max(T, cov) — is floored and blended by the rest, cov / a (sim markFn).
   // recipT (optional, from recipOf(T)): the division by T as a multiply.
   // m: the row's edge shade (throughLiquid), 256 = none.
-  static inline uint16_t wetColourT(uint16_t bg, uint16_t c, int &covT, int T, int C, bool bakedT, uint32_t recipT = 0, int m = 256, uint16_t cU = 0) {
+  static inline uint16_t wetColourT(uint16_t bg, uint16_t c, int &covT, int T, int C, bool bakedT, uint32_t recipT = 0, int m = 256, uint32_t cU = 0) {
     if (!bakedT) return throughLiquid(bg, c, T, C, m, cU);
     if (C <= 0) return c;
     if (covT >= T) { const int a = covT; covT = 256; return throughLiquid(bg, c, a, C, m, cU); }   // (cov * 256 + cov / 2) / cov
@@ -1550,7 +1559,7 @@ struct Tube {
   inline float edgeXL(int ry, float xs, float tanA, const CapShape &c) const;
   void buildRowCache(const Params &p, uint32_t gen);
   void buildShade(const Params &p);
-  double rodR = 0, rodSF = 0, rodDF = 0;   // the edge shade's rod: radius mm (TUBE_ROD_MM / 2), its fold (rodFold), render_init
+  double rodR = 0, rodSF = 0, rodST = 0, rodSP = 0, rodDP = 0;   // the edge shade's rod: radius mm (TUBE_ROD_MM / 2), its profile (rodProfile), render_init
   struct RodCache *rod = nullptr;          // its profile bases per panel row (buildShade), PSRAM, render_init
   void buildShadePal();
   void applyLens(const Params &p);
@@ -1577,7 +1586,7 @@ inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const 
 #endif
   if (!t.inStrip(x, y)) return;
   int ry = y - y0;
-  int m = 256; const uint16_t cU = c;   // edge shade: the colour darkened as the pixel behind it, the floor's constants by m (sim markFn)
+  int m = 256; const uint32_t cU = c | (uint32_t)t.pal.rows[ry] << 16;   // edge shade: the colour darkened as the pixel behind it, the floor's constants by m (sim markFn)
   if (shade) { const int sT = shade[ry]; if (sT) { c = shade565(c, sT); m = 256 - sT; } }
   const bool inside = !onTop && x >= edges.lo[ry] && x < edges.hi[ry];
   if (!onTop && edges.band && bandMark(x, y, ry, c, covT, rel, inside, m, cU)) return;
@@ -1607,7 +1616,7 @@ void __attribute__((noinline)) Mark::profPixel(int x, int y, uint16_t c, int cov
 // transparency baked in and the wet part applies it itself. The wet/dry colour mix and the blend over the
 // pixel are taken in 888 and rounded ONCE (parity with the sim). Out of the hot operator (noinline): the
 // divisions run only on the few mark pixels under a band.
-bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint16_t cU) const {
+bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint32_t cU) const {
   const BandInfo &b = *edges.band;
   const int xr = b.mirror ? b.L - 1 - x : x;
   const float hw = b.hw;
@@ -2316,10 +2325,10 @@ static void drawGlyphRows(const S &s, const GlyphPlan &gp, int y0, const Labels 
 // colour and neighbouring texels repeat, and throughLiquid with a contrast floor is two lumas and up to four
 // divisions. Exact: same inputs, same outputs.
 struct LiquidMemo {
-  uint16_t bg = 0, c = 0, cu = 0, out = 0; int cov = -1, covOut = 0;
+  uint16_t bg = 0, c = 0, out = 0; uint32_t cu = 0; int cov = -1, covOut = 0;
   uint32_t recipT = 0;
   // m: the row's edge shade (one per memo), cU: the texel before it (256: c itself, unused)
-  inline uint16_t get(uint16_t bg_, uint16_t c_, int &covT, int T, int C, bool baked, int m, uint16_t cU = 0) {
+  inline uint16_t get(uint16_t bg_, uint16_t c_, int &covT, int T, int C, bool baked, int m, uint32_t cU = 0) {
     if (bg_ == bg && c_ == c && covT == cov && cU == cu) { covT = covOut; return out; }
     bg = bg_; c = c_; cov = covT; cu = cU;
     if (baked && !recipT) recipT = Mark::recipOf(T);
@@ -2589,7 +2598,7 @@ static void __attribute__((noinline)) spriteRunInt(uint16_t *fb, int px0, int n,
 // texel colour darkened (sim markFn), m = 256 - its factor.
 template <int MODE>
 static void __attribute__((noinline)) spriteRunIntS(uint16_t *fb, int px0, int n, const uint8_t *a, const uint16_t *c, int scaleT, int T, int C,
-                                                    DigitScratch &ds, const uint16_t *sl, int m) {
+                                                    DigitScratch &ds, const uint16_t *sl, int m, uint32_t body) {   // body: the row's unshaded body << 16
 #if DIGIT_PIE
   if (MODE < 2) {
     PieRun r(ds);
@@ -2612,7 +2621,7 @@ static void __attribute__((noinline)) spriteRunIntS(uint16_t *fb, int px0, int n
     if (MODE == 0) { covT = covT * scaleT >> 8; if (covT <= 0) continue; }
     const uint16_t ci = shadeL(sl, c[i]);
     if (MODE >= 2) {
-      const uint16_t bg = __builtin_bswap16(fb[i]), col = memo.get(bg, ci, covT, T, C, MODE == 3, m, c[i]);
+      const uint16_t bg = __builtin_bswap16(fb[i]), col = memo.get(bg, ci, covT, T, C, MODE == 3, m, c[i] | body);
       fb[i] = __builtin_bswap16(covT >= 256 ? col : blend565T(bg, col, covT));
     } else fb[i] = covT >= 256 ? __builtin_bswap16(ci) : blendLanesSw(lanesSw(fb[i]), lanes565(ci), covT);
   }
@@ -2633,7 +2642,7 @@ struct FracRun {
   int nIn;                   // columns whose own taps lie in the glyph (cx < w); the rest (the overhang) read 0
   int p0, p1, q0, q1;        // the first column's left alphas and colours
   int w00, w10, w01, w11, scaleT, T, C;
-  const uint16_t *sl; int m;   // the row's edge shade (spriteRunInt), null / 256 = none
+  const uint16_t *sl; int m; uint32_t body;   // the row's edge shade (spriteRunIntS), null / 256 = none; its unshaded body << 16
   DigitScratch *ds;
 #if DIGIT_PIE
   FracMemo *memo;
@@ -2679,7 +2688,7 @@ static void __attribute__((noinline)) spriteRunFracScalar(uint16_t *fb, int n, c
       const int covT = (int)(v >> 16); const uint16_t col = (uint16_t)(v & 0xffff);
       const uint16_t cs = SH ? shadeL(f.sl, col) : col;
       if (MODE >= 2) {
-        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, cs, cT, f.T, f.C, MODE == 3, SH ? f.m : 256, col);
+        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, cs, cT, f.T, f.C, MODE == 3, SH ? f.m : 256, col | f.body);
         fb[i] = __builtin_bswap16(cT >= 256 ? cc : blend565T(bg, cc, cT));
       } else fb[i] = covT >= 256 ? __builtin_bswap16(cs) : blendLanesSw(lanesSw(fb[i]), lanes565(cs), covT);
     }
@@ -2804,10 +2813,10 @@ struct SpriteRow {
     if (!frac) {
       const uint8_t *a = aP + cy * g.w + cx0; const uint16_t *c = cP + cy * g.w + cx0;
       switch (mode) {
-        case 0: if (sl) spriteRunIntS<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm); else spriteRunInt<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
-        case 1: if (sl) spriteRunIntS<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm); else spriteRunInt<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
-        case 2: if (sl) spriteRunIntS<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm); else spriteRunInt<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
-        default: if (sl) spriteRunIntS<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm); else spriteRunInt<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        case 0: if (sl) spriteRunIntS<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm, (uint32_t)t.pal.rows[ry] << 16); else spriteRunInt<0>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        case 1: if (sl) spriteRunIntS<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm, (uint32_t)t.pal.rows[ry] << 16); else spriteRunInt<1>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        case 2: if (sl) spriteRunIntS<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm, (uint32_t)t.pal.rows[ry] << 16); else spriteRunInt<2>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
+        default: if (sl) spriteRunIntS<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch, sl, sm, (uint32_t)t.pal.rows[ry] << 16); else spriteRunInt<3>(d, px0, n, a, c, scaleT, Tuse, mark.Cin, *t.scratch); break;
       }
     } else {
       const bool r0 = cy >= 0 && cy < g.h, r1 = cy >= 1 && cy - 1 < g.h;
@@ -2818,7 +2827,7 @@ struct SpriteRow {
       f.nIn = clampI(wz - cx0, 0, n);
       const bool left = cx0 >= 1 && cx0 - 1 < wz;
       f.p0 = left ? f.a0[-1] : 0; f.p1 = left ? f.a1[-1] : 0; f.q0 = left ? f.c0[-1] : 0; f.q1 = left ? f.c1[-1] : 0;
-      f.w00 = tp.w00; f.w10 = tp.w10; f.w01 = tp.w01; f.w11 = tp.w11; f.scaleT = scaleT; f.T = Tuse; f.C = mark.Cin; f.sl = sl; f.m = sm; f.ds = t.scratch;
+      f.w00 = tp.w00; f.w10 = tp.w10; f.w01 = tp.w01; f.w11 = tp.w11; f.scaleT = scaleT; f.T = Tuse; f.C = mark.Cin; f.sl = sl; f.m = sm; f.body = (uint32_t)t.pal.rows[ry] << 16; f.ds = t.scratch;
 #if DIGIT_PIE
       f.memo = t.fracMemo;
 #endif
@@ -2957,8 +2966,9 @@ void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const 
 // colour, so after the first pixel each one is a load, a compare and a store. Other rows go pixel by pixel (tickPx),
 // band-footprint pixels through Mark::operator(). A pixel's ops read and write only that pixel, so pixels may go in any
 // order, the two ops of one pixel (plotF's edge columns: emboss, then body) in theirs. Byte-identical (check_render_frames).
-// a tick colour and its emboss highlight / shadow; m: its row's edge shade (256 = none), u: the colour before it; k: minor 0 / major 1
-struct TickInk { uint16_t c, hi, lo, u = 0; int16_t m = 256; uint8_t k = 0; };
+// a tick colour and its emboss highlight / shadow; m: its row's edge shade (256 = none), u: the colour before it | the row's
+// unshaded body << 16 (throughLiquidM); k: minor 0 / major 1
+struct TickInk { uint16_t c, hi, lo; int16_t m = 256; uint32_t u = 0; uint8_t k = 0; };
 struct TickRows {
   const Mark &mark; uint16_t *fb; DigitRow *rows; const uint16_t *dryT, *wetT;   // fb: strip row of tick row 0; wetT: Mark::wetT
   int y0, H, T, C, embT; float emb; bool rear, emboss;   // emb: tickEmboss clamped (plotF's edge-column shares)
@@ -3283,9 +3293,9 @@ bool Tube::planTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
 #ifdef TICK_PROF
   if (mark.prof) mark.prof[TP_CYC_FACTS] += esp_cpu_get_cycle_count() - f0;
 #endif
-  mp.ink[0] = {cMin, embossHi(cMin), embossLo(cMin), cMin, 256, 0}; mp.ink[1] = {cMaj, embossHi(cMaj), embossLo(cMaj), cMaj, 256, 1};
+  mp.ink[0] = {cMin, embossHi(cMin), embossLo(cMin), 256, cMin, 0}; mp.ink[1] = {cMaj, embossHi(cMaj), embossLo(cMaj), 256, cMaj, 1};
   if (mark.shade) for (int ry = 0; ry < H; ry++) if (const int sT = mark.shade[ry]) for (int j = 0; j < 2; j++) {   // sim markFn: the colour, then its emboss
-    TickInk &e = mp.inkRow[ry][j]; e.u = mp.ink[j].c; e.c = shade565(e.u, sT); e.m = (int16_t)(256 - sT); e.hi = embossHiM(e.c, e.m); e.lo = embossLo(e.c); e.k = (uint8_t)j;
+    TickInk &e = mp.inkRow[ry][j]; e.u = mp.ink[j].c | (uint32_t)pal.rows[ry] << 16; e.c = shade565(mp.ink[j].c, sT); e.m = (int16_t)(256 - sT); e.hi = embossHiM(e.c, e.m); e.lo = embossLo(e.c); e.k = (uint8_t)j;
   }
   auto addSegment = [&](int x0, int w, uint16_t c, int rangeA, int rangeB, bool top, float k) {
     if (rangeB < 0) return;
@@ -4170,46 +4180,56 @@ void Tube::applyLens(const Params &p) {
   }
 }
 
-// The edge shade's rod profile (layout.h ROD_GAP_MM / ROD_N / TUBE_ROD_MM; sim render.ts rodScreen / rodFold / rodBase, the
-// same double operations in the same order: square roots and divisions are exact roundings on both sides, so the two
-// agree bit for bit; only pow (edgeShadePow != 1) is a library call). A ray leaving the rod's curved surface toward a
-// viewer at infinity, at angle alpha to its normal (s = sin alpha, apparent offset R s), refracts through the PMMA and its
-// flat base and lands on the pixel plane at rodScreen(s): docs/physical-tube-model.py source(R s, R, gap, n) with its
-// trigonometry written out (sin / cos of the refracted angles from s alone). It grows with s to the fold (sF, dF: the
-// largest screen offset any ray reaches) and turns back toward the edge.
+// The edge shade's rod profile (layout.h ROD_GAP_MM / ROD_N / TUBE_ROD_MM; sim render.ts rodScreen / rodProfile /
+// rodBase, the same double operations in the same order: square roots and divisions are exact roundings on both sides,
+// so the two agree bit for bit; only pow (edgeShadePow != 1) is a library call). A ray leaving the rod's curved surface
+// toward a viewer at infinity, at angle alpha to its normal (s = sin alpha, apparent offset R s), refracts through the
+// PMMA and its flat base and lands on the pixel plane at rodScreen(s): docs/physical-tube-model.py source(R s, R, gap,
+// n) with its trigonometry written out (sin / cos of the refracted angles from s alone); NaN past total internal
+// reflection at the base, as source(). It grows with s to the fold (sF: the largest screen offset any ray reaches) and
+// turns back: past the fold the rod shows rows from further in again, up to the TIR onset sT (the last transmitting s).
 static double rodScreen(double s, double R, double g, double n) {
   const double s1 = s / n, c1 = sqrt(1 - s1 * s1), ca = sqrt(1 - s * s);
   const double st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
+  if (!(sa < 1 && sa > -1)) return NAN;
   return R * s - (R * ca) * (st / ct) - g * (sa / sqrt(1 - sa * sa));
 }
-// The fold: the last s before total internal reflection at the flat base (n sin theta < 1), by bisection, then the largest
-// screen offset below it by golden section; fixed steps (no tolerance: the same steps on both sides).
-static void rodFold(double R, double g, double n, double &sF, double &dF) {
+// s of the ray that lands at d on the rising branch [0, sF] (fixed bisection).
+static double rodInner(double d, double R, double g, double n, double sF) {
+  double lo = 0, hi = sF;
+  for (int i = 0; i < 60; i++) { const double m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
+  return (lo + hi) / 2;
+}
+// The profile's constants (fixed steps, no tolerance: the same on both sides): sT by bisection on n sin theta < 1, the fold
+// sF by golden section below it, then the cutoff on the outer branch sC = sF + 0.8 (sT - sF): every panel row the rod
+// shows between the fold and there, folded back inward down to dP = rodScreen(sC), is darkened in full (it is seen in
+// the dark edge band); dP's inner ray sP normalises the rest. 8 mm: fold 3.679 mm apparent (d 1.922), TIR onset 3.978,
+// cutoff 3.918 (dP 1.478), its inner ray 2.655 mm.
+static void rodProfile(double R, double g, double n, double &sF, double &sT, double &sP, double &dP) {
   double lo = 0, hi = 1;
   for (int i = 0; i < 60; i++) {
     const double m = (lo + hi) / 2, s1 = m / n, st = m * sqrt(1 - s1 * s1) - sqrt(1 - m * m) * s1;
     if (n * st < 1) lo = m; else hi = m;
   }
-  double a = 0, b = lo;
+  sT = lo;
+  double a = 0, b = sT;
   for (int i = 0; i < 100; i++) {
     const double c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
     if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
   }
-  sF = (a + b) / 2; dF = rodScreen(sF, R, g, n);
+  sF = (a + b) / 2;
+  dP = rodScreen(sF + 0.8 * (sT - sF), R, g, n);
+  sP = rodInner(dP, R, g, n, sF);
 }
-// A panel row d mm off the axis: s / sF of the ray that lands there (rodScreen inverted on the rising branch by fixed
-// bisection), 1 at and past the fold (rows seen from the side).
-static double rodBase(double d, double R, double g, double n, double sF, double dF) {
-  if (d >= dF) return 1;
-  double lo = 0, hi = sF;
-  for (int i = 0; i < 60; i++) { const double m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
-  return (lo + hi) / 2 / sF;
+// A panel row d mm off the axis: s / sP of the ray that lands there on the rising branch, 1 at and past dP.
+static double rodBase(double d, double R, double g, double n, double sF, double sP, double dP) {
+  return d >= dP ? 1 : rodInner(d, R, g, n, sF) / sP;
 }
 // Edge shade factors (sim edgeShadeRows) for the tube at canvas rows [baseY, baseY + H): doubles from the float params,
 // as the sim (soft doubles here: nothing fuses). On the glass: a canvas row covers the panel's rows [bs(y), bs(y + 1))
 // (display_lcd316.cpp bStart: the push's nearest-neighbour upscale at RENDER_H < 320, one row each at 320 and on the
-// AMOLED); each panel row's mm from the tube's centre on the panel, through the rod profile w = (s / sF)^(2 edgeShadePow)
-// (sin^2 alpha, 1 at the fold), averaged over the row's span, times edgeShade. The profile's bases per panel row depend on
+// AMOLED); each panel row's mm from the tube's centre on the panel, through the rod profile w = (s / sP)^(2 edgeShadePow)
+// (sin^2 alpha, 1 at the cutoff dP and past it), averaged over the row's span, times edgeShade. The profile's bases per panel row depend on
 // the rows only (RodCache, again when the tube moves: ~26 ms of soft doubles), the power and strength on the params.
 void Tube::buildShade(const Params &p) {
   rc.shadeY0 = baseY;
@@ -4221,7 +4241,7 @@ void Tube::buildShade(const Params &p) {
   auto bs = [&](int y) { return (y * R + PANEL_H - 1) / PANEL_H; };
   const float pxmm = PX_PER_MM;
   const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0;
-  const double pw = p.edgeShadePow < 0.25f ? 0.25 : p.edgeShadePow > 4 ? 4.0 : (double)p.edgeShadePow;
+  const double pw = !(p.edgeShadePow == p.edgeShadePow) ? 1.0 : p.edgeShadePow < 0.25f ? 0.25 : p.edgeShadePow > 4 ? 4.0 : (double)p.edgeShadePow;   // a stored NaN: 1
   const double c = (bs(baseY) + bs(baseY + H)) / 2.0;
   rc.shadeOn = k > 0;
   RodCache &rd = *rod;
@@ -4230,7 +4250,7 @@ void Tube::buildShade(const Params &p) {
       const int p0 = bs(baseY + y), p1 = bs(baseY + y + 1);
       for (int q = p0; q < p1 && q - p0 < 2; q++) {
         const double d = fabs(q + 0.5 - c) * PANEL_H / R / (double)pxmm;
-        rd.base[y][q - p0] = rodBase(d, rodR, ROD_GAP_MM, ROD_N, rodSF, rodDF);
+        rd.base[y][q - p0] = rodBase(d, rodR, ROD_GAP_MM, ROD_N, rodSF, rodSP, rodDP);
       }
     }
     rd.y0 = baseY; rd.H = H;
@@ -5524,7 +5544,7 @@ bool render_init(bool fast) {
     tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~1.7 KB
     if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; }
     ok = ok && tb.rod;
-    tb.rodR = TUBE_ROD_MM(i) / 2; rodFold(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodDF);
+    tb.rodR = TUBE_ROD_MM(i) / 2; rodProfile(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodST, tb.rodSP, tb.rodDP);
     if (tb.palS) tb.palS->valid = false;
     ok = ok && tb.palS;
     {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)
@@ -5762,6 +5782,8 @@ bool tile_strip_clean(const uint16_t *strip) {
 #ifdef SHADE_ROWS_DUMP
 // Host check (tools/check_shade_rows.py): the edge shade factors of tube idx's shown rows as its last render built them.
 const uint16_t *render_shade_rows(int idx, int &H) { Tube &t = tubeAt(idx); H = t.H; return t.rc.shadeOn ? t.rc.shadeT : nullptr; }
+const int16_t *render_lens_rows(int idx) { Tube &t = tubeAt(idx); return t.rc.lensOn ? t.rc.lensSrc : nullptr; }   // its lens map
+int render_spare_rows(int idx) { return tubeAt(idx).rc.spareN; }   // the spare rows its edge shade asked for (taken or not)
 #endif
 bool render_seq_reset(uint32_t seed) {
   for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; if (t.foam) t.foam->nOrder = 0; }

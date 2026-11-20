@@ -468,8 +468,8 @@ const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1
  *  collapses into one extra H-row table per mark colour, built when params change. */
 /** m: an edge-shaded row's 256 − factor (256 = none). bg and mark arrive darkened by m / 256, so the floor's constants
  *  are too (contrast, the near-black test, white, firmware throughLiquid): the unshaded result darkened, up to rounding. */
-function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256, markU = 0): number {
-  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m, markU);
+function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256, markU = 0, bodyU = 0): number {
+  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m, markU, bodyU);
   const B = rgb565to888(bg);
   let c = mix(B, rgb565to888(mark), transparency);
   const lb = luma(B), lc = luma(c), d = lc - lb;
@@ -484,7 +484,7 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
  *  row brings the luma difference of the floor's direction test down to where the float mix and the integer one can
  *  disagree on its sign. markU: the mark before the shade; where the shade left no luma difference at all, the
  *  direction is the unshaded one's (markU against the pixel behind brought back up, lb·256 / m). */
-function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number, markU: number): number {
+function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number, markU: number, bodyU: number): number {
   if (C <= 0) return blend565T(bg, mark, T);
   const [Br, Bg, Bb] = rgb565to888(bg), [Mr, Mg, Mb] = rgb565to888(mark);
   let cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
@@ -492,9 +492,17 @@ function throughLiquidM(bg: number, mark: number, T: number, C: number, m: numbe
   const Cm = (C * m + 128) >> 8, W = (255 * m + 128) >> 8, top = 1000 * W, dark = (110000 * m + 128) >> 8, den0 = ((1000 * m + 128) >> 8) + 1;
   if (Math.abs(d) >= Cm) return rgb565(cr, cg, cb);
   let dir = d !== 0 ? (d > 0 ? 1 : -1) : lb > dark ? -1 : 1;
-  if (d === 0 && T > 0) {
-    const [Ur, Ug, Ub] = rgb565to888(markU), e = 299 * Ur + 587 * Ug + 114 * Ub - Math.trunc(lb * 256 / m);
-    if (e !== 0) dir = e > 0 ? 1 : -1;
+  if (d === 0 && T > 0) {   // (firmware throughLiquidM): the unshaded floor's own test where the pixel behind is the row's body
+    const [Ur, Ug, Ub] = rgb565to888(markU);
+    if (bg === blend565T(bodyU, 0, 256 - m)) {
+      const [Pr, Pg, Pb] = rgb565to888(bodyU);
+      const lr = Pr + (((Ur - Pr) * T + 128) >> 8), lg = Pg + (((Ug - Pg) * T + 128) >> 8), lbb = Pb + (((Ub - Pb) * T + 128) >> 8);
+      const lU = 299 * Pr + 587 * Pg + 114 * Pb, dU = 299 * lr + 587 * lg + 114 * lbb - lU;
+      dir = dU !== 0 ? (dU > 0 ? 1 : -1) : lU > 110000 ? -1 : 1;
+    } else {
+      const e = 299 * Ur + 587 * Ug + 114 * Ub - Math.trunc(lb * 256 / m);
+      if (e !== 0) dir = e > 0 ? 1 : -1;
+    }
   }
   const target = Math.max(0, Math.min(top, lb + dir * Cm));
   const idiv = (a: number, b: number): number => Math.trunc(a / b);   // C integer division (operands >= 0 here)
@@ -525,7 +533,7 @@ function floorBake(p: Params): [number, number] {
 /** `shade`: the edge shade per tube row (drawTube: the drawn rows' fold factors, or the shown rows' after the lens), null
  *  = none: the mark's colour darkened as the pixel behind it, the floor and emboss constants by the same m (firmware
  *  Mark::operator()). */
-function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null, shade: Uint16Array | null = null): MarkFn {
+function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null, shade: Uint16Array | null = null, bodyRows: Uint16Array | null = null): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
   const Tq = Math.max(0, Math.min(256, Math.floor(p.liquidTransparency * 256 + 0.5)));   // firmware Mark::T
@@ -561,7 +569,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         }
       }
       if (inside) {
-        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK, m, cU);
+        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK, m, cU, bodyRows ? bodyRows[ry] : 0);
         else if (contrast > 0 && !floorBaked) {
           // The coverage already carries the transparency (glyph alpha x T, more where a baked shadow overlaps
           // the body), so the texel as is would never meet the floor. Floor what the glyph shows at full glyph
@@ -569,7 +577,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           // the ticks' floor-then-coverage order, so digits keep the ticks' contrast. (Without a floor the
           // texel is drawn as is: the same blend, cov = a * (cov / a).)
           const a = Math.max(transK, cov);
-          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a, m, cU);
+          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a, m, cU, bodyRows ? bodyRows[ry] : 0);
           cov /= a;
         }
         // The glass-cut relief is on the rear wall too: it fades with the liquid's opacity (invisible
@@ -595,7 +603,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         if (al < 1 / 255) return;
         let M = rgb565to888(c);
         if (aw > 0) {
-          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK, m, cU));
+          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK, m, cU, bodyRows ? bodyRows[ry] : 0));
           M = ad > 0 ? mix(M, CT, aw / (aw + ad)) : CT;
         }
         if (rel !== 0) M = rgb565to888(embossOf(q(M), rel, m));
@@ -2049,7 +2057,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const dx = onTop ? 0 : -state.edgeLight * p.tickParallax;
       const dy = onTop ? 0 : state.acrossTilt * p.tickParallax;
       drawTicks(y0, p, ticksN, wetRows, dryRows, onTop ? null : bounds,
-        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT, false, false, onTop ? null : pal.wetT, shF), dx, dy,
+        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT, false, false, onTop ? null : pal.wetT, shF, pal.rows), dx, dy,
         !onTop && rearTicksFollowDigits(p) ? tickFollow(p, H) : null);
     }
   };
@@ -2060,7 +2068,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // Sprite digits take no surface band: its rim, blick and dish are not layered over them (a look decision, firmware
     // perf: their runs need no per-pixel band test). Bitmap digits keep it.
     const digitEdges: Edges = labels.sprite ? { lo: bounds.lo, hi: bounds.hi } : bounds;
-    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0, null, shade));
+    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0, null, shade, pal.rows));
   };
   drawTickLayer(false);
   drawDigitLayer(false, shF);
@@ -2170,55 +2178,61 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   if (fold && !foldOn) applyEdgeShade(y0, H, fold.T);   // smooth lens: the shown rows after everything
 }
 
-/** The edge shade's rod profile (firmware render.cpp rodScreen / rodFold / rodBase, the same double operations in the
+/** The edge shade's rod profile (firmware render.cpp rodScreen / rodProfile / rodBase, the same double operations in the
  *  same order: square roots and divisions round exactly on both sides). A ray leaving the rod's curved surface at angle α
  *  to its normal (s = sin α, apparent offset R·s) lands on the pixel plane at rodScreen(s), docs/physical-tube-model.py
- *  source(R·s, R, gap, n) with its trigonometry written out; it grows with s up to the fold (sF, dF) and turns back. */
+ *  source(R·s, R, gap, n) with its trigonometry written out, NaN past total internal reflection; it grows with s up to
+ *  the fold sF and turns back inward up to the TIR onset sT. */
 export function rodScreen(s: number, R: number, g: number, n: number): number {
   const s1 = s / n, c1 = Math.sqrt(1 - s1 * s1), ca = Math.sqrt(1 - s * s);
   const st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
+  if (!(sa < 1 && sa > -1)) return NaN;
   return R * s - (R * ca) * (st / ct) - g * (sa / Math.sqrt(1 - sa * sa));
 }
-/** The fold: the last s before total internal reflection (bisection), the largest screen offset below it (golden section),
- *  fixed steps. */
-export function rodFold(R: number, g: number, n: number): [number, number] {
+/** s of the ray landing at d on the rising branch [0, sF] (fixed bisection). */
+function rodInner(d: number, R: number, g: number, n: number, sF: number): number {
+  let lo = 0, hi = sF;
+  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
+  return (lo + hi) / 2;
+}
+/** [sF, sT, sP, dP]: the fold, the TIR onset (fixed bisection), the cutoff on the outer branch sF + 0.8 (sT − sF) with
+ *  its screen offset dP (rows between it and the fold are shown in the dark edge band: full depth) and dP's inner ray sP. */
+export function rodProfile(R: number, g: number, n: number): [number, number, number, number] {
   let lo = 0, hi = 1;
   for (let i = 0; i < 60; i++) {
     const m = (lo + hi) / 2, s1 = m / n, st = m * Math.sqrt(1 - s1 * s1) - Math.sqrt(1 - m * m) * s1;
     if (n * st < 1) lo = m; else hi = m;
   }
-  let a = 0, b = lo;
+  const sT = lo;
+  let a = 0, b = sT;
   for (let i = 0; i < 100; i++) {
     const c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
     if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
   }
-  const sF = (a + b) / 2;
-  return [sF, rodScreen(sF, R, g, n)];
+  const sF = (a + b) / 2, dP = rodScreen(sF + 0.8 * (sT - sF), R, g, n);
+  return [sF, sT, rodInner(dP, R, g, n, sF), dP];
 }
-/** A panel row d mm off the axis: s / sF of the ray landing there (rising branch, fixed bisection); 1 at and past the fold. */
-export function rodBase(d: number, R: number, g: number, n: number, sF: number, dF: number): number {
-  if (d >= dF) return 1;
-  let lo = 0, hi = sF;
-  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
-  return (lo + hi) / 2 / sF;
+/** A panel row d mm off the axis: s / sP of the ray landing there on the rising branch; 1 at and past dP. */
+export function rodBase(d: number, R: number, g: number, n: number, sF: number, sP: number, dP: number): number {
+  return d >= dP ? 1 : rodInner(d, R, g, n, sF) / sP;
 }
-const rodFolds: ([number, number] | undefined)[] = [];
+const rodProfiles: ([number, number, number, number] | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. On the glass: canvas row y covers the panel's rows [bs(y), bs(y + 1)) (the LCD's
  *  nearest-neighbour upscale at fewer than 320 rows, firmware display_lcd316.cpp bStart; one row each at 320 and on the
  *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through the
- *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): w = (s / sF)^(2·edgeShadePow), sin²α normalised to 1 at the fold (rows
- *  past it: 1), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
+ *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): w = (s / sP)^(2·edgeShadePow), sin²α normalised to 1 at the outer-branch
+ *  cutoff's row dP (rows at and past it, the fold-back band included: 1), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
  *  buildShade, the same operations: no fused multiply-add on either side). One cache entry per tube (faces mix tube
  *  heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
-  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), pw = Math.max(0.25, Math.min(4, f(p.edgeShadePow)));
+  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), pw0 = f(p.edgeShadePow), pw = pw0 !== pw0 ? 1 : Math.max(0.25, Math.min(4, pw0));   // NaN: 1 (firmware)
   const key = `${y0}:${H}:${k}:${pw}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
   if (k > 0) {
-    const Rr = TUBE_ROD_MM[idx] / 2, [sF, dF] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N);
+    const Rr = TUBE_ROD_MM[idx] / 2, [sF, , sP, dP] = rodProfiles[idx] ??= rodProfile(Rr, ROD_GAP_MM, ROD_N);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
     const c = (bs(y0) + bs(y0 + H)) / 2;
     rows = new Uint16Array(H);
@@ -2226,7 +2240,7 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
       const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
       let sum = 0;
       for (let q = p0; q < p1; q++) {
-        const v = rodBase(Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM, Rr, ROD_GAP_MM, ROD_N, sF, dF);
+        const v = rodBase(Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM, Rr, ROD_GAP_MM, ROD_N, sF, sP, dP);
         sum += pw === 1 ? v * v : Math.pow(v, 2 * pw);
       }
       rows[y] = Math.floor(k * (sum / (p1 - p0)) * 256 + 0.5);
@@ -2278,19 +2292,22 @@ export function edgeShadeFold(idx: number, y0: number, H: number, p: Params, len
   edgeFoldCache[idx] = { key, fold };
   return fold;
 }
-/** The nearest-row lens map applyLens copies by (shown row yd shows drawn row src[yd]; null = no lens), in doubles: the
- *  fold's factors and its lens copy take the same one. (The firmware's is float32 with powf: on a strong lens a row can
- *  differ, at edgeShade 0 too — KAIZEN; the board's newlib powf agrees with this double map on the user's look where a
- *  float32 emulation did not.) */
+/** The nearest-row lens map in the firmware's float32 operations (render.cpp buildRowCache lensSrc): shown row yd shows
+ *  drawn row src[yd]; null = no lens. The fold's factors and its lens copy both take it (the sim's own double map can
+ *  pick the next row on a strong lens: lens 1 / curve 3, H 72, rows 33..35 show 36 here and in the firmware, 35 in double;
+ *  check_shade_rows pins it). edgeShade 0 keeps applyLens's double map. powf: the host's glibc and JS's rounding agree on
+ *  every map check_shade_rows takes; the board's newlib is not checked row by row (the same captured state rendered with
+ *  either map gave the same frame on the user's look, compare-device). */
 export function lensSourceRows(H: number, p: Params): Int16Array | null {
-  const lens = Math.max(-1, Math.min(1, p.lens)), curve = Math.max(-3, Math.min(3, p.lensCurve));
+  const f = Math.fround, lens = Math.max(-1, Math.min(1, f(p.lens))), curve = Math.max(-3, Math.min(3, f(p.lensCurve)));
   const signedCurve = lens < 0 ? -curve : curve, strength = Math.abs(lens);
   if (strength === 0 || signedCurve === 0) return null;
-  const exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2), src = new Int16Array(H);
+  const exponent = signedCurve > 0 ? f(1 + f(signedCurve * 2)) : f(1 / f(1 - f(signedCurve * 2)));
+  const h2 = f(H / 2), src = new Int16Array(H);
   for (let yd = 0; yd < H; yd++) {
-    const d = (yd + 0.5 - H / 2) / (H / 2), u = Math.abs(d);
-    const sv = Math.sign(d) * ((1 - strength) * u + strength * Math.pow(u, exponent));
-    src[yd] = Math.floor(Math.max(0, Math.min(H - 1, H / 2 + sv * H / 2)));
+    const d = f(f(f(yd + 0.5) - h2) / h2), u = Math.abs(d);
+    const sv = f((d < 0 ? -1 : 1) * f(f(f(1 - strength) * u) + f(strength * f(Math.pow(u, exponent)))));
+    src[yd] = Math.max(0, Math.min(H - 1, Math.floor(f(h2 + f(f(sv * H) / 2)))));
   }
   return src;
 }

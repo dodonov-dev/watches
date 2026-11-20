@@ -818,7 +818,7 @@ static bool setParam(Params &dst, const char *name, const char *val) {
   const ParamField *f = findField(name); if (!f) return false;
   uint8_t *p = (uint8_t *)&dst + f->off;
   switch (f->type) {
-    case 'f': *(float *)p = atof(val); break;
+    case 'f': { const float v = atof(val); if (!isfinite(v)) return false; *(float *)p = v; break; }   // nan / inf: rejected (not stored)
     case 'i': *(int *)p = atoi(val); break;
     case 'b': *(bool *)p = !(val[0] == '0' || val[0] == 'f' || val[0] == 'F' || val[0] == 'n'); break;
     case 'c': *(uint32_t *)p = strtoul(val[0] == '#' ? val + 1 : val, nullptr, 16); break;
@@ -847,7 +847,9 @@ static void dumpParams() {
 }
 
 static bool liquidOk = true;   // every boot allocation of the face succeeded (setup); else the face (and `x` / `X`) never runs
+static bool displayOk = true;  // the display and the canvas (fb) are there (setup); else no face at all: diagnostics only
 static void show(char m) {
+  if (!displayOk) { out.println("error face: the display or its canvas failed at boot (see the boot log): serial diagnostics only"); mode = 0; return; }
   display_wait_all();
   if (m == 'l' && !liquidOk) { out.println("error liquid face: a boot allocation failed (see the boot log), hello face instead"); m = 'h'; }
   mode = m;
@@ -903,7 +905,11 @@ static void handleLine(char *line) {
         out.printf(ok ? "ok %s\n" : "unknown param %s\n", arg); }
       break; }
     case 'x': {  // dump state + every strip (hex) for offline comparison with the sim
-      if (!liquidOk) { out.println("error x: a boot allocation failed (see the boot log)"); break; }
+      if (!liquidOk || !displayOk
+#ifdef BOARD_LCD316
+          || !dumpHex
+#endif
+         ) { out.println("error x: a boot allocation failed (see the boot log)"); break; }
       display_wait_all(); display_next_strips(strip); dropPending();   // strips re-rendered without the lens map
       const FaceLayout l = currentLayout();   // canvas W H, hours rows, tops, minutes rows (tube widths may differ)
 #if TUBE_COUNT == 3
@@ -942,7 +948,7 @@ static void handleLine(char *line) {
       out.println("END");
       break; }
     case 'X': {  // deterministic sequence (seq.h) on the current params, frame hashes (tools/check_board_steps.py)
-      if (!liquidOk) { out.println("error X: a boot allocation failed (see the boot log)"); break; }
+      if (!liquidOk || !displayOk) { out.println("error X: a boot allocation failed (see the boot log)"); break; }
       display_wait_all(); display_next_strips(strip); dropPending();   // strips rendered without the lens map, as `x`
       const bool seeded = render_seq_reset(0x5eedu);
       const FaceLayout l = currentLayout();
@@ -1038,6 +1044,7 @@ void setup() {
 #else
   liquidOk = dispOk && renderOk;   // the renderer's tables (edge shade LUT, ShadePal, ...): no face without them (physics: no residue)
 #endif
+  displayOk = dispOk && fb.buf;    // the hello face and every push need both
 #ifdef AB_COMPARE
   out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");
 #endif

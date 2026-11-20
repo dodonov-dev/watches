@@ -1,6 +1,6 @@
 {
   "kind": "liquid-watch-material",
-  "version": 2,
+  "version": 3,
   "name": "Olive oil",
   "material": {
     "ior": 1.47,

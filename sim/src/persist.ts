@@ -48,8 +48,11 @@ function loadMaterialState(raw: unknown): MaterialState {
   try {
     if (o.mode !== 'legacy' && o.mode !== 'material') throw new Error(`mode ${String(o.mode)}`);
     const has = (k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+    // stored states carry the material version since v3 (flush); an untagged one is older: migrated from version 1 (its
+    // steps only touch keys that version had, so a version-2 state passes through them)
+    const version = typeof o.version === 'number' ? o.version : 1;
     const env = parseMaterialEnvelope({
-      kind: MATERIAL_ENVELOPE_KIND, version: MATERIAL_VERSION, material: o.material, design: o.design,
+      kind: MATERIAL_ENVELOPE_KIND, version, material: o.material, design: o.design,
       ...(has('name') ? { name: o.name } : {}), ...(has('provenance') ? { provenance: o.provenance } : {}),
     });
     return {
@@ -96,7 +99,7 @@ function flush(): void {
   timer = 0;
   if (!pending) return;
   // `pending` holds the live objects, so this serialises the newest state, not the state at call time.
-  try { localStorage.setItem(KEY, JSON.stringify(pending)); localStorage.removeItem(LEGACY_PARAMS); }
+  try { localStorage.setItem(KEY, JSON.stringify({ ...pending, material: { ...pending.material, version: MATERIAL_VERSION } })); localStorage.removeItem(LEGACY_PARAMS); }
   catch { /* quota exceeded / private mode: keep the sim running, just unsaved */ }
   pending = null;
 }

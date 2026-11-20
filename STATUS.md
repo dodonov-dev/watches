@@ -5,36 +5,44 @@ _Last update: 2026-11-20 (edge shade: the rod profile, params v30; folded into t
 ## Edge shade: the rod profile (2026-11-20), branch `edge-shade`
 
 - Params v30: `edgeShade` (strength) and `edgeShadePow` (0.25..4, default 1); `edgeShadeFrom` / `edgeShadeTo` are gone (the
-  migration drops them, every preset `edgeShadePow` 1). Schema CRC changed: NVS dropped at the flash; the user's look
-  restored with edgeShade 0.67, edgeShadePow 1 (it looks different now: the profile reaches into the middle).
+  migration drops them, every preset `edgeShadePow` 1; a saved sim material design too: material schema v3, the stored
+  session's material state now carries its version, an untagged one is migrated). The user's look: edgeShade 0.52,
+  edgeShadePow 1, glassWallGlow 0.35 (their `p?`, kept across the flash).
 - The profile is the rod's: per panel row d mm off the tube's centre (as before, the reduced canvas averaging included),
   the ray that lands there through the half-cylinder of the build's tube width (layout.h `TUBE_ROD_MM`: 8 mm on 320w8-8,
   6 on the AMOLED), its flat base `ROD_GAP_MM` 0.87 above the pixels (fitted from a photo, M ~ 1.77; verify with the `m`
   ruler face), n `ROD_N` 1.49: docs/physical-tube-model.py `source()` with its trigonometry written out in s = sin alpha
-  (`rodScreen`), the fold by fixed bisection + golden section (`rodFold`, at boot), inverted on the rising branch by
-  fixed bisection (`rodBase`); w = (s / s_fold)^(2 edgeShadePow), 1 at and past the fold; T = round(edgeShade w 256).
-  Square roots and divisions only: sim and firmware agree bit for bit (pow only at edgeShadePow != 1). The bases per row
-  are cached per tube position (`RodCache`, PSRAM): a param change redoes only the power.
-- 320w8-8 (check:layout table): fold at x 3.679 mm (alpha 66.9 deg), d 1.922 mm; w 0.015 / 0.058 / 0.131 / 0.234 / 0.368
-  / 0.537 / 0.749 at d 0.25 .. 1.75 mm, 1 from 1.92 (the user's 72-row tube: rows 13 from each edge at full depth, the
-  centre two rows unshaded).
-- Host: check_shade_rows (sim vs firmware row factors, 1440 looks each: presets' geometry + a tubeHeight sweep x edgeShade
-  0.3 / 0.67 / 1 x edgeShadePow 0.25 / 0.6 / 1 / 2.5 / 4): lcd316@320w8-8 213150 rows, 240f 158880, 320f+t3 317295,
-  amoled191 158880: 0 differ. check:layout (74 configurations, 8-8 added): each canvas row within 1/256 of the mean of
-  an independent trig model's factors (sampled fold, bisection in x). edgeShade 0: check_board_render as before on every
-  path (75 / 75 / 75, 75 / 75 of 77, 74 of 77), check_render_frames vs 6df29da (its From / To as constants) byte-identical
-  (13136, also `--tiles`), check_fizz_steps 80 of 80 (amoled191, lcd316 `--tiles`). edgeShade on (29 looks: the earlier
-  ones, edgeShadePow 0.25 / 2.5 / 4): 0 px > 12/255 on 240f, 240f push and amoled191 but user1120-lens1c3 (a lens the
-  sim's double map and the firmware's float32 one place differently: 963 px > 12/255 at edgeShade 0 too); 320w8-8 (all
-  four paths): also lensstrong 2 px at 17 (a pre-existing 1-step digit difference, 2 steps after a spare row's shade).
-  check_shade_frames ok.
-- Review item 6 reverted: the sim's fold and its lens copy take one map, the sim's own double one (as applyLens). The
-  float32 emulation matched the host's glibc powf but not the board's: compare-device on the user's look showed 5 px
-  > 12/255 with it, 0 with the double map.
-- Board (lcd316@320w8-8, elf 7f8482e4, the user's look, edgeShadePow 1): `bench.py --fix-pose --stage edgeShade=0 --runs
-  3`: 58.6 fps (16.57 ms) on, 62.3 (15.60 ms) at 0: cost 0.97 ms (0.93-1.06; no spare rows on this look now: its
-  doubled rows lie in the flat full-depth band). TUBE_PROF: digits +0.66-0.74 ms a core (sprite texels shaded per pixel on
-  70 of 72 rows), ticks +0.02-0.08. compare-device: 38 px off, 0 > 12/255. Left on the user's look.
+  (`rodScreen`, NaN past total internal reflection). `rodProfile` (at boot, fixed steps): the TIR onset sT by bisection,
+  the fold sF by golden section, the cutoff on the outer branch sC = sF + 0.8 (sT - sF) with its screen offset dP, dP's
+  inner ray sP. w = (s_in(d) / sP)^(2 edgeShadePow) below dP, 1 at and past it: past the fold the rod shows rows from
+  further in again (8 mm: d 1.92 back to 0.9 mm), and those rows must read dark, not with their inner factor (the
+  user's dark / light / dark strips at the edge). T = round(edgeShade w 256). Square roots and divisions only: sim and
+  firmware agree bit for bit (pow only at edgeShadePow != 1). Bases per row cached per tube position (`RodCache`).
+- 320w8-8 (check:layout, against an independent trig model, and docs/physical-tube-model.py): fold x 3.6786 mm (alpha
+  66.88 deg) d 1.9216; TIR onset x 3.9783; cutoff x_c 3.9184, d_p 1.4783; x_in(d_p) 2.6546 (alpha 41.58). w 0.028 /
+  0.112 / 0.252 / 0.450 / 0.708 at d 0.25 / 0.5 / 0.75 / 1 / 1.25 mm, 1 from 1.478.
+- Review 4 (Astra): the sim's fold and lens copy take the firmware's float32 nearest-row map (lensSourceRows; a strong
+  lens 1 / 3 shows drawn row 36 on rows 33..35, double gives 35; pinned in check_shade_rows); the earlier "5 px with the
+  float map" was a capture of moving liquid (the same captured state renders identically with both maps; captures while
+  the liquid moves show 300-500 px > 12/255 at edgeShade 0 too: compare-device only on a settled board). Contrast floor:
+  where the shade left mark and pixel one colour, the direction is the unshaded floor's exactly when the pixel behind is
+  the row's body darkened, else the luma estimate. setParam rejects nonfinite floats; a NaN edgeShadePow reads 1. No
+  face, `x` or `X` without the display and its canvas (diagnostics only; `x` also needs its dump buffer).
+- Host (all at HEAD): check_board_render, edgeShade 0, every path: 75 of 77 (320w8-8 strip, `--tiles`, `--tiles
+  --push-lens`), 75 of 77 (240f, `--push-lens`), 74 of 77 (amoled191), the previous round's figures exactly;
+  check_render_frames vs 6df29da (its From / To as constants) byte-identical (13136 strips, also `--tiles`);
+  check_fizz_steps 80 of 80 (amoled191, lcd316@320w8-8 `--tiles`). edgeShade on, 29 looks (the earlier ones, a strong
+  lens, bubble, residue, edgeShadePow 0.25 / 2.5 / 4): 29 of 29 within 12/255 on all seven paths. check_shade_rows (1981
+  looks each: presets' geometry, a tubeHeight sweep, a lens sweep x 3 strengths x 5 powers): 320w8-8 318054 rows, 240f
+  236748, 320f+t3 473031, amoled191 236748, 0 differ; lens maps 3962 / 3962 / 5943 / 3962, 0 differ; pin ok.
+  check_shade_frames ok (spill: 36 and 28 spare rows asked for, canary kept; record x4; palette). check:layout 74
+  configurations ok; sim build, check:materials 1143 ok, check:material-gen, check:imu ok.
+- Board (lcd316@320w8-8, elf 8863125f, the user's look): `bench.py --fix-pose --stage edgeShade=0 --runs 3`: 58.9 fps
+  (16.50 ms) on, 62.3 (15.60 ms) at 0: cost 0.90 ms (0.86-0.96). compare-device, settled: 38 / 37 px off, 0 > 12/255.
+  TUBE_PROF (rod profile before the cutoff): the cost is the digits, +0.66-0.74 ms a core (sprite texels shaded per pixel
+  on nearly every row), ticks +0.02-0.08. Left on the user's look, `p?` unchanged.
+- RAM (static, against 6df29da): lcd316@320w8-8 bss +768 B, IRAM +668 B; amoled191 +824 B. PSRAM: SHADE_LUT 64.3 KB,
+  ShadePal ~1.7 KB, RodCache 1.7 KB and MarkPlan::inkRow 3.4 KB a tube (108 rows, 16-B inks).
 
 ## Edge shade folded (2026-11-20), branch `edge-shade`
 
@@ -82,7 +90,7 @@ _Last update: 2026-11-20 (edge shade: the rod profile, params v30; folded into t
   +~0.1. TILE_VERIFY / PUSH_VERIFY build: 0 bad (bands, spare rows, push). compare-device: 28 px off, 0 > 12/255.
   Left on the user's look (edge 0.67 / 1.15 / 2.85), `p?` equal to the saved look.
 - RAM (static): lcd316@320w8-8 bss +704 B (RowCache postT / lensMap), IRAM +956 B; amoled191 +720 B. PSRAM: SHADE_LUT
-  64.3 KB, ShadePal ~1.7 KB and MarkPlan::inkRow 2.6 KB a tube (108 rows). Worker stack free 1036 -> 952 B.
+  64.3 KB, ShadePal ~1.7 KB and MarkPlan::inkRow 3.4 KB a tube (108 rows, 16-B inks since review 4). Worker stack free 1036 -> 952 B.
 
 ## Edge shade (2026-11-19), branch `edge-shade`
 

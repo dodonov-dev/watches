@@ -1,0 +1,9 @@
+Resume notes (WIP after 6d18f86):
+- scripts/runchecks3.sh <looksdir>: check_board_render over looks/shade3 on 7 paths (edit paths inside: they point at the old /tmp scratchpad).
+- scripts/runzero.sh: edgeShade 0 vs the n2_*.txt figures (previous round, == 6df29da).
+- check_render_frames / check_fizz_steps reference: git show 6df29da:firmware/src/render.cpp, then
+  sed 's/a = p.edgeShadeFrom, b = p.edgeShadeTo;/a = 1.4, b = 1.9;/'  (v30 params no longer have From/To).
+- scripts/restore.py <look.json> <port>: write a look over serial (looks/board-look-now.json = the user's p? on 2026-11-20:
+  edgeShade 0.52, edgeShadePow 1, glassWallGlow 0.35).
+- scripts/prof.py / prof0.py: TUBE_PROF stage costs at edgeShade on/off (needs a -DTUBE_PROF build).
+- scripts/search.py: brute-force search for record-test lens cases; tl.py: python port of throughLiquid(M).

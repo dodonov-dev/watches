@@ -6,8 +6,9 @@
 lcd316, the tiled band loop (-DTILE_RENDER=1) with the push's lens map (main.cpp lensRows), built with ASan / UBSan, two
 strip buffers of TUBE_HEIGHT_MAX rows (the board's), params kept across renders (gen bumps only on a param change, as on
 the board). Scenarios, each on the board's look (fizz off):
-  spill    a 107-row tube with a lens that would want more spare rows than the strip holds, and the user's look with digits
-           on top (strip lens): no write past the strip (ASan).
+  spill    a 107-row tube with a lens that would want more spare rows than the strip holds, and digits on top with a
+           conflicting lens (strip lens): spare rows asked for, none written: no write past the strip (ASan) and the strip's
+           rows past the tube's whole 8-row blocks keep a canary.
   record   shade-only change with the lens row map unchanged: every word the push would show changed is marked in the
            render's change record (tiles.h TileDirty) whenever that record claims to be valid.
   palette  a light change at a constant edge light (hard-edge glow table): the frame equals a fresh render of it.
@@ -28,6 +29,7 @@ HARNESS = r'''
 #include "render.h"
 #include "layout.h"
 #include "tiles.h"
+int render_spare_rows(int idx);
 static uint16_t strip0[PANEL_W * TUBE_HEIGHT_MAX], strip1[PANEL_W * TUBE_HEIGHT_MAX];   // separate globals: ASan redzones between
 static bool setParam(Params &p, const char *name, const char *val) {
   for (const ParamField &f : PARAM_FIELDS) if (!strcmp(f.name, name)) {
@@ -53,6 +55,7 @@ int main() {
     if (line[0] == 'P') { char *eq = strchr(line + 2, '='); if (!eq) return 4; *eq = 0; if (!setParam(design, line + 2, eq + 1)) fprintf(stderr, "unknown param %s\n", line + 2); gen++; }
     else if (line[0] == 'D') { design = PRESET_DEFAULT; gen++; }
     else if (line[0] == 'G') gen++;
+    else if (line[0] == 'C') { for (size_t k = 0; k < sizeof strip0 / 2; k++) strip0[k] = strip1[k] = 0xa5c3; }   // canary
     else if (line[0] == 'S') { int i; float f, l; sscanf(line + 2, "%d %f %f", &i, &f, &l); st[i] = TubeState(); st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); st[i].fillTarget = f; st[i].light = l; }
     else if (line[0] == 'R') {
       for (int i = 0; i < TUBE_COUNT; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ);
@@ -62,7 +65,9 @@ int main() {
         renderTube(i, st[i], p[i], gen, strip[i], &map, lay.top(i));
         const int H = lay.rows(i);
         const TileDirty *rec = tile_dirty(strip[i]);
-        int32_t hdr[3] = {H, map ? 1 : 0, rec && rec->valid ? 1 : 0};
+        int canary = 1;   // the rows past the tube's whole 8-row blocks: untouched unless spare rows were taken
+        for (size_t k = (size_t)((H + 7) & ~7) * PANEL_W; k < sizeof strip0 / 2; k++) canary &= strip[i][k] == 0xa5c3;
+        int32_t hdr[5] = {H, map ? 1 : 0, rec && rec->valid ? 1 : 0, render_spare_rows(i), canary};
         fwrite(hdr, sizeof hdr, 1, stdout);
         int16_t m[TUBE_HEIGHT_MAX]; for (int r = 0; r < TUBE_HEIGHT_MAX; r++) m[r] = (int16_t)(r < H ? (map ? map[r] : r) : 0);
         fwrite(m, sizeof m, 1, stdout);
@@ -95,7 +100,7 @@ def main():
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
         subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O1', '-g', '-ffp-contract=off', '-fsanitize=address,undefined',
-                        '-fno-sanitize-recover=all', '-DTILE_RENDER=1', '-DBOARD_LCD316', *boardtag.tubes_flags(2), *boardtag.res_flags(a.res, 2),
+                        '-fno-sanitize-recover=all', '-DTILE_RENDER=1', '-DSHADE_ROWS_DUMP', '-DBOARD_LCD316', *boardtag.tubes_flags(2), *boardtag.res_flags(a.res, 2),
                         '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                         str(tmp / 'h.cpp'), str(a.render), str(ROOT / 'firmware/src/physics.cpp'),
                         '-o', str(tmp / 'h')], check=True)
@@ -109,16 +114,16 @@ def main():
 
         def frames(raw):   # [(tube0, tube1)] each (H, mapped, valid, map, strip words, bits)
             hmax = frame_hmax
-            n_tube = 12 + hmax * 2 + W * hmax * 2 + tile_max * pair_words * 4
+            n_tube = 20 + hmax * 2 + W * hmax * 2 + tile_max * pair_words * 4
             res, o = [], 0
             while o < len(raw):
                 fr = []
                 for _ in range(2):
-                    H, mapped, valid = struct.unpack_from('<3i', raw, o); q = o + 12
+                    H, mapped, valid, spares, canary = struct.unpack_from('<5i', raw, o); q = o + 20
                     m = struct.unpack_from(f'<{hmax}h', raw, q); q += hmax * 2
                     s = struct.unpack_from(f'<{W * hmax // 2}I', raw, q); q += W * hmax * 2
                     bits = struct.unpack_from(f'<{tile_max * pair_words}I', raw, q)
-                    fr.append((H, mapped, valid, m, s, bits)); o += n_tube
+                    fr.append((H, mapped, valid, m, s, bits, spares, canary)); o += n_tube
                 res.append(fr)
             return res
 
@@ -129,15 +134,18 @@ def main():
         pair_words = (W // 2 + 31) // 32
         for hm in range(32, 400):
             tm = (hm + 3) // 4
-            if 2 * (12 + hm * 2 + W * hm * 2 + tm * pair_words * 4) == len(probe): frame_hmax, tile_max = hm, tm; break
+            if 2 * (20 + hm * 2 + W * hm * 2 + tm * pair_words * 4) == len(probe): frame_hmax, tile_max = hm, tm; break
         else: sys.exit('check_shade_frames: cannot size the harness output')
         bad = 0
 
         # spill
-        for name, extra in (('107-row tube, lens -1 / 0.2', ['P tubeHeight=80', 'P lens=-1', 'P lensCurve=0.2', 'P edgeShade=1']),
-                            ('digits on top (strip lens)', ['P digitsOnTop=1'])):
-            ok = run(extra + ['R', 'R']) is not None
-            print(f'spill    {name:40s} {"ok" if ok else "FAIL (sanitizer)"}'); bad += not ok
+        for name, extra in (('107-row tube, lens -0.8 / -1.1', ['P tubeHeight=80', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1']),
+                            ('digits on top, lens -0.8 / -1.1', ['P digitsOnTop=1', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1'])):
+            raw = run(extra + ['C', 'R', 'C', 'R'])
+            if raw is None: print(f'spill    {name:40s} FAIL (sanitizer)'); bad += 1; continue
+            fr = frames(raw)[-1]; asked = sum(t[6] for t in fr); kept = all(t[7] for t in fr)
+            ok = asked > 0 and kept
+            print(f'spill    {name:40s} {"ok" if ok else "FAIL"} ({asked} spare rows asked for, canary {"kept" if kept else "OVERWRITTEN"})'); bad += not ok
 
         # record: shade-only change, the row map unchanged
         def record(name, script):
@@ -147,7 +155,7 @@ def main():
             fr = frames(raw); worst = 0; checked = 0
             for k in range(1, len(fr)):
                 for t in range(2):
-                    H, mapped, valid, m, s, bits = fr[k][t]; _, _, _, m0, s0, _ = fr[k - 1][t]
+                    H, mapped, valid, m, s, bits = fr[k][t][:6]; m0, s0 = fr[k - 1][t][3], fr[k - 1][t][4]
                     if not valid or m[:H] != m0[:H]: continue
                     checked += 1
                     for r in range(H):

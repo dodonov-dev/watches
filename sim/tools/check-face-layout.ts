@@ -52,21 +52,24 @@ const source = (x: number, R: number, g: number, n: number): number => {
   const al = Math.asin(x / R), th = al - Math.asin(Math.sin(al) / n), z = Math.sqrt(R * R - x * x), sa = n * Math.sin(th);
   return Math.abs(sa) >= 1 ? NaN : x - z * Math.tan(th) - g * Math.tan(Math.asin(sa));
 };
-const rodModel = TUBE_ROD_MM.map((mm) => {   // per tube: radius, the fold (by sampling), the ideal w(d) at power 1
-  const R = mm / 2; let xF = 0, dF = -1;
-  for (let i = 1; i < 200000; i++) { const x = R * i / 200000, d = source(x, R, ROD_GAP_MM, ROD_N); if (d > dF) { dF = d; xF = x; } }
+const rodModel = TUBE_ROD_MM.map((mm) => {   // per tube: radius, fold and TIR onset (by sampling), cutoff, the ideal base(d)
+  const R = mm / 2; let xF = 0, dF = -1, xT = 0;
+  for (let i = 1; i < 200000; i++) { const x = R * i / 200000, d = source(x, R, ROD_GAP_MM, ROD_N); if (d === d) xT = x; if (d > dF) { dF = d; xF = x; } }
+  { let lo = xT, hi = Math.min(R, xT + R / 200000); for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (source(m, R, ROD_GAP_MM, ROD_N) === source(m, R, ROD_GAP_MM, ROD_N)) lo = m; else hi = m; } xT = lo; }
   const xOf = (d: number): number => { let lo = 0, hi = xF; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (source(m, R, ROD_GAP_MM, ROD_N) < d) lo = m; else hi = m; } return (lo + hi) / 2; };
+  const xC = xF + 0.8 * (xT - xF), dP = source(xC, R, ROD_GAP_MM, ROD_N), xP = xOf(dP);
   const memo = new Map<number, number>();   // by the row's offset in half panel rows (|n + 0.5 - c| is a multiple of 0.5)
-  const baseAt = (h: number): number => { let v = memo.get(h); if (v === undefined) { const d = h / 2 * PANEL_MM; v = d >= dF ? 1 : xOf(d) / xF; memo.set(h, v); } return v; };
-  return { R, xF, dF, base: (d: number): number => d >= dF ? 1 : xOf(d) / xF, baseAt, xOf };
+  const baseAt = (h: number): number => { let v = memo.get(h); if (v === undefined) { const d = h / 2 * PANEL_MM; v = d >= dP ? 1 : xOf(d) / xP; memo.set(h, v); } return v; };
+  return { R, xF, dF, xT, xC, dP, xP, base: (d: number): number => d >= dP ? 1 : xOf(d) / xP, baseAt, xOf };
 });
 if (BOARD_TAG === 'lcd316@320w8-8') {
-  const m = rodModel[0];
-  console.log(`  rod 320w8-8: R ${m.R.toFixed(4)} mm, gap ${ROD_GAP_MM}, n ${ROD_N}: fold at x ${m.xF.toFixed(4)} mm (alpha ${(Math.asin(m.xF / m.R) * 180 / Math.PI).toFixed(2)} deg), d ${m.dF.toFixed(4)} mm`);
-  console.log('    d mm   x mm   alpha deg   source(x) mm   w (pow 1)');
+  const m = rodModel[0], deg = (x: number): string => (Math.asin(x / m.R) * 180 / Math.PI).toFixed(2);
+  console.log(`  rod 320w8-8: R ${m.R.toFixed(4)} mm, gap ${ROD_GAP_MM}, n ${ROD_N}: fold x ${m.xF.toFixed(4)} (alpha ${deg(m.xF)}) d ${m.dF.toFixed(4)}; TIR onset x ${m.xT.toFixed(4)}; ` +
+    `cutoff x_c ${m.xC.toFixed(4)} d_p ${m.dP.toFixed(4)}; x_in(d_p) ${m.xP.toFixed(4)} (alpha ${deg(m.xP)})`);
+  console.log('    d mm   x_in mm   alpha deg   source(x_in) mm   w (pow 1)');
   for (let d = 0; d <= 3.0001; d += 0.25) {
-    const x = d >= m.dF ? m.xF : m.xOf(d), w = m.base(d) ** 2;
-    console.log(`    ${d.toFixed(2)}   ${x.toFixed(4)}   ${(Math.asin(x / m.R) * 180 / Math.PI).toFixed(2).padStart(6)}      ${source(x, m.R, ROD_GAP_MM, ROD_N).toFixed(4)}       ${w.toFixed(4)}`);
+    const x = d >= m.dP ? m.xP : m.xOf(d), w = m.base(d) ** 2;
+    console.log(`    ${d.toFixed(2)}   ${x.toFixed(4)}    ${deg(x).padStart(6)}      ${source(x, m.R, ROD_GAP_MM, ROD_N).toFixed(4)}          ${w.toFixed(4)}`);
   }
 }
 let fails = 0, shadeRowsChecked = 0;

@@ -256,6 +256,16 @@ export function migrateMaterial(o: Record<string, unknown>): Record<string, unkn
         }
         break;
       }
+      case 2: {
+        // version 2 → 3: the edge shade's smoothstep (edgeShadeFrom / edgeShadeTo, mm) gave way to the rod profile
+        // (edgeShadePow, its shape). The strength edgeShade stays; a design that set any edge-shade key takes the
+        // shape's default explicitly.
+        if (isRecord(r.design) && (hasOwn(r.design, "edgeShadeFrom") || hasOwn(r.design, "edgeShadeTo") || hasOwn(r.design, "edgeShade"))) {
+          const kept = keepKeys(r.design, (key) => key !== "edgeShadeFrom" && key !== "edgeShadeTo") as Record<string, unknown>;
+          r.design = hasOwn(kept, "edgeShadePow") ? kept : { ...kept, edgeShadePow: DEFAULT_PARAMS.edgeShadePow };
+        }
+        break;
+      }
       default:
         fail("material file", `no migration from version ${v}`);
     }

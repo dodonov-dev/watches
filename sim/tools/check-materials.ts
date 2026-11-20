@@ -370,6 +370,18 @@ accepts('design: tubeBack #AbCdEf (hex any case)', () => validateDesign({ tubeBa
     m1.version === MATERIAL_VERSION && !('digitParallax' in m1.design) && m1.design.rearParallax === DEFAULT_PARAMS.rearParallax && m1.design.tubeHeight === 40
       && 'digitParallax' in v1.design ? [] : [JSON.stringify(m1)], []);
   accepts('migrate v1 without digitParallax: imports', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 1, material: DEFAULT_MATERIAL, design: { tubeHeight: 40 } }));
+  // version 2 → 3: the edge shade's edgeShadeFrom / edgeShadeTo are dropped, its strength kept, edgeShadePow takes its
+  // default (a saved sim design of the smoothstep era still restores)
+  {
+    let got: string[] = [];
+    try {
+      const env = parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 2, material: DEFAULT_MATERIAL, design: { tubeHeight: 40, edgeShade: 0.67, edgeShadeFrom: 1.15, edgeShadeTo: 2.85 } });
+      const d = env.design as Record<string, unknown>;
+      if ('edgeShadeFrom' in d || 'edgeShadeTo' in d || d.edgeShade !== 0.67 || d.edgeShadePow !== DEFAULT_PARAMS.edgeShadePow || d.tubeHeight !== 40) got = [JSON.stringify(d)];
+    } catch (error) { got = [(error as Error).message]; }
+    report('migrate v2 → current: edgeShadeFrom / To dropped, edgeShade kept, edgeShadePow default', got, []);
+  }
+  accepts('migrate v2 design without edge shade: imports untouched', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 2, material: DEFAULT_MATERIAL, design: { tubeHeight: 40 } }));
   {
     const fs = require('fs'), path = require('path');
     const text = fs.readFileSync(path.join(process.cwd(), 'tools', 'fixtures', 'material-v1-alpine.json'), 'utf8');
