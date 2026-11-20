@@ -29,6 +29,9 @@ void tile_begin(int idx, uint16_t *strip, int rows);
 // The slot's first `rows` rows -> dst (the copy before it lands first). The LCD copies the whole tile: strip rows past
 // the tube (the strip is allocated in whole tiles) take whatever the slot holds there; nothing reads them.
 void tile_put(int idx, int slot, uint16_t *dst, int rows);
+// The same for the slot's first `rows` rows only (the LCD: up to the next 32-B block past them, within the tile's
+// strip rows): the edge shade's spare rows (render.cpp drawTube), a shorter copy.
+void tile_put_rows(int idx, int slot, uint16_t *dst, int rows);
 void tile_end(int idx);                                  // every put of tube idx has landed
 // render.cpp (step 9): true, once, when the last render into strip wrote it by the tile copies only (every mark drawn
 // in the tiles, no strip lens): the CPU holds none of its lines dirty, so a DMA read of it needs no writeback first.

@@ -1,6 +1,44 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-19 (edge shade: `edgeShade` / `edgeShadeFrom` / `edgeShadeTo`)_
+_Last update: 2026-11-20 (edge shade folded into the producers: 9.5 -> 0.75 ms on the user's look)_
+
+## Edge shade folded (2026-11-20), branch `edge-shade`
+
+- Why it cost 9.3-9.5 ms on the user's look (edge 0.67 / 1.15 / 2.85, lens -0.2 / 0.2; board, `--fix-pose`, runs 3):
+  the lens shows drawn rows 9 and 62 (of 72) twice each, on shown rows needing factors 113 / 101; the old design then
+  ran the lens and the shade on the PSRAM strip and dropped the tile change record, so the push hashed and gathered the
+  whole strip (push 1.3 -> 7.5 ms, cores +5.7 / +3.3 ms). At 0.6 / 1.4 / 1.9 there was no such conflict: the 2.9 ms
+  there was the per-pixel pass in the tiles (lens 0 now: 3.2 ms, ~20 cycles/px, ~34 k px a core).
+- Now no pass over the rows: the factor is woven into every producer of a tube row's colour, per drawn row (RowCache
+  `shadeF`: the factor of the shown rows the lens maps onto the row, the lightest where they differ). Base stages draw
+  from `ShadePal` (palette rows, back rows, bubble colours, the band's inner / rim and the highlight / tone colours the
+  stages mix in, each `shade565`'d by its row; rebuilt with the palette or the factors); the other row the inset mixes
+  in and the band's outer colour are shaded per row as drawn. Marks darken their own colour (`Mark::shade`, sim
+  `markFn` shade): Mark::operator / bandMark, tick inks per row (`MarkPlan::inkRow`), sprite texels (`SHADE_LUT`,
+  257 x 128 channel tables, PSRAM), fizz rim / pinpoint per row. The constants they mix in scale too: the contrast floor
+  (`throughLiquidM`: contrast, near-black test, white by m = 256 - T; the sim uses the same integers there) and the
+  emboss white (`embossHiM`). Unshaded rows run the old code (`spriteRunInt` / `throughLiquid` kept as they were).
+- A darker shown row of a conflict (`postT`): its drawn row darkened on the rest of the way, (256 - postT) / 256 =
+  (256 - T) / (256 - F). Push lens (LCD): as spare rows past the tube (`spareS0` = H rounded to 8 rows, `lensMap` points
+  the shown rows there), drawn in a tile slot before the next band's copy, copied by DMA (`tile_put_rows`), their change
+  record ORed from their drawn rows' tiles; the push keeps going by record. Strip lens (AMOLED, digits on top, no room):
+  the rows after the lens (`postShade`), then the top digits with the shown rows' factors. Sim `edgeShadeFold`, the same
+  integers. A smooth sim lens keeps the old pass.
+- Host, edgeShade 0: check_board_render lcd316@320w8-8 (strip, `--tiles`, `--tiles --push-lens`), 240f (strip,
+  `--push-lens`), amoled191 print exactly the previous round's figures (75 / 75 / 75 of 77, 75 / 75 of 77, 74 of 77);
+  check_render_frames vs 6df29da byte-identical (13136 strips, also `--tiles`); check_fizz_steps 80 of 80 identical
+  (amoled191, lcd316@320w8-8 `--tiles`). edgeShade on: 23 looks (the 17 of 2026-11-19 + the user's look, with digits on
+  top, ticks on top + bitmap digits, a strong lens, a heavy-conflict lens, claret at the user's band) 0 px > 12/255 on
+  all seven paths except cola's old 2 px at 320w8-8; px off below the same looks' count at edgeShade 0 (user: 28 vs 52).
+  Against the old post-pass (6df29da sim): worst 17/255 (two 5-bit steps of rounding). check:layout, sim build ok.
+- Board (lcd316@320w8-8, elf a8a2c5f1): `bench.py --fix-pose --preset <user look at 0> --stage edgeShade=0.67 --runs 3`,
+  same session: 6df29da 63.3 fps (15.34 ms) at 0, 39.7 (24.66 ms) at 0.67; now 62.9 (15.46 ms) at 0, 59.9 (16.24 ms) at
+  0.67 (cost 0.75 ms, spread 0.70-0.85). With the lens off the shade costs ~0 (0.67 on: 15.55 ms vs 15.60 at 0 with
+  it on). TUBE_PROF (user look): spare rows ~0.21-0.25 ms a core (2 rows: PSRAM read, shade, copy), ticks +~0.07, digits
+  +~0.1. TILE_VERIFY / PUSH_VERIFY build: 0 bad (bands, spare rows, push). compare-device: 28 px off, 0 > 12/255.
+  Left on the user's look (edge 0.67 / 1.15 / 2.85), `p?` equal to the saved look.
+- RAM (static): lcd316@320w8-8 bss +704 B (RowCache postT / lensMap), IRAM +956 B; amoled191 +720 B. PSRAM: SHADE_LUT
+  64.3 KB, ShadePal ~1.7 KB and MarkPlan::inkRow ~1.7 KB a tube. Worker stack free 1036 -> 952 B.
 
 ## Edge shade (2026-11-19), branch `edge-shade`
 
@@ -13,7 +51,7 @@ _Last update: 2026-11-19 (edge shade: `edgeShade` / `edgeShadeFrom` / `edgeShade
   its factor is the mean of those panel rows' (each by its mm off the tube's centre on the panel). One factor per canvas
   row, so mirrored panel rows can still differ by up to half a step (exact only per panel row, in the push). At 320
   rows and on the AMOLED: one panel row each, the plain profile.
-- One factor per row in 1/256 (doubles from the float params on both sides), blended toward black with blend565T's
+- (Implementation of 2026-11-19, a pass after the marks; folded since 2026-11-20, above.) One factor per row in 1/256 (doubles from the float params on both sides), blended toward black with blend565T's
   integers (firmware: per-channel tables, exhaustively equal). Sim render.ts `edgeShadeRows` / `applyEdgeShade`;
   firmware render.cpp `Tube::buildShade` (with the row cache, again when the tube's top row moves), `Tube::edgeShade`,
   `shadeRow`; the sim caches one table per tube.

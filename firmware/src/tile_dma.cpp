@@ -96,19 +96,25 @@ void tile_begin(int idx, uint16_t *strip, int rows) {
   c.prof[0] += esp_cpu_get_cycle_count() - c0;
 }
 
-void tile_put(int idx, int slot, uint16_t *dst, int) {
+static void putBytes(int idx, int slot, uint16_t *dst, int bytes) {   // the slot's first `bytes` (a whole number of RX blocks)
   TileChan &c = chans[idx & 1];
   waitLanded(c, 1);
   const uint32_t c0 = esp_cpu_get_cycle_count();
   uint8_t *src = (uint8_t *)tileBuf[idx & 1][slot & 1], *d = (uint8_t *)dst;
-  for (int k = 0; k < NDESC; k++) {
-    const int n = k < NDESC - 1 ? DESC_MAX : TILE_BYTES - DESC_MAX * (NDESC - 1);
-    const int nx = k + 1 < NDESC ? k + 1 : k;
-    desc(c.txd[k], src + k * DESC_MAX, n, true, k == NDESC - 1, &c.txd[nx]);
-    desc(c.rxd[k], d + k * DESC_MAX, n, false, k == NDESC - 1, &c.rxd[nx]);
+  const int nd = (bytes + DESC_MAX - 1) / DESC_MAX;
+  for (int k = 0; k < nd; k++) {
+    const int n = k < nd - 1 ? DESC_MAX : bytes - DESC_MAX * (nd - 1);
+    const int nx = k + 1 < nd ? k + 1 : k;
+    desc(c.txd[k], src + k * DESC_MAX, n, true, k == nd - 1, &c.txd[nx]);
+    desc(c.rxd[k], d + k * DESC_MAX, n, false, k == nd - 1, &c.rxd[nx]);
   }
-  go(c, &c.txd[0], &c.rxd[0], &c.rxd[NDESC - 1]);
+  go(c, &c.txd[0], &c.rxd[0], &c.rxd[nd - 1]);
   c.prof[3] += esp_cpu_get_cycle_count() - c0;
+}
+void tile_put(int idx, int slot, uint16_t *dst, int) { putBytes(idx, slot, dst, TILE_BYTES); }
+void tile_put_rows(int idx, int slot, uint16_t *dst, int rows) {
+  const int bytes = (rows * PANEL_W * 2 + RX_BURST - 1) / RX_BURST * RX_BURST;
+  putBytes(idx, slot, dst, bytes < TILE_BYTES ? bytes : TILE_BYTES);
 }
 
 void tile_end(int idx) { waitLanded(chans[idx & 1], 2); }

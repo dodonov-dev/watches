@@ -446,8 +446,16 @@ function scaledGlyphs(sheet: number, bw: number, bh: number, brightness: number,
 /** Composites one mark (tick / label) pixel; `cov` is glyph anti-alias coverage 0..1.
  *  `rel` = +1 / -1 draws the emboss highlight / shadow of body colour `c`. */
 type MarkFn = (x: number, y: number, c: number, cov?: number, rel?: number) => void;
-const embossOf = (c: number, rel: number): number =>
-  rel > 0 ? q(mix(rgb565to888(c), [255, 255, 255], 0.7)) : q(scale(rgb565to888(c), 0.25));
+const embossOf = (c: number, rel: number, m = 256): number => {
+  if (rel > 0 && m < 256) {   // an edge-shaded row (m = 256 − its factor): toward the row's white by 179/256, integers (firmware embossHiM)
+    const W = (255 * m + 128) >> 8, [r, g, b] = rgb565to888(c), e = (v: number): number => v + (((W - v) * 179 + 128) >> 8);
+    return rgb565(e(r), e(g), e(b));
+  }
+  return rel > 0 ? q(mix(rgb565to888(c), [255, 255, 255], 0.7)) : q(scale(rgb565to888(c), 0.25));
+};
+/** Edge shade folded into the producers: a colour of a row darkened by the row's factor T (1/256), blend565T toward
+ *  black — the integers of the post-pass it replaced (firmware shade565). */
+const shade565 = (c: number, T: number): number => blend565T(c, 0, T);
 
 const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
 /** Colour of a mark seen through the liquid: alpha-blended by `liquidTransparency`, then pushed
@@ -458,7 +466,10 @@ const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1
  *  otherwise the floor would simply undo the dimming wherever the mark sits over liquid.
  *  Firmware note: the liquid behind a mark is the per-row LUT colour, so this whole function
  *  collapses into one extra H-row table per mark colour, built when params change. */
-function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency): number {
+/** m: an edge-shaded row's 256 − factor (256 = none). bg and mark arrive darkened by m / 256, so the floor's constants
+ *  are too (contrast, the near-black test, white, firmware throughLiquid): the unshaded result darkened, up to rounding. */
+function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256): number {
+  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m);
   const B = rgb565to888(bg);
   let c = mix(B, rgb565to888(mark), transparency);
   const lb = luma(B), lc = luma(c), d = lc - lb;
@@ -468,6 +479,29 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
   c = dir < 0 ? scale(c, target / Math.max(1, lc))
     : mix(c, [255, 255, 255], Math.min(1, (target - lc) / Math.max(1, 255 - lc)));
   return q(c);
+}
+/** throughLiquid on an edge-shaded row: the firmware's integers (luma in 1/1000, T in 1/256), byte for byte — a darkened
+ *  row brings the luma difference of the floor's direction test down to where the float mix and the integer one can
+ *  disagree on its sign. */
+function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number): number {
+  if (C <= 0) return blend565T(bg, mark, T);
+  const [Br, Bg, Bb] = rgb565to888(bg), [Mr, Mg, Mb] = rgb565to888(mark);
+  let cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
+  const lb = 299 * Br + 587 * Bg + 114 * Bb, lc = 299 * cr + 587 * cg + 114 * cb, d = lc - lb;
+  const Cm = (C * m + 128) >> 8, W = (255 * m + 128) >> 8, top = 1000 * W, dark = (110000 * m + 128) >> 8, den0 = ((1000 * m + 128) >> 8) + 1;
+  if (Math.abs(d) >= Cm) return rgb565(cr, cg, cb);
+  const dir = d !== 0 ? (d > 0 ? 1 : -1) : lb > dark ? -1 : 1;
+  const target = Math.max(0, Math.min(top, lb + dir * Cm));
+  const idiv = (a: number, b: number): number => Math.trunc(a / b);   // C integer division (operands >= 0 here)
+  if (dir < 0) {
+    const den = lc < den0 ? den0 : lc;
+    cr = idiv(cr * target + (den >> 1), den); cg = idiv(cg * target + (den >> 1), den); cb = idiv(cb * target + (den >> 1), den);
+  } else {
+    const den = Math.max(den0, top - lc);
+    const K = Math.max(0, Math.min(256, idiv((target - lc) * 256, den)));
+    cr += ((W - cr) * K + 128) >> 8; cg += ((W - cg) * K + 128) >> 8; cb += ((W - cb) * K + 128) >> 8;
+  }
+  return rgb565(Math.min(255, cr), Math.min(255, cg), Math.min(255, cb));
 }
 /** Mark compositor for one tube. `onTop` marks ignore the liquid and are drawn opaque. Rear marks
  *  behind air fade by `dryT` (invisible inside the glass wall band, like the tube back there).
@@ -483,7 +517,10 @@ function floorBake(p: Params): [number, number] {
   if (!(contrast > 0) || p.digitsOnTop || !(p.digitShadow && p.digitShadowStrength > 0)) return [0, 0];
   return [contrast, q(scale(hexToRgb(p.liquid), p.brightness * p.liquidBright))];
 }
-function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null): MarkFn {
+/** `shade`: the edge shade per tube row (drawTube: the drawn rows' fold factors, or the shown rows' after the lens), null
+ *  = none: the mark's colour darkened as the pixel behind it, the floor and emboss constants by the same m (firmware
+ *  Mark::operator()). */
+function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null, shade: Uint16Array | null = null): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
   const Tq = Math.max(0, Math.min(256, Math.floor(p.liquidTransparency * 256 + 0.5)));   // firmware Mark::T
@@ -491,6 +528,8 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
   return (x, y, c, cov = 1, rel = 0) => {
     const ry = y - y0;
     if (ry < 0 || ry >= H || x < 0 || x >= PANEL_W) return;
+    let m = 256;
+    if (shade) { const sT = shade[ry]; if (sT) { c = shade565(c, sT); m = 256 - sT; } }
     const inside = x >= edges.lo[ry] && x < edges.hi[ry];
     if (!onTop) {
       // The concave surface band's footprint at this pixel — it overlaps the body by hw inside the
@@ -516,7 +555,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         }
       }
       if (inside) {
-        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK);
+        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK, m);
         else if (contrast > 0 && !floorBaked) {
           // The coverage already carries the transparency (glyph alpha x T, more where a baked shadow overlaps
           // the body), so the texel as is would never meet the floor. Floor what the glyph shows at full glyph
@@ -524,7 +563,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           // the ticks' floor-then-coverage order, so digits keep the ticks' contrast. (Without a floor the
           // texel is drawn as is: the same blend, cov = a * (cov / a).)
           const a = Math.max(transK, cov);
-          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a);
+          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a, m);
           cov /= a;
         }
         // The glass-cut relief is on the rear wall too: it fades with the liquid's opacity (invisible
@@ -533,7 +572,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           let covT = Math.round(cov * 256);
           if (rel !== 0) { covT = (covT * Tq) >> 8; if (covT <= 0) return; }
           covT = (covT * wallQ(ry)) >> 8; if (covT <= 0) return;
-          markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, covT);
+          markWrite(x, y, rel !== 0 ? embossOf(c, rel, m) : c, covT);
           return;
         }
         if (rel !== 0) cov *= transK;
@@ -550,20 +589,20 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         if (al < 1 / 255) return;
         let M = rgb565to888(c);
         if (aw > 0) {
-          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK));
+          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK, m));
           M = ad > 0 ? mix(M, CT, aw / (aw + ad)) : CT;
         }
-        if (rel !== 0) M = rgb565to888(embossOf(q(M), rel));
+        if (rel !== 0) M = rgb565to888(embossOf(q(M), rel, m));
         fb[i] = al >= 1 ? q(M) : q(mix(rgb565to888(fb[i]), M, al));
         return;
       } else if (dryT) {   // rear marks vanish behind the wall band, in the firmware's 1/256 steps (pal.dryT)
         const covT = (Math.round(cov * 256) * Math.floor(dryT[ry] * 256 + 0.5)) >> 8;
         if (covT <= 0) return;
-        markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, covT);
+        markWrite(x, y, rel !== 0 ? embossOf(c, rel, m) : c, covT);
         return;
       }
     }
-    markWrite(x, y, rel !== 0 ? embossOf(c, rel) : c, Math.round(cov * 256));
+    markWrite(x, y, rel !== 0 ? embossOf(c, rel, m) : c, Math.round(cov * 256));
   };
 }
 /** A mark's write: coverage in 1/256 (the firmware's covT), blended as blend565T. */
@@ -1515,9 +1554,18 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
 
   const softW = p.edgeSoft > 0 ? Math.max(1, Math.round(p.edgeSoft)) : 0;
   const traceMode = p.traces && p.traceAmount > 0 && !!state.trace;
+  // Edge shade folded in (edgeShadeFold, firmware drawTube): the base stages draw the drawn rows' palette darkened by F
+  // (bRows / bBack, the constant colours they mix in likewise), every mark darkens its own colour (markFn shade), and the
+  // shown rows of a conflict take their own factor after the lens. A smooth lens blends drawn rows: no fold, the shown
+  // rows shaded after everything (the old pass).
+  const fold = edgeShadeFold(idx, y0, H, p, lensEffect), foldOn = !!fold && !(lensEffect && lensSmooth);
+  const shF = foldOn ? fold!.F : null;
+  const shadeRow = (c: number, ry: number): number => shF ? shade565(c, shF[ry]) : c;
+  const bRows = shF ? pal.rows.map((c, ry) => shade565(c, shF[ry])) : pal.rows;
+  const bBack = shF ? pal.tubeBackRows.map((c, ry) => shade565(c, shF[ry])) : pal.tubeBackRows;
 
   // Step 1: tube back — whole strip
-  for (let ry = 0; ry < H; ry++) hspan(y0 + ry, 0, L, pal.tubeBackRows[ry]);
+  for (let ry = 0; ry < H; ry++) hspan(y0 + ry, 0, L, bBack[ry]);
 
   // Cache the two curved edges before composing the backing and liquid. The
   // home edge `edgesL` sits on the end cap (x <= 0) unless the liquid is free.
@@ -1611,10 +1659,10 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           return Math.min(256, (i >= 256 ? 256 : FILM_PHI[i]) * G / 256);
         };
         // the residue is the first layer over the tube back: B^(1−τ)·C^τ from the two rows' logs
-        const B = rgb565to888(pal.tubeBackRows[ry]), C = rgb565to888(pal.rows[ry]);
+        const B = rgb565to888(bBack[ry]), C = rgb565to888(bRows[ry]);
         const lgB0 = FILM_LG[B[0]], lgB1 = FILM_LG[B[1]], lgB2 = FILM_LG[B[2]];
         const lgC0 = FILM_LG[C[0]], lgC1 = FILM_LG[C[1]], lgC2 = FILM_LG[C[2]];
-        const tint = (T: number): number => T >= 256 ? pal.rows[ry]
+        const tint = (T: number): number => T >= 256 ? bRows[ry]
           : rgb565(filmMix(lgB0, lgC0, T), filmMix(lgB1, lgC1, T), filmMix(lgB2, lgC2, T));
         const xr = Math.round(ex), xrL = Math.round(exL);   // hard edge: liquid where xrL <= x < xr
         // this row's Δ per edge, where the smear is sheared at all
@@ -1684,10 +1732,10 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     for (let ry = 0; ry < H; ry++) {
       const y = y0 + ry, d = (ry - yc) / yc, rowW = 0.4 + 0.6 * d * d;
       const xr = Math.floor(edges[ry] + hw - 0.5) + 1, xl = Math.ceil(edgesL[ry] - hw - 0.5) - 1;
-      let bR = xr >= 0 && xr < L ? fb[y * PANEL_W + xr] : pal.tubeBackRows[ry];
-      let bL = xl >= capX0[ry] && xl < L ? fb[y * PANEL_W + xl] : pal.tubeBackRows[ry];
-      if (film3c && s.filmFree > 0.02 && Math.round(p.wetFilm * s.filmFree) > 0) bR = blend565(bR, pal.rows[ry], 0.35 * s.filmFree * rowW);
-      if (film3c && p.freeLiquid && s.filmHome > 0.02 && Math.round(p.wetFilm * s.filmHome) > 0) bL = blend565(bL, pal.rows[ry], 0.35 * s.filmHome * rowW);
+      let bR = xr >= 0 && xr < L ? fb[y * PANEL_W + xr] : bBack[ry];
+      let bL = xl >= capX0[ry] && xl < L ? fb[y * PANEL_W + xl] : bBack[ry];
+      if (film3c && s.filmFree > 0.02 && Math.round(p.wetFilm * s.filmFree) > 0) bR = blend565(bR, bRows[ry], 0.35 * s.filmFree * rowW);
+      if (film3c && p.freeLiquid && s.filmHome > 0.02 && Math.round(p.wetFilm * s.filmHome) > 0) bL = blend565(bL, bRows[ry], 0.35 * s.filmHome * rowW);
       backR[ry] = bR; backL[ry] = bL;
     }
   }
@@ -1702,7 +1750,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // Keep the underlay intact in partially covered pixels until the AA pass blends them.
     const solidLo = traceMode && softW > 0 ? Math.max(xa, Math.ceil(exL + softW / 2 - 0.5)) : xa;
     const solidHi = traceMode && softW > 0 ? Math.min(xi, Math.floor(ex - softW / 2 - 0.5) + 1) : xi;
-    hspan(y0 + ry, solidLo, solidHi, pal.rows[ry]);
+    hspan(y0 + ry, solidLo, solidHi, bRows[ry]);
     if (p.edgeSoft > 0) {  // soft edge: a coverage ramp `w` px wide centred on the geometric edge.
       // The glow (if any) folds into the same per-pixel alpha min(1, cov + g), anchored to the
       // sub-pixel edge: no integer snapping, so no seam before the glow and no 1-px stepping
@@ -1718,7 +1766,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           const ar = Math.max(0, (ex + hw - x - 0.5) / w) + gr * gr * p.glowStrength * lightK;
           const al = Math.max(0, (x + 0.5 - exL + hw) / w) + gl * gl * p.glowStrength * lightKL;
           const a = Math.min(1, ar, al);
-          if (a > 0) pxa(x, y0 + ry, pal.rows[ry], a);
+          if (a > 0) pxa(x, y0 + ry, bRows[ry], a);
         }
         continue;
       }
@@ -1730,8 +1778,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         if (a <= 0) break;
         if (a >= 1 && x >= solidLo && x < solidHi) continue;   // the span already drew it full
         if (x >= x0) {
-          if (traceMode) pxa(x, y0 + ry, pal.rows[ry], a);
-          else px(x, y0 + ry, blend565(pal.tubeBackRows[ry], pal.rows[ry], a));
+          if (traceMode) pxa(x, y0 + ry, bRows[ry], a);
+          else px(x, y0 + ry, blend565(bBack[ry], bRows[ry], a));
         }
       }
       const b0 = Math.floor(exL - hw - 0.5) + 1;
@@ -1742,12 +1790,12 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         if (a <= 0) break;
         if (x < x0 || x >= xi) continue;
         if (a >= 1 && x >= solidLo && x < solidHi) continue;
-        if (traceMode) pxa(x, y0 + ry, pal.rows[ry], a);
-        else px(x, y0 + ry, blend565(pal.tubeBackRows[ry], pal.rows[ry], a));
+        if (traceMode) pxa(x, y0 + ry, bRows[ry], a);
+        else px(x, y0 + ry, blend565(bBack[ry], bRows[ry], a));
       }
     } else {
-      if (frac >= 0.5) px(xi, y0 + ry, pal.rows[ry]);
-      if (fracL < 0.5 && xiL >= x0) px(xiL, y0 + ry, pal.rows[ry]);
+      if (frac >= 0.5) px(xi, y0 + ry, bRows[ry]);
+      if (fracL < 0.5 && xiL >= x0) px(xiL, y0 + ry, bRows[ry]);
     }
   }
 
@@ -1765,6 +1813,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const darkC = q(scale(liquid888, 0.35));   // deep liquid colour: the dark tone target, and the unlit stroke's shade
   const toneC = p.surfaceTone < 0 ? darkC : hiC, toneK = Math.min(1, Math.abs(p.surfaceTone));
   const tone = (c: number): number => toneK > 0 ? blend565(c, toneC, toneK) : c;
+  const toneS = (c: number, ry: number): number => toneK > 0 ? blend565(c, shadeRow(toneC, ry), toneK) : c;   // toward the row's shaded tone (mixes of shaded colours)
   const rowKs = new Float32Array(H);
   { let lmax = 1;
     for (let ry = 0; ry < H; ry++) { rowKs[ry] = luma(rgb565to888(pal.rows[ry])); lmax = Math.max(lmax, rowKs[ry]); }
@@ -1782,13 +1831,13 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       for (let k = 1; k <= p.frontBright; k++) {
         const x = xi - k; if (x < 0) break;
         if (x >= L) continue;
-        const t = (1 - k / p.frontBright); px(x, y0 + ry, blend565(fb[(y0 + ry) * PANEL_W + x], hiC, Math.min(1, t * t * 0.85 * lightK * rowK)));
+        const t = (1 - k / p.frontBright); px(x, y0 + ry, blend565(fb[(y0 + ry) * PANEL_W + x], shadeRow(hiC, ry), Math.min(1, t * t * 0.85 * lightK * rowK)));
       }
       if (!p.freeLiquid) continue;
       for (let k = 1; k <= p.frontBright; k++) {   // home edge: lit by the opposite tilt
         const x = xiL + k; if (x >= xi - p.frontBright) break;
         if (x < 0 || x >= L) continue;
-        const t = (1 - k / p.frontBright); px(x, y0 + ry, blend565(fb[(y0 + ry) * PANEL_W + x], hiC, Math.min(1, t * t * 0.85 * lightKL * rowK)));
+        const t = (1 - k / p.frontBright); px(x, y0 + ry, blend565(fb[(y0 + ry) * PANEL_W + x], shadeRow(hiC, ry), Math.min(1, t * t * 0.85 * lightKL * rowK)));
       }
     }
   }
@@ -1804,13 +1853,13 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         const t = (1 - k / p.edgeGlow), xr = xg + k, xl = xgL - k;
         if (xr < L) {
           const a = Math.min(1, t * t * p.glowStrength * lightK);
-          if (traceMode) pxa(xr, y0 + ry, pal.rows[ry], a);
-          else px(xr, y0 + ry, blend565(pal.tubeBackRows[ry], pal.rows[ry], a));
+          if (traceMode) pxa(xr, y0 + ry, bRows[ry], a);
+          else px(xr, y0 + ry, blend565(bBack[ry], bRows[ry], a));
         }
         if (p.freeLiquid && xl >= capX0[ry]) {
           const a = Math.min(1, t * t * p.glowStrength * lightKL);
-          if (traceMode) pxa(xl, y0 + ry, pal.rows[ry], a);
-          else px(xl, y0 + ry, blend565(pal.tubeBackRows[ry], pal.rows[ry], a));
+          if (traceMode) pxa(xl, y0 + ry, bRows[ry], a);
+          else px(xl, y0 + ry, blend565(bBack[ry], bRows[ry], a));
         }
       }
     }
@@ -1827,8 +1876,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const nR = Math.round(p.wetFilm * s.filmFree), nL = p.freeLiquid ? Math.round(p.wetFilm * s.filmHome) : 0;
       const xg = softW > 0 ? Math.ceil(edges[ry] + softW / 2 - 0.5) : Math.ceil(edges[ry]);
       const xgL = softW > 0 ? Math.floor(edgesL[ry] - softW / 2 - 0.5) : Math.floor(edgesL[ry]);
-      for (let k = 0; k < nR; k++) if (xg + k < L) pxa(xg + k, y0 + ry, pal.rows[ry], 0.35 * s.filmFree * rowW * (1 - k / nR));
-      for (let k = 0; k < nL; k++) if (xgL - k >= capX0[ry]) pxa(xgL - k, y0 + ry, pal.rows[ry], 0.35 * s.filmHome * rowW * (1 - k / nL));
+      for (let k = 0; k < nR; k++) if (xg + k < L) pxa(xg + k, y0 + ry, bRows[ry], 0.35 * s.filmFree * rowW * (1 - k / nR));
+      for (let k = 0; k < nL; k++) if (xgL - k >= capX0[ry]) pxa(xgL - k, y0 + ry, bRows[ry], 0.35 * s.filmHome * rowW * (1 - k / nL));
     }
   }
 
@@ -1839,16 +1888,16 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     for (let ry = Math.max(0, hiTop); ry < hiTop + p.highlightH && ry < H; ry++) {
       const ex = edges[ry];
       // fade the highlight into the body colour over the last `inset` px
-      const bodyRow = pal.rows[Math.min(H - 1, hiTop + p.highlightH + 1)];
+      const bodyRow = shadeRow(pal.rows[Math.min(H - 1, hiTop + p.highlightH + 1)], ry);   // the other row's colour, in this row's shade
       const exL = edgesL[ry], xl = Math.max(0, Math.floor(exL));   // home edge (0 unless the liquid is free)
       for (let x = Math.floor(ex - p.highlightInset); x < Math.floor(ex); x++) {
         if (x < xl) continue;   // never outside the column
         const t = (x - (ex - p.highlightInset)) / p.highlightInset; // 0..1 toward edge
-        px(x, y0 + ry, blend565(pal.rows[ry], bodyRow, t));
+        px(x, y0 + ry, blend565(bRows[ry], bodyRow, t));
       }
       for (let x = xl; x < xl + p.highlightInset && x < ex; x++) {
         const t = 1 - (x - xl) / p.highlightInset;
-        px(x, y0 + ry, blend565(pal.rows[ry], bodyRow, t));
+        px(x, y0 + ry, blend565(bRows[ry], bodyRow, t));
       }
     }
   }
@@ -1908,8 +1957,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         const a = strokeA * Math.min(1, tw);
         if (a < 1 / 255) return 0;   // below visible opacity: no stroke, rim or band for the marks
         const shade = 0.6 * (1 - Math.min(1, lk));   // unlit edge: toward the deep liquid colour
-        const inner = tone(blend565(pal.rows[ry], darkC, 0.3));
-        const outer = tone(blend565(blend565(lensC, pal.rows[ry], 0.2), darkC, shade));
+        const inner = shadeRow(tone(blend565(pal.rows[ry], darkC, 0.3)), ry);
+        const outer = shadeRow(tone(blend565(blend565(lensC, pal.rows[ry], 0.2), darkC, shade)), ry);
         const wEff = Math.min(p.surfaceWidth, tw);
         const invWidth = 1 / (wEff + hw);
         const pull = dir > 0 ? pullR : pullL;
@@ -1919,7 +1968,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         // the light. backK blends the two.
         const backK = backKs[ry];
         const rimK = p.surfaceRim * Math.min(1, wEff / 2) * (1 - pull) * ((1 - backK) * (0.5 + 0.5 * rowKs[ry]) * Math.min(1, lk) + backK);
-        const rimC = blend565(hiC, blend565(pal.rows[ry], darkC, 0.75), backK);
+        const rimC = shadeRow(blend565(hiC, blend565(pal.rows[ry], darkC, 0.75), backK), ry);
         const side = dir > 0 ? 0 : 1;   // layer weights for the rear-mark compositor (markFn)
         bandFill[side][ry] = a * fill; bandBlick[side][ry] = a * blickK; bandRim[side][ry] = a * rimK;
         // Integrate pixel footprints, including the rim, instead of snapping to a last column.
@@ -1941,7 +1990,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           // same-direction layers (a tinted rim over the fill on a light back) stacked to 2 LSB before.
           // A single layer takes the plain path, byte-identical to the separate writes.
           nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
-          layer(pull > 0 ? blend565(c, pal.rows[ry], pull) : c, af); layer(hiC, Math.min(1, ab)); layer(rimC, Math.min(1, ar));
+          layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(hiC, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
           if (nL === 1) pxa(x, y, cLast, A);
           else if (nL > 1) pxa(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
         }
@@ -1953,7 +2002,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         // pale crescent), sampled before the body and glow. Motion never fades it.
         const noseK = p.surfaceBand;
         const back = dir > 0 ? backR[ry] : backL[ry];
-        const c = tone(blend565(blend565(pal.rows[ry], back, 0.55), hiC, 0.5 * transK));
+        const c = toneS(blend565(blend565(bRows[ry], back, 0.55), shadeRow(hiC, ry), 0.5 * transK), ry);
         for (let x = x0; x < x1; x++) {
           const t = dir * (x + 0.5 - xm); if (t > -hw) continue;
           const a = noseK * Math.min(1, -tw) * (1 - Math.sqrt(Math.max(0, t / tw)));   // t/tw: 1 at the ring, 0 at the tip
@@ -1994,20 +2043,21 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const dx = onTop ? 0 : -state.edgeLight * p.tickParallax;
       const dy = onTop ? 0 : state.acrossTilt * p.tickParallax;
       drawTicks(y0, p, ticksN, wetRows, dryRows, onTop ? null : bounds,
-        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT, false, false, onTop ? null : pal.wetT), dx, dy,
+        markFn(y0, bounds, p, onTop, p.markContrast * p.tickBright, onTop ? null : pal.dryT, false, false, onTop ? null : pal.wetT, shF), dx, dy,
         !onTop && rearTicksFollowDigits(p) ? tickFollow(p, H) : null);
     }
   };
-  const drawDigitLayer = (onTop: boolean): void => {
+  // shade: the drawn rows' factors, or (the top digits, after the lens) the shown rows'
+  const drawDigitLayer = (onTop: boolean, shade: Uint16Array | null): void => {
     if (!labels || p.digitsOnTop !== onTop) return;
     const baked = !!labels.sprite && labels.shadow >= 0;
     // Sprite digits take no surface band: its rim, blick and dish are not layered over them (a look decision, firmware
     // perf: their runs need no per-pixel band test). Bitmap digits keep it.
     const digitEdges: Edges = labels.sprite ? { lo: bounds.lo, hi: bounds.hi } : bounds;
-    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0));
+    drawLabels(labels, p, onTop ? null : bounds, markFn(y0, digitEdges, p, onTop, p.markContrast * p.digitBright, onTop ? null : pal.dryT, baked, baked && floorBake(p)[0] > 0, null, shade));
   };
   drawTickLayer(false);
-  drawDigitLayer(false);
+  drawDigitLayer(false, shF);
   const mapX = (x: number): number => mir ? L - 1 - x : x;
   const span = (y: number, xa: number, xb: number, c: number): void => {
     if (mir) hspan(y, L - 1 - xb, L - xa, c);
@@ -2050,7 +2100,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         if (iy < 0 || iy >= H) continue;
         const wallT = pal.dryT[iy] * pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
         if (wallT <= 0) continue;
-        const cRimD = depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy];
+        const cRimD = shadeRow(depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy], iy);
+        const cBlickR = shadeRow(cBlickD, iy);   // the centre row's pinpoint in this row's shade
         // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
         // profile and gone at the band's outer rim; a receding edge's band thins out the same way it is drawn.
         const sR = surf[iy], sL = surfL[iy], bR = strokeR[iy], bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
@@ -2073,11 +2124,11 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
             // neutral room light, panel-dimmed, depth-tinted) or the dark tint is laid over, one write, nothing at tint 0.
             // Pinpoint and tint fused: out = bg·(1 − A) + blick·cov·g with A = cov·(g + tint·(1 − g)), as one blend of
             // blick·g/(g + tint·(1 − g)) at A — no untinted hole under the pinpoint's AA fringe (a division only there).
-            if (g > 0) { const w = g + tintA * (1 - g); pxa(mapX(ix + xsI), y0 + iy, tintA > 0 ? blend565(0, cBlickD, g / w) : cBlickD, cov * w); }
+            if (g > 0) { const w = g + tintA * (1 - g); pxa(mapX(ix + xsI), y0 + iy, tintA > 0 ? blend565(0, cBlickR, g / w) : cBlickR, cov * w); }
             else if (tintA > 0) pxa(mapX(ix + xsI), y0 + iy, 0, cov * tintA);
             continue;
           }
-          pxa(mapX(ix + xsI), y0 + iy, g > 0 ? blend565(cRimD, cBlickD, g) : cRimD, cov);
+          pxa(mapX(ix + xsI), y0 + iy, g > 0 ? blend565(cRimD, cBlickR, g) : cRimD, cov);
         }
       }
     }
@@ -2094,21 +2145,23 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         const hw = Math.sqrt(1 - dy * dy) * rx;
         const xa = Math.round(bx - hw), xb = Math.round(bx + hw);
         const ryi = Math.max(0, Math.min(H - 1, yy));
-        span(y0 + yy, xa, xb, pal.bubbleIn[ryi]);
-        px(mapX(xa), y0 + yy, pal.bubbleRim); px(mapX(xb), y0 + yy, pal.bubbleRim);
+        span(y0 + yy, xa, xb, shadeRow(pal.bubbleIn[ryi], ryi));
+        const rim = shadeRow(pal.bubbleRim, ryi);
+        px(mapX(xa), y0 + yy, rim); px(mapX(xb), y0 + yy, rim);
       }
       // top/bottom rim rows
-      const yt = Math.round(by - ry_), yb = Math.round(by + ry_);
-      span(y0 + yt, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), pal.bubbleRim);
-      span(y0 + yb, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), pal.bubbleRim);
+      const yt = Math.round(by - ry_), yb = Math.round(by + ry_), rimAt = (y: number): number => shadeRow(pal.bubbleRim, Math.max(0, Math.min(H - 1, y)));
+      span(y0 + yt, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yt));
+      span(y0 + yb, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yb));
     }
   }
   drawTickLayer(true);
   if (lensEffect) applyLens(y0, H, p, lensSmooth);
+  if (foldOn && fold!.conf) applyEdgeShade(y0, H, fold!.post);   // a conflict's darker shown rows, the rest of the way
 
   // Front-facing marks are composited last, as on the physical display.
-  drawDigitLayer(true);
-  applyEdgeShade(idx, y0, H, p);
+  drawDigitLayer(true, foldOn ? fold!.T : null);
+  if (fold && !foldOn) applyEdgeShade(y0, H, fold.T);   // smooth lens: the shown rows after everything
 }
 
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
@@ -2143,15 +2196,64 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
   edgeShadeCache[idx] = { key, rows };
   return rows;
 }
-function applyEdgeShade(idx: number, y0: number, H: number, p: Params): void {
-  const rows = edgeShadeRows(idx, y0, H, p);
-  if (!rows) return;
+function applyEdgeShade(y0: number, H: number, rows: Uint16Array): void {
   for (let y = 0; y < H; y++) {
     const T = rows[y];
     if (T === 0) continue;
     const o = (y0 + y) * PANEL_W;
     for (let x = 0; x < PANEL_W; x++) fb[o + x] = blend565T(fb[o + x], 0, T);
   }
+}
+
+/** The edge shade folded into the producers (firmware RowCache shadeF / postT, buildShade): per drawn row F, the factor of
+ *  the shown rows the lens (`lens`: applied, nearest row) maps onto it, the lightest of them where they differ (a
+ *  conflict); a darker shown row of a conflict is darkened on after the lens by `post` (0 elsewhere), the rest of the
+ *  way to its own factor. Lens off: F = T. null = no shade. */
+export interface EdgeShadeFold { T: Uint16Array; F: Uint16Array; post: Uint16Array; conf: boolean; }
+const edgeFoldCache: ({ key: string; fold: EdgeShadeFold } | undefined)[] = [];
+export function edgeShadeFold(idx: number, y0: number, H: number, p: Params, lens: boolean): EdgeShadeFold | null {
+  const T = edgeShadeRows(idx, y0, H, p);
+  if (!T) return null;
+  const src = lens ? lensSourceRows(H, p) : null;
+  const key = `${src ? src.join(',') : 'off'}`, hit = edgeFoldCache[idx];
+  if (hit && hit.fold.T === T && hit.key === key) return hit.fold;
+  const F = new Uint16Array(H), post = new Uint16Array(H);
+  let conf = false;
+  if (!src) F.set(T);
+  else {
+    const seen = new Int32Array(H).fill(-1), bad = new Uint8Array(H);
+    for (let y = 0; y < H; y++) {   // a drawn row takes the lightest factor of its shown rows
+      const r = src[y];
+      if (seen[r] < 0) seen[r] = T[y]; else if (seen[r] !== T[y]) { bad[r] = 1; seen[r] = Math.min(seen[r], T[y]); }
+    }
+    for (let y = 0; y < H; y++) F[y] = seen[y] < 0 ? 0 : seen[y];
+    // a darker shown row: the folded drawn row darkened on the rest of the way, (256 − post) / 256 = (256 − T) / (256 − F)
+    for (let y = 0; y < H; y++) {
+      const f = F[src[y]];
+      if (!bad[src[y]] || T[y] === f) continue;
+      const base = 256 - f, keep = 256 - T[y];
+      post[y] = 256 - Math.floor((keep * 256 + (base >> 1)) / base); conf = true;
+    }
+  }
+  const fold = { T, F, post, conf };
+  edgeFoldCache[idx] = { key, fold };
+  return fold;
+}
+/** applyLens's row map (nearest row): shown row yd shows drawn row src[yd]; null = no lens. */
+function lensSourceRows(H: number, p: Params): Int16Array | null {
+  const lens = Math.max(-1, Math.min(1, p.lens));
+  const curve = Math.max(-3, Math.min(3, p.lensCurve));
+  const signedCurve = lens < 0 ? -curve : curve;
+  const strength = Math.abs(lens);
+  if (strength === 0 || signedCurve === 0) return null;
+  const exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2);
+  const src = new Int16Array(H);
+  for (let yd = 0; yd < H; yd++) {
+    const d = (yd + 0.5 - H / 2) / (H / 2), u = Math.abs(d);
+    const sv = Math.sign(d) * ((1 - strength) * u + strength * Math.pow(u, exponent));
+    src[yd] = Math.floor(Math.max(0, Math.min(H - 1, H / 2 + sv * H / 2)));
+  }
+  return src;
 }
 
 /** Magnification for a bubble of radius r centred at float row y: mean of the row table over the rows

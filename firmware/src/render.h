@@ -88,10 +88,10 @@ inline FaceLayout faceLayout(const Params &pH, const Params &pM, const Params &p
 bool render_init(bool fast = true);
 // gen: params generation counter (bumped by main on every param write / preset load / NVS restore);
 // all param-only tables inside the renderer are keyed on it.
-// lensRows (optional): when nothing is drawn after the whole-tube lens (no front-printed digits; an edge shade only if
-// each drawn row's shown rows share one factor: it then darkens the drawn rows), the lens is not applied to the strip;
-// *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
-// the next render of this tube; nullptr = no lens), for a push that remaps rows anyway (display_lcd316.cpp).
+// lensRows (optional): when nothing is drawn after the whole-tube lens (no front-printed digits), the lens is not applied
+// to the strip; *lensRows gets its row map instead (strip row r shows row lensRows[r], H entries, valid until
+// the next render of this tube; nullptr = no lens; an edge shade's spare rows past the tube can be among them, within the
+// strip's TUBE_HEIGHT_MAX rows), for a push that remaps rows anyway (display_lcd316.cpp).
 void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows = nullptr, int y0 = -1);
 // Start of a deterministic sequence (seq.h, the `X` command): no bubbles, spring clocks at 0,
 // the fizz draws reseeded. false: this build draws from esp_random (AMOLED), the fizz is not reproducible.
