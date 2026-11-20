@@ -28,6 +28,7 @@ export interface Params {
   lens: number;          // -1..1 vertical distortion; negative compresses, positive magnifies
   lensCurve: number;     // -3..3 profile; negative reverses the distortion direction
   edgeShade: number;     // 0..1 darkening toward the tube's long edges in the shown rows (after the lens), hue kept: colour × (1 − edgeShade) at full depth; 0 = off
+  edgeShadeFold: number; // 0..1 how much of the rod's fold-back zone (past the fold, toward total internal reflection) is covered at full depth
   edgeShadePow: number;  // 0.25..4 shape of the rod profile (render.ts edgeShadeRows): w = sin²α of the ray at the row (1 at the rod's fold) to this power; < 1 spreads it toward the middle, > 1 keeps it at the edge
   bubbleRim: string;
   // --- layout (px) ---
@@ -203,7 +204,7 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 30;
+export const PARAMS_VERSION = 31;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
@@ -236,6 +237,7 @@ export const DEFAULT_PARAMS: Params = {
   lensCurve: 1,
   edgeShade: 0,
   edgeShadePow: 1,
+  edgeShadeFold: 0.4,
   bubbleRim: '#b0c7a9',
   highlightH: 11,
   highlightBright: 1,
@@ -1644,7 +1646,8 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   if (from < 27 && !('traceDrain' in r)) r.traceDrain = legacyTraceDrain({ ...DEFAULT_PARAMS, ...r } as Params);
   if (from < 28) { r.tubeStack = DEFAULT_PARAMS.tubeStack; r.tubeGap = DEFAULT_PARAMS.tubeGap; }
   if (from < 29) r.edgeShade = DEFAULT_PARAMS.edgeShade;
-  if (from < 30) r.edgeShadePow = DEFAULT_PARAMS.edgeShadePow;   // edgeShadeFrom / To go (the rod profile replaced the smoothstep)
+  if (from < 30) r.edgeShadePow = DEFAULT_PARAMS.edgeShadePow;
+  if (from < 31) r.edgeShadeFold = DEFAULT_PARAMS.edgeShadeFold;   // the plateau past the fold, at its default cover   // edgeShadeFrom / To go (the rod profile replaced the smoothstep)
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1674,7 +1677,8 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   rimTint: { help: 'Side-lit rim of a tinted liquid on a dark ground: adds rimLight·u²·rimTint to the liquid rows toward the walls.', group: 'Glass', label: 'rim tint' },
   glassOverLiquid: { help: 'How much of the glass specular is laid over the liquid too (not the grazing rim: that stays full).', group: 'Glass', label: 'specular over liquid', min: 0, max: 1, step: 0.01 },
   edgeShade: { help: 'Darkens everything drawn in the tube toward both long edges, hue kept (colour × (1 − edge shade) at full depth): the rod magnifies the pixel rows there, so their stripes and rainbow show less. Applied to the rows the panel shows (after the lens). 0 = off.', group: 'Glass', label: 'edge shade', min: 0, max: 1, step: 0.01 },
-  edgeShadePow: { help: 'Edge shade profile: the rod (the half-cylinder over the tube, the build\'s width, ROD_GAP_MM above the pixels) shows each panel row through a ray at angle α; the darkening is sin²α (1 at the rod\'s fold, full beyond it) to this power, times edge shade. Below 1 a subtle darkening spreads toward the middle, above 1 it gathers at the edge.', group: 'Glass', label: '· shade shape', min: 0.25, max: 4, step: 0.05 },
+  edgeShadePow: { help: 'Edge shade profile: the rod (the half-cylinder over the tube, the build\'s width, ROD_GAP_MM above the pixels) shows each panel row through a ray at angle α; the darkening b = sin²α (normalised to 1 at the fold cover\'s row) to this power, joined smoothly to full depth (1 − (1 − b^shape)²), times edge shade. Below 1 a subtle darkening spreads toward the middle, above 1 it gathers at the edge.', group: 'Glass', label: '· shade shape', min: 0.25, max: 4, step: 0.05 },
+  edgeShadeFold: { help: 'Edge shade: how much of the rod\'s fold-back zone is covered at full depth. Past its fold the rod shows rows from further in again, up to total internal reflection at the edge; the profile reaches full depth at the row seen at this share of that zone (0: at the fold itself, a light strip can show past it; 0.8: most of it, a wide flat band).', group: 'Glass', label: '· fold cover', min: 0, max: 1, step: 0.01 },
   brightness: { help: 'Global panel dimmer (emulates cmd 0x51).', group: 'Colour', label: 'brightness (panel)', min: 0.1, max: 1, step: 0.01 },
   liquidBright: { help: 'Per-layer trim on top of brightness: liquid body, highlight, shade, bubble, fizz.', group: 'Colour', label: '· liquid trim', min: 0, max: 2, step: 0.01 },
   tickBright: { help: 'Per-layer trim on top of brightness: tick ladder only.', group: 'Colour', label: '· ticks trim', min: 0, max: 2, step: 0.01 },

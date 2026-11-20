@@ -46,30 +46,38 @@ const MM_PER_PX = BOARD === 'lcd316' ? LCD_MM_PER_PX * LCD_PANEL_H / PANEL_H : 0
 // Edge shade: the panel's rows (the LCD's 320 / the AMOLED's own), canvas row y covering [bs(y), bs(y + 1)), mm per panel row
 const PANEL_ROWS = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, PANEL_MM = BOARD === 'lcd316' ? LCD_MM_PER_PX : 0.083;
 const bs = (y: number): number => Math.floor((y * PANEL_ROWS + PANEL_H - 1) / PANEL_H);
-const SHADES: [number, number][] = [[0.67, 1], [1, 0.25], [1, 4], [0.6, 2.5]];   // edgeShade, edgeShadePow
+const SHADES: [number, number, number][] = [[0.67, 1, 0.4], [1, 0.25, 0], [1, 4, 0.8], [0.6, 2.5, 1], [0.52, 1, 0.4]];   // edgeShade, edgeShadePow, edgeShadeFold
 // docs/physical-tube-model.py source(x, R, gap, n): the screen offset seen at apparent offset x
 const source = (x: number, R: number, g: number, n: number): number => {
   const al = Math.asin(x / R), th = al - Math.asin(Math.sin(al) / n), z = Math.sqrt(R * R - x * x), sa = n * Math.sin(th);
   return Math.abs(sa) >= 1 ? NaN : x - z * Math.tan(th) - g * Math.tan(Math.asin(sa));
 };
-const rodModel = TUBE_ROD_MM.map((mm) => {   // per tube: radius, fold and TIR onset (by sampling), cutoff, the ideal base(d)
+// The rod by docs/physical-tube-model.py's trigonometry (not render.ts's algebra): fold and TIR onset by sampling, the
+// inverse on the rising branch by bisection in x; per fold cover f the cutoff x_c = x_fold + f (x_tir - x_fold), d_p =
+// source(x_c), the ideal t(d) = x_in(d) / x_in(d_p) (1 from d_p), w = 1 - (1 - t^(2 pow))^2.
+const rodOf = (mm: number) => {
   const R = mm / 2; let xF = 0, dF = -1, xT = 0;
   for (let i = 1; i < 200000; i++) { const x = R * i / 200000, d = source(x, R, ROD_GAP_MM, ROD_N); if (d === d) xT = x; if (d > dF) { dF = d; xF = x; } }
   { let lo = xT, hi = Math.min(R, xT + R / 200000); for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (source(m, R, ROD_GAP_MM, ROD_N) === source(m, R, ROD_GAP_MM, ROD_N)) lo = m; else hi = m; } xT = lo; }
   const xOf = (d: number): number => { let lo = 0, hi = xF; for (let i = 0; i < 80; i++) { const m = (lo + hi) / 2; if (source(m, R, ROD_GAP_MM, ROD_N) < d) lo = m; else hi = m; } return (lo + hi) / 2; };
-  const xC = xF + 0.8 * (xT - xF), dP = source(xC, R, ROD_GAP_MM, ROD_N), xP = xOf(dP);
-  const memo = new Map<number, number>();   // by the row's offset in half panel rows (|n + 0.5 - c| is a multiple of 0.5)
-  const baseAt = (h: number): number => { let v = memo.get(h); if (v === undefined) { const d = h / 2 * PANEL_MM; v = d >= dP ? 1 : xOf(d) / xP; memo.set(h, v); } return v; };
-  return { R, xF, dF, xT, xC, dP, xP, base: (d: number): number => d >= dP ? 1 : xOf(d) / xP, baseAt, xOf };
-});
-if (BOARD_TAG === 'lcd316@320w8-8') {
-  const m = rodModel[0], deg = (x: number): string => (Math.asin(x / m.R) * 180 / Math.PI).toFixed(2);
-  console.log(`  rod 320w8-8: R ${m.R.toFixed(4)} mm, gap ${ROD_GAP_MM}, n ${ROD_N}: fold x ${m.xF.toFixed(4)} (alpha ${deg(m.xF)}) d ${m.dF.toFixed(4)}; TIR onset x ${m.xT.toFixed(4)}; ` +
-    `cutoff x_c ${m.xC.toFixed(4)} d_p ${m.dP.toFixed(4)}; x_in(d_p) ${m.xP.toFixed(4)} (alpha ${deg(m.xP)})`);
-  console.log('    d mm   x_in mm   alpha deg   source(x_in) mm   w (pow 1)');
-  for (let d = 0; d <= 3.0001; d += 0.25) {
-    const x = d >= m.dP ? m.xP : m.xOf(d), w = m.base(d) ** 2;
-    console.log(`    ${d.toFixed(2)}   ${x.toFixed(4)}    ${deg(x).padStart(6)}      ${source(x, m.R, ROD_GAP_MM, ROD_N).toFixed(4)}          ${w.toFixed(4)}`);
+  const cuts = new Map<number, { xC: number; dP: number; xP: number; memo: Map<number, number> }>();
+  const cut = (f: number) => { let c = cuts.get(f); if (!c) { const xC = xF + f * (xT - xF), dP = source(xC, R, ROD_GAP_MM, ROD_N); c = { xC, dP, xP: xOf(dP), memo: new Map() }; cuts.set(f, c); } return c; };
+  const base = (d: number, f: number): number => { const c = cut(f); return d >= c.dP ? 1 : xOf(d) / c.xP; };
+  const baseAt = (h: number, f: number): number => {   // by the row's offset in half panel rows (|n + 0.5 - c| is a multiple of 0.5)
+    const c = cut(f); let v = c.memo.get(h); if (v === undefined) { v = base(h / 2 * PANEL_MM, f); c.memo.set(h, v); } return v; };
+  return { R, xF, dF, xT, cut, base, baseAt, xOf };
+};
+const weight = (t: number, pw: number): number => { const e = 1 - t ** (2 * pw); return 1 - e * e; };
+const rodModel = TUBE_ROD_MM.map(rodOf);
+if (BOARD_TAG === 'lcd316@320w8-8') {   // the profile on every rod size the builds take, at three fold covers
+  for (const mm of [3, 6, 8, 10]) {
+    const m = rodOf(mm), deg = (x: number): string => (Math.asin(x / m.R) * 180 / Math.PI).toFixed(2);
+    console.log(`  rod ${mm} mm (gap ${ROD_GAP_MM}, n ${ROD_N}): fold x ${m.xF.toFixed(4)} (alpha ${deg(m.xF)}) d_fold ${m.dF.toFixed(4)}; TIR onset x ${m.xT.toFixed(4)}`);
+    for (const f of [0, 0.4, 0.8]) {
+      const c = m.cut(f), ds = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2].map((v) => v * m.R / 4).filter((v) => v < c.dP);
+      console.log(`    fold ${f}: x_c ${c.xC.toFixed(4)} d_p ${c.dP.toFixed(4)} x_in(d_p) ${c.xP.toFixed(4)} (alpha ${deg(c.xP)}); w (pow 1) ` +
+        ds.map((d) => `${d.toFixed(3)}:${weight(m.base(d, f), 1).toFixed(3)}`).join(' ') + ` ${c.dP.toFixed(3)}+:1`);
+    }
   }
 }
 let fails = 0, shadeRowsChecked = 0;
@@ -91,14 +99,14 @@ for (const [name, p] of cases) {
     const below = PANEL_H - rows[n - 1].y - rows[n - 1].H;
     if (below - rows[0].y < 0 || below - rows[0].y > 1) err(`stack off centre: ${rows[0].y} rows above, ${below} below`);
   } else if (TUBE_COUNT === 2 && (lay.yH !== tubeLayout(ps[0]).yH || lay.yM !== tubeLayout(ps[1]).yM)) err('two-tube rows moved');
-  for (const [k, pw] of SHADES) rows.forEach((r, i) => {
-    const q = { ...ps[i], edgeShade: k, edgeShadePow: pw }, T = edgeShadeRows(i, r.y, r.H, q)!;
+  for (const [k, pw, fo] of SHADES) rows.forEach((r, i) => {
+    const q = { ...ps[i], edgeShade: k, edgeShadePow: pw, edgeShadeFold: fo }, T = edgeShadeRows(i, r.y, r.H, q)!;
     const p0 = bs(r.y), p1 = bs(r.y + r.H), c = (p0 + p1) / 2;
-    const ideal = (n: number): number => k * rodModel[i].baseAt(Math.round(Math.abs(n + 0.5 - c) * 2)) ** (2 * pw) * 256;
+    const ideal = (n: number): number => k * weight(rodModel[i].baseAt(Math.round(Math.abs(n + 0.5 - c) * 2), Math.fround(fo)), pw) * 256;
     for (let n = p0; n < p1; n++) {
       const y = Math.floor(n * PANEL_H / PANEL_ROWS), g = [...Array(bs(y + 1) - bs(y))].map((_, j) => ideal(bs(y) + j));
       const t = T[y - r.y], mean = g.reduce((s, v) => s + v, 0) / g.length;   // the covered panel rows' mean, not just its range
-      if (Math.abs(t - mean) > 1) { err(`edge shade ${k}/${pw} tube ${i} panel row ${n}: ${t}, ideal mean ${mean.toFixed(1)} of ${g.map((v) => v.toFixed(1))}`); return; }
+      if (Math.abs(t - mean) > 1) { err(`edge shade ${k}/${pw}/${fo} tube ${i} panel row ${n}: ${t}, ideal mean ${mean.toFixed(1)} of ${g.map((v) => v.toFixed(1))}`); return; }
     }
     shadeRowsChecked += p1 - p0;
   });

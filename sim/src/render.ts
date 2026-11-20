@@ -2178,7 +2178,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   if (fold && !foldOn) applyEdgeShade(y0, H, fold.T);   // smooth lens: the shown rows after everything
 }
 
-/** The edge shade's rod profile (firmware render.cpp rodScreen / rodProfile / rodBase, the same double operations in the
+/** The edge shade's rod profile (firmware render.cpp rodScreen / rodFold / rodCut / rodBase, the same double operations in the
  *  same order: square roots and divisions round exactly on both sides). A ray leaving the rod's curved surface at angle α
  *  to its normal (s = sin α, apparent offset R·s) lands on the pixel plane at rodScreen(s), docs/physical-tube-model.py
  *  source(R·s, R, gap, n) with its trigonometry written out, NaN past total internal reflection; it grows with s up to
@@ -2195,9 +2195,8 @@ function rodInner(d: number, R: number, g: number, n: number, sF: number): numbe
   for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
   return (lo + hi) / 2;
 }
-/** [sF, sT, sP, dP]: the fold, the TIR onset (fixed bisection), the cutoff on the outer branch sF + 0.8 (sT − sF) with
- *  its screen offset dP (rows between it and the fold are shown in the dark edge band: full depth) and dP's inner ray sP. */
-export function rodProfile(R: number, g: number, n: number): [number, number, number, number] {
+/** [sF, sT]: the fold (golden section) and the TIR onset (bisection), fixed steps (firmware rodFold). */
+export function rodFold(R: number, g: number, n: number): [number, number] {
   let lo = 0, hi = 1;
   for (let i = 0; i < 60; i++) {
     const m = (lo + hi) / 2, s1 = m / n, st = m * Math.sqrt(1 - s1 * s1) - Math.sqrt(1 - m * m) * s1;
@@ -2209,30 +2208,39 @@ export function rodProfile(R: number, g: number, n: number): [number, number, nu
     const c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
     if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
   }
-  const sF = (a + b) / 2, dP = rodScreen(sF + 0.8 * (sT - sF), R, g, n);
-  return [sF, sT, rodInner(dP, R, g, n, sF), dP];
+  return [(a + b) / 2, sT];
 }
-/** A panel row d mm off the axis: s / sP of the ray landing there on the rising branch; 1 at and past dP. */
+/** [sP, dP]: the full-depth cutoff for fold cover f (edgeShadeFold, firmware rodCut): the ray at sF + f (sT − sF) on the
+ *  outer branch shows the row dP; rows from dP out are seen in the fold-back band at full depth; sP, dP's ray on the
+ *  rising branch, normalises the rest. */
+export function rodCut(R: number, g: number, n: number, sF: number, sT: number, f: number): [number, number] {
+  const dP = rodScreen(sF + f * (sT - sF), R, g, n);
+  return [rodInner(dP, R, g, n, sF), dP];
+}
+/** A panel row d mm off the axis: t = s / sP of the ray landing there on the rising branch; 1 at and past dP. */
 export function rodBase(d: number, R: number, g: number, n: number, sF: number, sP: number, dP: number): number {
   return d >= dP ? 1 : rodInner(d, R, g, n, sF) / sP;
 }
-const rodProfiles: ([number, number, number, number] | undefined)[] = [];
+/** w of a row's base t at power pw: b = t² (sin²α normalised), w = 1 − (1 − b^pw)² (smooth join to full depth). */
+export const rodWeight = (t: number, pw: number): number => { const bp = pw === 1 ? t * t : Math.pow(t, 2 * pw), e = 1 - bp; return 1 - e * e; };
+const rodFolds: ([number, number] | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. On the glass: canvas row y covers the panel's rows [bs(y), bs(y + 1)) (the LCD's
  *  nearest-neighbour upscale at fewer than 320 rows, firmware display_lcd316.cpp bStart; one row each at 320 and on the
  *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through the
- *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): w = (s / sP)^(2·edgeShadePow), sin²α normalised to 1 at the outer-branch
- *  cutoff's row dP (rows at and past it, the fold-back band included: 1), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
+ *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): b = (s / sP)², sin²α normalised to 1 at the cutoff row dP of the fold cover
+ *  (edgeShadeFold, rodCut), w = 1 − (1 − b^edgeShadePow)² (1 at and past dP, the fold-back band included), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
  *  buildShade, the same operations: no fused multiply-add on either side). One cache entry per tube (faces mix tube
  *  heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
   const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), pw0 = f(p.edgeShadePow), pw = pw0 !== pw0 ? 1 : Math.max(0.25, Math.min(4, pw0));   // NaN: 1 (firmware)
-  const key = `${y0}:${H}:${k}:${pw}`, hit = edgeShadeCache[idx];
+  const fo0 = f(p.edgeShadeFold), fold = fo0 !== fo0 ? f(0.4) : Math.max(0, Math.min(1, fo0));
+  const key = `${y0}:${H}:${k}:${pw}:${fold}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
   if (k > 0) {
-    const Rr = TUBE_ROD_MM[idx] / 2, [sF, , sP, dP] = rodProfiles[idx] ??= rodProfile(Rr, ROD_GAP_MM, ROD_N);
+    const Rr = TUBE_ROD_MM[idx] / 2, [sF, sT] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N), [sP, dP] = rodCut(Rr, ROD_GAP_MM, ROD_N, sF, sT, fold);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
     const c = (bs(y0) + bs(y0 + H)) / 2;
     rows = new Uint16Array(H);
@@ -2241,7 +2249,7 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
       let sum = 0;
       for (let q = p0; q < p1; q++) {
         const v = rodBase(Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM, Rr, ROD_GAP_MM, ROD_N, sF, sP, dP);
-        sum += pw === 1 ? v * v : Math.pow(v, 2 * pw);
+        sum += rodWeight(v, pw);
       }
       rows[y] = Math.floor(k * (sum / (p1 - p0)) * 256 + 0.5);
     }

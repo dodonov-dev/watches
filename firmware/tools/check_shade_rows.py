@@ -5,7 +5,7 @@ render.ts edgeShadeRows) over a matrix of looks per board / canvas.
   python3 firmware/tools/check_shade_rows.py [--board lcd316 --res 320w8-8] [--tubes 2]
 
 Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.67 / 1 x edgeShadePow 0.25 / 0.6 /
-1 / 2.5 / 4, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
+1 / 2.5 / 4 x edgeShadeFold 0 / 0.4 / 0.8 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
 factors and the lens row map the fold uses (firmware lensSrc, sim lensSourceRows: float32 both), and pins one strong
 lens (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36). Exits 1 on any difference, a missing or reordered
 tube, a look with no shaded row, or a moved pin.
@@ -94,7 +94,8 @@ def main():
     pin = {**base, 'tubeHeight': 54, 'lens': 1, 'lensCurve': 3, 'edgeShade': 0.67, 'edgeShadePow': 1, 'fizz': False}
     for g in geo:
         for k in (0.3, 0.67, 1):
-            for pw in (0.25, 0.6, 1, 2.5, 4): looks.append({**g, 'edgeShade': k, 'edgeShadePow': pw, 'fizz': False})
+            for pw in (0.25, 0.6, 1, 2.5, 4):
+                for fo in (0, 0.4, 0.8, 1): looks.append({**g, 'edgeShade': k, 'edgeShadePow': pw, 'edgeShadeFold': fo, 'fizz': False})
     looks.append(pin)
     env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res, LW_TUBES=str(a.tubes))
     with tempfile.TemporaryDirectory(prefix='watches-shrows-') as tmp:
