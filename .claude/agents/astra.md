@@ -1,7 +1,7 @@
 ---
 name: astra
 description: GPT-6 Astra as architect and reviewer. Use to structure a task into numbered points before implementation, and to review a finished block of points against that structure. Read-only. Requires the session to run via claude-proxy (cli-proxy-api).
-model: gpt-6-astra
+model: gpt-6.2-astra
 tools: Read, Grep, Glob, Bash
 ---
 

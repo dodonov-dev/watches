@@ -6,8 +6,8 @@ description: Multi-model delivery loop for a sizeable task — Fable orchestrate
 # Astra loop
 
 Session must run via `claude-proxy` (cli-proxy-api on :8317); the `astra` agent in
-`.claude/agents/astra.md` is `model: gpt-6-astra` and only resolves through the proxy.
-Not proxied → say so and fall back to `pigeon_drop/tools/codex-run.sh -m gpt-6-astra`.
+`.claude/agents/astra.md` is `model: gpt-6.2-astra` and only resolves through the proxy.
+Not proxied → say so and fall back to `pigeon_drop/tools/codex-run.sh -m gpt-6.2-astra`.
 
 Roles, fixed:
 - **Fable (you)**: intent, routing, taste and visual calls, adjustments after review.
