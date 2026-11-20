@@ -265,7 +265,7 @@ static FaceLayout frameLayout;   // this frame's (renderBoth): the tubes' top ro
 #define FRAME_TOP(idx) frameLayout.top(idx)
 static void renderOneTube(int idx, uint16_t *dst) {
 #ifdef AB_COMPARE   // A/B face: the native minutes tube on core 0 (top slot), the AB_COMPARE-row one here (bottom)
-  if (idx == 0) renderTube(1, tubeM, effM, paramsGen, dst, &lensRows[0]);
+  if (idx == 0) renderTube(1, tubeM, effM, paramsGen, dst, &lensRows[0], frameLayout.yH);   // shaded for the row it is pushed at
   else abcmp::render(dst, params, paramsGen, &lensRows[1]);
   return;
 #endif

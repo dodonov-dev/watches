@@ -73,8 +73,8 @@ for (const [name, p] of cases) {
     };
     for (let n = p0; n < p1; n++) {
       const y = Math.floor(n * PANEL_H / PANEL_ROWS), g = [...Array(bs(y + 1) - bs(y))].map((_, j) => ideal(bs(y) + j));
-      const t = T[y - r.y];
-      if (t < Math.min(...g) - 1 || t > Math.max(...g) + 1) { err(`edge shade ${k}/${a}/${b} tube ${i} panel row ${n}: ${t}, ideal ${g.map((v) => v.toFixed(1))}`); return; }
+      const t = T[y - r.y], mean = g.reduce((s, v) => s + v, 0) / g.length;   // the covered panel rows' mean, not just its range
+      if (Math.abs(t - mean) > 1) { err(`edge shade ${k}/${a}/${b} tube ${i} panel row ${n}: ${t}, ideal mean ${mean.toFixed(1)} of ${g.map((v) => v.toFixed(1))}`); return; }
     }
     shadeRowsChecked += p1 - p0;
   });

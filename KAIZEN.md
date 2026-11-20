@@ -949,3 +949,4 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - The board's look before this flash was not the brief's saved look (subtle-soda with 9 changes, 42 keys off); both
   JSONs are in the session scratchpad.
 - `npm run check:presets` still fails on its path (KAIZEN 2026-11-10); the compiled file run by hand passes.
+- `-DAB_COMPARE` lcd316 build fails in toolchain headers (functional_hash.h: declval / __void_t) on the edge-shade parent too (2026-11-20); the main.cpp AB top-strip call now passes frameLayout.yH, compiled unchecked.
