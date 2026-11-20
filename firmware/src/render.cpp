@@ -1385,6 +1385,12 @@ struct MarkPlan;   // step 9, after the mark kernels
 // are set per call by renderTube. Nothing here is shared between the tubes, so they can render concurrently on both
 // cores. lane: the scratch the render borrows per core (tiles.h slots and copy channel): hours 0, minutes and seconds 1
 // (one after the other on core 1, main renderBoth), so tube identity (idx: px scale, residue streak) and lane differ.
+// buildShade's rod profile bases (rodBase) per canvas row and covered panel row (at most two: RENDER_H >= 240), for the
+// tube at rows [y0, y0 + H).
+struct RodCache { int y0 = -1, H = 0; double base[TUBE_HEIGHT_MAX][2]; };
+#ifdef BOARD_LCD316
+static_assert(LCD_PANEL_H <= 2 * PANEL_H, "RodCache: a canvas row covers at most two panel rows");
+#endif
 struct Tube {
   uint16_t *FB = nullptr; int baseY = 0, H = TUBE_HEIGHT_PX; int idx = 0;
 #if TUBE_COUNT == 3
@@ -1544,6 +1550,8 @@ struct Tube {
   inline float edgeXL(int ry, float xs, float tanA, const CapShape &c) const;
   void buildRowCache(const Params &p, uint32_t gen);
   void buildShade(const Params &p);
+  double rodR = 0, rodSF = 0, rodDF = 0;   // the edge shade's rod: radius mm (TUBE_ROD_MM / 2), its fold (rodFold), render_init
+  struct RodCache *rod = nullptr;          // its profile bases per panel row (buildShade), PSRAM, render_init
   void buildShadePal();
   void applyLens(const Params &p);
   void shadeRowTo(uint16_t *d, const uint16_t *s, int t);
@@ -4162,10 +4170,47 @@ void Tube::applyLens(const Params &p) {
   }
 }
 
+// The edge shade's rod profile (layout.h ROD_GAP_MM / ROD_N / TUBE_ROD_MM; sim render.ts rodScreen / rodFold / rodBase, the
+// same double operations in the same order: square roots and divisions are exact roundings on both sides, so the two
+// agree bit for bit; only pow (edgeShadePow != 1) is a library call). A ray leaving the rod's curved surface toward a
+// viewer at infinity, at angle alpha to its normal (s = sin alpha, apparent offset R s), refracts through the PMMA and its
+// flat base and lands on the pixel plane at rodScreen(s): docs/physical-tube-model.py source(R s, R, gap, n) with its
+// trigonometry written out (sin / cos of the refracted angles from s alone). It grows with s to the fold (sF, dF: the
+// largest screen offset any ray reaches) and turns back toward the edge.
+static double rodScreen(double s, double R, double g, double n) {
+  const double s1 = s / n, c1 = sqrt(1 - s1 * s1), ca = sqrt(1 - s * s);
+  const double st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
+  return R * s - (R * ca) * (st / ct) - g * (sa / sqrt(1 - sa * sa));
+}
+// The fold: the last s before total internal reflection at the flat base (n sin theta < 1), by bisection, then the largest
+// screen offset below it by golden section; fixed steps (no tolerance: the same steps on both sides).
+static void rodFold(double R, double g, double n, double &sF, double &dF) {
+  double lo = 0, hi = 1;
+  for (int i = 0; i < 60; i++) {
+    const double m = (lo + hi) / 2, s1 = m / n, st = m * sqrt(1 - s1 * s1) - sqrt(1 - m * m) * s1;
+    if (n * st < 1) lo = m; else hi = m;
+  }
+  double a = 0, b = lo;
+  for (int i = 0; i < 100; i++) {
+    const double c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
+    if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
+  }
+  sF = (a + b) / 2; dF = rodScreen(sF, R, g, n);
+}
+// A panel row d mm off the axis: s / sF of the ray that lands there (rodScreen inverted on the rising branch by fixed
+// bisection), 1 at and past the fold (rows seen from the side).
+static double rodBase(double d, double R, double g, double n, double sF, double dF) {
+  if (d >= dF) return 1;
+  double lo = 0, hi = sF;
+  for (int i = 0; i < 60; i++) { const double m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
+  return (lo + hi) / 2 / sF;
+}
 // Edge shade factors (sim edgeShadeRows) for the tube at canvas rows [baseY, baseY + H): doubles from the float params,
 // as the sim (soft doubles here: nothing fuses). On the glass: a canvas row covers the panel's rows [bs(y), bs(y + 1))
 // (display_lcd316.cpp bStart: the push's nearest-neighbour upscale at RENDER_H < 320, one row each at 320 and on the
-// AMOLED); each panel row's mm from the tube's centre on the panel, through the smoothstep, averaged over the row's span.
+// AMOLED); each panel row's mm from the tube's centre on the panel, through the rod profile w = (s / sF)^(2 edgeShadePow)
+// (sin^2 alpha, 1 at the fold), averaged over the row's span, times edgeShade. The profile's bases per panel row depend on
+// the rows only (RodCache, again when the tube moves: ~26 ms of soft doubles), the power and strength on the params.
 void Tube::buildShade(const Params &p) {
   rc.shadeY0 = baseY;
 #ifdef BOARD_LCD316
@@ -4175,20 +4220,27 @@ void Tube::buildShade(const Params &p) {
 #endif
   auto bs = [&](int y) { return (y * R + PANEL_H - 1) / PANEL_H; };
   const float pxmm = PX_PER_MM;
-  const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0, a = p.edgeShadeFrom, b = p.edgeShadeTo;
+  const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0;
+  const double pw = p.edgeShadePow < 0.25f ? 0.25 : p.edgeShadePow > 4 ? 4.0 : (double)p.edgeShadePow;
   const double c = (bs(baseY) + bs(baseY + H)) / 2.0;
   rc.shadeOn = k > 0;
+  RodCache &rd = *rod;
+  if (rc.shadeOn && !(rd.y0 == baseY && rd.H == H)) {
+    for (int y = 0; y < H; y++) {
+      const int p0 = bs(baseY + y), p1 = bs(baseY + y + 1);
+      for (int q = p0; q < p1 && q - p0 < 2; q++) {
+        const double d = fabs(q + 0.5 - c) * PANEL_H / R / (double)pxmm;
+        rd.base[y][q - p0] = rodBase(d, rodR, ROD_GAP_MM, ROD_N, rodSF, rodDF);
+      }
+    }
+    rd.y0 = baseY; rd.H = H;
+  }
   for (int y = 0; y < H; y++) {
     int T = 0;
     if (rc.shadeOn) {
       const int p0 = bs(baseY + y), p1 = bs(baseY + y + 1);
       double sum = 0;
-      for (int q = p0; q < p1; q++) {
-        const double d = fabs(q + 0.5 - c) * PANEL_H / R / (double)pxmm;
-        double w;
-        if (b > a) { double t = (d - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
-        sum += w;
-      }
+      for (int q = p0; q < p1; q++) { const double v = rd.base[y][q - p0]; sum += pw == 1 ? v * v : pow(v, 2 * pw); }
       T = (int)floor(k * (sum / (p1 - p0)) * 256 + 0.5);
     }
     rc.shadeT[y] = (uint16_t)T;
@@ -5469,6 +5521,10 @@ bool render_init(bool fast) {
     tb.fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
     tb.palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
     tb.palS = (ShadePal *)heap_caps_malloc(sizeof(ShadePal), MALLOC_CAP_SPIRAM);   // ~1.7 KB
+    tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~1.7 KB
+    if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; }
+    ok = ok && tb.rod;
+    tb.rodR = TUBE_ROD_MM(i) / 2; rodFold(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodDF);
     if (tb.palS) tb.palS->valid = false;
     ok = ok && tb.palS;
     {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)
@@ -5702,6 +5758,10 @@ bool tile_strip_clean(const uint16_t *strip) {
     for (int e = 0; e < 2; e++) { Tube &t = tubeAt(i); if (strip && t.cleanStrip[e] == strip) { t.cleanStrip[e] = nullptr; return true; } }
   return false;
 }
+#endif
+#ifdef SHADE_ROWS_DUMP
+// Host check (tools/check_shade_rows.py): the edge shade factors of tube idx's shown rows as its last render built them.
+const uint16_t *render_shade_rows(int idx, int &H) { Tube &t = tubeAt(idx); H = t.H; return t.rc.shadeOn ? t.rc.shadeT : nullptr; }
 #endif
 bool render_seq_reset(uint32_t seed) {
   for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; if (t.foam) t.foam->nOrder = 0; }

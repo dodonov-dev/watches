@@ -1,6 +1,40 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-20 (edge shade folded into the producers: 9.5 -> 0.75 ms on the user's look)_
+_Last update: 2026-11-20 (edge shade: the rod profile, params v30; folded into the producers)_
+
+## Edge shade: the rod profile (2026-11-20), branch `edge-shade`
+
+- Params v30: `edgeShade` (strength) and `edgeShadePow` (0.25..4, default 1); `edgeShadeFrom` / `edgeShadeTo` are gone (the
+  migration drops them, every preset `edgeShadePow` 1). Schema CRC changed: NVS dropped at the flash; the user's look
+  restored with edgeShade 0.67, edgeShadePow 1 (it looks different now: the profile reaches into the middle).
+- The profile is the rod's: per panel row d mm off the tube's centre (as before, the reduced canvas averaging included),
+  the ray that lands there through the half-cylinder of the build's tube width (layout.h `TUBE_ROD_MM`: 8 mm on 320w8-8,
+  6 on the AMOLED), its flat base `ROD_GAP_MM` 0.87 above the pixels (fitted from a photo, M ~ 1.77; verify with the `m`
+  ruler face), n `ROD_N` 1.49: docs/physical-tube-model.py `source()` with its trigonometry written out in s = sin alpha
+  (`rodScreen`), the fold by fixed bisection + golden section (`rodFold`, at boot), inverted on the rising branch by
+  fixed bisection (`rodBase`); w = (s / s_fold)^(2 edgeShadePow), 1 at and past the fold; T = round(edgeShade w 256).
+  Square roots and divisions only: sim and firmware agree bit for bit (pow only at edgeShadePow != 1). The bases per row
+  are cached per tube position (`RodCache`, PSRAM): a param change redoes only the power.
+- 320w8-8 (check:layout table): fold at x 3.679 mm (alpha 66.9 deg), d 1.922 mm; w 0.015 / 0.058 / 0.131 / 0.234 / 0.368
+  / 0.537 / 0.749 at d 0.25 .. 1.75 mm, 1 from 1.92 (the user's 72-row tube: rows 13 from each edge at full depth, the
+  centre two rows unshaded).
+- Host: check_shade_rows (sim vs firmware row factors, 1440 looks each: presets' geometry + a tubeHeight sweep x edgeShade
+  0.3 / 0.67 / 1 x edgeShadePow 0.25 / 0.6 / 1 / 2.5 / 4): lcd316@320w8-8 213150 rows, 240f 158880, 320f+t3 317295,
+  amoled191 158880: 0 differ. check:layout (74 configurations, 8-8 added): each canvas row within 1/256 of the mean of
+  an independent trig model's factors (sampled fold, bisection in x). edgeShade 0: check_board_render as before on every
+  path (75 / 75 / 75, 75 / 75 of 77, 74 of 77), check_render_frames vs 6df29da (its From / To as constants) byte-identical
+  (13136, also `--tiles`), check_fizz_steps 80 of 80 (amoled191, lcd316 `--tiles`). edgeShade on (29 looks: the earlier
+  ones, edgeShadePow 0.25 / 2.5 / 4): 0 px > 12/255 on 240f, 240f push and amoled191 but user1120-lens1c3 (a lens the
+  sim's double map and the firmware's float32 one place differently: 963 px > 12/255 at edgeShade 0 too); 320w8-8 (all
+  four paths): also lensstrong 2 px at 17 (a pre-existing 1-step digit difference, 2 steps after a spare row's shade).
+  check_shade_frames ok.
+- Review item 6 reverted: the sim's fold and its lens copy take one map, the sim's own double one (as applyLens). The
+  float32 emulation matched the host's glibc powf but not the board's: compare-device on the user's look showed 5 px
+  > 12/255 with it, 0 with the double map.
+- Board (lcd316@320w8-8, elf 7f8482e4, the user's look, edgeShadePow 1): `bench.py --fix-pose --stage edgeShade=0 --runs
+  3`: 58.6 fps (16.57 ms) on, 62.3 (15.60 ms) at 0: cost 0.97 ms (0.93-1.06; no spare rows on this look now: its
+  doubled rows lie in the flat full-depth band). TUBE_PROF: digits +0.66-0.74 ms a core (sprite texels shaded per pixel on
+  70 of 72 rows), ticks +0.02-0.08. compare-device: 38 px off, 0 > 12/255. Left on the user's look.
 
 ## Edge shade folded (2026-11-20), branch `edge-shade`
 
@@ -9,7 +43,7 @@ _Last update: 2026-11-20 (edge shade folded into the producers: 9.5 -> 0.75 ms o
   from their drawn rows': a shade-only change kept it); spare copies read drawn rows in whole landed 8-row blocks (a row
   next to one still being copied shares a cache line); no face / `x` / `X` after a failed boot allocation on two tubes
   too; the contrast floor keeps the unshaded direction where the shade left mark and pixel one colour (`markU`); the sim
-  folds and copies by the firmware's float32 lens map (a strong lens picked other rows); the shaded glow table is keyed
+  folds and copies by one lens map (the float32 one first; back to the sim's double one with the rod profile, above); the shaded glow table is keyed
   on the palette too; residue tints from the unshaded rows, then shaded (the log mix magnified the shaded endpoints'
   rounding: fold vs post-pass on a heavy-residue look 7419 -> 3227 px off); the sim's spirit bubble clips to the tube's
   rows as the firmware's. `tools/check_shade_frames.py` (ASan, the tiled push-lens path across frames): spill, record,

@@ -173,6 +173,19 @@
 #define PX_PER_MM          (1.0f / DESIGN_MM_PER_PX)
 #endif
 
+// The edge shade's rod (render.cpp buildShade, sim render.ts edgeShadeRows): the PMMA half-cylinder over each tube, its
+// diameter the tube's build width (mm, from its px scale: LCD_MM_x, wide, narrow 6 mm; the AMOLED's tube 6 mm), its flat
+// base ROD_GAP_MM above the pixel plane (the air-equivalent distance pixel plane -> rod base: fitted from a photo, central
+// magnification M ~ 1.77 at 8 mm; verify with the `m` ruler face), index ROD_N. Doubles: the profile is computed in
+// double on both sides (layout.ts the same values).
+#define ROD_GAP_MM         0.87
+#define ROD_N              1.49
+#ifdef BOARD_LCD316
+#define TUBE_ROD_MM(i)     (6.0 * (double)TUBE_PX_SCALE(i) / (double)PX_SCALE_NARROW)
+#else
+#define TUBE_ROD_MM(i)     6.0
+#endif
+
 #define RGB565(r,g,b)      ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
 #define LIQUID_RGB565      RGB565(0x5D,0xCA,0xA5)   // 0x5E54
 #define LIQUID_HI_RGB565   RGB565(0x9F,0xE1,0xCB)

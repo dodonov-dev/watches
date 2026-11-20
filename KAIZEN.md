@@ -965,3 +965,10 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   from the tile into a third (internal) slot would drop the read, at ~6.5 KB internal a lane.
 - The contrast floor's direction on shaded rows is restored only where the shade made mark and pixel one colour (d = 0);
   a small nonzero d whose sign the quantisation flipped keeps the flipped direction.
+- Lens row maps: firmware float32 + powf (newlib on the board, glibc on the host), sim doubles. A strong lens (1 / 3)
+  places rows differently on the host at edgeShade 0 (963 px > 12/255, user1120-lens1c3); the board agreed with the sim's
+  double map on the user's look where a float32 emulation did not. A double, powf-free map on both sides would settle it
+  (changes the firmware at edgeShade 0).
+- Rod profile: digits cost +0.7 ms a core on the user's look (sprite texels shaded one by one on nearly every row); a SIMD
+  multiply of the colour lanes in pieBlend would cut it.
+- edgeShadePow != 1: pow is a library call (board newlib vs JS), not checked against the board (host glibc: 0 rows differ).

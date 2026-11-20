@@ -160,8 +160,10 @@ def main():
         # the board's look moves the 2nd tube's lens map? keep it: only the shade depth changes
         record('shade depth 0.67 -> 0.4 -> 0.67', ['R', 'R', 'P edgeShade=0.4', 'R', 'R', 'P edgeShade=0.67', 'R'])
         record('strong lens, depth 0.5 -> 0.75', ['P lens=-1', 'P lensCurve=0.2', 'P edgeShade=0.5', 'R', 'R', 'P edgeShade=0.75', 'R', 'R'])
-        # a hard step: a conflict's lighter row unshaded, so only its darker rows' spare copies change
-        record('lens -1 / 0.2, step 2.5 mm, 0.5 -> 0.75', ['P lens=-1', 'P lensCurve=0.2', 'P edgeShadeFrom=2.5', 'P edgeShadeTo=2.5', 'P edgeShade=0.5', 'R', 'R', 'P edgeShade=0.75', 'R', 'R'])
+        # a spare tile whose drawn rows' tiles do not change with the depth (their factors are their lighter rows', unshaded
+        # or unchanged) while its own rows do: the bits ORed from them would miss it (the record must not be valid)
+        for lens, curve, pw, k0, k1 in ((-0.8, -1.1, 2.5, 1, 0.9), (-0.7, -2.8, 2.5, 1, 0.9)):
+            record(f'lens {lens} / {curve}, pow {pw}, depth {k0} -> {k1}', [f'P lens={lens}', f'P lensCurve={curve}', f'P edgeShadePow={pw}', f'P edgeShade={k0}', 'R', 'R', f'P edgeShade={k1}', 'R', 'R'])
 
         # palette: a light change at a constant edge light (glow table), against a fresh render
         raw = run(['P edgeSoft=0', 'P traces=0', 'P edgeGlow=6', 'P glowStrength=1', 'S 0 0.42 -45', 'S 1 0.71 -45', 'R',

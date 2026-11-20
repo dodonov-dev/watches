@@ -4,7 +4,7 @@
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
   rgb565, rgb565to888, mmPerPxAt, TUBE_COUNT, TUBE_PX_SCALE, PX_SCALE_FIZZ,
-  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H,
+  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H, TUBE_ROD_MM, ROD_GAP_MM, ROD_N,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
@@ -2170,20 +2170,55 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   if (fold && !foldOn) applyEdgeShade(y0, H, fold.T);   // smooth lens: the shown rows after everything
 }
 
+/** The edge shade's rod profile (firmware render.cpp rodScreen / rodFold / rodBase, the same double operations in the
+ *  same order: square roots and divisions round exactly on both sides). A ray leaving the rod's curved surface at angle α
+ *  to its normal (s = sin α, apparent offset R·s) lands on the pixel plane at rodScreen(s), docs/physical-tube-model.py
+ *  source(R·s, R, gap, n) with its trigonometry written out; it grows with s up to the fold (sF, dF) and turns back. */
+export function rodScreen(s: number, R: number, g: number, n: number): number {
+  const s1 = s / n, c1 = Math.sqrt(1 - s1 * s1), ca = Math.sqrt(1 - s * s);
+  const st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
+  return R * s - (R * ca) * (st / ct) - g * (sa / Math.sqrt(1 - sa * sa));
+}
+/** The fold: the last s before total internal reflection (bisection), the largest screen offset below it (golden section),
+ *  fixed steps. */
+export function rodFold(R: number, g: number, n: number): [number, number] {
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 60; i++) {
+    const m = (lo + hi) / 2, s1 = m / n, st = m * Math.sqrt(1 - s1 * s1) - Math.sqrt(1 - m * m) * s1;
+    if (n * st < 1) lo = m; else hi = m;
+  }
+  let a = 0, b = lo;
+  for (let i = 0; i < 100; i++) {
+    const c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
+    if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
+  }
+  const sF = (a + b) / 2;
+  return [sF, rodScreen(sF, R, g, n)];
+}
+/** A panel row d mm off the axis: s / sF of the ray landing there (rising branch, fixed bisection); 1 at and past the fold. */
+export function rodBase(d: number, R: number, g: number, n: number, sF: number, dF: number): number {
+  if (d >= dF) return 1;
+  let lo = 0, hi = sF;
+  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
+  return (lo + hi) / 2 / sF;
+}
+const rodFolds: ([number, number] | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. On the glass: canvas row y covers the panel's rows [bs(y), bs(y + 1)) (the LCD's
  *  nearest-neighbour upscale at fewer than 320 rows, firmware display_lcd316.cpp bStart; one row each at 320 and on the
- *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through
- *  edgeShadeFrom → edgeShadeTo smoothstep (To ≤ From: a step at From), averaged over the row's span, times edgeShade.
- *  Doubles from the float32 params (firmware render.cpp buildShade, the same operations: no fused multiply-add on
- *  either side). One cache entry per tube (faces mix tube heights). */
+ *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through the
+ *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): w = (s / sF)^(2·edgeShadePow), sin²α normalised to 1 at the fold (rows
+ *  past it: 1), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
+ *  buildShade, the same operations: no fused multiply-add on either side). One cache entry per tube (faces mix tube
+ *  heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
-  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), a = f(p.edgeShadeFrom), b = f(p.edgeShadeTo);
-  const key = `${y0}:${H}:${k}:${a}:${b}`, hit = edgeShadeCache[idx];
+  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), pw = Math.max(0.25, Math.min(4, f(p.edgeShadePow)));
+  const key = `${y0}:${H}:${k}:${pw}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
   if (k > 0) {
+    const Rr = TUBE_ROD_MM[idx] / 2, [sF, dF] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
     const c = (bs(y0) + bs(y0 + H)) / 2;
     rows = new Uint16Array(H);
@@ -2191,10 +2226,8 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
       const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
       let sum = 0;
       for (let q = p0; q < p1; q++) {
-        const d = Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM;
-        let w: number;
-        if (b > a) { const t = Math.max(0, Math.min(1, (d - a) / (b - a))); w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
-        sum += w;
+        const v = rodBase(Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM, Rr, ROD_GAP_MM, ROD_N, sF, dF);
+        sum += pw === 1 ? v * v : Math.pow(v, 2 * pw);
       }
       rows[y] = Math.floor(k * (sum / (p1 - p0)) * 256 + 0.5);
     }
@@ -2245,19 +2278,19 @@ export function edgeShadeFold(idx: number, y0: number, H: number, p: Params, len
   edgeFoldCache[idx] = { key, fold };
   return fold;
 }
-/** The nearest-row lens map in the firmware's float32 operations (render.cpp buildRowCache lensSrc): shown row yd shows
- *  drawn row src[yd]; null = no lens. The fold's factors and its lens copy both take it (a double map can pick the next
- *  row on a strong lens, and that row's factor). */
+/** The nearest-row lens map applyLens copies by (shown row yd shows drawn row src[yd]; null = no lens), in doubles: the
+ *  fold's factors and its lens copy take the same one. (The firmware's is float32 with powf: on a strong lens a row can
+ *  differ, at edgeShade 0 too — KAIZEN; the board's newlib powf agrees with this double map on the user's look where a
+ *  float32 emulation did not.) */
 export function lensSourceRows(H: number, p: Params): Int16Array | null {
-  const f = Math.fround, lens = Math.max(-1, Math.min(1, f(p.lens))), curve = Math.max(-3, Math.min(3, f(p.lensCurve)));
+  const lens = Math.max(-1, Math.min(1, p.lens)), curve = Math.max(-3, Math.min(3, p.lensCurve));
   const signedCurve = lens < 0 ? -curve : curve, strength = Math.abs(lens);
   if (strength === 0 || signedCurve === 0) return null;
-  const exponent = signedCurve > 0 ? f(1 + f(signedCurve * 2)) : f(1 / f(1 - f(signedCurve * 2)));
-  const h2 = f(H / 2), src = new Int16Array(H);
+  const exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2), src = new Int16Array(H);
   for (let yd = 0; yd < H; yd++) {
-    const d = f(f(f(yd + 0.5) - h2) / h2), u = Math.abs(d);
-    const sv = f((d < 0 ? -1 : 1) * f(f(f(1 - strength) * u) + f(strength * f(Math.pow(u, exponent)))));
-    src[yd] = Math.max(0, Math.min(H - 1, Math.floor(f(h2 + f(f(sv * H) / 2)))));
+    const d = (yd + 0.5 - H / 2) / (H / 2), u = Math.abs(d);
+    const sv = Math.sign(d) * ((1 - strength) * u + strength * Math.pow(u, exponent));
+    src[yd] = Math.floor(Math.max(0, Math.min(H - 1, H / 2 + sv * H / 2)));
   }
   return src;
 }

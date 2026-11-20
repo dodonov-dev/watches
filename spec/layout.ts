@@ -190,6 +190,13 @@ export const mmPerPxAt = (k: number): number => DESIGN_MM_PER_PX / k;
  *  (tubeGap) are placed with it, whatever the tubes' px scales (layout.h, float32). */
 export const PX_PER_MM = Math.fround((BOARD === 'lcd316' ? PX_SCALE_NARROW : 1) / Math.fround(DESIGN_MM_PER_PX));
 
+/** The edge shade's rod (layout.h ROD_GAP_MM / ROD_N / TUBE_ROD_MM): the half-cylinder over each tube, its diameter the
+ *  tube's build width in mm (from its float32 px scale, in double), its flat base ROD_GAP_MM of air above the pixels
+ *  (fitted from a photo, central magnification M ~ 1.77 at 8 mm; verify with the `m` ruler face), PMMA index ROD_N. */
+export const ROD_GAP_MM = 0.87, ROD_N = 1.49;
+export const TUBE_ROD_MM: readonly number[] = BOARD === 'lcd316'
+  ? TUBE_PX_SCALE.map((k) => 6 * Math.fround(k) / PX_SCALE_NARROW) : Array(TUBE_COUNT).fill(6);
+
 export function rgb565(r: number, g: number, b: number): number {
   return ((r & 0xf8) << 8) | ((g & 0xfc) << 3) | (b >> 3);
 }
