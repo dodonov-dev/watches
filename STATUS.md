@@ -22,8 +22,8 @@ _Last update: 2026-11-19 (edge shade: `edgeShade` / `edgeShadeFrom` / `edgeShade
   the drawn rows. Either way the change records / tile hashes carry it. Otherwise the lens runs on the strip and the
   shade after it (as for front-printed digits).
 - check_board_render `--push-lens`: the lens row map handed to the push, applied when composing (that path had no host
-  check). check:layout: every tube of every layout (72 configurations, 240..320 rows), each panel row's factor between
-  the ideal ones of its canvas row's panel rows.
+  check). check:layout: every tube of every layout (72 configurations, 240..320 rows), each canvas row's factor within 1/256 of the
+  mean of the ideal factors of the panel rows it covers (a first-covered-row mutation fails 47 of 72).
 - Host, edgeShade 0: check_board_render lcd316@320w8-8 (strip, `--tiles`, `--tiles --push-lens`), 240f (strip, `--push-lens`)
   and amoled191 print exactly HEAD's figures (75 / 75 / 75, 75 / 75 of 77, 74 of 77: the old cola / malt, 1 /
   glycerol-dark, cryo / frizzante-big / glycerol-dark; 240f has no tile build, on HEAD neither);
@@ -31,10 +31,11 @@ _Last update: 2026-11-19 (edge shade: `edgeShade` / `edgeShadeFrom` / `edgeShade
   edgeShade 0.6: 17 looks (presets, the board's look, lens off, step, full depth) 0 px > 12/255 on every path (240f
   included) except cola's old 2 px at 320w8-8 (3 at 0).
 - RAM (static): lcd316@320w8-8 +1,424 B (bss +1,408, data +16), IRAM +128 B; amoled191 +1,176 B.
-- Board (lcd316@320w8-8): a first build (shade always after a strip lens, per-pixel blend565T) benched 64.9 fps at 0
-  and 37.4 at 0.6 (render 15.0 → 26.2 ms, `--fix-pose`, the board's look). The board then went silent (USB serial up,
-  no reply, esptool "No serial data received"): needs BOOT + RST / replug. The final build is not flashed or benched;
-  NVS holds the board's look (v29, edgeShade 0). No compare-device.
+- Board (lcd316@320w8-8, final build elf 6f66a9f9, 2026-11-20): the user's latest look (blue #5c85ff, glassWall 6.5)
+  restored, `p?` equal. `bench.py --fix-pose --stage edgeShade=0.6 --runs 3`: 51.1 fps at 0 (render 19.0 ms), 45.4 at
+  0.6 (21.45 ms, cost 2.9 ms). Left on edgeShade 0.6 / 1.4 / 1.9 (saved); compare-device 31 px off, 0 > 12/255.
+  A first build (shade after a strip lens, per-pixel blend) cost 11 ms on the older purple look, then the board's USB
+  went silent until a replug.
 
 ## Desk housing + LCD pitch (2026-11-14), branch `desk-housing`
 
