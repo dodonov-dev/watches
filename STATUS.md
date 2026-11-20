@@ -8,20 +8,28 @@ _Last update: 2026-11-19 (edge shade: `edgeShade` / `edgeShadeFrom` / `edgeShade
   line, 1.4 / 1.9). Darkens everything in the tube toward both long edges, hue kept: colour × (1 − edgeShade) at full
   depth, smoothstep From → To (To ≤ From: a step at From). Against the rod's stripes / rainbow near its edges.
 - Real mm on the glass (layout `PX_PER_MM`, as `tubeGap`): the same band of the rod at any tube width. Shown rows
-  (after the lens, top digits included), symmetric about H / 2; every tube, both boards.
+  (after the lens, top digits included), symmetric about the tube's centre on the panel; every tube, both boards.
+- LCD below 320 rows (240f ...): a canvas row covers 1 or 2 panel rows (the push's nearest-neighbour upscale, bStart);
+  its factor is the mean of those panel rows' (each by its mm off the tube's centre on the panel). One factor per canvas
+  row, so mirrored panel rows can still differ by up to half a step (exact only per panel row, in the push). At 320
+  rows and on the AMOLED: one panel row each, the plain profile.
 - One factor per row in 1/256 (doubles from the float params on both sides), blended toward black with blend565T's
   integers (firmware: per-channel tables, exhaustively equal). Sim render.ts `edgeShadeRows` / `applyEdgeShade`;
-  firmware render.cpp `RowCache::shadeT` (built with the row cache), `Tube::edgeShade`, `shadeRow`.
-- LCD: the lens stays with the push when every shown row of a drawn row has the same factor (`shadeSrc`, most looks):
-  the shade runs in the tiles on the drawn rows, so the change records / tile hashes carry it. Otherwise (and lens off)
-  the lens runs on the strip and the shade after it (as for front-printed digits).
+  firmware render.cpp `Tube::buildShade` (with the row cache, again when the tube's top row moves), `Tube::edgeShade`,
+  `shadeRow`; the sim caches one table per tube.
+- LCD tiles: lens off, the shade runs in the tiles after the marks (drawn rows = shown rows). Lens on, it stays with the
+  push when every shown row of a drawn row has the same factor (`shadeSrc`, most looks): the shade runs in the tiles on
+  the drawn rows. Either way the change records / tile hashes carry it. Otherwise the lens runs on the strip and the
+  shade after it (as for front-printed digits).
 - check_board_render `--push-lens`: the lens row map handed to the push, applied when composing (that path had no host
-  check).
-- Host, edgeShade 0: check_board_render lcd316@320w8-8 (strip, `--tiles`, `--tiles --push-lens`) and amoled191 print
-  exactly HEAD's figures (75 / 75 / 75 of 77, 74 of 77: the old cola / malt / cryo / frizzante-big / glycerol-dark);
+  check). check:layout: every tube of every layout (72 configurations, 240..320 rows), each panel row's factor between
+  the ideal ones of its canvas row's panel rows.
+- Host, edgeShade 0: check_board_render lcd316@320w8-8 (strip, `--tiles`, `--tiles --push-lens`), 240f (strip, `--push-lens`)
+  and amoled191 print exactly HEAD's figures (75 / 75 / 75, 75 / 75 of 77, 74 of 77: the old cola / malt, 1 /
+  glycerol-dark, cryo / frizzante-big / glycerol-dark; 240f has no tile build, on HEAD neither);
   check_render_frames vs HEAD byte-identical (13136 strips, also `--tiles`); check_fizz_steps 80 of 80 identical.
-  edgeShade 0.6: 17 looks (presets, the board's look, lens off, step, full depth) 0 px > 12/255 on every path except
-  cola's old 2 px (3 at 0).
+  edgeShade 0.6: 17 looks (presets, the board's look, lens off, step, full depth) 0 px > 12/255 on every path (240f
+  included) except cola's old 2 px at 320w8-8 (3 at 0).
 - RAM (static): lcd316@320w8-8 +1,424 B (bss +1,408, data +16), IRAM +128 B; amoled191 +1,176 B.
 - Board (lcd316@320w8-8): a first build (shade always after a strip lens, per-pixel blend565T) benched 64.9 fps at 0
   and 37.4 at 0.6 (render 15.0 → 26.2 ms, `--fix-pose`, the board's look). The board then went silent (USB serial up,

@@ -3,13 +3,16 @@
 // overlap and stay inside the canvas; a two-tube face keeps each tube at its own params' row (as before the seconds
 // tube); a three-tube face keeps the rows boardParams capped (tube3HeightAt) and fits the canvas. Stacked (tubeStack): the
 // tubes lie tubeGap mm apart by the panel's pitch (cut to the rows the canvas has left), the stack centred. Tube widths:
-// every narrow / wide combination, plus mm faces (MM_TAGS).
+// every narrow / wide combination, plus mm faces (MM_TAGS). Edge shade (render.ts edgeShadeRows): on every tube of every
+// layout, each panel row (the LCD's 320, nearest-neighbour from the canvas rows) gets a factor between the smallest and
+// largest of the ideal ones of the panel rows its canvas row covers (±1/256; at 320 rows and on the AMOLED: the ideal
+// one), the ideal one from that panel row's mm off the tube's centre on the panel at the panel's own pitch.
 // Run: npm run check:layout (the parent spawns one child per configuration: spec/layout reads LW_* at import).
 const { execFileSync } = require('child_process'); declare const process: any; declare function require(m: string): any;
 declare const __filename: string;
 import { BOARD, BOARD_TAG, PANEL_H, LCD_PANEL_H, LCD_MM_PER_PX, TUBE_COUNT, TUBE_PX_SCALE, LCD_RES, NARROW_MM, resTag, tube3HeightAt } from '@spec/layout';
 import { DEFAULT_PARAMS, PRESETS, presetParams, tubeParams, type Params } from '../src/params';
-import { faceLayout, tubeLayout, tubeRows } from '../src/render';
+import { edgeShadeRows, faceLayout, tubeLayout, tubeRows } from '../src/render';
 
 // mm faces (layout.h LCD_MM_x): the widest and narrowest, equal mm, mm next to wide / narrow.
 const MM_TAGS: Record<number, string[]> = { 2: ['10-6', '10-10', '3-f', '7.5-f'], 3: ['10-8-6', '9-7-5', '10-10-10', '3-3-3', 'f-7-5', '10-f-10', '6-6-9.5'] };
@@ -38,7 +41,11 @@ for (let h = 4; h <= 80; h += 4) for (const tubeGap of [0, 0.1, 0.5, 1, 2.5, 6, 
   cases.push([`h${h} stacked ${tubeGap} mm`, { ...DEFAULT_PARAMS, tubeHeight: h, hoursY: 12, minutesY: 100, tubeStack: true, tubeGap }]);
 // mm per canvas px, from the panels' pitches (not from spec/layout PX_PER_MM, which the layout under test reads)
 const MM_PER_PX = BOARD === 'lcd316' ? LCD_MM_PER_PX * LCD_PANEL_H / PANEL_H : 0.083;
-let fails = 0;
+// Edge shade: the panel's rows (the LCD's 320 / the AMOLED's own), canvas row y covering [bs(y), bs(y + 1)), mm per panel row
+const PANEL_ROWS = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, PANEL_MM = BOARD === 'lcd316' ? LCD_MM_PER_PX : 0.083;
+const bs = (y: number): number => Math.floor((y * PANEL_ROWS + PANEL_H - 1) / PANEL_H);
+const SHADES: [number, number, number][] = [[0.6, 1.4, 1.9], [1, 1.4, 1.4], [1, 0.8, 2.6]];
+let fails = 0, shadeRowsChecked = 0;
 for (const [name, p] of cases) {
   const ps = tubeParams(p), lay = faceLayout(ps), rows = ps.map((_, i) => tubeRows(lay, i));
   const err = (m: string): void => { if (fails++ < 10) console.log(`  FAIL ${BOARD_TAG} ${name}: ${m} ${JSON.stringify(lay)}`); };
@@ -57,6 +64,20 @@ for (const [name, p] of cases) {
     const below = PANEL_H - rows[n - 1].y - rows[n - 1].H;
     if (below - rows[0].y < 0 || below - rows[0].y > 1) err(`stack off centre: ${rows[0].y} rows above, ${below} below`);
   } else if (TUBE_COUNT === 2 && (lay.yH !== tubeLayout(ps[0]).yH || lay.yM !== tubeLayout(ps[1]).yM)) err('two-tube rows moved');
+  for (const [k, a, b] of SHADES) rows.forEach((r, i) => {
+    const q = { ...ps[i], edgeShade: k, edgeShadeFrom: a, edgeShadeTo: b }, T = edgeShadeRows(i, r.y, r.H, q)!;
+    const p0 = bs(r.y), p1 = bs(r.y + r.H), c = (p0 + p1) / 2;
+    const ideal = (n: number): number => {
+      const d = Math.abs(n + 0.5 - c) * PANEL_MM, t = b > a ? Math.max(0, Math.min(1, (d - a) / (b - a))) : d >= a ? 1 : 0;
+      return k * (b > a ? t * t * (3 - 2 * t) : t) * 256;
+    };
+    for (let n = p0; n < p1; n++) {
+      const y = Math.floor(n * PANEL_H / PANEL_ROWS), g = [...Array(bs(y + 1) - bs(y))].map((_, j) => ideal(bs(y) + j));
+      const t = T[y - r.y];
+      if (t < Math.min(...g) - 1 || t > Math.max(...g) + 1) { err(`edge shade ${k}/${a}/${b} tube ${i} panel row ${n}: ${t}, ideal ${g.map((v) => v.toFixed(1))}`); return; }
+    }
+    shadeRowsChecked += p1 - p0;
+  });
 }
-console.log(`${fails ? 'FAIL' : 'ok  '} ${BOARD_TAG}: ${cases.length} layouts${fails ? `, ${fails} failures` : ''}`);
+console.log(`${fails ? 'FAIL' : 'ok  '} ${BOARD_TAG}: ${cases.length} layouts, edge shade ${shadeRowsChecked} panel rows${fails ? `, ${fails} failures` : ''}`);
 process.exit(fails ? 1 : 0);

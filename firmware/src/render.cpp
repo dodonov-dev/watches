@@ -1222,7 +1222,7 @@ struct RowCache {
   // Edge shade: per shown row (after the lens) the blend toward black in 1/256 (0: row untouched); shadeSrc the same per
   // drawn row for a lens the push applies (row s takes the factor of the shown rows lensSrc maps onto it; shadeSrcOk:
   // they all have the same one, else the lens has to run on the strip first). Lens off: shadeSrc = shadeT.
-  uint16_t shadeT[TUBE_HEIGHT_MAX], shadeSrc[TUBE_HEIGHT_MAX]; bool shadeOn; bool shadeSrcOk;
+  uint16_t shadeT[TUBE_HEIGHT_MAX], shadeSrc[TUBE_HEIGHT_MAX]; bool shadeOn; bool shadeSrcOk; int shadeY0;   // shadeY0: the tube's top row they were built for
   float mag[TUBE_HEIGHT_MAX];                                    // lensMagRows (fizz squash)
   int16_t capX0[TUBE_HEIGHT_MAX];                                // rounded-corner mask
   // edge profile terms (sim edgeCap): d = boreRow(row), u2 = d^2; boreR = bore radius (sim boreR)
@@ -1462,6 +1462,7 @@ struct Tube {
   inline float edgeX(int ry, float xe, float tanA, const CapShape &c) const;
   inline float edgeXL(int ry, float xs, float tanA, const CapShape &c) const;
   void buildRowCache(const Params &p, uint32_t gen);
+  void buildShade(const Params &p);
   void applyLens(const Params &p);
   void edgeShade(int r0, int r1, const uint16_t *T);
   uint16_t shadeLut[128]; int shadeLutT = -1;                 // edgeShade's channel tables for factor shadeLutT (32 R, 64 G, 32 B)
@@ -3950,7 +3951,7 @@ inline float Tube::wallXL(int ry, float xs, float tanA, const CapShape &c) const
 
 
 void Tube::buildRowCache(const Params &p, uint32_t gen) {
-  if (rc.valid && rc.gen == gen && rc.H == H) return;
+  if (rc.valid && rc.gen == gen && rc.H == H) { if (rc.shadeY0 != baseY) buildShade(p); return; }
   rc.valid = true; rc.gen = gen; rc.H = H;
   markSourceRows(H, p.tickLens, rc.tickWet);
   markSourceRows(H, p.tickDryLens, rc.tickDry);
@@ -3976,31 +3977,7 @@ void Tube::buildRowCache(const Params &p, uint32_t gen) {
       rc.lensSrc[yd] = (int16_t)clampf(ffloor(H / 2.0f + s * H / 2.0f), 0, H - 1);
     }
   }
-  {   // edge shade (sim edgeShadeRows): doubles from the float params, as the sim (soft doubles here: nothing fuses)
-    const float pxmm = PX_PER_MM;
-    const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0, a = p.edgeShadeFrom, b = p.edgeShadeTo;
-    rc.shadeOn = k > 0;
-    for (int y = 0; y < H; y++) {
-      int T = 0;
-      if (rc.shadeOn) {
-        const double d = fabs(y + 0.5 - H / 2.0) / (double)pxmm;
-        double w;
-        if (b > a) { double t = (d - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
-        T = (int)floor(k * w * 256 + 0.5);
-      }
-      rc.shadeT[y] = (uint16_t)T;
-    }
-    rc.shadeSrcOk = true;
-    if (!rc.lensOn) memcpy(rc.shadeSrc, rc.shadeT, H * sizeof(uint16_t));
-    else {
-      for (int y = 0; y < H; y++) rc.shadeSrc[y] = 0xffff;
-      for (int y = 0; y < H; y++) {
-        uint16_t &t = rc.shadeSrc[rc.lensSrc[y]];
-        if (t == 0xffff) t = rc.shadeT[y]; else if (t != rc.shadeT[y]) rc.shadeSrcOk = false;
-      }
-      for (int y = 0; y < H; y++) if (rc.shadeSrc[y] == 0xffff) rc.shadeSrc[y] = 0;   // no shown row: never seen
-    }
-  }
+  buildShade(p);
   const float yc = (H - 1) / 2.0f;
   rc.boreR = boreR(p);
   // wall-band ease (sim boreRow): D = outer / bore radius, eased from a0 onto 1 at the outer edge
@@ -4045,6 +4022,49 @@ void Tube::applyLens(const Params &p) {
   } else {
     for (int yd = H / 2 - 1; yd >= 0; yd--) copyRow(yd);
     for (int yd = H / 2; yd < H; yd++) copyRow(yd);
+  }
+}
+
+// Edge shade factors (sim edgeShadeRows) for the tube at canvas rows [baseY, baseY + H): doubles from the float params,
+// as the sim (soft doubles here: nothing fuses). On the glass: a canvas row covers the panel's rows [bs(y), bs(y + 1))
+// (display_lcd316.cpp bStart: the push's nearest-neighbour upscale at RENDER_H < 320, one row each at 320 and on the
+// AMOLED); each panel row's mm from the tube's centre on the panel, through the smoothstep, averaged over the row's span.
+void Tube::buildShade(const Params &p) {
+  rc.shadeY0 = baseY;
+#ifdef BOARD_LCD316
+  const int R = LCD_PANEL_H;
+#else
+  const int R = PANEL_H;
+#endif
+  auto bs = [&](int y) { return (y * R + PANEL_H - 1) / PANEL_H; };
+  const float pxmm = PX_PER_MM;
+  const double k = p.edgeShade > 0 ? p.edgeShade < 1 ? (double)p.edgeShade : 1.0 : 0.0, a = p.edgeShadeFrom, b = p.edgeShadeTo;
+  const double c = (bs(baseY) + bs(baseY + H)) / 2.0;
+  rc.shadeOn = k > 0;
+  for (int y = 0; y < H; y++) {
+    int T = 0;
+    if (rc.shadeOn) {
+      const int p0 = bs(baseY + y), p1 = bs(baseY + y + 1);
+      double sum = 0;
+      for (int q = p0; q < p1; q++) {
+        const double d = fabs(q + 0.5 - c) * PANEL_H / R / (double)pxmm;
+        double w;
+        if (b > a) { double t = (d - a) / (b - a); t = t < 0 ? 0 : t > 1 ? 1 : t; w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
+        sum += w;
+      }
+      T = (int)floor(k * (sum / (p1 - p0)) * 256 + 0.5);
+    }
+    rc.shadeT[y] = (uint16_t)T;
+  }
+  rc.shadeSrcOk = true;
+  if (!rc.lensOn) memcpy(rc.shadeSrc, rc.shadeT, H * sizeof(uint16_t));
+  else {
+    for (int y = 0; y < H; y++) rc.shadeSrc[y] = 0xffff;
+    for (int y = 0; y < H; y++) {
+      uint16_t &t = rc.shadeSrc[rc.lensSrc[y]];
+      if (t == 0xffff) t = rc.shadeT[y]; else if (t != rc.shadeT[y]) rc.shadeSrcOk = false;
+    }
+    for (int y = 0; y < H; y++) if (rc.shadeSrc[y] == 0xffff) rc.shadeSrc[y] = 0;   // no shown row: never seen
   }
 }
 

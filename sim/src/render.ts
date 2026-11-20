@@ -4,7 +4,7 @@
 import {
   PANEL_W, PANEL_H, TUBE_LENGTH_PX, TUBE_HEIGHT_MAX,
   rgb565, rgb565to888, mmPerPxAt, TUBE_COUNT, TUBE_PX_SCALE, PX_SCALE_FIZZ,
-  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM,
+  FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H,
 } from '@spec/layout';
 import type { Params } from './params';
 import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState } from './physics';
@@ -2108,33 +2108,43 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
 
   // Front-facing marks are composited last, as on the physical display.
   drawDigitLayer(true);
-  applyEdgeShade(y0, H, p);
+  applyEdgeShade(idx, y0, H, p);
 }
 
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
- *  untouched; null = off. Symmetric about the tube's centre line (H / 2): mm from it by the panel's pitch (PX_PER_MM),
- *  edgeShadeFrom → edgeShadeTo smoothstep to edgeShade (To ≤ From: a step at From). Doubles from the float32 params
- *  (firmware render.cpp buildRowCache, the same operations: no fused multiply-add on either side). */
-let edgeShadeCache: { key: string; rows: Uint16Array | null } | null = null;
-export function edgeShadeRows(H: number, p: Params): Uint16Array | null {
+ *  untouched; null = off. On the glass: canvas row y covers the panel's rows [bs(y), bs(y + 1)) (the LCD's
+ *  nearest-neighbour upscale at fewer than 320 rows, firmware display_lcd316.cpp bStart; one row each at 320 and on the
+ *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through
+ *  edgeShadeFrom → edgeShadeTo smoothstep (To ≤ From: a step at From), averaged over the row's span, times edgeShade.
+ *  Doubles from the float32 params (firmware render.cpp buildShade, the same operations: no fused multiply-add on
+ *  either side). One cache entry per tube (faces mix tube heights). */
+const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
+export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
   const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), a = f(p.edgeShadeFrom), b = f(p.edgeShadeTo);
-  const key = `${H}:${k}:${a}:${b}`;
-  if (edgeShadeCache && edgeShadeCache.key === key) return edgeShadeCache.rows;
+  const key = `${y0}:${H}:${k}:${a}:${b}`, hit = edgeShadeCache[idx];
+  if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
   if (k > 0) {
+    const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
+    const c = (bs(y0) + bs(y0 + H)) / 2;
     rows = new Uint16Array(H);
     for (let y = 0; y < H; y++) {
-      const d = Math.abs(y + 0.5 - H / 2) / PX_PER_MM;
-      let w: number;
-      if (b > a) { const t = Math.max(0, Math.min(1, (d - a) / (b - a))); w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
-      rows[y] = Math.floor(k * w * 256 + 0.5);
+      const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
+      let sum = 0;
+      for (let q = p0; q < p1; q++) {
+        const d = Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM;
+        let w: number;
+        if (b > a) { const t = Math.max(0, Math.min(1, (d - a) / (b - a))); w = t * t * (3 - 2 * t); } else w = d >= a ? 1 : 0;
+        sum += w;
+      }
+      rows[y] = Math.floor(k * (sum / (p1 - p0)) * 256 + 0.5);
     }
   }
-  edgeShadeCache = { key, rows };
+  edgeShadeCache[idx] = { key, rows };
   return rows;
 }
-function applyEdgeShade(y0: number, H: number, p: Params): void {
-  const rows = edgeShadeRows(H, p);
+function applyEdgeShade(idx: number, y0: number, H: number, p: Params): void {
+  const rows = edgeShadeRows(idx, y0, H, p);
   if (!rows) return;
   for (let y = 0; y < H; y++) {
     const T = rows[y];
