@@ -15,6 +15,15 @@
 probably another "digit" in the same font
 
 ## UX
+- param loading / sync must not cost fps (2026-11-20, user: fps drops for a while on connect / look push): spread
+  the work over frames (batched param writes, one cache rebuild per batch, NVS save deferred to idle), accept a
+  slower load with a progress indicator. Measure first which part stalls (serial parsing, per-key cache rebuilds,
+  NVS flash writes).
+- physics fast-forward after a stall (user saw ~5x speed for seconds after a connect/disconnect): liquid_tick
+  (main.cpp:739) catches up at most 5 steps a frame but never drops the backlog, so a multi-second stall is replayed
+  at up to 5x. Drop the lag beyond the cap (lastPhysUs = now - one step).
+- fps monitoring session: log fps (and stage costs / frame-interval histogram, `f`) over real use — connects,
+  look pushes, motion, idle — to see where it dips; the firmware already keeps a frame-interval histogram.
 - taps for control: turning ble/wifi on
 - taps for control: setting time?
 
