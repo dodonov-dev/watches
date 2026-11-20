@@ -846,14 +846,10 @@ static void dumpParams() {
   out.println("}");
 }
 
-#if TUBE_COUNT == 3
-static bool liquidOk = true;   // every boot allocation of the face succeeded (setup); else the face never runs
-#endif
+static bool liquidOk = true;   // every boot allocation of the face succeeded (setup); else the face (and `x` / `X`) never runs
 static void show(char m) {
   display_wait_all();
-#if TUBE_COUNT == 3
   if (m == 'l' && !liquidOk) { out.println("error liquid face: a boot allocation failed (see the boot log), hello face instead"); m = 'h'; }
-#endif
   mode = m;
   switch (m) {
     case 'h': face_hello(); break;
@@ -907,6 +903,7 @@ static void handleLine(char *line) {
         out.printf(ok ? "ok %s\n" : "unknown param %s\n", arg); }
       break; }
     case 'x': {  // dump state + every strip (hex) for offline comparison with the sim
+      if (!liquidOk) { out.println("error x: a boot allocation failed (see the boot log)"); break; }
       display_wait_all(); display_next_strips(strip); dropPending();   // strips re-rendered without the lens map
       const FaceLayout l = currentLayout();   // canvas W H, hours rows, tops, minutes rows (tube widths may differ)
 #if TUBE_COUNT == 3
@@ -945,6 +942,7 @@ static void handleLine(char *line) {
       out.println("END");
       break; }
     case 'X': {  // deterministic sequence (seq.h) on the current params, frame hashes (tools/check_board_steps.py)
+      if (!liquidOk) { out.println("error X: a boot allocation failed (see the boot log)"); break; }
       display_wait_all(); display_next_strips(strip); dropPending();   // strips rendered without the lens map, as `x`
       const bool seeded = render_seq_reset(0x5eedu);
       const FaceLayout l = currentLayout();
@@ -1031,12 +1029,14 @@ void setup() {
   const bool dispOk = display_init(); diag_stage(DIAG_DISPLAY);
   const bool renderOk = render_init(!ble_on()), physOk = physics_init(); diag_stage(DIAG_RENDER);
   if (!dispOk) out.println("display init FAILED");
-  if (!renderOk) out.println("render init FAILED (glyph pools / mark tables / film tables / lane table, PSRAM)");
+  if (!renderOk) out.println("render init FAILED (glyph pools / mark tables / film tables / lane table / edge shade tables, PSRAM)");
   if (!physOk) out.println("physics init FAILED (wet-film buffers, PSRAM): no residue");
 #if TUBE_COUNT == 3
   pendMap = (int16_t *)heap_caps_malloc(3 * TUBE_HEIGHT_MAX * sizeof(int16_t), MALLOC_CAP_SPIRAM);
   if (!pendMap) out.println("FATAL: pending lens map alloc failed");
   liquidOk = dispOk && renderOk && physOk && pendMap;   // the seconds tube's state lives in these allocations: no face without them
+#else
+  liquidOk = dispOk && renderOk;   // the renderer's tables (edge shade LUT, ShadePal, ...): no face without them (physics: no residue)
 #endif
 #ifdef AB_COMPARE
   out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");

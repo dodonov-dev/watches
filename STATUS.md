@@ -4,6 +4,16 @@ _Last update: 2026-11-20 (edge shade folded into the producers: 9.5 -> 0.75 ms o
 
 ## Edge shade folded (2026-11-20), branch `edge-shade`
 
+- Review fixes (Astra, 438ccc9): spare rows only when taken (`spareOn`: a 107-row tube's 40 spares past the strip, or
+  a strip lens, drained them anyway); a new `shadeVer` invalidates the change record once (spare rows' record is ORed
+  from their drawn rows': a shade-only change kept it); spare copies read drawn rows in whole landed 8-row blocks (a row
+  next to one still being copied shares a cache line); no face / `x` / `X` after a failed boot allocation on two tubes
+  too; the contrast floor keeps the unshaded direction where the shade left mark and pixel one colour (`markU`); the sim
+  folds and copies by the firmware's float32 lens map (a strong lens picked other rows); the shaded glow table is keyed
+  on the palette too; residue tints from the unshaded rows, then shaded (the log mix magnified the shaded endpoints'
+  rounding: fold vs post-pass on a heavy-residue look 7419 -> 3227 px off); the sim's spirit bubble clips to the tube's
+  rows as the firmware's. `tools/check_shade_frames.py` (ASan, the tiled push-lens path across frames): spill, record,
+  palette; 438ccc9 fails 3 of 6 there.
 - Why it cost 9.3-9.5 ms on the user's look (edge 0.67 / 1.15 / 2.85, lens -0.2 / 0.2; board, `--fix-pose`, runs 3):
   the lens shows drawn rows 9 and 62 (of 72) twice each, on shown rows needing factors 113 / 101; the old design then
   ran the lens and the shade on the PSRAM strip and dropped the tile change record, so the push hashed and gathered the
@@ -38,7 +48,7 @@ _Last update: 2026-11-20 (edge shade folded into the producers: 9.5 -> 0.75 ms o
   +~0.1. TILE_VERIFY / PUSH_VERIFY build: 0 bad (bands, spare rows, push). compare-device: 28 px off, 0 > 12/255.
   Left on the user's look (edge 0.67 / 1.15 / 2.85), `p?` equal to the saved look.
 - RAM (static): lcd316@320w8-8 bss +704 B (RowCache postT / lensMap), IRAM +956 B; amoled191 +720 B. PSRAM: SHADE_LUT
-  64.3 KB, ShadePal ~1.7 KB and MarkPlan::inkRow ~1.7 KB a tube. Worker stack free 1036 -> 952 B.
+  64.3 KB, ShadePal ~1.7 KB and MarkPlan::inkRow 2.6 KB a tube (108 rows). Worker stack free 1036 -> 952 B.
 
 ## Edge shade (2026-11-19), branch `edge-shade`
 

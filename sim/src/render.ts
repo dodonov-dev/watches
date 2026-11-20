@@ -468,8 +468,8 @@ const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1
  *  collapses into one extra H-row table per mark colour, built when params change. */
 /** m: an edge-shaded row's 256 − factor (256 = none). bg and mark arrive darkened by m / 256, so the floor's constants
  *  are too (contrast, the near-black test, white, firmware throughLiquid): the unshaded result darkened, up to rounding. */
-function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256): number {
-  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m);
+function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256, markU = 0): number {
+  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m, markU);
   const B = rgb565to888(bg);
   let c = mix(B, rgb565to888(mark), transparency);
   const lb = luma(B), lc = luma(c), d = lc - lb;
@@ -482,15 +482,20 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
 }
 /** throughLiquid on an edge-shaded row: the firmware's integers (luma in 1/1000, T in 1/256), byte for byte — a darkened
  *  row brings the luma difference of the floor's direction test down to where the float mix and the integer one can
- *  disagree on its sign. */
-function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number): number {
+ *  disagree on its sign. markU: the mark before the shade; where the shade left no luma difference at all, the
+ *  direction is the unshaded one's (markU against the pixel behind brought back up, lb·256 / m). */
+function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number, markU: number): number {
   if (C <= 0) return blend565T(bg, mark, T);
   const [Br, Bg, Bb] = rgb565to888(bg), [Mr, Mg, Mb] = rgb565to888(mark);
   let cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
   const lb = 299 * Br + 587 * Bg + 114 * Bb, lc = 299 * cr + 587 * cg + 114 * cb, d = lc - lb;
   const Cm = (C * m + 128) >> 8, W = (255 * m + 128) >> 8, top = 1000 * W, dark = (110000 * m + 128) >> 8, den0 = ((1000 * m + 128) >> 8) + 1;
   if (Math.abs(d) >= Cm) return rgb565(cr, cg, cb);
-  const dir = d !== 0 ? (d > 0 ? 1 : -1) : lb > dark ? -1 : 1;
+  let dir = d !== 0 ? (d > 0 ? 1 : -1) : lb > dark ? -1 : 1;
+  if (d === 0 && T > 0) {
+    const [Ur, Ug, Ub] = rgb565to888(markU), e = 299 * Ur + 587 * Ug + 114 * Ub - Math.trunc(lb * 256 / m);
+    if (e !== 0) dir = e > 0 ? 1 : -1;
+  }
   const target = Math.max(0, Math.min(top, lb + dir * Cm));
   const idiv = (a: number, b: number): number => Math.trunc(a / b);   // C integer division (operands >= 0 here)
   if (dir < 0) {
@@ -529,6 +534,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
     const ry = y - y0;
     if (ry < 0 || ry >= H || x < 0 || x >= PANEL_W) return;
     let m = 256;
+    const cU = c;
     if (shade) { const sT = shade[ry]; if (sT) { c = shade565(c, sT); m = 256 - sT; } }
     const inside = x >= edges.lo[ry] && x < edges.hi[ry];
     if (!onTop) {
@@ -555,7 +561,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         }
       }
       if (inside) {
-        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK, m);
+        if (!bakedT) c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, transK, m, cU);
         else if (contrast > 0 && !floorBaked) {
           // The coverage already carries the transparency (glyph alpha x T, more where a baked shadow overlaps
           // the body), so the texel as is would never meet the floor. Floor what the glyph shows at full glyph
@@ -563,7 +569,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           // the ticks' floor-then-coverage order, so digits keep the ticks' contrast. (Without a floor the
           // texel is drawn as is: the same blend, cov = a * (cov / a).)
           const a = Math.max(transK, cov);
-          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a, m);
+          c = throughLiquid(fb[y * PANEL_W + x], c, p, contrast, a, m, cU);
           cov /= a;
         }
         // The glass-cut relief is on the rear wall too: it fades with the liquid's opacity (invisible
@@ -589,7 +595,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
         if (al < 1 / 255) return;
         let M = rgb565to888(c);
         if (aw > 0) {
-          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK, m));
+          const CT = rgb565to888(throughLiquid(fb[i], c, p, contrast, transK, m, cU));
           M = ad > 0 ? mix(M, CT, aw / (aw + ad)) : CT;
         }
         if (rel !== 0) M = rgb565to888(embossOf(q(M), rel, m));
@@ -1659,11 +1665,11 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           return Math.min(256, (i >= 256 ? 256 : FILM_PHI[i]) * G / 256);
         };
         // the residue is the first layer over the tube back: B^(1−τ)·C^τ from the two rows' logs
-        const B = rgb565to888(bBack[ry]), C = rgb565to888(bRows[ry]);
+        const B = rgb565to888(pal.tubeBackRows[ry]), C = rgb565to888(pal.rows[ry]);   // unshaded: the tint is shaded after the mix
         const lgB0 = FILM_LG[B[0]], lgB1 = FILM_LG[B[1]], lgB2 = FILM_LG[B[2]];
         const lgC0 = FILM_LG[C[0]], lgC1 = FILM_LG[C[1]], lgC2 = FILM_LG[C[2]];
         const tint = (T: number): number => T >= 256 ? bRows[ry]
-          : rgb565(filmMix(lgB0, lgC0, T), filmMix(lgB1, lgC1, T), filmMix(lgB2, lgC2, T));
+          : shadeRow(rgb565(filmMix(lgB0, lgC0, T), filmMix(lgB1, lgC1, T), filmMix(lgB2, lgC2, T)), ry);
         const xr = Math.round(ex), xrL = Math.round(exL);   // hard edge: liquid where xrL <= x < xr
         // this row's Δ per edge, where the smear is sheared at all
         const shR = shearR && Math.abs(ex - xe) >= 0.125 ? ex - xe : 0, shL = shearL && Math.abs(exL - xs) >= 0.125 ? exL - xs : 0;
@@ -2141,7 +2147,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     if (bx - rx > xs + 2) {
       for (let yy = Math.floor(by - ry_); yy <= Math.ceil(by + ry_); yy++) {
         const dy = (yy - by) / ry_;
-        if (Math.abs(dy) > 1) continue;
+        if (Math.abs(dy) > 1 || yy < 0 || yy >= H) continue;   // the tube's rows only (firmware: the spans clip to them)
         const hw = Math.sqrt(1 - dy * dy) * rx;
         const xa = Math.round(bx - hw), xb = Math.round(bx + hw);
         const ryi = Math.max(0, Math.min(H - 1, yy));
@@ -2151,12 +2157,12 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       }
       // top/bottom rim rows
       const yt = Math.round(by - ry_), yb = Math.round(by + ry_), rimAt = (y: number): number => shadeRow(pal.bubbleRim, Math.max(0, Math.min(H - 1, y)));
-      span(y0 + yt, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yt));
-      span(y0 + yb, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yb));
+      if (yt >= 0 && yt < H) span(y0 + yt, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yt));
+      if (yb >= 0 && yb < H) span(y0 + yb, Math.round(bx - rx * 0.45), Math.round(bx + rx * 0.45), rimAt(yb));
     }
   }
   drawTickLayer(true);
-  if (lensEffect) applyLens(y0, H, p, lensSmooth);
+  if (lensEffect) applyLens(y0, H, p, lensSmooth, foldOn ? fold!.src : null);
   if (foldOn && fold!.conf) applyEdgeShade(y0, H, fold!.post);   // a conflict's darker shown rows, the rest of the way
 
   // Front-facing marks are composited last, as on the physical display.
@@ -2209,7 +2215,7 @@ function applyEdgeShade(y0: number, H: number, rows: Uint16Array): void {
  *  the shown rows the lens (`lens`: applied, nearest row) maps onto it, the lightest of them where they differ (a
  *  conflict); a darker shown row of a conflict is darkened on after the lens by `post` (0 elsewhere), the rest of the
  *  way to its own factor. Lens off: F = T. null = no shade. */
-export interface EdgeShadeFold { T: Uint16Array; F: Uint16Array; post: Uint16Array; conf: boolean; }
+export interface EdgeShadeFold { T: Uint16Array; F: Uint16Array; post: Uint16Array; conf: boolean; src: Int16Array | null; }
 const edgeFoldCache: ({ key: string; fold: EdgeShadeFold } | undefined)[] = [];
 export function edgeShadeFold(idx: number, y0: number, H: number, p: Params, lens: boolean): EdgeShadeFold | null {
   const T = edgeShadeRows(idx, y0, H, p);
@@ -2235,23 +2241,23 @@ export function edgeShadeFold(idx: number, y0: number, H: number, p: Params, len
       post[y] = 256 - Math.floor((keep * 256 + (base >> 1)) / base); conf = true;
     }
   }
-  const fold = { T, F, post, conf };
+  const fold = { T, F, post, conf, src };
   edgeFoldCache[idx] = { key, fold };
   return fold;
 }
-/** applyLens's row map (nearest row): shown row yd shows drawn row src[yd]; null = no lens. */
-function lensSourceRows(H: number, p: Params): Int16Array | null {
-  const lens = Math.max(-1, Math.min(1, p.lens));
-  const curve = Math.max(-3, Math.min(3, p.lensCurve));
-  const signedCurve = lens < 0 ? -curve : curve;
-  const strength = Math.abs(lens);
+/** The nearest-row lens map in the firmware's float32 operations (render.cpp buildRowCache lensSrc): shown row yd shows
+ *  drawn row src[yd]; null = no lens. The fold's factors and its lens copy both take it (a double map can pick the next
+ *  row on a strong lens, and that row's factor). */
+export function lensSourceRows(H: number, p: Params): Int16Array | null {
+  const f = Math.fround, lens = Math.max(-1, Math.min(1, f(p.lens))), curve = Math.max(-3, Math.min(3, f(p.lensCurve)));
+  const signedCurve = lens < 0 ? -curve : curve, strength = Math.abs(lens);
   if (strength === 0 || signedCurve === 0) return null;
-  const exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2);
-  const src = new Int16Array(H);
+  const exponent = signedCurve > 0 ? f(1 + f(signedCurve * 2)) : f(1 / f(1 - f(signedCurve * 2)));
+  const h2 = f(H / 2), src = new Int16Array(H);
   for (let yd = 0; yd < H; yd++) {
-    const d = (yd + 0.5 - H / 2) / (H / 2), u = Math.abs(d);
-    const sv = Math.sign(d) * ((1 - strength) * u + strength * Math.pow(u, exponent));
-    src[yd] = Math.floor(Math.max(0, Math.min(H - 1, H / 2 + sv * H / 2)));
+    const d = f(f(f(yd + 0.5) - h2) / h2), u = Math.abs(d);
+    const sv = f((d < 0 ? -1 : 1) * f(f(f(1 - strength) * u) + f(strength * f(Math.pow(u, exponent)))));
+    src[yd] = Math.max(0, Math.min(H - 1, Math.floor(f(h2 + f(f(sv * H) / 2)))));
   }
   return src;
 }
@@ -2316,7 +2322,8 @@ function lensMagRows(H: number, p: Params): Float32Array {
   return rows;
 }
 
-function applyLens(y0: number, H: number, p: Params, smooth: boolean): void {
+/** map: the nearest-row map to copy by (the edge shade's fold, lensSourceRows), else its own (double) one. */
+function applyLens(y0: number, H: number, p: Params, smooth: boolean, map: Int16Array | null = null): void {
   const lens = Math.max(-1, Math.min(1, p.lens));
   const curve = Math.max(-3, Math.min(3, p.lensCurve));
   const signedCurve = lens < 0 ? -curve : curve;
@@ -2333,7 +2340,7 @@ function applyLens(y0: number, H: number, p: Params, smooth: boolean): void {
     const sy = sourceRow(yd);
     const dst = (y0 + yd) * PANEL_W;
     if (!smooth) {
-      const src = (y0 + Math.floor(sy)) * PANEL_W;
+      const src = (y0 + (map ? map[yd] : Math.floor(sy))) * PANEL_W;
       if (src !== dst) fb.copyWithin(dst, src, src + PANEL_W);
       return;
     }

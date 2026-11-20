@@ -130,10 +130,12 @@ struct ResidueTint {
   const uint16_t *phi;                   // FILM_PHI
   uint32_t K; int G;                     // row path weight (1/256, capped at 2^18), traceAmount (1/256)
   float kq;                              // K / 2^16, for interpolated A
-  uint16_t full;                         // C (rgb565)
+  uint16_t full;                         // C (rgb565; edge-shaded: its row's shaded body)
+  int shT = 0;                           // edge shade: the tint from the unshaded rows, then darkened by the row's factor
   uint16_t at(int T) const {             // 0 < T
     if (T >= 256) return full;
-    return rgb565(ex[lgB0 + ((dl0 * T + 128) >> 8)], ex[lgB1 + ((dl1 * T + 128) >> 8)], ex[lgB2 + ((dl2 * T + 128) >> 8)]);
+    const uint16_t c = rgb565(ex[lgB0 + ((dl0 * T + 128) >> 8)], ex[lgB1 + ((dl1 * T + 128) >> 8)], ex[lgB2 + ((dl2 * T + 128) >> 8)]);
+    return shT ? blend565T(c, 0, shT) : c;     // (the log mix would magnify the shaded endpoints' rounding)
   }
   int depthT(uint32_t A) const {         // stain depth 1/256 of a column's coat (sim: Math.floor(depth(A) + 0.5))
     const uint32_t i = (A * K + 32768u) >> 16;
@@ -1030,8 +1032,10 @@ static uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C) {
 }
 // The same on an edge-shaded row (m = 256 - the row's factor, < 256): bg and mark arrive darkened by m / 256, so every
 // constant of the floor is too (contrast, the near-black test, white): the result is the unshaded one darkened, up to
-// rounding (sim throughLiquidM, the same integers).
-static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t mark, int T, int C, int m) {
+// rounding (sim throughLiquidM, the same integers). markU: the mark's own colour before the shade. Where the shade made
+// mark and pixel behind one colour (no luma difference left), the floor's direction is the unshaded one's: markU's luma
+// against the pixel behind brought back up (lb 256 / m), else the darkened pair would pick its own (a reversed tick).
+static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t mark, int T, int C, int m, uint16_t markU) {
   if (C <= 0) return blend565T(bg, mark, T);
   int Br, Bg, Bb, Mr, Mg, Mb;
   expand565(bg, Br, Bg, Bb); expand565(mark, Mr, Mg, Mb);
@@ -1040,6 +1044,11 @@ static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t m
   const int Cm = (C * m + 128) >> 8, W = (255 * m + 128) >> 8, top = 1000 * W, dark = (110000 * m + 128) >> 8, den0 = ((1000 * m + 128) >> 8) + 1;
   if (abs(d) >= Cm) return rgb565(cr, cg, cb);
   int dir = d != 0 ? (d > 0 ? 1 : -1) : (lb > dark ? -1 : 1);
+  if (d == 0 && T > 0) {
+    int Ur, Ug, Ub; expand565(markU, Ur, Ug, Ub);
+    const int e = 299 * Ur + 587 * Ug + 114 * Ub - lb * 256 / m;
+    if (e != 0) dir = e > 0 ? 1 : -1;
+  }
   int target = lb + dir * Cm; if (target < 0) target = 0; if (target > top) target = top;
   if (dir < 0) {
     int den = lc < den0 ? den0 : lc;   // scale toward black
@@ -1052,9 +1061,9 @@ static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t m
   if (cr > 255) cr = 255; if (cg > 255) cg = 255; if (cb > 255) cb = 255;
   return rgb565(cr, cg, cb);
 }
-// m: 256 = an unshaded row (the plain integers).
-static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, int m) {
-  return m < 256 ? throughLiquidM(bg, mark, T, C, m) : throughLiquid(bg, mark, T, C);
+// m: 256 = an unshaded row (the plain integers); markU: the mark's colour before the shade (throughLiquidM).
+static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, int m, uint16_t markU) {
+  return m < 256 ? throughLiquidM(bg, mark, T, C, m, markU) : throughLiquid(bg, mark, T, C);
 }
 
 // rel = +1 / -1: emboss highlight / shadow of body colour c, derived after the liquid pass.
@@ -1083,22 +1092,22 @@ struct Mark {
 #endif
   // A rear mark within the concave surface band's footprint (see sim markFn); false when the pixel is outside
   // it, or inside the body where the band lets everything through — the plain paths then apply.
-  bool bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m) const;
+  bool bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint16_t cU) const;
   // Whether the mark at (x, tube row ry) is composited through the liquid — the same test operator() applies.
   inline bool inLiquid(int x, int ry) const { return !onTop && x >= edges.lo[ry] && x < edges.hi[ry]; }
   // A mark pixel over the liquid: its colour through the liquid (contrast floor included); covT is updated.
-  inline uint16_t wetColour(uint16_t bg, uint16_t c, int &covT, int m = 256) const { return wetColourT(bg, c, covT, T, Cin, bakedT, 0, m); }
+  inline uint16_t wetColour(uint16_t bg, uint16_t c, int &covT, int m = 256, uint16_t cU = 0) const { return wetColourT(bg, c, covT, T, Cin, bakedT, 0, m, cU); }
   // bakedT: the texel as is without a floor; with one, the colour the glyph shows at full glyph coverage —
   // the texel over the liquid at a = max(T, cov) — is floored and blended by the rest, cov / a (sim markFn).
   // recipT (optional, from recipOf(T)): the division by T as a multiply.
   // m: the row's edge shade (throughLiquid), 256 = none.
-  static inline uint16_t wetColourT(uint16_t bg, uint16_t c, int &covT, int T, int C, bool bakedT, uint32_t recipT = 0, int m = 256) {
-    if (!bakedT) return throughLiquid(bg, c, T, C, m);
+  static inline uint16_t wetColourT(uint16_t bg, uint16_t c, int &covT, int T, int C, bool bakedT, uint32_t recipT = 0, int m = 256, uint16_t cU = 0) {
+    if (!bakedT) return throughLiquid(bg, c, T, C, m, cU);
     if (C <= 0) return c;
-    if (covT >= T) { const int a = covT; covT = 256; return throughLiquid(bg, c, a, C, m); }   // (cov * 256 + cov / 2) / cov
+    if (covT >= T) { const int a = covT; covT = 256; return throughLiquid(bg, c, a, C, m, cU); }   // (cov * 256 + cov / 2) / cov
     const uint32_t n = (uint32_t)(covT * 256 + (T >> 1));
     covT = recipT ? (int)(((uint64_t)n * recipT) >> 32) : (int)(n / T);
-    return throughLiquid(bg, c, T, C, m);
+    return throughLiquid(bg, c, T, C, m, cU);
   }
   // ceil(2^32 / d) for 1 <= d <= 256: (n * recipOf(d)) >> 32 == n / d exactly for n < 2^24.
   static inline uint32_t recipOf(int d) { return d > 0 ? 0xFFFFFFFFu / (uint32_t)d + 1 : 0; }
@@ -1308,7 +1317,7 @@ struct CapShape { float cosT, h, asym, cap, k; };
 // Edge-effect blend tables: (row, k) -> 565, a function of the palette and lightK only. Rebuilt when
 // lightK moves (exact compare: at rest it is constant, in motion it changes every frame anyway).
 #define EFFECT_MAX 16
-struct EffectTable { uint32_t gen = 0, sv = 0; int H = 0; float lightK = -1; bool valid = false; uint16_t c[TUBE_HEIGHT_MAX * EFFECT_MAX]; };
+struct EffectTable { uint32_t gen = 0, sv = 0, pv = 0; int H = 0; float lightK = -1; bool valid = false; uint16_t c[TUBE_HEIGHT_MAX * EFFECT_MAX]; };
 
 // Per-row facts of the rear-mark compositors, the same for every glyph / tick of the layer (markRowFacts): the row's
 // liquid interval [Li, Hi) (empty when Hi <= Li) and where the surface band may touch it, nb footprints [b0, b1),
@@ -1463,7 +1472,7 @@ struct Tube {
   // Change records (tiles.h TileDirty): per tile and column pair the hash of the last render that hashed its tiles
   // (TILE_MAX x TILE_PAIRS, PSRAM), the rows that render had (-1: no valid table); one record per strip buffer (PSRAM).
   // All allocated by render_init. renderSeq counts every render of the tube.
-  uint32_t *tileHash = nullptr; int hashH = -1; uint32_t renderSeq = 0;
+  uint32_t *tileHash = nullptr; int hashH = -1; uint32_t renderSeq = 0, hashShadeVer = 0;   // hashShadeVer: rc.shadeVer of that render
   TileDirty *dirty[2] = {nullptr, nullptr};
   TileDirty *dirtyFor(const uint16_t *strip) {   // strip's record; a strip without one takes a free entry, else the first
     const int e = dirty[0]->strip == strip ? 0 : dirty[1]->strip == strip ? 1 : !dirty[0]->strip || dirty[1]->strip ? 0 : 1;
@@ -1560,12 +1569,12 @@ inline void Mark::operator()(int x, int y, uint16_t c, int covT, int rel) const 
 #endif
   if (!t.inStrip(x, y)) return;
   int ry = y - y0;
-  int m = 256;   // edge shade: the colour darkened as the pixel behind it, the floor's constants by m (sim markFn)
+  int m = 256; const uint16_t cU = c;   // edge shade: the colour darkened as the pixel behind it, the floor's constants by m (sim markFn)
   if (shade) { const int sT = shade[ry]; if (sT) { c = shade565(c, sT); m = 256 - sT; } }
   const bool inside = !onTop && x >= edges.lo[ry] && x < edges.hi[ry];
-  if (!onTop && edges.band && bandMark(x, y, ry, c, covT, rel, inside, m)) return;
+  if (!onTop && edges.band && bandMark(x, y, ry, c, covT, rel, inside, m, cU)) return;
   if (inside) {
-    c = wetColour(t.rd(x, y), c, covT, m);
+    c = wetColour(t.rd(x, y), c, covT, m, cU);
     if (rel) { covT = covT * T >> 8; if (covT <= 0) return; }   // rear relief fades with the liquid's opacity (sim markFn)
     if (wetT) { covT = covT * wetT[ry] >> 8; if (covT <= 0) return; }   // past the contents' edge the row is the empty tube's wall
   } else if (!onTop) { covT = covT * t.pal.dryT[ry] >> 8; if (covT <= 0) return; }   // rear marks vanish behind the wall band
@@ -1590,7 +1599,7 @@ void __attribute__((noinline)) Mark::profPixel(int x, int y, uint16_t c, int cov
 // transparency baked in and the wet part applies it itself. The wet/dry colour mix and the blend over the
 // pixel are taken in 888 and rounded ONCE (parity with the sim). Out of the hot operator (noinline): the
 // divisions run only on the few mark pixels under a band.
-bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m) const {
+bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, int covT, int rel, bool inside, int m, uint16_t cU) const {
   const BandInfo &b = *edges.band;
   const int xr = b.mirror ? b.L - 1 - x : x;
   const float hw = b.hw;
@@ -1608,7 +1617,7 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
   const float wallK = wetT ? wetT[ry] * (1 / 256.0f) : 1;   // sim wallQ / 256
   if (inside) {
     if (through >= 1) return false;   // nothing on top here: the plain body path, byte-identical
-    c = wetColour(t.rd(x, y), c, covT, m);
+    c = wetColour(t.rd(x, y), c, covT, m, cU);
     if (rel) covT = covT * T >> 8;
     covT = (int)(covT * through * wallK + 0.5f); if (covT <= 0) return true;
     if (rel > 0) c = embossHiM(c, m); else if (rel < 0) c = embossLo(c);
@@ -1623,7 +1632,7 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
   const uint16_t bg = t.rd(x, y);
   RGB M = to888(c);
   if (aw > 0) {
-    const RGB CT = to888(throughLiquid(bg, c, T, C, m));
+    const RGB CT = to888(throughLiquid(bg, c, T, C, m, cU));
     M = ad > 0 ? mix(M, CT, aw / (aw + ad)) : CT;
   }
   if (rel > 0) M = to888(embossHiM(q(M), m)); else if (rel < 0) M = to888(embossLo(q(M)));
@@ -2299,13 +2308,14 @@ static void drawGlyphRows(const S &s, const GlyphPlan &gp, int y0, const Labels 
 // colour and neighbouring texels repeat, and throughLiquid with a contrast floor is two lumas and up to four
 // divisions. Exact: same inputs, same outputs.
 struct LiquidMemo {
-  uint16_t bg = 0, c = 0, out = 0; int cov = -1, covOut = 0;
+  uint16_t bg = 0, c = 0, cu = 0, out = 0; int cov = -1, covOut = 0;
   uint32_t recipT = 0;
-  inline uint16_t get(uint16_t bg_, uint16_t c_, int &covT, int T, int C, bool baked, int m) {   // m: the row's edge shade (one per memo)
-    if (bg_ == bg && c_ == c && covT == cov) { covT = covOut; return out; }
-    bg = bg_; c = c_; cov = covT;
+  // m: the row's edge shade (one per memo), cU: the texel before it (256: c itself, unused)
+  inline uint16_t get(uint16_t bg_, uint16_t c_, int &covT, int T, int C, bool baked, int m, uint16_t cU = 0) {
+    if (bg_ == bg && c_ == c && covT == cov && cU == cu) { covT = covOut; return out; }
+    bg = bg_; c = c_; cov = covT; cu = cU;
     if (baked && !recipT) recipT = Mark::recipOf(T);
-    out = baked ? Mark::wetColourT(bg_, c_, covT, T, C, true, recipT, m) : throughLiquid(bg_, c_, T, C, m);
+    out = baked ? Mark::wetColourT(bg_, c_, covT, T, C, true, recipT, m, cU) : throughLiquid(bg_, c_, T, C, m, cU);
     covOut = covT; return out;
   }
 };
@@ -2594,7 +2604,7 @@ static void __attribute__((noinline)) spriteRunIntS(uint16_t *fb, int px0, int n
     if (MODE == 0) { covT = covT * scaleT >> 8; if (covT <= 0) continue; }
     const uint16_t ci = shadeL(sl, c[i]);
     if (MODE >= 2) {
-      const uint16_t bg = __builtin_bswap16(fb[i]), col = memo.get(bg, ci, covT, T, C, MODE == 3, m);
+      const uint16_t bg = __builtin_bswap16(fb[i]), col = memo.get(bg, ci, covT, T, C, MODE == 3, m, c[i]);
       fb[i] = __builtin_bswap16(covT >= 256 ? col : blend565T(bg, col, covT));
     } else fb[i] = covT >= 256 ? __builtin_bswap16(ci) : blendLanesSw(lanesSw(fb[i]), lanes565(ci), covT);
   }
@@ -2661,7 +2671,7 @@ static void __attribute__((noinline)) spriteRunFracScalar(uint16_t *fb, int n, c
       const int covT = (int)(v >> 16); const uint16_t col = (uint16_t)(v & 0xffff);
       const uint16_t cs = SH ? shadeL(f.sl, col) : col;
       if (MODE >= 2) {
-        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, cs, cT, f.T, f.C, MODE == 3, SH ? f.m : 256);
+        int cT = covT; const uint16_t bg = __builtin_bswap16(fb[i]), cc = memo.get(bg, cs, cT, f.T, f.C, MODE == 3, SH ? f.m : 256, col);
         fb[i] = __builtin_bswap16(cT >= 256 ? cc : blend565T(bg, cc, cT));
       } else fb[i] = covT >= 256 ? __builtin_bswap16(cs) : blendLanesSw(lanesSw(fb[i]), lanes565(cs), covT);
     }
@@ -2939,7 +2949,8 @@ void Tube::spriteGlyphRows(const GlyphPlan &gp, int y0, const Labels &lb, const 
 // colour, so after the first pixel each one is a load, a compare and a store. Other rows go pixel by pixel (tickPx),
 // band-footprint pixels through Mark::operator(). A pixel's ops read and write only that pixel, so pixels may go in any
 // order, the two ops of one pixel (plotF's edge columns: emboss, then body) in theirs. Byte-identical (check_render_frames).
-struct TickInk { uint16_t c, hi, lo; int m = 256; int k = 0; };   // a tick colour and its emboss highlight / shadow; m: its row's edge shade (256 = none); k: minor 0 / major 1
+// a tick colour and its emboss highlight / shadow; m: its row's edge shade (256 = none), u: the colour before it; k: minor 0 / major 1
+struct TickInk { uint16_t c, hi, lo, u = 0; int16_t m = 256; uint8_t k = 0; };
 struct TickRows {
   const Mark &mark; uint16_t *fb; DigitRow *rows; const uint16_t *dryT, *wetT;   // fb: strip row of tick row 0; wetT: Mark::wetT
   int y0, H, T, C, embT; float emb; bool rear, emboss;   // emb: tickEmboss clamped (plotF's edge-column shares)
@@ -2961,7 +2972,7 @@ static inline uint16_t tickOp(const TickRows &k, const TickInk &ink, bool wet, i
 }
 // Column class i of a row (TickMemo::o) over the pixel behind bg: its ops in their order (w0: bg through the liquid).
 static uint16_t tickColumn(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t bg, uint16_t w0, int i, int fT, int eA, int eF) {
-  auto wc = [&](uint16_t b) { return wet ? throughLiquid(b, ink.c, k.T, k.C, ink.m) : (uint16_t)0; };
+  auto wc = [&](uint16_t b) { return wet ? throughLiquid(b, ink.c, k.T, k.C, ink.m, ink.u) : (uint16_t)0; };
   switch (i) {
     case 0: return tickOp(k, ink, wet, dT, bg, w0, eA, 1);
     case 1:
@@ -2979,7 +2990,7 @@ static uint16_t tickColumn(const TickRows &k, const TickInk &ink, bool wet, int 
 // The memo for the pixel behind raw: every column class the row has (plot: no x + w + 1; without emboss no x - 1).
 TICK_IRAM static void __attribute__((noinline)) tickMemoFill(const TickRows &k, const TickInk &ink, TickMemo &m, bool wet, int dT, uint16_t raw,
                                                              int fT, int eA, int eF) {
-  const uint16_t bg = __builtin_bswap16(raw), w0 = wet ? throughLiquid(bg, ink.c, k.T, k.C, ink.m) : 0;
+  const uint16_t bg = __builtin_bswap16(raw), w0 = wet ? throughLiquid(bg, ink.c, k.T, k.C, ink.m, ink.u) : 0;
   m.raw = raw; m.c = ink.c; m.fT = (int16_t)fT;
   for (int i = 0; i < 5; i++)
     m.o[i] = (i == 0 && !k.emboss) || (i == 4 && (!fT || !k.emboss)) ? 0 : __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, w0, i, fT, eA, eF));
@@ -2987,7 +2998,7 @@ TICK_IRAM static void __attribute__((noinline)) tickMemoFill(const TickRows &k, 
 // A pixel of a memo row that shows another pixel behind than the memo's (strip layout in and out).
 static uint16_t __attribute__((noinline)) tickColumnRaw(const TickRows &k, const TickInk &ink, bool wet, int dT, uint16_t raw, int i, int fT, int eA, int eF) {
   const uint16_t bg = __builtin_bswap16(raw);
-  return __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, wet ? throughLiquid(bg, ink.c, k.T, k.C, ink.m) : 0, i, fT, eA, eF));
+  return __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, wet ? throughLiquid(bg, ink.c, k.T, k.C, ink.m, ink.u) : 0, i, fT, eA, eF));
 }
 // One op of a row that straddles the liquid's edge, a band footprint or the strip's ends: Mark::operator() given the
 // row's facts.
@@ -3000,7 +3011,7 @@ TICK_IRAM static void __attribute__((noinline)) tickPx(const TickRows &k, const 
   const uint16_t bg = __builtin_bswap16(*d);
   uint16_t col; int cv = covT;
   if (k.rear && px >= r.Li && px < r.Hi) {
-    col = throughLiquid(bg, ink.c, k.T, k.C, ink.m);
+    col = throughLiquid(bg, ink.c, k.T, k.C, ink.m, ink.u);
     if (rel) { col = rel > 0 ? embossHiM(col, ink.m) : embossLo(col); cv = cv * k.T >> 8; }   // rear relief fades with the liquid's opacity
     cv = cv * wT >> 8;   // past the contents' edge the row is the empty tube's wall
   } else {
@@ -3264,9 +3275,9 @@ bool Tube::planTicks(int y0, const Params &p, int ticksN, const int16_t *wetRows
 #ifdef TICK_PROF
   if (mark.prof) mark.prof[TP_CYC_FACTS] += esp_cpu_get_cycle_count() - f0;
 #endif
-  mp.ink[0] = {cMin, embossHi(cMin), embossLo(cMin), 256, 0}; mp.ink[1] = {cMaj, embossHi(cMaj), embossLo(cMaj), 256, 1};
+  mp.ink[0] = {cMin, embossHi(cMin), embossLo(cMin), cMin, 256, 0}; mp.ink[1] = {cMaj, embossHi(cMaj), embossLo(cMaj), cMaj, 256, 1};
   if (mark.shade) for (int ry = 0; ry < H; ry++) if (const int sT = mark.shade[ry]) for (int j = 0; j < 2; j++) {   // sim markFn: the colour, then its emboss
-    TickInk &e = mp.inkRow[ry][j]; e.c = shade565(mp.ink[j].c, sT); e.m = 256 - sT; e.hi = embossHiM(e.c, e.m); e.lo = embossLo(e.c); e.k = j;
+    TickInk &e = mp.inkRow[ry][j]; e.u = mp.ink[j].c; e.c = shade565(e.u, sT); e.m = (int16_t)(256 - sT); e.hi = embossHiM(e.c, e.m); e.lo = embossLo(e.c); e.k = (uint8_t)j;
   }
   auto addSegment = [&](int x0, int w, uint16_t c, int rangeA, int rangeB, bool top, float k) {
     if (rangeB < 0) return;
@@ -4187,11 +4198,9 @@ void Tube::buildShade(const Params &p) {
   for (int y = 0; y < H; y++) rc.postT[y] = 0;
   if (!rc.lensOn) { memcpy(rc.shadeF, rc.shadeT, H * sizeof(uint16_t)); return; }
   for (int y = 0; y < H; y++) rc.shadeF[y] = 0xffff;
-  uint8_t conf[TUBE_HEIGHT_MAX] = {};
   for (int y = 0; y < H; y++) {   // a drawn row takes the lightest factor of its shown rows
     uint16_t &t = rc.shadeF[rc.lensSrc[y]];
-    if (t == 0xffff) t = rc.shadeT[y];
-    else if (t != rc.shadeT[y]) { conf[rc.lensSrc[y]] = 1; if (rc.shadeT[y] < t) t = rc.shadeT[y]; }
+    if (t == 0xffff || rc.shadeT[y] < t) t = rc.shadeT[y];
   }
   for (int y = 0; y < H; y++) if (rc.shadeF[y] == 0xffff) rc.shadeF[y] = 0;   // no shown row: never seen
   // A darker shown row of a conflict: its drawn row (folded at the lighter factor F) darkened on by postT, the rest of
@@ -4201,7 +4210,7 @@ void Tube::buildShade(const Params &p) {
   for (int y = 0; y < H; y++) {
     const int s = rc.lensSrc[y], F = rc.shadeF[s], T = rc.shadeT[y];
     rc.lensMap[y] = (int16_t)s;
-    if (!conf[s] || T == F) continue;
+    if (T == F) continue;   // (every shown row of a row without a conflict)
     const int base = 256 - F, keep = 256 - T;   // base > keep >= 0 (F < T <= 256)
     rc.postT[y] = (uint16_t)(256 - (keep * 256 + base / 2) / base);
     rc.shadeConf = true;
@@ -4284,9 +4293,9 @@ void Tube::buildShadePal() {
 const uint16_t *Tube::effectTable(EffectTable &T, const Params &p, const uint16_t *back, const uint16_t *rows, uint32_t gen, float lightK, bool glow) const {
   int n = glow ? (int)fceil(p.edgeGlow) : (int)p.frontBright;
   if (n > EFFECT_MAX) return nullptr;
-  const uint32_t sv = rc.shadeOn ? rc.shadeVer : 0;   // the shaded rows (ShadePal) are their own key
-  if (T.valid && T.gen == gen && T.H == H && T.lightK == lightK && T.sv == sv) return T.c;
-  T.valid = true; T.gen = gen; T.H = H; T.lightK = lightK; T.sv = sv;
+  const uint32_t sv = rc.shadeOn ? rc.shadeVer : 0, pv = rc.shadeOn ? pal.ver : 0;   // the shaded rows (ShadePal) are their own key
+  if (T.valid && T.gen == gen && T.H == H && T.lightK == lightK && T.sv == sv && T.pv == pv) return T.c;
+  T.valid = true; T.gen = gen; T.H = H; T.lightK = lightK; T.sv = sv; T.pv = pv;
   for (int ry = 0; ry < H; ry++) for (int k = 0; k < n; k++) {
     uint16_t *o = T.c + ry * EFFECT_MAX + k;
     if (glow) { float t = 1 - k / p.edgeGlow; *o = blend565(back[ry], rows[ry], fmn(1, t * t * p.glowStrength * lightK)); }
@@ -4611,7 +4620,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // (every earlier band's copy has landed by then, drawing it took far longer), in the previous band's slot, from the
   // strip; the copy of the band then waits only for this short one. The rest after the loop.
   int spareNext = rc.spareS0, spareNeed = -1;   // spareNeed: the last drawn row the next spare tile reads (-1: not known yet)
-  const int spareEnd = rc.spareS0 + rc.spareN;
+  const int spareEnd = spareOn ? rc.spareS0 + rc.spareN : spareNext;   // none when the spares were not taken (spareOk, strip lens)
   auto spareTiles = [&](int done, int slot, bool one) {   // done: the drawn rows [0, done) have landed in the strip
     while (spareNext < spareEnd) {
       const int r = spareNext, m = spareEnd - r < TILE_ROWS ? spareEnd - r : TILE_ROWS;
@@ -4623,9 +4632,9 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       for (int y = 0; y < H; y++) if (rc.postT[y] && rc.lensMap[y] >= r && rc.lensMap[y] < r + m)
         shadeRowTo(t + (size_t)(rc.lensMap[y] - r) * PANEL_W, stripFB + (size_t)rc.lensSrc[y] * PANEL_W, rc.postT[y]);
       tile_put_rows(laneOf(), slot, stripFB + (size_t)r * PANEL_W, m);   // only its rows: a short copy
-      // Its change record without a hash: a spare pixel is a function of its drawn row's pixel alone (postT fixed while
-      // the map is: a new map fails the push's offset test), so a pair can change only where the drawn row's tile marks it
-      // in this render.
+      // Its change record without a hash: a spare pixel is a function of its drawn row's pixel alone and postT, so a pair
+      // can change only where the drawn row's tile marks it in this render, while postT stays (a new postT is a new
+      // shadeVer: that render's record is not valid, below).
       if (hashOn) {
         uint32_t *const bits = rec->bits[r / TILE_ROWS];
         for (int j = 0; j < TILE_PAIR_WORDS; j++) bits[j] = 0;
@@ -4638,7 +4647,9 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
       if (one) return;   // the band's own slot is next
     }
   };
-#define TILE_BAND_SPARES(rb0, rb1) do { if (spareOn && (rb0) > 0) { spareTiles(rb0, tileSlot ^ 1, true); TU_MARK(TU_TOP); } } while (0)
+// done: the landed rows in whole 8-row blocks only (whole cache lines: a CPU read of a row next to one still being copied
+// would cache that one's stale bytes)
+#define TILE_BAND_SPARES(rb0, rb1) do { if (spareOn && (rb0) >= 8) { spareTiles((rb0) & ~7, tileSlot ^ 1, true); TU_MARK(TU_TOP); } } while (0)
 #define TILE_BAND_END(rb0, rb1) do { tile_put(laneOf(), tileSlot, stripFB + (rb0) * PANEL_W, (rb1) - (rb0)); TU_MARK(TU_TILE); \
                                      if (hashOn) tileHashes((const uint32_t *)tile_slot(laneOf(), tileSlot), (rb1) - (rb0), \
                                                             tileHash + (rb0) / TILE_ROWS * TILE_PAIRS, rec->bits[(rb0) / TILE_ROWS]); \
@@ -4670,11 +4681,11 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         const uint32_t K = kRow >= 1024 ? 262144u : (uint32_t)(kRow * 256 + 0.5f);
         // the residue is the first layer over the tube back: B^(1-tau) C^tau from the two rows' logs
         int Br, Bg, Bb, Cr, Cg, Cb;
-        expand565(bBack[ry], Br, Bg, Bb); expand565(bRows[ry], Cr, Cg, Cb);
+        expand565(pal.tubeBackRows[ry], Br, Bg, Bb); expand565(pal.rows[ry], Cr, Cg, Cb);   // unshaded: at() shades the tint
         ResidueTint tint;
         tint.lgB0 = FILM_LG[Br]; tint.lgB1 = FILM_LG[Bg]; tint.lgB2 = FILM_LG[Bb];
         tint.dl0 = FILM_LG[Cr] - tint.lgB0; tint.dl1 = FILM_LG[Cg] - tint.lgB1; tint.dl2 = FILM_LG[Cb] - tint.lgB2;
-        tint.ex = FILM_EX; tint.phi = FILM_PHI; tint.K = K; tint.G = G; tint.kq = K * (1.0f / 65536); tint.full = bRows[ry];
+        tint.ex = FILM_EX; tint.phi = FILM_PHI; tint.K = K; tint.G = G; tint.kq = K * (1.0f / 65536); tint.full = bRows[ry]; tint.shT = sp ? rc.shadeF[ry] : 0;
         const int xr = (int)jround(ex), xrL = (int)jround(exL);   // hard edge: liquid where xrL <= x < xr
         // this row's Delta per edge, where the smear is sheared at all
         const float shR = shearR && fabsf(ex - xe) >= 0.125f ? ex - xe : 0.0f, shL = shearL && fabsf(exL - xs) >= 0.125f ? exL - xs : 0.0f;
@@ -5058,8 +5069,8 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     cleanStrip[e] = stripLens ? nullptr : stripFB;
   }
   rec->tube = (int8_t)idx; rec->seq = renderSeq; rec->rows = (int16_t)H;
-  rec->valid = hashOn && hashH == H;   // the table held the tube's last render (renderSeq - 1), the same rows
-  hashH = hashOn ? H : -1;
+  rec->valid = hashOn && hashH == H && hashShadeVer == rc.shadeVer;   // the table held the tube's last render (renderSeq - 1), the same rows and edge shade
+  hashH = hashOn ? H : -1; hashShadeVer = rc.shadeVer;
 #if defined(TILE_VERIFY) && !defined(TUBE_BAND_INLINE)
   {   // the whole render again straight into a PSRAM copy of the strip (the step-6 path: bands, then every mark over the
       // whole tube, the lens, the top digits), compared with what the tiles left

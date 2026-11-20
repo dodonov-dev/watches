@@ -953,7 +953,8 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 
 ## Edge shade folded (2026-11-20)
 - effectTable (hard-edge glow table) is keyed on gen / H / lightK only, not the palette's light (`pal.light`): a light
-  change at a constant lightK keeps the old rows' glow. Unchecked; the fold added only the shade's own key.
+  change at a constant lightK keeps the old rows' glow. Unshaded rows still (shaded: keyed on pal.ver since the review;
+  check_shade_frames palette, 523 words on 438ccc9).
 - `x` (compare-device) renders the strips without the push's lens map (strip lens + postShade): the spare-row path of
   the push (lensMap) is proven on the host only (check_board_render --tiles --push-lens) and by PUSH_VERIFY.
 - Sim throughLiquid (float) and the firmware's (integer) can disagree on the floor's direction where the luma
@@ -962,3 +963,5 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Worker stack free fell 1036 -> 952 B with the fold (buildShade's conflict flags on the stack, larger kernels' frames).
 - Spare rows still cost ~0.2 ms a core on the user's look (2 rows: a PSRAM read, the shade, a copy); a band-time copy
   from the tile into a third (internal) slot would drop the read, at ~6.5 KB internal a lane.
+- The contrast floor's direction on shaded rows is restored only where the shade made mark and pixel one colour (d = 0);
+  a small nonzero d whose sign the quantisation flipped keeps the flipped direction.
