@@ -5,6 +5,25 @@ plumb. No stand and no mechanism: a rounded, weighted underside. The liquid on t
 Order of work: the decisions are settled and the clay views accepted; **the CAD for a cheap FDM print is built
 (round 2, see "CAD state"); then the user's print test, then the final white body by SLA.**
 
+## Start here (next session, 2026-11-20): battery position
+The CAD below (round 5) is built but **not printed yet**. Before printing, the user wants to reconsider the battery:
+lower, or lying flat, or a smaller cell (the 3000 mAh 10 × 35 × 68 is not a requirement). See "Open idea" at the end.
+1. **Weigh** the real board and battery (the model assumes 30 g / 55 g; the rocking is most sensitive to them).
+2. **Compare** battery positions and sizes with the mass model `cad/desk/concept/rolypoly.py` (centre of mass under
+   the rocking centre, period, fore-aft tip limits, steel still needed). Numbers first, then the user picks.
+3. Only then **rework the CAD** (`cad/desk/rolypoly.py`): bulkhead, insertion from below, breakout, LED room.
+4. **Carry over from the smooth shells' print rounds** (end of `docs/desk-housing-plan.md`):
+   - The door's slots: 8.1 with a 0.6 straight land at the inner face (the knife-edge E came out 0.8 wider on the
+     X1E; `rolypoly.py` still takes `housing.SLOT_W` 8.6 and `flat_end_cutter`).
+   - The glow-through logo: the per-letter pockets (0.8 skin, 45° roofs) are untested; on the shells, abrupt skin
+     steps left sink lines and thin white PLA showed through unlit (1.0 skin + flared sides + stencil was the fix
+     there). Print `cad/desk/to-print/rolypoly-logo-coupon.stl` in PLA Matte white before deciding.
+   - Printing: Bambu X1E with Bambu Studio (the user's `.3mf` projects in `cad/desk/to-print/`), ironing on top
+     surfaces, PLA Matte white (candidate for a pearl-like roly-poly). Ballast glue: 5-minute epoxy (2 × 50 ml);
+     with it, glue first, then drop the balls in, in three small batches (not the build sheet's pour-over).
+   - Review: Astra 6.2 via the Codex CLI (`-m gpt-6.2-astra -e high`), critical issues only, with fault injection
+     on the checks.
+
 Read first: `docs/desk-housing-handoff.md` (entry, decisions for every track, tools), `docs/lcd316-mechanical.md`
 (board). Pictures: `images/desk-housing-v2/sheet-5.jpg` (18 at rest, 19 mid-rock, 20 plain FDM), `13-cairn-soft.jpg`
 (the look), `clay-rolypoly-13-*.png` (the chosen outline) and `clay-stable-*.png` (the stable variant), both at true
@@ -240,3 +259,10 @@ reproduced the numbers below and the fits: no CAD blocker, ready to print. Print
 - Codex draws the alcove smaller than it is, the tube ends rounded and the logo on the front. Compare with the clay.
 - A hand-cast or thick shell raises the centre of mass; keep the upper walls thin.
 - agy's image quota is small; use codex for consistent pictures.
+
+## Open idea (user, 2026-11-20): battery lower or lying flat
+The battery is not a hard requirement (one 3000 mAh cell is plenty; a smaller one is fine). Lying flat low in the
+belly (just above the seam) or a flat cell in the bowl would turn its ~55 g into ballast: lower centre of mass,
+less steel or calmer rocking. Affects the bulkhead, insertion from below, the breakout and the logo LEDs' room.
+Next: compare positions and sizes with `cad/desk/concept/rolypoly.py` (centre of mass, period, tip limits, steel
+needed) before any CAD; weigh the real board and battery first.

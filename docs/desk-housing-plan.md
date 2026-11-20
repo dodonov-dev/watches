@@ -288,3 +288,8 @@ per side); the pocket's 3.0 -> 0.6 step left a sink line. Rods measured exactly 
 - **Possible later (user, 2026-11-19):** a small lip over the slot's long sides, covering the rod's edges, to hide the
   moiré seen there; only if darkening and narrowing the drawn tube (firmware), a matte film or sanding the rod's
   sides do not help.
+- **Hardware fit (user, 2026-11-20; photos `images/cable_photos/`):** USB cables and batteries arrived; everything fits
+  in all three shells. The MOGOOD adapter + cable stands out slightly on the tilt15 (expected); the right-angle
+  extension runs out through its notch. The oval even takes the board and two batteries (tight).
+- **Round 3 test print started:** the oval shell in PLA Matte white at 0.12 Fine + ironing (quick check of the land
+  slots, the 1.0 flared pocket, Matte and ironing).

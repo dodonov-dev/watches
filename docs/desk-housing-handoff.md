@@ -8,9 +8,10 @@ Three tracks. The first is the working prototype; the other two are new looks th
 
 | Track | What it is | Next step | Handoff |
 |---|---|---|---|
-| v1 box | the fit prototype: shell + lid + test strip, ready to print | print the **test strip v3** and judge it (it decides the slot for all tracks) | this file |
-| A. Smooth design | one-piece soft shell + flat lid: upright, front tilted 15°, and oval (`cad/desk/smooth.py`, built and reviewed 2026-11-15) | order the prints (copies in `cad/desk/to-print/`), judge them on the desk | "Smooth shells" at the end of `docs/desk-housing-plan.md`; `docs/desk-housing-smooth-handoff.md` is the history |
-| B. Roly-poly | a soft drop-shaped body with two bottom cups: one rocks sideways and rights itself, one stands flat | CAD built and reviewed 2026-11-15 (`cad/desk/rolypoly.py`); next: the user's FDM print test | `docs/desk-housing-rolypoly-handoff.md` |
+| v1 box | the fit prototype: shell + lid + test strip, ready to print | test strip v3 printed and judged on the X1E (2026-11-17/18): slot 8.1 with a 0.6 land, E front; the box itself is parked | this file |
+| A. Smooth design | one-piece soft shell + flat lid: upright, front tilted 15°, and oval (`cad/desk/smooth.py`, built and reviewed 2026-11-15) | printed on the X1E (rounds 1-2), round 3 CAD built and reviewed (land slots, 1.0 flared logo pocket, stencils); a Matte oval test print is running (2026-11-20) | "Smooth shells" at the end of `docs/desk-housing-plan.md`; `docs/desk-housing-smooth-handoff.md` is the history |
+| A2. Tilted oval | the oval's look with the tilt15's 15° front (user, 2026-11-20) | concept pictures, then decisions, then CAD | `docs/desk-housing-oval-tilt-handoff.md` |
+| B. Roly-poly | a soft drop-shaped body with two bottom cups: one rocks sideways and rights itself, one stands flat | CAD built and reviewed 2026-11-16 (`cad/desk/rolypoly.py`), not printed; next: battery position study ("Start here" in its handoff) | `docs/desk-housing-rolypoly-handoff.md` |
 
 The work of 2026-11-14/15 (test strip v3, concept scripts, pictures, the smooth shells, these docs) is committed on
 the branch `desk-housing`. Check `git status`.
