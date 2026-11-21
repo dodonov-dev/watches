@@ -971,4 +971,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   (changes the firmware at edgeShade 0).
 - Rod profile: digits cost +0.7 ms a core on the user's look (sprite texels shaded one by one on nearly every row); a SIMD
   multiply of the colour lanes in pieBlend would cut it.
-- edgeShadePow != 1: pow is a library call (board newlib vs JS), not checked against the board (host glibc: 0 rows differ).
+- Perceptual edge shade: the ray grid (ROD_RAYS 8192) is not converged to the last code: vs 65536 rays ~15% of looks have a
+  row 1/256 apart (rounding ties; 32768 still differs). Harmless; a finer grid costs rebuild time and 128 KB PSRAM a step.
+- RodRays is per tube (128 KB PSRAM each) though tubes of one rod size could share one table.

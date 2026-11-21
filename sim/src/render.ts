@@ -2230,48 +2230,94 @@ export function rodFold(R: number, g: number, n: number): [number, number] {
   }
   return [(a + b) / 2, sT];
 }
-/** [sP, dP]: the full-depth cutoff for fold cover f (edgeShadeFold, firmware rodCut): the ray at sF + f (sT − sF) on the
- *  outer branch shows the row dP; rows from dP out are seen in the fold-back band at full depth; sP, dP's ray on the
- *  rising branch, normalises the rest. */
-export function rodCut(R: number, g: number, n: number, sF: number, sT: number, f: number): [number, number] {
-  const dP = rodScreen(sF + f * (sT - sF), R, g, n);
-  return [rodInner(dP, R, g, n, sF), dP];
+/** Fresnel power reflectances [s, p] of a lossless n1 → n2 interface (firmware fresnel). */
+function fresnel(n1: number, ci: number, n2: number, ct: number): [number, number] {
+  const a = (n1 * ci - n2 * ct) / (n1 * ci + n2 * ct), b = (n2 * ci - n1 * ct) / (n2 * ci + n1 * ct);
+  return [a * a, b * b];
 }
-/** A panel row d mm off the axis: t = s / sP of the ray landing there on the rising branch; 1 at and past dP. */
-export function rodBase(d: number, R: number, g: number, n: number, sF: number, sP: number, dP: number): number {
-  return d >= dP ? 1 : rodInner(d, R, g, n, sF) / sP;
+/** The direct transfer at s: curved surface, PMMA → air base, air → cover glass (the base's reflectances again),
+ *  unpolarised with products per polarisation, T2 = ½ Σ (1 − rc)(1 − rb)²; 0 past TIR (firmware rodT2). */
+export function rodT2(s: number, n: number): number {
+  const s1 = s / n, c1 = Math.sqrt(1 - s1 * s1), ca = Math.sqrt(1 - s * s);
+  const st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
+  if (!(sa < 1 && sa > -1)) return 0;
+  const [cs, cp] = fresnel(1, ca, n, c1), [bs, bp] = fresnel(n, ct, 1, Math.sqrt(1 - sa * sa));
+  return 0.5 * ((1 - cs) * (1 - bs) * (1 - bs) + (1 - cp) * (1 - bp) * (1 - bp));
 }
-/** w of a row's base t at power pw: b = t² (sin²α normalised), w = 1 − (1 − b^pw)² (smooth join to full depth). */
-export const rodWeight = (t: number, pw: number): number => { const bp = pw === 1 ? t * t : Math.pow(t, 2 * pw), e = 1 - bp; return 1 - e * e; };
-const rodFolds: ([number, number] | undefined)[] = [];
+/** Rays of the edge shade's profile (firmware ROD_RAYS / rodRays): apparent offsets x_i = (i + 0.5) R / ROD_RAYS, the panel
+ *  offset each lands on (NaN past TIR) and its transfer relative to the centre's. */
+export const ROD_RAYS = 8192;
+export function rodRays(R: number, g: number, n: number): { d: Float64Array; tau: Float64Array } {
+  const d = new Float64Array(ROD_RAYS), tau = new Float64Array(ROD_RAYS), t0 = rodT2(0, n);
+  for (let i = 0; i < ROD_RAYS; i++) { const s = (i + 0.5) / ROD_RAYS; d[i] = rodScreen(s, R, g, n); tau[i] = rodT2(s, n) / t0; }
+  return { d, tau };
+}
+/** The code factor of a linear panel factor a (gamma 2.2: F^11 = a^5), fixed 24-step bisection (firmware rodGammaInv). */
+export function rodGammaInv(a: number): number {
+  if (!(a > 0)) return 0;
+  if (a >= 1) return 1;
+  const a2 = a * a, a5 = a2 * a2 * a;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 24; i++) {
+    const m = (lo + hi) / 2, m2 = m * m, m4 = m2 * m2, m8 = m4 * m4;
+    if (m8 * m2 * m < a5) lo = m; else hi = m;
+  }
+  return (lo + hi) / 2;
+}
+const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: ({ d: Float64Array; tau: Float64Array } | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
- *  untouched; null = off. On the glass: canvas row y covers the panel's rows [bs(y), bs(y + 1)) (the LCD's
- *  nearest-neighbour upscale at fewer than 320 rows, firmware display_lcd316.cpp bStart; one row each at 320 and on the
- *  AMOLED). Each panel row's mm from the tube's centre on the panel (PX_PER_MM, by the canvas share) goes through the
- *  tube's rod (TUBE_ROD_MM, ROD_GAP_MM, ROD_N): b = (s / sP)², sin²α normalised to 1 at the cutoff row dP of the fold cover
- *  (edgeShadeFold, rodCut), w = 1 − (1 − b^edgeShadePow)² (1 at and past dP, the fold-back band included), averaged over the row's span, times edgeShade. Doubles from the float32 params (firmware render.cpp
- *  buildShade, the same operations: no fused multiply-add on either side). One cache entry per tube (faces mix tube
- *  heights). */
+ *  untouched; null = off. The perceptual profile (docs/edge-shade-session/astra-model.md section 3; firmware render.cpp
+ *  buildShade, the same double operations in the same order, fixed steps): target lightness along the apparent offset x
+ *  L*(x) = Lc − (Lc − Le)·min(x / x_e, 1)^q, Le = 100 (1 − s), Lc = 100 − 12 s (s = edgeShade, q = edgeShadeShape in half
+ *  steps), x_e the inner ray of the fold cover's row d_p (edgeShadeFold); the rays (rodRays) grouped by the panel row they
+ *  land on, each group's least-squares linear factor Σ τ·Y_t / Σ τ² → code factor F = clip(a^(1/2.2), 1 − s, 1), rows
+ *  from the boundary nearest d_p (and rows no ray reaches) at 1 − s. Canvas row y covers the panel's rows [bs(y), bs(y +
+ *  1)) (the LCD's nearest-neighbour upscale; one each at 320 and on the AMOLED): their mean F, T = 256 − round(256 F).
+ *  One cache entry per tube (faces mix tube heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
-  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade))), pw0 = f(p.edgeShadePow), pw = pw0 !== pw0 ? 1 : Math.max(0.25, Math.min(4, pw0));   // NaN: 1 (firmware)
+  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade)));
   const fo0 = f(p.edgeShadeFold), fold = fo0 !== fo0 ? f(0.4) : Math.max(0, Math.min(1, fo0));
-  const key = `${y0}:${H}:${k}:${pw}:${fold}`, hit = edgeShadeCache[idx];
+  const sh0 = f(p.edgeShadeShape), q2 = sh0 !== sh0 ? 3 : Math.max(1, Math.min(6, Math.floor(f(f(sh0 * 2) + 0.5))));
+  const key = `${y0}:${H}:${k}:${fold}:${q2}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
   if (k > 0) {
-    const Rr = TUBE_ROD_MM[idx] / 2, [sF, sT] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N), [sP, dP] = rodCut(Rr, ROD_GAP_MM, ROD_N, sF, sT, fold);
+    const Rr = TUBE_ROD_MM[idx] / 2, [sF, sT] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N);
+    const ry = rodRayTables[idx] ??= rodRays(Rr, ROD_GAP_MM, ROD_N);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
-    const c = (bs(y0) + bs(y0 + H)) / 2;
+    const p0t = bs(y0), p1t = bs(y0 + H), span = p1t - p0t;
+    const c = (p0t + p1t) / 2, pitch = PANEL_H / R / PX_PER_MM, o = span % 2 === 0 ? 0.5 : 0;
+    const s = k, Le = 100 * (1 - s), Lc = 100 - 12 * s, half = span / 2 * pitch;
+    let dP = rodScreen(sF + fold * (sT - sF), Rr, ROD_GAP_MM, ROD_N);
+    if (!(dP > 0)) dP = 0;
+    const sE = dP > 0 ? rodInner(dP, Rr, ROD_GAP_MM, ROD_N, sF) : 0;
+    const groups = Math.floor((span + 1) / 2);
+    const plateau = Math.min(groups, Math.max(0, Math.floor(dP / pitch - o + 1)));
+    const num = new Float64Array(plateau), den = new Float64Array(plateau), F = new Float64Array(plateau);
+    if (sE > 0) for (let i = 0; i < ROD_RAYS; i++) {
+      const d = ry.d[i];
+      if (d !== d) continue;
+      const ad = Math.abs(d);
+      if (ad >= half) continue;
+      const j = Math.floor(ad / pitch - o + 0.5);
+      if (j >= plateau) continue;
+      let v = (i + 0.5) / ROD_RAYS / sE; if (v > 1) v = 1;
+      const r = Math.sqrt(v); let vq = r;
+      for (let m = 1; m < q2; m++) vq *= r;
+      const L = Lc - (Lc - Le) * vq;
+      let Y: number;
+      if (L > 8) { const t = (L + 16) / 116; Y = t * t * t; } else Y = L / (24389 / 27);
+      const tau = ry.tau[i];
+      num[j] += tau * Y; den[j] += tau * tau;
+    }
+    for (let j = 0; j < plateau; j++) { const v = den[j] > 0 ? rodGammaInv(num[j] / den[j]) : 1 - s; F[j] = v < 1 - s ? 1 - s : v > 1 ? 1 : v; }
     rows = new Uint16Array(H);
     for (let y = 0; y < H; y++) {
       const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
       let sum = 0;
-      for (let q = p0; q < p1; q++) {
-        const v = rodBase(Math.abs(q + 0.5 - c) * PANEL_H / R / PX_PER_MM, Rr, ROD_GAP_MM, ROD_N, sF, sP, dP);
-        sum += rodWeight(v, pw);
-      }
-      rows[y] = Math.floor(k * (sum / (p1 - p0)) * 256 + 0.5);
+      for (let q = p0; q < p1; q++) { const j = Math.floor(Math.abs(q + 0.5 - c) - o + 0.5); sum += j >= plateau ? 1 - k : F[j]; }
+      rows[y] = 256 - Math.floor(256 * (sum / (p1 - p0)) + 0.5);
     }
   }
   edgeShadeCache[idx] = { key, rows };

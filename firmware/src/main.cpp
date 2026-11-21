@@ -614,6 +614,7 @@ static void face_ruler() {
 }
 
 // Live figures of whatever the loop is rendering (2 s rolling window, see liquid_tick).
+static bool liquidOk = true;   // every boot allocation of the face succeeded (setup); else the face (and `x` / `X`) never runs
 static void report_fps() {
   int foamH = 0, foamM = 0, slotsH = 0, slotsM = 0; const int fizzH = fizzCounts(0, foamH, slotsH), fizzM = fizzCounts(1, foamM, slotsM);
 #if TUBE_COUNT == 3
@@ -643,6 +644,8 @@ static void report_fps() {
     out.printf("  push-verify bad %u of %u px  stored %u of %u words  skipped %u of %u segments", (unsigned)v.bad, (unsigned)v.checked,
                (unsigned)v.stored, (unsigned)v.words, (unsigned)v.skipped, (unsigned)v.segs); }
 #endif
+  if (liquidOk) { out.printf("  shade-build");
+    for (int i = 0; i < TUBE_COUNT; i++) { uint32_t l, m, n, r; render_shade_build(i, l, m, n, r); out.printf(" %c %u/%u us (%u, rays %u us)", "hms"[i], (unsigned)l, (unsigned)m, (unsigned)n, (unsigned)r); } }
   out.printf("\n");
 #if defined(PUSH_PROF) && defined(BOARD_LCD316)
   { uint32_t k[TUBE_COUNT][PUSH_PROF_N]; display_push_prof(k, true);
@@ -846,7 +849,6 @@ static void dumpParams() {
   out.println("}");
 }
 
-static bool liquidOk = true;   // every boot allocation of the face succeeded (setup); else the face (and `x` / `X`) never runs
 static bool displayOk = true;  // the display and the canvas (fb) are there (setup); else no face at all: diagnostics only
 static void show(char m) {
   if (!displayOk) { out.println("error face: the display or its canvas failed at boot (see the boot log): serial diagnostics only"); mode = 0; return; }

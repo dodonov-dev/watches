@@ -4,8 +4,8 @@ render.ts edgeShadeRows) over a matrix of looks per board / canvas.
 
   python3 firmware/tools/check_shade_rows.py [--board lcd316 --res 320w8-8] [--tubes 2]
 
-Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.67 / 1 x edgeShadePow 0.25 / 0.6 /
-1 / 2.5 / 4 x edgeShadeFold 0 / 0.4 / 0.8 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
+Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.7 / 1 x edgeShadeShape 0.5 / 1 / 1.5 /
+2 / 3 x edgeShadeFold 0 / 0.4 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
 factors and the lens row map the fold uses (firmware lensSrc, sim lensSourceRows: float32 both), and pins one strong
 lenses (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36; H 25, lens 0.25 / 0.5: row 2 shows 2). Exits 1 on any difference, a missing or reordered
 tube, a look with no shaded row, or a moved pin.
@@ -91,11 +91,11 @@ def main():
     for h in range(8, 81, 4): geo.append({**base, 'tubeHeight': h})
     for lens in (-1, -0.6, -0.2, 0.2, 0.6, 1):
         for curve in (-3, -1, -0.2, 0.2, 1, 3): geo.append({**base, 'lens': lens, 'lensCurve': curve})
-    pin = {**base, 'tubeHeight': 54, 'lens': 1, 'lensCurve': 3, 'edgeShade': 0.67, 'edgeShadePow': 1, 'fizz': False}
+    pin = {**base, 'tubeHeight': 54, 'lens': 1, 'lensCurve': 3, 'edgeShade': 0.67, 'edgeShadeShape': 1.5, 'fizz': False}
     for g in geo:
-        for k in (0.3, 0.67, 1):
-            for pw in (0.25, 0.6, 1, 2.5, 4):
-                for fo in (0, 0.4, 0.8, 1): looks.append({**g, 'edgeShade': k, 'edgeShadePow': pw, 'edgeShadeFold': fo, 'fizz': False})
+        for k in (0.3, 0.7, 1):
+            for q in (0.5, 1, 1.5, 2, 3):
+                for fo in (0, 0.4, 1): looks.append({**g, 'edgeShade': k, 'edgeShadeShape': q, 'edgeShadeFold': fo, 'fizz': False})
     looks.append(pin)
     looks.append({**pin, 'tubeHeight': 19, 'lens': 0.25, 'lensCurve': 0.5})   # H 25 at 320w8-8
     env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res, LW_TUBES=str(a.tubes))

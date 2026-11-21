@@ -139,8 +139,8 @@ def main():
         bad = 0
 
         # spill
-        for name, extra in (('107-row tube, lens -0.8 / -1.1', ['P tubeHeight=80', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1']),
-                            ('digits on top, lens -0.8 / -1.1', ['P digitsOnTop=1', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1'])):
+        for name, extra in (('107-row tube, lens -0.8 / -1.1', ['P tubeHeight=80', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadeShape=3', 'P edgeShade=1']),
+                            ('digits on top, lens -0.8 / -1.1', ['P digitsOnTop=1', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadeShape=3', 'P edgeShade=1'])):
             raw = run(extra + ['C', 'R', 'R'])   # one canary, checked on every frame and tube
             if raw is None: print(f'spill    {name:40s} FAIL (sanitizer)'); bad += 1; continue
             frs = frames(raw); asked = min(sum(t[6] for t in fr) for fr in frs); kept = all(t[7] for fr in frs for t in fr)
@@ -170,8 +170,8 @@ def main():
         record('strong lens, depth 0.5 -> 0.75', ['P lens=-1', 'P lensCurve=0.2', 'P edgeShade=0.5', 'R', 'R', 'P edgeShade=0.75', 'R', 'R'])
         # a spare tile whose drawn rows' tiles do not change with the depth (their factors are their lighter rows', unshaded
         # or unchanged) while its own rows do: the bits ORed from them would miss it (the record must not be valid)
-        for lens, curve, pw, k0, k1 in ((-0.8, -1.1, 2.5, 1, 0.9), (-0.7, -2.8, 2.5, 1, 0.9)):
-            record(f'lens {lens} / {curve}, pow {pw}, depth {k0} -> {k1}', [f'P lens={lens}', f'P lensCurve={curve}', f'P edgeShadePow={pw}', f'P edgeShade={k0}', 'R', 'R', f'P edgeShade={k1}', 'R', 'R'])
+        for lens, curve, pw, k0, k1 in ((-0.8, -1.1, 3, 1, 0.9), (-0.7, -2.8, 0.5, 1, 0.9)):
+            record(f'lens {lens} / {curve}, shape {pw}, depth {k0} -> {k1}', [f'P lens={lens}', f'P lensCurve={curve}', f'P edgeShadeShape={pw}', f'P edgeShade={k0}', 'R', 'R', f'P edgeShade={k1}', 'R', 'R'])
 
         # palette: a light change at a constant edge light (glow table), against a fresh render
         raw = run(['P edgeSoft=0', 'P traces=0', 'P edgeGlow=6', 'P glowStrength=1', 'S 0 0.42 -45', 'S 1 0.71 -45', 'R',

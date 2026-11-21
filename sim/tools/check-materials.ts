@@ -377,10 +377,21 @@ accepts('design: tubeBack #AbCdEf (hex any case)', () => validateDesign({ tubeBa
     try {
       const env = parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 2, material: DEFAULT_MATERIAL, design: { tubeHeight: 40, edgeShade: 0.67, edgeShadeFrom: 1.15, edgeShadeTo: 2.85 } });
       const d = env.design as Record<string, unknown>;
-      if ('edgeShadeFrom' in d || 'edgeShadeTo' in d || d.edgeShade !== 0.67 || d.edgeShadePow !== DEFAULT_PARAMS.edgeShadePow || d.tubeHeight !== 40) got = [JSON.stringify(d)];
+      if ('edgeShadeFrom' in d || 'edgeShadeTo' in d || 'edgeShadePow' in d || d.edgeShade !== 0.67 || d.edgeShadeShape !== DEFAULT_PARAMS.edgeShadeShape || d.tubeHeight !== 40) got = [JSON.stringify(d)];
     } catch (error) { got = [(error as Error).message]; }
-    report('migrate v2 → current: edgeShadeFrom / To dropped, edgeShade kept, edgeShadePow default', got, []);
+    report('migrate v2 → current: edgeShadeFrom / To / Pow dropped, edgeShade kept, edgeShadeShape default', got, []);
   }
+  // version 3 → 4: edgeShadePow gives way to the perceptual profile's edgeShadeShape (its default); strength and cover kept
+  {
+    let got: string[] = [];
+    try {
+      const env = parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 3, material: DEFAULT_MATERIAL, design: { tubeHeight: 40, edgeShade: 0.42, edgeShadePow: 2.5, edgeShadeFold: 0.7 } });
+      const d = env.design as Record<string, unknown>;
+      if ('edgeShadePow' in d || d.edgeShade !== 0.42 || d.edgeShadeFold !== 0.7 || d.edgeShadeShape !== DEFAULT_PARAMS.edgeShadeShape || d.tubeHeight !== 40) got = [JSON.stringify(d)];
+    } catch (error) { got = [(error as Error).message]; }
+    report('migrate v3 → current: edgeShadePow dropped, edgeShade / Fold kept, edgeShadeShape default', got, []);
+  }
+  accepts('migrate v3 design without edge shade: imports untouched', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 3, material: DEFAULT_MATERIAL, design: { tubeHeight: 40 } }));
   accepts('migrate v2 design without edge shade: imports untouched', () => parseMaterialEnvelope({ kind: 'liquid-watch-material', version: 2, material: DEFAULT_MATERIAL, design: { tubeHeight: 40 } }));
   {
     const fs = require('fs'), path = require('path');

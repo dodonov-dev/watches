@@ -262,7 +262,16 @@ export function migrateMaterial(o: Record<string, unknown>): Record<string, unkn
         // shape's default explicitly.
         if (isRecord(r.design) && (hasOwn(r.design, "edgeShadeFrom") || hasOwn(r.design, "edgeShadeTo") || hasOwn(r.design, "edgeShade"))) {
           const kept = keepKeys(r.design, (key) => key !== "edgeShadeFrom" && key !== "edgeShadeTo") as Record<string, unknown>;
-          r.design = hasOwn(kept, "edgeShadePow") ? kept : { ...kept, edgeShadePow: DEFAULT_PARAMS.edgeShadePow };
+          r.design = hasOwn(kept, "edgeShadePow") ? kept : { ...kept, edgeShadePow: 1 };   // (version 3's default; 3 → 4 replaces it)
+        }
+        break;
+      }
+      case 3: {
+        // version 3 → 4: the edge shade's power edgeShadePow gave way to the perceptual profile's shape edgeShadeShape;
+        // a design that set any edge-shade key takes the shape's default explicitly.
+        if (isRecord(r.design) && (hasOwn(r.design, "edgeShadePow") || hasOwn(r.design, "edgeShade") || hasOwn(r.design, "edgeShadeFold"))) {
+          const kept = keepKeys(r.design, (key) => key !== "edgeShadePow") as Record<string, unknown>;
+          r.design = hasOwn(kept, "edgeShadeShape") ? kept : { ...kept, edgeShadeShape: DEFAULT_PARAMS.edgeShadeShape };
         }
         break;
       }

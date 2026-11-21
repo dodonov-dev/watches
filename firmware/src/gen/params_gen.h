@@ -31,7 +31,7 @@ struct Params {
   float lens;
   float lensCurve;
   float edgeShade;
-  float edgeShadePow;
+  float edgeShadeShape;
   float edgeShadeFold;
   uint32_t bubbleRim;
   bool remaining;
@@ -190,7 +190,7 @@ struct Params {
 };
 
 #define PARAMS_NUM_FIELDS 183
-#define PARAMS_SCHEMA_CRC 0x6bb6cdafu  // field names+types; guards the NVS blob
+#define PARAMS_SCHEMA_CRC 0xcd2763c1u  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
 // dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
@@ -224,7 +224,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"lens", 'f', (uint16_t)offsetof(Params, lens), 0},
   {"lensCurve", 'f', (uint16_t)offsetof(Params, lensCurve), 0},
   {"edgeShade", 'f', (uint16_t)offsetof(Params, edgeShade), 0},
-  {"edgeShadePow", 'f', (uint16_t)offsetof(Params, edgeShadePow), 0},
+  {"edgeShadeShape", 'f', (uint16_t)offsetof(Params, edgeShadeShape), 0},
   {"edgeShadeFold", 'f', (uint16_t)offsetof(Params, edgeShadeFold), 0},
   {"bubbleRim", 'c', (uint16_t)offsetof(Params, bubbleRim), 0},
   {"remaining", 'b', (uint16_t)offsetof(Params, remaining), 0},
@@ -384,7 +384,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
 
 // from presets/1.json
 static const Params PRESET_1 = {
-  31, // v
+  32, // v
   72.0f, // tubeHeight
   0.0f, // hoursY
   168.0f, // minutesY
@@ -411,7 +411,7 @@ static const Params PRESET_1 = {
   0.6f, // lens
   1.0f, // lensCurve
   0.0f, // edgeShade
-  1.0f, // edgeShadePow
+  1.5f, // edgeShadeShape
   0.4f, // edgeShadeFold
   0xB0C7A9, // bubbleRim
   false, // remaining
