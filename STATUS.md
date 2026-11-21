@@ -2,7 +2,12 @@
 
 _Last update: 2026-11-21 (edge shade: review 8)_
 
-## Edge shade: review 8 (2026-11-21), branch `edge-shade`, host only (not flashed)
+## Edge shade: review 8 (2026-11-21), branch `edge-shade`
+
+- Board (lcd316@320w8-8, elf 649a1632, 5299335): flashed; the app stayed in download mode until an esptool
+  watchdog-reset (as before). Same schema as 27bfab50, so NVS kept: `p?` equal to before the flash (user's look,
+  edgeShade 0.7 / shape 1.5 / fold 0.4). compare-device settled: 21 px off, 0 > 12/255. The v31 -> v32 NVS migration
+  was not exercised (the board was already v32).
 
 - NVS v31 -> v32: the old blob is read into a copy and used only if the whole of it was read; the CRC is relabelled
   only after the whole blob was written, success reported only when the CRC write returns 4 (errors printed otherwise).
