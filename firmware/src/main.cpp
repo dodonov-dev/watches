@@ -1046,7 +1046,9 @@ void setup() {
 #endif
   displayOk = dispOk && fb.buf;    // the hello face and every push need both
 #ifdef AB_COMPARE
-  out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abcmp::init() ? "" : " - init FAILED");
+  { const bool abOk = abcmp::init();
+    out.printf("ab face: native top, %dx%d bottom%s\n", abcmp::width(), abcmp::height(), abOk ? "" : " - init FAILED: no liquid face");
+    if (!abOk) liquidOk = false; }
 #endif
   for (int t = 0; t < TUBE_COUNT; t++) {
     tubeOf(t).trace = traceBuf(t);         // dried-trace buffers (see physics.h; seconds' in PSRAM)
@@ -1054,6 +1056,7 @@ void setup() {
   }
   display_next_strips(strip);
   workerStart();
+  if (!workerTask) { out.println("render worker task FAILED: no liquid face"); liquidOk = false; }
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);   // IMU and RTC share the board bus
 #ifdef PIN_BAT_ADC
   analogReadMilliVolts(PIN_BAT_ADC);   // the ADC driver allocates on its first read: at boot, not on the first `s`

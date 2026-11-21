@@ -1,6 +1,42 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-20 (edge shade: the rod profile, params v30; folded into the producers)_
+_Last update: 2026-11-21 (edge shade: fold cover, params v31; review 5)_
+
+## Edge shade: fold cover, smooth join (2026-11-21), branch `edge-shade`
+
+- Params v31: `edgeShadeFold` (0..1, default 0.4, every preset; UI "· fold cover"): the full-depth cutoff on the rod's
+  outer branch, x_c = x_fold + fold (x_tir - x_fold), d_p = source(x_c) (0: the fold's own row). The ramp joins full depth
+  smoothly and rises sooner: t = x_in(d) / x_in(d_p), b = t^2, w = 1 - (1 - b^edgeShadePow)^2 (2b - b^2 at pow 1: no
+  Mach band at the knee), 1 from d_p. Was: 0.8 of the zone and w = b^pow (a flat grey band with a knee; d_p 0.048 mm on a
+  3 mm rod). `rodFold` (fold, TIR onset) at boot, `rodCut` per cover; RodCache keyed on position and cover.
+- check:layout table (docs/physical-tube-model.py's trig): 8 mm fold x 3.6786 d 1.9216, TIR 3.9783; fold 0 / 0.4 / 0.8:
+  d_p 1.9216 / 1.8794 / 1.4783, x_in(d_p) 3.6786 / 3.4845 / 2.6546. 3 mm: d_p 0.3333 / 0.3017 / 0.0483; 6 mm: 1.2376 /
+  1.2004 / 0.8626; 10 mm: 2.6410 / 2.5932 / 2.1272. The user's 72-row tube spans 2.97 mm each way, the rod shows 1.92: rows
+  0..12 and 59..71 lie past what the rod shows from the front and stay at full depth (42 % on their look, edgeShade
+  0.42, pow 1.05, fold 0.4: 108 / 256), the rest ramps 107 105 102 97 91 84 78 70 63 56 49 42 35 29 23 18 14 10 6 4 2 1 0
+  toward the centre.
+- Review 5 (Astra): the firmware lens map in its own function without fused multiply-add (`optimize("fp-contract=off")`;
+  the LCD build contracted it into madd.s: H 25, lens 0.25 / 0.5 picked row 3 for row 2; the new function has 0 madd.s,
+  pinned in check_shade_rows; this moves the board's map toward the sim at edgeShade 0 too where madd.s rounded across
+  a row boundary). Contrast floor over the row's body: the unshaded floor, darkened, exactly (both compositors); off the
+  body the pixel behind before the shade is not kept anywhere, so there it is the shaded floor with the tie rule (I
+  disagree that the original background can be passed: the fold never makes it). Tick memo keyed by the tick's own
+  colour. Boot: the AMOLED's transfer semaphore, the render worker and the A/B renderer count for the liquid face; the
+  seconds tube's fizz counts read 0 without its renderer. check_shade_frames' canary on every frame and tube;
+  check_shade_rows asserts factor and map lengths against the layout's rows. persist.ts defaults the material version
+  only when the key is absent.
+- Host: edgeShade 0 as 6df29da on every path (75 / 75 / 75 of 77 at 320w8-8, 75 / 75 at 240f, 74 at amoled191);
+  check_render_frames 13136 byte-identical (also `--tiles`); check_fizz_steps 80 / 80 (amoled191, lcd316 `--tiles`).
+  edgeShade on, 34 looks (fold 0 / 0.4 / 0.8 / 1, pow 0.5): 34 of 34 within 12/255 on all seven paths. check_shade_rows
+  (7922 looks each: geometry x strength x pow 0.25..4 x fold 0 / 0.4 / 0.8 / 1, a lens sweep, two pins): 320w8-8
+  1271834 rows, 240f 946706, 320f+t3 1891551, amoled191 946706, 0 differ; lens maps 15844 / 15844 / 23766 / 15844, 0
+  differ. check_shade_frames ok (spill 48 / 32 spare rows asked, canary kept). check:layout 74 ok; sim build,
+  check:materials 1143, check:material-gen, check:imu ok.
+- Board (lcd316@320w8-8, elf 3fd952dc; schema CRC changed: NVS reset at the flash, the user's look written back from
+  their `p?` with edgeShadeFold 0.4): `bench.py --fix-pose --stage edgeShade=0 --runs 3`: 58.4 fps (16.63 ms) on, 62.5
+  (15.55 ms) at 0: cost 1.08 ms (1.05-1.13). compare-device on the settled board: 31 / 34 px off, 0 > 12/255. Left on
+  the look, `p?` equal.
+- RAM (static, against 6df29da): lcd316@320w8-8 bss +768 B, IRAM -804 B; amoled191 +792 B.
 
 ## Edge shade: the rod profile (2026-11-20), branch `edge-shade`
 

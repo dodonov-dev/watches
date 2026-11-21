@@ -50,7 +50,7 @@ function loadMaterialState(raw: unknown): MaterialState {
     const has = (k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
     // stored states carry the material version since v3 (flush); an untagged one is older: migrated from version 1 (its
     // steps only touch keys that version had, so a version-2 state passes through them)
-    const version = typeof o.version === 'number' ? o.version : 1;
+    const version = has('version') ? o.version : 1;   // a malformed tag is the envelope validator's to reject
     const env = parseMaterialEnvelope({
       kind: MATERIAL_ENVELOPE_KIND, version, material: o.material, design: o.design,
       ...(has('name') ? { name: o.name } : {}), ...(has('provenance') ? { provenance: o.provenance } : {}),

@@ -7,7 +7,7 @@ render.ts edgeShadeRows) over a matrix of looks per board / canvas.
 Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.67 / 1 x edgeShadePow 0.25 / 0.6 /
 1 / 2.5 / 4 x edgeShadeFold 0 / 0.4 / 0.8 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
 factors and the lens row map the fold uses (firmware lensSrc, sim lensSourceRows: float32 both), and pins one strong
-lens (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36). Exits 1 on any difference, a missing or reordered
+lenses (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36; H 25, lens 0.25 / 0.5: row 2 shows 2). Exits 1 on any difference, a missing or reordered
 tube, a look with no shaded row, or a moved pin.
 """
 import argparse, glob, json, os, shutil, subprocess, sys, tempfile
@@ -58,7 +58,7 @@ int main() {
       for (int i = 0; i < TUBE_COUNT; i++) {
         renderTube(i, st[i], p[i], gen, strip, nullptr, lay.top(i));
         int H = 0; const uint16_t *T = render_shade_rows(i, H); const int16_t *L = render_lens_rows(i);
-        printf("%s%d:", i ? ";" : "", i);
+        printf("%s%d:%d:", i ? ";" : "", i, lay.rows(i));
         if (T) for (int y = 0; y < H; y++) printf(y ? ",%u" : "%u", T[y]);
         printf(":");
         if (L) for (int y = 0; y < H; y++) printf(y ? ",%d" : "%d", L[y]);
@@ -97,6 +97,7 @@ def main():
             for pw in (0.25, 0.6, 1, 2.5, 4):
                 for fo in (0, 0.4, 0.8, 1): looks.append({**g, 'edgeShade': k, 'edgeShadePow': pw, 'edgeShadeFold': fo, 'fizz': False})
     looks.append(pin)
+    looks.append({**pin, 'tubeHeight': 19, 'lens': 0.25, 'lensCurve': 0.5})   # H 25 at 320w8-8
     env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res, LW_TUBES=str(a.tubes))
     with tempfile.TemporaryDirectory(prefix='watches-shrows-') as tmp:
         tmp = Path(tmp)
@@ -124,22 +125,26 @@ def main():
         tf, ts = fw[i].split(';'), sim[i].split(';')
         if len(tf) != a.tubes or len(ts) != a.tubes: print(f'look {i}: {len(tf)} firmware / {len(ts)} sim tubes, want {a.tubes}'); bad += 1; continue
         for t, (f, g) in enumerate(zip(tf, ts)):
-            fi, fT, fL = f.split(':'); si, sT, sL = g.split(':')
+            fi, fH, fT, fL = f.split(':'); si, sH, sT, sL = g.split(':')
             if fi != str(t) or si != str(t): print(f'look {i}: tube ids {fi} / {si} at {t}'); bad += 1; continue
             A = [int(v) for v in fT.split(',') if v]; B = [int(v) for v in sT.split(',') if v]
-            if not A or len(A) != len(B): print(f'look {i} tube {t}: {len(A)} firmware rows, {len(B)} sim'); bad += 1; continue
+            if fH != sH or len(A) != int(fH) or len(B) != int(sH): print(f'look {i} tube {t}: layout {fH} / {sH} rows, factors {len(A)} / {len(B)}'); bad += 1; continue
+            lensOn = q.get('lens', 0) != 0 and q.get('lensCurve', 0) != 0   # every look shades (edgeShade > 0): a lens on gives both maps, H long
+            if lensOn and not (len(fL.split(',')) == int(fH) and len(sL.split(',')) == int(sH) and fL and sL): print(f'look {i} tube {t}: lens maps missing or short'); bad += 1; continue
             for x, y in zip(A, B):
                 rows += 1
                 if x != y: diff += 1; worst = max(worst, abs(x - y))
             if fL or sL:
                 maps += 1; mapdiff += fL != sL
                 if fL != sL and mapdiff <= 3: print(f'look {i} tube {t}: lens maps differ (lens {q.get("lens")} / {q.get("lensCurve")}, H {len(A)})')
-    # the pin: the last look, tube 0 (H 72 at 320w8-8)
-    L = [int(v) for v in fw[len(looks) - 1].split(';')[0].split(':')[2].split(',') if v]
-    pinned = len(L) == 72 and L[33:36] == [36, 36, 36] if lcd and a.res == '320w8-8' else None
+    # the pins: tube 0 of the last two looks at 320w8-8 (H 72, lens 1 / 3: rows 33..35 show 36; H 25, lens 0.25 / 0.5: row 2
+    # shows 2, the board's fused multiply-add picked 3)
+    L = [int(v) for v in fw[len(looks) - 2].split(';')[0].split(':')[3].split(',') if v]
+    L25 = [int(v) for v in fw[len(looks) - 1].split(';')[0].split(':')[3].split(',') if v]
+    pinned = len(L) == 72 and L[33:36] == [36, 36, 36] and len(L25) == 25 and L25[2] == 2 if lcd and a.res == '320w8-8' else None
     tag = f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
     print(f'{tag}: {len(looks)} looks, {rows} shaded rows, {diff} differ (worst {worst}/256); {maps} lens maps, {mapdiff} differ'
-          + ('' if pinned is None else f'; pin lens 1 / 3 rows 33..35 -> {L[33:36]} {"ok" if pinned else "MOVED"}'))
+          + ('' if pinned is None else f'; pins: H 72 lens 1 / 3 rows 33..35 -> {L[33:36]}, H {len(L25)} lens 0.25 / 0.5 row 2 -> {L25[2:3]} {"ok" if pinned else "MOVED"}'))
     sys.exit(1 if diff or mapdiff or bad or pinned is False else 0)
 
 if __name__ == '__main__': main()

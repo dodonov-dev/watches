@@ -141,9 +141,9 @@ def main():
         # spill
         for name, extra in (('107-row tube, lens -0.8 / -1.1', ['P tubeHeight=80', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1']),
                             ('digits on top, lens -0.8 / -1.1', ['P digitsOnTop=1', 'P lens=-0.8', 'P lensCurve=-1.1', 'P edgeShadePow=2.5', 'P edgeShade=1'])):
-            raw = run(extra + ['C', 'R', 'C', 'R'])
+            raw = run(extra + ['C', 'R', 'R'])   # one canary, checked on every frame and tube
             if raw is None: print(f'spill    {name:40s} FAIL (sanitizer)'); bad += 1; continue
-            fr = frames(raw)[-1]; asked = sum(t[6] for t in fr); kept = all(t[7] for t in fr)
+            frs = frames(raw); asked = min(sum(t[6] for t in fr) for fr in frs); kept = all(t[7] for fr in frs for t in fr)
             ok = asked > 0 and kept
             print(f'spill    {name:40s} {"ok" if ok else "FAIL"} ({asked} spare rows asked for, canary {"kept" if kept else "OVERWRITTEN"})'); bad += not ok
 

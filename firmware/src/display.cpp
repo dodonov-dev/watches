@@ -58,6 +58,7 @@ static bool IRAM_ATTR on_trans_done(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_
 
 bool display_init(void) {
   done_sem = xSemaphoreCreateCounting(32, 0);
+  if (!done_sem) { log_e("transfer semaphore alloc failed"); return false; }   // the DMA callback gives it
   for (int i = 0; i < 2; i++) {
     strips[i] = (uint16_t *)heap_caps_malloc(PANEL_W * STRIP_ROWS * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     if (!strips[i]) { log_e("band buf alloc failed"); return false; }

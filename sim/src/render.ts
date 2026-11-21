@@ -480,12 +480,32 @@ function throughLiquid(bg: number, mark: number, p: Params, contrast: number, tr
     : mix(c, [255, 255, 255], Math.min(1, (target - lc) / Math.max(1, 255 - lc)));
   return q(c);
 }
+/** The firmware's unshaded integer throughLiquid (render.cpp throughLiquid, m = 256). */
+function throughLiquidInt(bg: number, mark: number, T: number, C: number): number {
+  if (C <= 0) return blend565T(bg, mark, T);
+  const [Br, Bg, Bb] = rgb565to888(bg), [Mr, Mg, Mb] = rgb565to888(mark);
+  let cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
+  const lb = 299 * Br + 587 * Bg + 114 * Bb, lc = 299 * cr + 587 * cg + 114 * cb, d = lc - lb;
+  if (Math.abs(d) >= C) return rgb565(cr, cg, cb);
+  const dir = d !== 0 ? (d > 0 ? 1 : -1) : lb > 110000 ? -1 : 1;
+  const target = Math.max(0, Math.min(255000, lb + dir * C));
+  if (dir < 0) {
+    const den = lc < 1000 ? 1000 : lc;
+    cr = Math.trunc((cr * target + (den >> 1)) / den); cg = Math.trunc((cg * target + (den >> 1)) / den); cb = Math.trunc((cb * target + (den >> 1)) / den);
+  } else {
+    const den = Math.max(1000, 255000 - lc), K = Math.max(0, Math.min(256, Math.trunc((target - lc) * 256 / den)));
+    cr += ((255 - cr) * K + 128) >> 8; cg += ((255 - cg) * K + 128) >> 8; cb += ((255 - cb) * K + 128) >> 8;
+  }
+  return rgb565(Math.min(255, cr), Math.min(255, cg), Math.min(255, cb));
+}
 /** throughLiquid on an edge-shaded row: the firmware's integers (luma in 1/1000, T in 1/256), byte for byte — a darkened
  *  row brings the luma difference of the floor's direction test down to where the float mix and the integer one can
  *  disagree on its sign. markU: the mark before the shade; where the shade left no luma difference at all, the
  *  direction is the unshaded one's (markU against the pixel behind brought back up, lb·256 / m). */
 function throughLiquidM(bg: number, mark: number, T: number, C: number, m: number, markU: number, bodyU: number): number {
   if (C <= 0) return blend565T(bg, mark, T);
+  // over the row's body, the mark its own colour, both darkened: the unshaded floor, darkened (firmware, exact)
+  if (bg === blend565T(bodyU, 0, 256 - m) && mark === blend565T(markU, 0, 256 - m)) return blend565T(throughLiquidInt(bodyU, markU, T, C), 0, 256 - m);
   const [Br, Bg, Bb] = rgb565to888(bg), [Mr, Mg, Mb] = rgb565to888(mark);
   let cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
   const lb = 299 * Br + 587 * Bg + 114 * Bb, lc = 299 * cr + 587 * cg + 114 * cb, d = lc - lb;

@@ -1033,11 +1033,16 @@ static uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C) {
 // The same on an edge-shaded row (m = 256 - the row's factor, < 256): bg and mark arrive darkened by m / 256, so every
 // constant of the floor is too (contrast, the near-black test, white): the result is the unshaded one darkened, up to
 // rounding (sim throughLiquidM, the same integers). u: the mark's own colour before the shade (low half) and its row's
-// unshaded body colour (high half). Where the shade made mark and pixel behind one colour (no luma difference left), the
-// floor's direction is the unshaded one's: exactly the unshaded floor's when the pixel behind is that body darkened (the
-// usual case: a mark over the liquid), else markU's luma against the pixel behind brought back up (lb 256 / m).
+// unshaded body colour (high half). Over the body (the usual case: a mark over the liquid), the floor is the unshaded
+// one darkened, exactly: its direction is the original pixel's and ink's whatever the quantisation did. Elsewhere the
+// pixel behind before the shade is not kept anywhere: the floor runs on the darkened pair, and where the shade made them
+// one colour its direction comes from markU's luma against the pixel behind brought back up (lb 256 / m).
 static uint16_t __attribute__((noinline)) throughLiquidM(uint16_t bg, uint16_t mark, int T, int C, int m, uint32_t u) {
   if (C <= 0) return blend565T(bg, mark, T);
+  {   // the pixel behind is the row's body and the mark its own colour, both darkened: the unshaded result, darkened
+    const uint16_t markU = (uint16_t)u, bodyU = (uint16_t)(u >> 16);
+    if (bg == blend565T(bodyU, 0, 256 - m) && mark == blend565T(markU, 0, 256 - m)) return blend565T(throughLiquid(bodyU, markU, T, C), 0, 256 - m);
+  }
   int Br, Bg, Bb, Mr, Mg, Mb;
   expand565(bg, Br, Bg, Bb); expand565(mark, Mr, Mg, Mb);
   int cr = Br + (((Mr - Br) * T + 128) >> 8), cg = Bg + (((Mg - Bg) * T + 128) >> 8), cb = Bb + (((Mb - Bb) * T + 128) >> 8);
@@ -3009,7 +3014,7 @@ static uint16_t tickColumn(const TickRows &k, const TickInk &ink, bool wet, int 
 TICK_IRAM static void __attribute__((noinline)) tickMemoFill(const TickRows &k, const TickInk &ink, TickMemo &m, bool wet, int dT, uint16_t raw,
                                                              int fT, int eA, int eF) {
   const uint16_t bg = __builtin_bswap16(raw), w0 = wet ? throughLiquid(bg, ink.c, k.T, k.C, ink.m, ink.u) : 0;
-  m.raw = raw; m.c = ink.c; m.fT = (int16_t)fT;
+  m.raw = raw; m.c = (uint16_t)ink.u; m.fT = (int16_t)fT;   // (u: the colour before the edge shade; = c on unshaded rows)
   for (int i = 0; i < 5; i++)
     m.o[i] = (i == 0 && !k.emboss) || (i == 4 && (!fT || !k.emboss)) ? 0 : __builtin_bswap16(tickColumn(k, ink, wet, dT, bg, w0, i, fT, eA, eF));
 }
@@ -3096,7 +3101,7 @@ TICK_IRAM static void __attribute__((noinline)) tickRow(const TickRows &k, const
   TickMemo &m = r.tm[kind];
   uint16_t *const d = row + x;
   const uint16_t raw0 = d[emb ? -1 : 0];
-  if (!(m.fT == fT && m.raw == raw0 && m.c == ink.c)) {
+  if (!(m.fT == fT && m.raw == raw0 && m.c == (uint16_t)ink.u)) {   // keyed by the tick's own colour: two inks can shade to one
 #ifdef TICK_PROF
     const uint32_t f0 = esp_cpu_get_cycle_count();
 #endif
@@ -3817,7 +3822,12 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
 // (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). See sim stepFizz.
 int fizzOverflow() { return fizzOverflowPeak.load(std::memory_order_relaxed); }
 int fizzCounts(int idx, int &foam, int &slots) {
-  const Tube &t = tubeAt(idx); int live = 0; foam = 0; slots = t.fizzN;
+  foam = slots = 0;
+#if TUBE_COUNT == 3
+  if (idx == 2 && !tubeS) return 0;   // its allocation failed at boot (render_init): no seconds renderer
+#endif
+  const Tube &t = tubeAt(idx); int live = 0; slots = t.fizzN;
+  if (!t.fizz) return 0;
   for (int i = 0; i < t.fizzN; i++) { if (t.fizz[i].v != 0) live++; if (t.fizz[i].life != 0) foam++; }
   return live;
 }
@@ -4105,6 +4115,20 @@ inline float Tube::wallXL(int ry, float xs, float tanA, const CapShape &c) const
 }
 
 
+// applyLens's nearest-row map (shown row yd shows drawn row src[yd]), float32 step by step, no fused multiply-add (the LCD
+// build contracts float products into madd.s by default: H 25, lens 0.25 / curve 0.5 then picked another row on the board
+// than the sim's float32 map, render.ts lensSourceRows, and the host's). On / pos: the lens is on, its curve positive.
+static void __attribute__((noinline, optimize("fp-contract=off"))) lensRowMap(const Params &p, int H, int16_t *src, bool &on, bool &pos) {
+  float lens = clampf(p.lens, -1, 1), curve = clampf(p.lensCurve, -3, 3);
+  float signedCurve = lens < 0 ? -curve : curve, strength = fabsf(lens);
+  on = !(strength == 0 || signedCurve == 0); pos = signedCurve > 0;
+  float exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2);
+  for (int yd = 0; yd < H; yd++) {
+    float d = (yd + 0.5f - H / 2.0f) / (H / 2.0f), u = fabsf(d);
+    float s = (d < 0 ? -1 : 1) * ((1 - strength) * u + strength * powf(u, exponent));
+    src[yd] = (int16_t)clampf(ffloor(H / 2.0f + s * H / 2.0f), 0, H - 1);
+  }
+}
 void Tube::buildRowCache(const Params &p, uint32_t gen) {
   if (rc.valid && rc.gen == gen && rc.H == H) { if (rc.shadeY0 != baseY) buildShade(p); return; }
   rc.valid = true; rc.gen = gen; rc.H = H;
@@ -4121,17 +4145,7 @@ void Tube::buildRowCache(const Params &p, uint32_t gen) {
     }
   }
   lensMagRows(p, rc.mag);
-  {
-    float lens = clampf(p.lens, -1, 1), curve = clampf(p.lensCurve, -3, 3);
-    float signedCurve = lens < 0 ? -curve : curve, strength = fabsf(lens);
-    rc.lensOn = !(strength == 0 || signedCurve == 0); rc.lensPos = signedCurve > 0;
-    float exponent = signedCurve > 0 ? 1 + signedCurve * 2 : 1 / (1 - signedCurve * 2);
-    for (int yd = 0; yd < H; yd++) {
-      float d = (yd + 0.5f - H / 2.0f) / (H / 2.0f), u = fabsf(d);
-      float s = (d < 0 ? -1 : 1) * ((1 - strength) * u + strength * powf(u, exponent));
-      rc.lensSrc[yd] = (int16_t)clampf(ffloor(H / 2.0f + s * H / 2.0f), 0, H - 1);
-    }
-  }
+  lensRowMap(p, H, rc.lensSrc, rc.lensOn, rc.lensPos);
   buildShade(p);
   const float yc = (H - 1) / 2.0f;
   rc.boreR = boreR(p);
