@@ -9,9 +9,9 @@
   stable-ortho.png      with the flat cup: front, tilted 15 deg on its foot edge, left side
   parts-views.png       body, rocking cup, flat cup, door, arc gauge, feature edges drawn
   print-cup.png         rocking cup as printed: standing on its back (build direction up), from the side and from above
-  body-views.png        body: front, left, back, bottom (seam, bosses, bulkhead with the breakout notch, ledges, tabs)
+  body-views.png        body: front, left, back, bottom (seam, bosses, bulkhead with the USB head's notch, cable notch, tabs)
   section-views.png     cuts: y 3.5 seen from the front (battery, bulkhead, cast, segments); x = door centre seen from +x
-                        (door, board, battery, bulkhead, cast); x 0 close-up seen from -x (breakout, USB hole, seam, cast)
+                        (door, board, battery, bulkhead, cast); x = cable close-up seen from -x (USB head, cable hole, seam, cast)
   ballast-views.png     cups from above: rocking cup with the cast (brown) and the trim layer as planned (left-out
                         segments red), the flat cup with its segments, a cut through the rocking cup
   door-views.png        door front and back
@@ -29,9 +29,9 @@ F = json.loads((OUT / "focus.json").read_text())
 H = F["H"]
 IVORY, DARK, BLUE = (233, 226, 211), (40, 40, 43), (122, 190, 226)
 COL = {"body": IVORY, "cup-rock": (224, 214, 196), "cup-flat": (224, 214, 196), "door": DARK, "rod-l": BLUE, "rod-r": BLUE,
-       "glass": (60, 70, 90), "pcb": (40, 110, 60), "battery": (170, 170, 175), "breakout": (120, 60, 150), "socket": (200, 200, 200),
+       "glass": (60, 70, 90), "pcb": (40, 110, 60), "battery": (170, 170, 175), "usb-head": (30, 30, 32), "usb-cable": (60, 60, 64),
        "segments-rock": (95, 98, 105), "segments-rock-left-out": (200, 50, 50), "segments-flat": (95, 98, 105),
-       "segments-steps": (95, 98, 105), "cast": (70, 62, 55), "cup-rock-steps": (224, 214, 196), "wires": (220, 120, 40),
+       "segments-steps": (95, 98, 105), "cast": (70, 62, 55), "cup-rock-steps": (224, 214, 196), 
        "led-room": (255, 176, 64), "arc-gauge": (150, 180, 150)}
 
 
@@ -220,13 +220,13 @@ def clipped(names, normal, origin):
     return out
 
 
-INSIDE = ["body", "cup-rock", "door", "rod-l", "rod-r", "glass", "pcb", "battery", "breakout", "socket", "wires", "segments-rock",
+INSIDE = ["body", "cup-rock", "door", "rod-l", "rod-r", "glass", "pcb", "battery", "usb-head", "usb-cable", "segments-rock",
           "cast", "led-room"] + [p.stem[len("dummy-"):] for p in OUT.glob("dummy-button-*.stl")] + \
          [p.stem[len("dummy-"):] for p in OUT.glob("dummy-plug-*.stl")]
 dc = F["door_c"]
 multi("section-views.png", [(clipped(INSIDE, (0, 1, 0), (0, 3.5, 0)), ((0, -1, 0), Z, True, (0, 0, H / 2)), H * 0.55),
                             (clipped(INSIDE, (-1, 0, 0), (dc[0], 0, 0)), ((1, 0, 0), Z, True, (0, 2, H / 2)), H * 0.55),
-                            (clipped(INSIDE, (1, 0, 0), (0.0, 0, 0)), ((-1, 0, 0), Z, True, (0, 2, 30)), 30)],
+                            (clipped(INSIDE, (1, 0, 0), (F["usb"][0], 0, 0)), ((-1, 0, 0), Z, True, (0, 2, 30)), 30)],
       size=(650, 900), edges=False)
 multi("ballast-views.png", [([(n, rd(n)) for n in ("cup-rock", "cast", "segments-rock", "segments-rock-left-out") if rd(n) is not None],
                              ((0, 0, 1), (0, 1, 0), True, (0, 2, 10)), 34),

@@ -993,3 +993,10 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Relief shells for round E have no seam plate for W (only N1, plate `_18`).
 - `keeper_clay.py` / `keeper_e_clay.py` / `pocket_sketch.py` repeat the model's numbers by hand; they are sketches of their day, not kept in step.
 - `gcode_supports.py` (the sliced supports reader) lives only on `rolypoly-print`; run from that worktree for pebble plate `_18`. Belongs next to `seam_shell.py` once the branches meet.
+
+## 2026-11-20 roly-poly round 6
+- Cast top lowered globally (17.9 -> 17.0) for the USB head: a level pour can't dip locally without a printed dam (a well round the head's footprint, its own fill target); worth ~0.4 mm of margin if wanted.
+- Cable leaves at x -5 (port under the board's centre), not on the rocking centre line: its weight/pull leans the clock slightly; a cable bent to x 0 inside, or a hole at x 0, untested.
+- Battery's way up now needs a ~0.85 mm sideways step at 1.5 mm above the seam (straight up leaves -0.07 per side): a 1 mm narrower cell (or a 0.5 mm wider seam) would make it straight again.
+- Plug's sweep up into the port is geometrically the same test as the seated head (nothing of the body lies below the head's bottom); kept as a separate assert for the assembly order.
+- Mass-model asserts are now collected and raised after the report is written (a failing case still fails the build, with numbers on paper).

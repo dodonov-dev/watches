@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Desk housing, track B ("roly-poly"): CAD for the FDM prototype (docs/desk-housing-rolypoly-handoff.md, steps 3-4), round 2
-after the review in docs/desk-housing-reviews/5-rolypoly-cad-astra.md.
+"""Desk housing, track B ("roly-poly"): CAD for the FDM prototype (docs/desk-housing-rolypoly-handoff.md, steps 3-4), round 6
+(first print): the USB-C breakout is replaced by a right-angle USB-C extension in the board's own port, its cable out
+through a round hole split by the seam; the door's slots get the smooth shells' printed land (8.1, 0.6 land); 1.0 logo skin.
 
 Parts (STEP + STL each, in out-rolypoly/):
   body       the shell from the seam (z SEAM) up: lofted outer surface with the alcove, the inner surface the same points
              moved WALL along the surface normal; the door opening, four magnet tabs behind the door, the thinned logo
-             wall, the battery bulkhead (notched for the breakout's way in), the breakout's ledges, wall pocket and USB
-             hole (back, on the centre line), the seam bosses.
+             wall, the battery bulkhead (notched for the USB head's way up), the cable notch in the back rim (open
+             downward), the seam bosses.
   cup-rock   the bottom up to the seam: the rocking arc (R RR, symmetric about x 0, through the pole without a flat);
              the bowl open below the top terrace for a level cast of 304 balls in epoxy, one terrace above it for the
-             stick-on trim segments; seam bosses. Printed standing on its back so every layer draws the arc.
-  cup-flat   the stable variant: the same outline cut flat at z CUT_FLAT, foot edge rounded, room for one strip.
+             stick-on trim segments; seam bosses; the cable notch in the back rim (open upward). Printed standing on its
+             back so every layer draws the arc.
+  cup-flat   the stable variant: the same outline cut flat at z CUT_FLAT, foot edge rounded, room for one strip; the
+             same cable notch.
   door       the dark panel: flat plate with the two flat-end slots (E, F as a switch), glass locating ribs, magnet holes.
   arc-gauge  a concave R RR cradle to check (and true) the printed arc.
   (cup-rock-steps, terraces only for segments, behind BUILD_STEPS: it does not reach the 8 mm.)
-Plus dummies (board, glass, rods, battery, breakout with its wire stubs, the cast, segments, the LEDs' room) for the views,
+Plus dummies (board, glass, rods, battery, the USB head and cable, the cast, segments, the LEDs' room) for the views,
 the two keels' outer surfaces, report.txt and build-sheet.txt.
 
 Frame (the study's): x right seen from the front, y front -> back (front is -y), z up from the bottom pole (the rocking
@@ -24,14 +27,16 @@ The shape functions (a_side, xc, bf_of, bb_of, the panel plane, the alcove flare
 (cad/desk/concept/rolypoly.py) with the chosen outline; the alcove outline is the door opening; the keel (the side view's
 lower corner) is squared (KEEL).
 
-Checks raise instead of exporting: fits (door + board straight in, battery up through the seam, the breakout's way in with
-its socket and wires, the LEDs' room, a tool's way to the door), minimum walls measured on the solids, the arc through the
+Checks raise instead of exporting: fits (door + board straight in, battery up through the seam, the USB plug's way up into
+the port, head and cable clear of cups / cast / segments / bosses / battery, the cable hole free along the cable, the cups
+off straight down with the cable in, the LEDs' room, a tool's way to the door), the slots' land measured on sections of the
+door, minimum walls measured on the solids, the arc through the
 pole, the mass model on the exported meshes for the nominal and the bad case (centre of mass under the rocking centre,
 one sideways rest position over the full revolution, fore-aft limits, plumb by the trim plan), the segment counts.
 
 Run: ~/.venvs/cad/bin/python cad/desk/rolypoly.py   then   ~/.venvs/cad/bin/python cad/desk/render_rolypoly.py
 """
-import sys, math, json, pathlib
+import sys, os, math, json, pathlib
 import numpy as np
 
 HERE = pathlib.Path(__file__).parent
@@ -61,11 +66,16 @@ FOOT_R = 3.0                                                   # stable cup: foo
 # ---- printed walls --------------------------------------------------------------------------------------------
 WALL = 2.4                                                     # FDM (SLA later ~2.0)
 RHO_PLA = 1.24
-RHO_DOOR = 1.24                                                # PLA Matte black (PETG-CF ~1.3)
+RHO_DOOR = 1.24                                                # PLA Matte (white for the round 6 print; black later; PETG-CF ~1.3)
 
 # ---- door (the dark panel) ------------------------------------------------------------------------------------
-SLOT_TYPE = "E"                                                # E: 3 mm, bevel to 0 (user); F: 4 mm, bevel to a 1 mm rim
-FRONT_BY_SLOT = {"E": (0.0, 0.0), "F": (1.0, 1.0)}             # (extra over hw.FRONT_T, rim): housing.flat_end_cutter
+SLOT_TYPE = "E"                                                # E: 3 mm, bevel to a SLOT_LAND land (user); F: 4 mm, bevel to a 1 mm rim
+SLOT_LAND = 0.6                                                # E: straight land at the door's inner face before the 45 deg starts
+                                                               # (smooth shells' print test 2026-11-19: the knife edge printed 0.8 wide)
+FRONT_BY_SLOT = {"E": (0.0, SLOT_LAND), "F": (1.0, 1.0)}       # (extra over hw.FRONT_T, rim): housing.flat_end_cutter
+SLOT_W = 8.1                                                   # smooth shells' round 3: rods measured 8.0, snug fit (hw.SLOT_W 8.6)
+ROD_PLAY_MIN = 0.1                                             # slot width over the rod, at least
+LAND_DY, SLOT_SECTIONS = 0.01, 23                              # land measurement: depth step, sections along each slot
 PCB_Z0 = 26.0                                                  # board's PCB bottom (study)
 DOOR_W, DOOR_H, DOOR_R = 42.5, 82.0, 6.75                      # visible door; the opening is DOOR_GAP larger all round
 DOOR_GAP = 0.25
@@ -78,13 +88,15 @@ TAB_CLR = 0.5                                                  # tab to the boar
 TABS = ((+1, 17.0), (+1, 68.0), (-1, 48.0), (-1, 68.0))
 
 # ---- inside ---------------------------------------------------------------------------------------------------
-M_BOARD, M_BAT, M_MISC = 30.0, 55.0, 10.0                      # ASSUMED (weigh them); misc = wires, breakout, LEDs, magnets
-BAD = dict(M_BOARD=40.0, M_BAT=60.0, RHO_CAST=4.8)             # the bad case the asserts also cover
+M_BOARD, M_BAT, M_MISC = 30.0, 55.0, 10.0                      # ASSUMED (weigh them); misc = wires, USB head, LEDs, magnets
+BAD = dict(M_BOARD=52.0, M_BAT=60.0, RHO_CAST=4.8)             # the bad case the asserts also cover (round 6: 52 g found online
+                                                               # for one of the board's parts)
 BAT_L, BAT_HT, BAT_T = 68.0, 35.0, 10.0                        # battery on its long edge (68 along x, 35 tall)
 BAT_GAP = 1.0                                                  # board back -> battery (Kapton)
 BAT_TAPE = 1.0                                                 # battery -> bulkhead (foam tape)
-BAT_Z0 = 23.0                                                  # battery bottom (study: lowest level where it fits)
-BULK_T, BULK_TOP = 1.5, 61.0                                   # bulkhead behind the battery
+BAT_HEAD_MIN = 1.0                                             # battery bottom above the USB head, at least
+BAT_Z0 = PCB_Z0 + BAT_HEAD_MIN                                 # battery bottom (round 6: over the USB head; was 23)
+BULK_T, BULK_TOP = 1.5, BAT_Z0 + BAT_HT + 3.0                  # bulkhead behind the battery (3 over its top, as before)
 BAT_SWEEP_MIN = 0.3                                            # battery's way up from below: clearance, at least
 
 # ---- seam joint ---------------------------------------------------------------------------------------------------
@@ -115,21 +127,29 @@ PLUMB_TOL = 0.2                                                # centre of mass 
 # Trim spots: segments stuck standing (12 along x, 19 tall) on the bulkhead's back, right half, behind the battery. The
 # door and board sit 5 mm left: with the cast in, the clock leans ~0.8 mm left, more than the symmetric trim layer can take.
 TRIM_SPOTS = (27.5, 15.0)                                      # x centres, in the order they are used
-TRIM_SPOT_Z0 = 27.5                                            # bottom (clear above the breakout's PCB)
+TRIM_SPOT_Z0 = 27.5                                            # bottom; round 6: searched down to the lowest that clears the body
+TRIM_SPOT_Z_LO = SEAM + 0.5                                    # ... from here, in 0.5 steps (round 5: 27.5 over the breakout)
 
-# ---- USB-C breakout (Pololu 2585 class) ---------------------------------------------------------------------------
-BO_W, BO_L, BO_OVER, BO_PCB_T = hw.BO_W, hw.BO_L, hw.BO_OVER, hw.BO_PCB_T     # 20.3 x 14, connector 1.3 over the edge
-SOCKET_W, SOCKET_H = hw.SOCKET_W, hw.SOCKET_H
-BO_MOUTH_IN = 0.3                                              # socket mouth behind the outer surface
-USB_HOLE_W, USB_HOLE_H, USB_HOLE_R = hw.USB_HOLE_W, hw.USB_HOLE_H, hw.USB_HOLE_R
-USB_SEAM_MIN = 2.0                                             # hole's lower edge above the seam
+# ---- USB: right-angle USB-C extension straight in the board's own port (round 6; the breakout + J5 pigtail are gone) ----
+# ASSUMED head envelope, as housing.py's MOGOOD adapter box (the extension's head is "<= 12 x 7 x 21"): 12 across (x), 21
+# along y, a 1.5 collar + 7 body below the PCB's bottom edge; the plug's axis 5 from the head's closed (front) end; the
+# cable leaves the far end along +y at the head body's mid-thickness. The port: on the PCB's bottom edge, at the board's
+# x centre, hw.PORT_Y_FROM_BOARD_BACK in front of the back of the board stack (housing.py: assumed, measure).
+HEAD_W, HEAD_L, HEAD_BEHIND = hw.ADAPTER_W, hw.ADAPTER_L, hw.ADAPTER_BEHIND
+HEAD_COLLAR, HEAD_T = hw.ADAPTER_COLLAR, hw.ADAPTER_T
+CABLE_D = 5.0                                                  # the extension's cable
+CABLE_HOLE_D = 5.6                                             # round passage through the back wall, split by the seam (smooth.py's
+                                                               # notch for a cable up to 5)
+HEAD_CLR = 0.5                                                 # head + cable to cups, cast, segments, bosses, bulkhead, at least
+CABLE_LAY_MIN = 0.1                                            # cable laid up into the body's notch (a vertical sweep): at least
 
 # ---- logo -----------------------------------------------------------------------------------------------------
 LOGO_W, LOGO_X, LOGO_ZC = 14.0, 32.0, 30.0                     # letters' width, centre x, centre z (round 4: x 28 -> 32, off
                                                                # the alcove's flare onto the plain belly; scan in the report)
 LOGO_FLARE_CLR = 2.0                                           # letters to the end of the alcove's outer flare, outside, at least
 LED_SHIFT = 0.0                                                # LEDs' room right of the letters' centre (round 2-3: 2.0)
-LOGO_SKIN = 0.8                                                # wall left over the letters (2 perimeters)
+LOGO_SKIN = 1.0                                                # wall left over the letters (round 6: 0.8 -> 1.0, as the smooth
+                                                               # shells after their 2026-11-19 print: thinner showed through unlit)
 
 # ---- shape (the study's functions) ------------------------------------------------------------------------------
 Z1 = RR * (1 - math.cos(math.radians(P["ARC_DEG"])))
@@ -703,37 +723,54 @@ def inner_x_limits(z, y0, y1, t=WALL):
     return lo, hi
 
 
-def battery_x():
-    zs = np.linspace(SEAM, BAT_Z0 + BAT_HT, 25)
-    lims = [inner_x_limits(z, BAT_Y0, BAT_Y1) for z in zs]
-    lo, hi = max(l for l, _ in lims), min(h for _, h in lims)
-    check(hi - lo >= BAT_L + 2 * BAT_SWEEP_MIN, f"battery: the belly leaves {hi - lo:.2f} across its band (seam -> top), needs {BAT_L} + 2 x {BAT_SWEEP_MIN}")
-    return (lo + hi) / 2, lo, hi
+def battery_path(dz=0.25):
+    """The battery's way up from below (cup off): straight up at x X1 until its bottom reaches Z_MID, across to x X2, then
+    straight up to its seat at x X2 (round 6: raised over the USB head to z BAT_Z0, its top reaches where the body's right
+    side has narrowed (the upper body sits XOFF left), while the seam's opening is narrow on both sides: no straight way up
+    leaves BAT_SWEEP_MIN; round 5's straight path is the case Z_MID = BAT_Z0). The levels each move passes, the inner
+    sections across the battery's y band; Z_MID chosen for the largest least clearance. Returns a dict."""
+    top = BAT_Z0 + BAT_HT
+    zs = np.round(np.arange(SEAM, top + dz / 2, dz), 4)
+    lims = np.array([inner_x_limits(z, BAT_Y0, BAT_Y1) for z in zs])
+
+    def rng(z0, z1):
+        k = (zs >= z0 - 1e-9) & (zs <= z1 + 1e-9)
+        return lims[k, 0].max(), lims[k, 1].min()
+    best = None
+    for zm in np.round(np.arange(SEAM - 2.0, BAT_Z0 + dz / 2, dz), 4):
+        lo1, hi1 = rng(SEAM, zm + BAT_HT)
+        lo2, hi2 = rng(zm, top)
+        x1, x2 = (lo1 + hi1) / 2, (lo2 + hi2) / 2
+        lo3, hi3 = rng(zm, zm + BAT_HT)
+        m = min((hi1 - lo1 - BAT_L) / 2, (hi2 - lo2 - BAT_L) / 2, min(x1, x2) - BAT_L / 2 - lo3, hi3 - max(x1, x2) - BAT_L / 2)
+        if best is None or m > best["m"] + 1e-9:
+            best = dict(m=float(m), Z_MID=float(zm), X1=float(x1), X2=float(x2), lo=float(lo2), hi=float(hi2),
+                        straight=(hi2 - lo2 - BAT_L) / 2 if zm == BAT_Z0 else None)
+    lo0, hi0 = rng(SEAM, top)
+    best["straight"] = float((hi0 - lo0 - BAT_L) / 2)
+    check(best["m"] >= BAT_SWEEP_MIN, f"battery: no way up from below with {BAT_SWEEP_MIN} each side (best {best['m']:.3f})")
+    return best
 
 
-BAT_X, BAT_XLO, BAT_XHI = battery_x()
+BAT_PATH = battery_path()
+BAT_X, BAT_XLO, BAT_XHI = BAT_PATH["X2"], BAT_PATH["lo"], BAT_PATH["hi"]
 
-# ---- USB-C breakout -------------------------------------------------------------------------------------------------
-Z_SOCK = SEAM + USB_SEAM_MIN + USB_HOLE_H / 2
-BO_Z1 = Z_SOCK - SOCKET_H / 2                          # PCB top (socket on top of the PCB)
-BO_Z0 = BO_Z1 - BO_PCB_T
-Y_BACK_OUT = float(bb_of(Z_SOCK))
-BO_YM = Y_BACK_OUT - BO_MOUTH_IN                       # socket mouth
-BO_Y1 = BO_YM - BO_OVER                                # PCB back edge
-BO_Y0 = BO_Y1 - BO_L                                   # PCB front edge (the wire pads)
-BO_CLR, BO_LIP = 0.15, 1.2
-# Round 2: no cradle under the breakout (its straight-up insertion went through it). The breakout comes up from below
-# BO_DY in front of its seat, through a notch in the bulkhead, then slides back: the socket into the hole, the PCB's back
-# edge into the wall pocket, its two side strips onto two ledges that start just behind where it came up. Glued there.
-BO_DY = 2.5                                            # insertion offset (forward of the seat), checked as a swept path
-BO_LEDGE_IN = 2.0                                      # ledge under each side strip of the PCB
-BO_WIRE_H = 6.0                                        # soldered wire stubs above the front-edge pads
-BO_NOTCH_X = BO_W / 2 + BO_CLR + 1.0                   # bulkhead notch: half-width, up to above the wire stubs
-BO_NOTCH_TOP = BO_Z1 + BO_WIRE_H + 2.0
-BO_PATH_CLR = 0.2                                      # clearance along the insertion path, at least
+# ---- USB: the extension's head in the port, its cable straight back -----------------------------------------------
+PORT_Y = Y_BOARD1 - hw.PORT_Y_FROM_BOARD_BACK          # the board's Type-C axis (y)
+HEAD_X = XOFF                                          # the port at the board's x centre (housing.py)
+HEAD_Y0 = PORT_Y - HEAD_BEHIND                         # the head's closed (front) end
+HEAD_Y1 = HEAD_Y0 + HEAD_L                             # its far end: the cable leaves here, along +y
+HEAD_Z1 = PCB_Z0                                       # collar face on the PCB's bottom edge (assumed flush with the port face)
+HEAD_Z0 = HEAD_Z1 - HEAD_COLLAR - HEAD_T
+CABLE_Z = HEAD_Z0 + HEAD_T / 2                         # the cable's axis: the head body's mid-thickness
+Y_BACK_OUT = float(bb_of(CABLE_Z))                     # back surface on the centre line at the cable's height
+CAST_TOP_MAX = HEAD_Z0 - HEAD_CLR                      # the cast (and the trim terrace) under the head: at most here
+HEAD_NOTCH_X = HEAD_W / 2 + HEAD_CLR                   # bulkhead notch for the head's way up: half-width, top
+HEAD_NOTCH_TOP = HEAD_Z1 + HEAD_CLR
+TOOL_W = 6.0                                           # the door tool beside the head (right of it), its width
 LED_MIN = 3.0                                          # LEDs' room to the battery's way up and the board's way in, at least
 TOOL_MIN = 0.3                                         # the door tool's way to the board / battery, at least
-SKIN_RANGE = (0.7, 0.9)                                # logo skin, normal thickness, over a sample of both letter floors
+SKIN_RANGE = (0.9, 1.1)                                # logo skin, normal thickness, over a sample of both letter floors
 LOGO_OPEN = 5.0                                        # behind a letter floor, free along the ray this far = open there
 LOGO_OPEN_MIN = 0.95                                   # each letter: share of its floor whose column opens into the cavity
 
@@ -794,20 +831,16 @@ def make_body(S):
     shell_only = b
     # door opening through the alcove floor
     b = b - xz_prism(OPEN_W, OPEN_H, OPEN_R, XOFF, DOOR_ZC, Y_PANEL - 10, Y_PANEL + WALL + 1.0)
-    # battery bulkhead (behind the battery, wall to wall) and the breakout cradle behind it
+    # battery bulkhead (behind the battery, wall to wall), notched for the USB head's way up
     add = box(-100, 100, BULK_Y0, BULK_Y1, SEAM, BULK_TOP)
-    add = add - box(-BO_NOTCH_X, BO_NOTCH_X, BULK_Y0 - 1, BULK_Y1 + 1, SEAM - 1, BO_NOTCH_TOP)      # breakout's way in
-    xc_ = BO_W / 2 + BO_CLR + BO_LIP
-    for sx in (-1, 1):                                  # ledges under the PCB's side strips, behind its way up
-        add = add + box(sx * (BO_W / 2 - BO_LEDGE_IN), sx * xc_, BO_Y1 - BO_DY + BO_PATH_CLR + 0.2, 60, SEAM, BO_Z0)
+    add = add - box(HEAD_X - HEAD_NOTCH_X, HEAD_X + HEAD_NOTCH_X, BULK_Y0 - 1, BULK_Y1 + 1, SEAM - 1, HEAD_NOTCH_TOP)
     for s in boss_spots():
         add = add + zcyl(s["x"], s["y"], s["r_boss"], SEAM, SEAM + s["h"])
     for sx, zl in TABS:
         add = add + tab_solid(S, sx, zl)
     b = one_solid(b + (add & S.mid()), "body + features")
-    # cuts: breakout pocket in the back wall, USB hole, seam holes, tab magnet holes, logo pocket
-    b = b - box(-(BO_W / 2 + BO_CLR), BO_W / 2 + BO_CLR, BO_Y0, BO_Y1 + BO_CLR, BO_Z0, BO_Z1 + 0.2)
-    b = b - xz_prism(USB_HOLE_W, USB_HOLE_H, USB_HOLE_R, 0, Z_SOCK, BO_Y1 - 2.0, Y_BACK_OUT + 5)
+    # cuts: the cable notch (the round hole's part above the seam, open downward), seam holes, tab magnet holes, logo pocket
+    b = b - cable_hole()
     for s in boss_spots():
         r = SEAM_R_HOLE if s["kind"] == "mag" else PIN_R_BODY
         d = SEAM_MAG_H + MAG_CLR_H if s["kind"] == "mag" else PIN_DEPTH
@@ -900,10 +933,51 @@ def logo_pocket(S):
     return pocket
 
 
+def slot_land_measure(door):
+    """The slots measured on sections of the door (planes z, SLOT_SECTIONS along each slot, 0.3 inside its ends): at depths
+    LAND_DY apart from the door's inner (back) face towards its face, the slot's two walls (the section's crossings nearest
+    the slot's axis). The land on each side runs as far as its wall stays within 0.002 of where it meets the inner face.
+    Per slot: width at the inner face (least, most), least land depth, and the opening on the face (least)."""
+    ys = Y_DOOR_BACK - LAND_DY / 2 - LAND_DY * np.arange(int(round(DOOR_T / LAND_DY)))
+    out = []
+    for x0 in TUBE_X:
+        w, depth, face = [], [], []
+        for zs in np.linspace(AA_ZC - SLOT_L / 2 + 0.3, AA_ZC + SLOT_L / 2 - 0.3, SLOT_SECTIONS):
+            seg = sm.section_segments(door, float(zs), bbox=(x0 - 9, x0 + 9, Y_PANEL - 1, Y_DOOR_BACK + 1), step=0.02)
+            walls = []
+            for y in ys:
+                x1, y1, x2, y2 = seg.T
+                k = (np.minimum(y1, y2) <= y) & (np.maximum(y1, y2) > y)
+                xc_ = x1[k] + (y - y1[k]) * (x2[k] - x1[k]) / (y2[k] - y1[k])
+                lo, hi = xc_[xc_ < x0], xc_[xc_ > x0]
+                check(lo.size and hi.size, f"slot at x {x0:+.2f}, z {zs:.2f}: no walls at y {y:.3f}")
+                walls.append((lo.max(), hi.min()))
+            walls = np.array(walls)
+            w.append(walls[0, 1] - walls[0, 0])
+            face.append(walls[-1, 1] - walls[-1, 0])
+            for j in (0, 1):
+                off = np.abs(walls[:, j] - walls[0, j]) > 0.002
+                depth.append((int(np.argmax(off)) if off.any() else len(ys)) * LAND_DY)
+        out.append(dict(x=x0, w=min(w), w_max=max(w), depth=min(depth), depth_max=max(depth), face=min(face), n=len(w)))
+    return out
+
+
+def slot_land_check(door):
+    SL = slot_land_measure(door)
+    for q in SL:          # depth resolution LAND_DY: the land reads 0.60 when it is 0.60..0.61 deep
+        check(abs(q["w"] - SLOT_W) < 1e-3 and abs(q["w_max"] - SLOT_W) < 1e-3 and abs(q["depth"] - RIM) < LAND_DY + 1e-6
+              and abs(q["depth_max"] - RIM) < LAND_DY + 1e-6,
+              f"slot at x {q['x']:+.2f}: land at the inner face {q['w']:.3f}..{q['w_max']:.3f} wide, {q['depth']:.3f}..{q['depth_max']:.3f} deep")
+        want = SLOT_W + 2 * (DOOR_T - RIM) * math.tan(math.radians(hw.BEVEL_DEG))
+        check(abs(q["face"] - want) < 0.05, f"slot at x {q['x']:+.2f}: opening on the face {q['face']:.3f}, designed {want:.3f}")
+    check(SLOT_W - hw.ROD_W >= ROD_PLAY_MIN - 1e-9, f"slot {SLOT_W} over the rod {hw.ROD_W}: < {ROD_PLAY_MIN}")
+    return SL
+
+
 def door_part():
     d = xz_prism(DOOR_W, DOOR_H, DOOR_R, XOFF, DOOR_ZC, Y_PANEL, Y_DOOR_BACK)
     for x in TUBE_X:
-        d = d - Pos(0, Y_PANEL + EXTRA, 0) * hw.flat_end_cutter(x, AA_ZC, hw.SLOT_W, SLOT_L, EXTRA, RIM)
+        d = d - Pos(0, Y_PANEL + EXTRA, 0) * hw.flat_end_cutter(x, AA_ZC, SLOT_W, SLOT_L, EXTRA, RIM)
     # glass locating corners (L-shaped, 6 mm legs) on the back
     gx, gz0, gz1 = hw.GLASS_W / 2 + GLASS_RIB_CLR, GLASS_Z0 - GLASS_RIB_CLR, GLASS_Z0 + hw.GLASS_H + GLASS_RIB_CLR
     t, L, y0, y1 = GLASS_RIB_T, 6.0, Y_DOOR_BACK - 0.01, Y_DOOR_BACK + GLASS_RIB_H
@@ -977,6 +1051,7 @@ def make_cup(S, kind, layers, cast_to=None):
     check(abs(vol(c) - (vol(env) - vol(cav & env))) < 1.0, f"cup-{kind}: the cavity cut failed")
     c = one_solid(c + (cup_bosses(S, min(layers)) & S.mid()), f"cup-{kind} + bosses")
     c = cup_holes(c)
+    c = c - cable_hole(cup=True)                         # the cable notch, open upward: the cup comes off straight down
     return one_solid(c, f"cup-{kind}"), env, cav
 
 
@@ -984,9 +1059,9 @@ def make_cup(S, kind, layers, cast_to=None):
 PX = 0.1
 
 
-def free_mask(loops, x0, x1, y0, y1, cavity=False):
+def free_mask(loops, x0, x1, y0, y1, cavity=False, outline=None):
     """Raster (PX) of the free region. cavity=True: inside the one loop given. Otherwise the loops are a slice of the
-    material: free = inside the largest loop and outside the material (even-odd over all loops)."""
+    material: free = inside the largest loop (or `outline`, if given) and outside the material (even-odd over all loops)."""
     from matplotlib.path import Path as MPath
     xs, ys = np.arange(x0, x1, PX), np.arange(y0, y1, PX)
     XX, YY = np.meshgrid(xs, ys)
@@ -999,7 +1074,7 @@ def free_mask(loops, x0, x1, y0, y1, cavity=False):
         cnt += MPath(L).contains_points(pts)
     if cavity:
         return (cnt == 1).reshape(XX.shape), xs, ys
-    outer = MPath(np.asarray(loops[int(np.argmax(areas))])).contains_points(pts)
+    outer = MPath(np.asarray(outline if outline is not None else loops[int(np.argmax(areas))])).contains_points(pts)
     free = (cnt % 2 == 0) & outer
     return free.reshape(XX.shape), xs, ys
 
@@ -1070,6 +1145,18 @@ def _pack_rows(free, xs, ys, gap=SEG_GAP):
     return best[0][1]
 
 
+def usb_keepout(free, xs, ys, zf):
+    """The USB head's and cable's plan footprints (+ HEAD_CLR) taken out of a segment band whose height comes within
+    HEAD_CLR of theirs."""
+    XX, YY = np.meshgrid(xs, ys)
+    r = CABLE_D / 2
+    for (x0, x1, y0, y1, z0, z1) in ((HEAD_X - HEAD_W / 2, HEAD_X + HEAD_W / 2, HEAD_Y0, HEAD_Y1, HEAD_Z0, HEAD_Z1),
+                                     (HEAD_X - r, HEAD_X + r, HEAD_Y1, 60.0, CABLE_Z - r, CABLE_Z + r)):
+        if zf + SEG[2] > z0 - HEAD_CLR and zf < z1 + HEAD_CLR:
+            free &= ~((XX >= x0 - HEAD_CLR) & (XX <= x1 + HEAD_CLR) & (YY >= y0 - HEAD_CLR) & (YY <= y1 + HEAD_CLR))
+    return free
+
+
 def band_free_designed(zf, bosses):
     """Free region of a band (designed): the inner section at the floor, minus the bosses reaching into the band."""
     from matplotlib.path import Path as MPath
@@ -1086,7 +1173,7 @@ def band_free_designed(zf, bosses):
         if SEAM - s["h"] < zf + SEG[2]:
             disc = np.c_[s["x"] + s["r_boss"] * np.cos(a), s["y"] + s["r_boss"] * np.sin(a)]
             f &= ~MPath(disc).contains_points(pts).reshape(f.shape)
-    return f, xs, ys
+    return usb_keepout(f, xs, ys, zf), xs, ys
 
 
 def band_free_measured(mesh, zf):
@@ -1095,9 +1182,11 @@ def band_free_measured(mesh, zf):
     for dz in (0.05, SEG[2] / 2, SEG[2] - 0.05):
         sl = mesh.slice(normal="z", origin=(0, 0, zf + dz))
         loops = mesh_loops(sl)
-        m, xs, ys = free_mask(loops, -45, 45, -30, 32)
+        # round 6: the cable notch joins the wall's outer and inner curves into one C-shaped curve, so the largest curve
+        # is no longer the outline; take the designed outer section (the notch then reads free; usb_keepout removes it)
+        m, xs, ys = free_mask(loops, -45, 45, -30, 32, outline=offset_rows(0.0, [zf + dz], outer=True)[0][:, :2])
         f = m if f is None else f & m
-    return f, xs, ys
+    return usb_keepout(f, xs, ys, zf), xs, ys
 
 
 def mesh_loops(sl):
@@ -1149,11 +1238,31 @@ def battery_solid(x=None):
     return box(x - BAT_L / 2, x + BAT_L / 2, BAT_Y0, BAT_Y1, BAT_Z0, BAT_Z0 + BAT_HT)
 
 
-def breakout_solids(dy=0.0):
-    """The breakout seated (dy = 0) or dy in front of its seat: PCB, socket, the soldered wire stubs on the front pads."""
-    return {"breakout": box(-BO_W / 2, BO_W / 2, BO_Y0 - dy, BO_Y1 - dy, BO_Z0, BO_Z1),
-            "socket": box(-SOCKET_W / 2, SOCKET_W / 2, BO_Y1 - 6.0 - dy, BO_YM - dy, Z_SOCK - SOCKET_H / 2, Z_SOCK + SOCKET_H / 2),
-            "wires": box(-4.5, 4.5, BO_Y0 + 0.2 - dy, BO_Y0 + 2.2 - dy, BO_Z1, BO_Z1 + BO_WIRE_H)}
+def usb_solids(dz=0.0, dx=0.0):
+    """The extension seated in the port (dz, dx: shifted, for the fault injection): its head, and its cable straight back
+    from the head's far end to 3 mm outside the back surface."""
+    return {"usb-head": box(HEAD_X + dx - HEAD_W / 2, HEAD_X + dx + HEAD_W / 2, HEAD_Y0, HEAD_Y1, HEAD_Z0 + dz, HEAD_Z1 + dz),
+            "usb-cable": ycyl(HEAD_X + dx, CABLE_Z + dz, CABLE_D / 2, HEAD_Y1, Y_BACK_OUT + 3.0)}
+
+
+def cable_hole(cup=False, r=None):
+    """The round passage (CABLE_HOLE_D) round the cable through the back wall, from 2 mm behind the head; the cups' part
+    runs straight up to the rim (open upward). r: another radius (the checks' passage)."""
+    r = CABLE_HOLE_D / 2 if r is None else r
+    h = ycyl(HEAD_X, CABLE_Z, r, HEAD_Y1 + 2.0, Y_BACK_OUT + 5.0)
+    if cup:
+        h = h + box(HEAD_X - r, HEAD_X + r, HEAD_Y1 + 2.0, Y_BACK_OUT + 5.0, CABLE_Z, SEAM + 1.0)
+    return h
+
+
+def cable_sweep(cable, up_to=None, from_z=None):
+    """The cable's section moved straight along z: from its place up to `up_to` (a cup coming off below it), or from
+    `from_z` up to its place (laid up into the body's notch): a box over the moved part plus the cable itself."""
+    bb = cable.bounding_box()
+    r = CABLE_D / 2
+    xc_, zc_ = (bb.min.X + bb.max.X) / 2, (bb.min.Z + bb.max.Z) / 2
+    z0, z1 = (zc_, up_to) if up_to is not None else (from_z, zc_)
+    return cable + box(xc_ - r, xc_ + r, bb.min.Y, bb.max.Y, z0, z1)
 
 
 def segment_solids(segs):
@@ -1398,15 +1507,18 @@ def row_runs(mesh, cells):
         d = cells[idx[0]][3]
         k = (ys >= y - d / 2) & (ys <= y + d / 2)
         line = f[k].all(0)
-        xm = np.mean([cells[i][0] for i in idx])
-        j = int(np.argmin(np.abs(xs - xm)))
-        check(line[j], f"row at y {y}: its centre is not free")
-        a, b = j, j
-        while a > 0 and line[a - 1]:
-            a -= 1
-        while b < len(line) - 1 and line[b + 1]:
-            b += 1
-        out.append(dict(z=z, y=y, idx=sorted(idx, key=lambda i: cells[i][0]), run=(xs[a], xs[b] + PX)))
+        runs = {}                                       # round 6: a row may be split into runs (by the USB head's footprint)
+        for i in idx:
+            j = int(np.argmin(np.abs(xs - cells[i][0])))
+            check(line[j], f"row at y {y}: segment at x {cells[i][0]:.1f} is not on free ground")
+            a, b = j, j
+            while a > 0 and line[a - 1]:
+                a -= 1
+            while b < len(line) - 1 and line[b + 1]:
+                b += 1
+            runs.setdefault((a, b), []).append(i)
+        for (a, b), ii in runs.items():
+            out.append(dict(z=z, y=y, idx=sorted(ii, key=lambda i: cells[i][0]), run=(xs[a], xs[b] + PX)))
     return out
 
 
@@ -1419,7 +1531,7 @@ def spot_part(x):
     return dict(box_props(SEG_G, (bb.min.X, bb.min.Y, bb.min.Z), (bb.max.X, bb.max.Y, bb.max.Z)), name="trim spot")
 
 
-def trim_plan(cells, runs, Mx_fixed, M_fixed):
+def trim_plan(cells, runs, Mx_fixed, M_fixed, best_effort=False):
     """Plumb: the fewest trim spots (segments on the bulkhead's back, right), then the fewest trim-layer segments left out
     (leftmost first), the rest slid along their rows (all rows by the same fraction of their slack) so the centre of mass
     lands on x 0. Returns a dict: kept, left out, spots used, G_x, slide fraction, and the trim layer's reach by sliding
@@ -1457,7 +1569,16 @@ def trim_plan(cells, runs, Mx_fixed, M_fixed):
                 t = 0.0 if hi == lo else -lo / (hi - lo)
                 kept = layout(removed, t)
                 return dict(kept=kept, left=[cells[i] for i in sorted(removed)], spots=spots, gx=gx(kept, spots), t=t, auth=auth)
-    check(False, f"no trim plan reaches plumb (trim layer's reach {auth[0]:+.2f}..{auth[1]:+.2f}, spots {TRIM_SPOTS})")
+    msg = f"no trim plan reaches plumb (trim layer's reach {auth[0]:+.2f}..{auth[1]:+.2f}, spots {TRIM_SPOTS})"
+    check(best_effort, msg)
+    best = None                                         # the closest plan, for the report of a failed build
+    for k in range(len(cells)):
+        for t in (0.0, 1.0):
+            kept = layout(set(order[:k]), t)
+            g = gx(kept, list(TRIM_SPOTS))
+            if best is None or abs(g) < abs(best["gx"]):
+                best = dict(kept=kept, left=[cells[i] for i in sorted(order[:k])], spots=list(TRIM_SPOTS), gx=g, t=t, auth=auth, fail=msg)
+    return best
 
 
 def roll_full(pts, G, step=0.25):
@@ -1545,8 +1666,10 @@ def led_keepout():
 
 
 def door_tool_access():
-    """A blunt tool from below onto the door's back strip under the PCB (to push the door out): the space it needs."""
-    return box(XOFF - 6, XOFF + 6, Y_DOOR_BACK + 0.3, Y_DOOR_BACK + 4.0, -20, PCB_Z0 - 0.3)
+    """A blunt tool from below onto the door's back strip under the PCB (to push the door out): the space it needs. Round
+    6: TOOL_W wide, right of the USB head (it reaches there with the plug in; round 5: 12 wide on the door's centre)."""
+    x0 = HEAD_X + HEAD_W / 2 + HEAD_CLR
+    return box(x0, x0 + TOOL_W, Y_DOOR_BACK + 0.3, Y_DOOR_BACK + 4.0, -20, PCB_Z0 - 0.3)
 
 
 # ---- round 3 checks ------------------------------------------------------------------------------------------------
@@ -1770,17 +1893,82 @@ def packing(layers, bosses, measured_mesh=None):
 
 
 
-def best_stack(z_bottom, bosses):
-    """The stack height (top layer ending 0..SEG[2] below SEG_TOP_MAX, 0.25 steps) that holds the most segments; ties: the
+def best_stack(z_bottom, bosses, top_max=SEG_TOP_MAX):
+    """The stack height (top layer ending 0..SEG[2] below top_max, 0.25 steps) that holds the most segments; ties: the
     lower stack. Returns ({floor z: segments}, top)."""
     best = None
     for i in range(int(SEG[2] / 0.25)):
-        top = SEG_TOP_MAX - 0.25 * i
+        top = top_max - 0.25 * i
         pk = {z: v for z, v in packing(floors(z_bottom, top), bosses).items() if v}
         n = sum(len(v) for v in pk.values())
         if best is None or n > best[0] or (n == best[0] and top < best[2]):
             best = (n, pk, top)
     return best[1], best[2]
+
+
+def battery_sweeps():
+    """The battery's way up (battery_path) as boxes: straight up at X1, across at Z_MID, straight up at X2 to its seat."""
+    bp, h = BAT_PATH, BAT_L / 2
+    out = {"up": box(bp["X1"] - h, bp["X1"] + h, BAT_Y0, BAT_Y1, -60, bp["Z_MID"] + BAT_HT)}
+    if bp["Z_MID"] < BAT_Z0:
+        out["across"] = box(min(bp["X1"], bp["X2"]) - h, max(bp["X1"], bp["X2"]) + h, BAT_Y0, BAT_Y1, bp["Z_MID"], bp["Z_MID"] + BAT_HT)
+        out["up to the seat"] = box(bp["X2"] - h, bp["X2"] + h, BAT_Y0, BAT_Y1, bp["Z_MID"], BAT_Z0 + BAT_HT)
+    return out
+
+
+def usb_checks(body, cups, door, bat, bd, rods, cast, seg_sets, dz=0.0, dx=0.0):
+    """The extension's head and cable (dz, dx: shifted, for the fault injection) against everything, seated and on the
+    ways in and out: the plug pushed up into the port from below (cup off, battery in), the cable laid up into the body's
+    notch, each cup coming off straight down. Returns the measured gaps."""
+    R = {}
+    u = usb_solids(dz, dx)
+    head, cable = u["usb-head"], u["usb-cable"]
+    pas = CABLE_HOLE_D / 2 - CABLE_D / 2 - 0.01           # the cable in its round passage
+    y_in = Y_BACK_OUT - WALL - 1.0                          # the cable's run inside, up to 1 mm before the back wall's inner face
+    run = ycyl(HEAD_X + dx, CABLE_Z + dz, CABLE_D / 2, HEAD_Y1, y_in)
+    up = sweep_z(head, -30.0)                               # the plug's way up into the port
+    # the passage first (an obstruction in it would also show as a cable clearance below)
+    R["hole"] = {}
+    passage = cable_hole(r=CABLE_HOLE_D / 2 - 0.01)
+    for n, cup in cups.items():
+        R["hole"][n] = overlap(passage, cup)
+    R["hole"]["body"] = overlap(passage, body)
+    check(max(R["hole"].values()) < EPS_V and overlap(passage, cable) > 1.0, f"the cable hole is not free along the cable: {R['hole']}")
+    # ways in and out: the plug up into the port (cup off, battery and board in), the cable laid up into the body's notch,
+    # each cup off straight down (relative to the cups, head and cable move up)
+    R["up_bat"] = clear(up, bat, "USB head on its way up: the battery", BAT_HEAD_MIN - 1e-3)
+    R["up_body"] = clear(up, body, "USB head on its way up into the port: the body", HEAD_CLR)
+    R["up_door"] = clear(up, door, "USB head on its way up: the door", HEAD_CLR)
+    R["up_board"] = min(clear(up, s, f"USB head on its way up: {n}", HEAD_CLR, touch_ok=(n == "pcb"))
+                        for n, s in list(bd.items()) + list(rods.items()))
+    R["lay_body"] = clear(cable_sweep(cable, from_z=-30.0), body, "USB cable laid up into the body's notch", CABLE_LAY_MIN)
+    hb = head.bounding_box()
+    head_off = box(hb.min.X, hb.max.X, hb.min.Y, hb.max.Y, hb.min.Z, SEAM + 10)
+    for n, cup in cups.items():
+        R[f"off_head_cup-{n}"] = clear(head_off, cup, f"cup-{n} off straight down: the USB head", HEAD_CLR)
+        R[f"off_cable_cup-{n}"] = clear(cable_sweep(cable, up_to=SEAM + 10), cup, f"cup-{n} off straight down: the USB cable", pas)
+    # seated
+    check(gap_to(head, bd["pcb"]) < 1e-3 and overlap(head, bd["pcb"]) < EPS_V, "USB head not seated against the PCB's edge")
+    R["head_body"] = clear(head, body, "USB head to the body", HEAD_CLR)
+    R["cable_body"] = clear(cable, body, "USB cable in the body's notch", pas)
+    R["run_body"] = clear(run, body, "USB cable's run inside: the body (bosses, bulkhead)", HEAD_CLR)
+    for n, cup in cups.items():
+        R[f"head_cup-{n}"] = clear(head, cup, f"USB head to cup-{n}", HEAD_CLR)
+        R[f"cable_cup-{n}"] = clear(cable, cup, f"USB cable in cup-{n}'s notch", pas)
+        R[f"run_cup-{n}"] = clear(run, cup, f"USB cable's run inside cup-{n}", HEAD_CLR)
+    R["head_cast"] = clear(head, cast, "USB head to the cast", HEAD_CLR)
+    R["cable_cast"] = clear(cable, cast, "USB cable to the cast", HEAD_CLR)
+    R["head_bat"] = clear(head, bat, "USB head to the battery", BAT_HEAD_MIN - 1e-3)
+    R["cable_bat"] = clear(cable, bat, "USB cable to the battery", HEAD_CLR)
+    R["segs"] = {}
+    for n, (cup, segs) in seg_sets.items():
+        g = 6.0
+        for i, sg in enumerate(segs):
+            g = min(g, clear(sg, head, f"{n}: segment {i} to the USB head", HEAD_CLR),
+                    clear(sg, cable, f"{n}: segment {i} to the USB cable", HEAD_CLR),
+                    clear(sg, head_off, f"{n}: segment {i} to the USB head as the cup comes off", HEAD_CLR))
+        R["segs"][n] = g
+    return R
 
 
 def build():
@@ -1789,13 +1977,20 @@ def build():
     from scipy.spatial import cKDTree
     t0 = time.time()
     OUT.mkdir(exist_ok=True)
+    for f_ in OUT.glob("dummy-*.stl"):                    # round 6: no stale dummies (breakout, socket, wires) in the views
+        f_.unlink()
     log = lambda m: print(f"[{time.time() - t0:6.1f} s] {m}", flush=True)
     S = Surfaces()
     log(f"surfaces: outer {S.dev_outer:.3f}, inner {S.dev_inner:.3f} from their points; inner flare {FLARE_IN}; keel {KEEL} NC {P['NC']}")
     bosses = boss_spots()
-    pk_steps, top_steps = best_stack(S.inner_z[0], bosses)
+    # round 6: the cast's top (= the trim layer's floor) as high as the USB head allows (round 5: 17.9, under SEG_TOP_MAX)
+    top_rock = min(SEG_TOP_MAX, CAST_TOP_MAX + SEG[2])
+    lay_rock = [round(top_rock - SEG[2], 4)]
+    check(TRIM_LAYERS == 1, "round 6 builds one trim layer")
+    pk_steps = packing(lay_rock, bosses)
+    if BUILD_STEPS:
+        pk_steps, top_steps = best_stack(S.inner_z[0], bosses, top_rock)
     lay_steps = sorted(pk_steps)
-    lay_rock = lay_steps[-TRIM_LAYERS:]
     cast_to = lay_rock[0]
     pk_flat, top_flat = best_stack(CUT_FLAT + FLAT_FLOOR_MIN, bosses)
     lay_flat = sorted(pk_flat)
@@ -1842,39 +2037,34 @@ def build():
         check(overlap(s, door) < EPS_V, f"{n} in its slot")
     R["tab_pcb"] = min(gap_to(sweep_y(bd["pcb"]), tab_solid(S, sx, zl)) for sx, zl in TABS)
     bat = battery_solid()
-    R["bat_sweep"] = clear(sweep_z(bat), body, "battery on its way up", BAT_SWEEP_MIN - 0.05)
+    R["bat_sweep"] = {n: clear(sw, body, f"battery on its way up ({n})", BAT_SWEEP_MIN - 0.05) for n, sw in battery_sweeps().items()}
     R["bat_board"] = clear(bat, bd["pcb"], "battery to the board", BAT_GAP - 0.01)
     R["bat_bulk"] = gap_to(bat, body)
-    # breakout: up from below BO_DY in front of its seat, then back into it (socket and wire stubs on)
-    R["bo_up"], R["bo_up_bat"], R["bo_slide"] = {}, {}, {}
-    for n, c in breakout_solids(BO_DY).items():
-        up = sweep_z(c, -30.0)
-        R["bo_up"][n] = clear(up, body, f"breakout {n} on its way up", BO_PATH_CLR)
-        R["bo_up_bat"][n] = gap_to(up, bat)
-    for n, c in breakout_solids(0.0).items():
-        bb = c.bounding_box()
-        sl = box(bb.min.X, bb.max.X, bb.min.Y - BO_DY, bb.max.Y, bb.min.Z, bb.max.Z)
-        R["bo_slide"][n] = clear(sl, body, f"breakout {n} sliding into its seat", 0.0, touch_ok=True)
-    R["bo_bat"] = dist_shapes(breakout_solids(0.0)["breakout"], bat)[0]
     # the LEDs' room behind the logo, and a tool's way to the door's back strip
     led = led_keepout()
     check(overlap(led, body) < EPS_V, "the LEDs' room behind the logo is not free")
-    R["led_bat"] = gap_to(led, sweep_z(bat))
+    R["led_bat"] = min(gap_to(led, sw) for sw in battery_sweeps().values())
     R["led_board"] = min(gap_to(led, sweep_y(s)) for s in bd.values())          # gap_to stops looking at 6
     check(R["led_bat"] >= LED_MIN and R["led_board"] >= LED_MIN,
           f"LEDs' room: {R['led_bat']:.2f} from the battery's way up, {R['led_board']:.2f} from the board's way in (< {LED_MIN})")
     R["spots"] = {}
+    global TRIM_SPOT_Z0                                 # round 6: the lowest bottom (0.5 steps) where both spots clear the body
+    for z0 in np.arange(TRIM_SPOT_Z_LO, 27.51, 0.5):
+        TRIM_SPOT_Z0 = float(z0)
+        if all(overlap(spot_box(x), body) < EPS_V for x in TRIM_SPOTS):
+            break
     for x in TRIM_SPOTS:
         sp = spot_box(x)
         R["spots"][x] = clear(sp, body, f"trim spot x {x}", 0.0, touch_ok=True)
         clear(sp, bat, f"trim spot x {x} to the battery", 0.3)
-        for n, c in breakout_solids(0.0).items():
-            clear(sp, c, f"trim spot x {x} to the breakout {n}", 0.3)
     check(TRIM_SPOTS[0] - TRIM_SPOTS[1] >= SEG[0] + 0.3, "trim spots overlap")
     tool = door_tool_access()
     check(overlap(tool, body) < EPS_V, "no tool access to the door's back strip")
-    R["tool"] = min(gap_to(tool, s) for s in (bd["pcb"], bd["glass"], bat))
-    check(R["tool"] >= TOOL_MIN, f"door tool's way: {R['tool']:.2f} from the board / battery (< {TOOL_MIN})")
+    R["tool"] = min(gap_to(tool, s) for s in (bd["pcb"], bd["glass"], bat, *usb_solids().values()))
+    check(R["tool"] >= TOOL_MIN, f"door tool's way: {R['tool']:.2f} from the board / battery / USB head (< {TOOL_MIN})")
+    R["slots"] = slot_land_check(door)
+    R["rod_slot"] = min(dist_shapes(r_, door)[0] for r_ in rods.values())
+    check(R["rod_slot"] > 0.0, f"a rod touches its slot: {R['rod_slot']:.3f}")
     log("fits")
     R["meat_body"] = [dist_shapes(zcyl(s["x"], s["y"], SEAM_R_HOLE if s["kind"] == "mag" else PIN_R_BODY, SEAM,
                                        SEAM + (SEAM_MAG_H + MAG_CLR_H if s["kind"] == "mag" else PIN_DEPTH)), Compound(f_out))[0] for s in bosses]
@@ -1914,7 +2104,7 @@ def build():
     dummies = dict(bd)
     dummies.update(rods)
     dummies["battery"] = bat
-    dummies.update(breakout_solids(0.0))
+    dummies.update(usb_solids())
     dummies["cast"] = cast
     dummies["led-room"] = led
     for n, s in dummies.items():
@@ -1945,12 +2135,20 @@ def build():
     mm = lambda cup: {n: meshes[n] for n in ("body", cup, "door")}
     cases = {"nominal": dict(m_board=M_BOARD, m_bat=M_BAT, rho=RHO_CAST), "bad": dict(m_board=BAD["M_BOARD"], m_bat=BAD["M_BAT"], rho=BAD["RHO_CAST"])}
     C = {}
+    # round 6: the mass model's asserts (assumed masses) are collected, written into the report and build sheet, then raised
+    # at the end: the build still fails, but the numbers that fail are on paper
+    FAIL = []
+    soft = lambda ok, msg: ok or FAIL.append(msg)
     for cn, cs in cases.items():
         cast_p = dict(mesh_props(OUT / "dummy-cast.stl", cs["rho"]), name="cast")
         nb = mass_parts(mm("cup-rock"), [], m_board=cs["m_board"], m_bat=cs["m_bat"])
         M_nb, G_nb, _ = combine(nb)
         M_f, G_f, _ = combine(nb + [cast_p])
-        tp = trim_plan(cells["cup-rock"], runs, M_f * G_f[0], M_f)
+        try:
+            tp = trim_plan(cells["cup-rock"], runs, M_f * G_f[0], M_f)
+        except AssertionError as e:
+            FAIL.append(f"{cn}: {e}")
+            tp = trim_plan(cells["cup-rock"], runs, M_f * G_f[0], M_f, best_effort=True)
         kept, left, gx, auth, t = tp["kept"], tp["left"], tp["gx"], tp["auth"], tp["t"]
         x_need = -M_nb * G_nb[0] / (cast_p["m"] + SEG_G * len(cells["cup-rock"]))
         st = stability(pts["cup-rock"], mass_parts(mm("cup-rock"), kept, extra=[cast_p] + [spot_part(x) for x in tp["spots"]],
@@ -1962,13 +2160,13 @@ def build():
                      fwd=fwd, back=back, rest_p=rest_p, rest=rest, crest=crest, M_nb=M_nb, G_nb=G_nb)
         # the loft closes the pole in a cone 0.002 high (first section +-0.42): it reads as a +-0.25 deg pivot round upright,
         # far below what a print holds; any other rest position (beyond 1 deg) fails
-        check(len(rest) >= 1 and all(abs(q) <= 1.0 for q in rest), f"{cn}: sideways rest positions {rest} (upright only, expected)")
+        soft(len(rest) >= 1 and all(abs(q) <= 1.0 for q in rest), f"{cn}: sideways rest positions {rest} (upright only, expected)")
     n_, b_ = C["nominal"], C["bad"]
-    check(n_["margin"] >= MARGIN_MIN, f"nominal: centre of mass {n_['margin']:.2f} under the rocking centre (needs {MARGIN_MIN})")
-    check(b_["margin"] >= MARGIN_MIN, f"bad case: centre of mass {b_['margin']:.2f} under the rocking centre (needs {MARGIN_MIN})")
-    check(min(n_["fwd"], n_["back"]) >= FWD_MIN_NOMINAL, f"nominal fore-aft {n_['fwd']:.2f} / {n_['back']:.2f} < {FWD_MIN_NOMINAL}")
-    check(min(b_["fwd"], b_["back"]) >= FWD_MIN_BAD, f"bad case fore-aft {b_['fwd']:.2f} / {b_['back']:.2f} < {FWD_MIN_BAD}")
-    check(abs(n_["gx"]) < 0.01, f"trim plan misses plumb: {n_['gx']:+.3f}")
+    soft(n_["margin"] >= MARGIN_MIN, f"nominal: centre of mass {n_['margin']:.2f} under the rocking centre (needs {MARGIN_MIN})")
+    soft(b_["margin"] >= MARGIN_MIN, f"bad case: centre of mass {b_['margin']:.2f} under the rocking centre (needs {MARGIN_MIN})")
+    soft(min(n_["fwd"], n_["back"]) >= FWD_MIN_NOMINAL, f"nominal fore-aft {n_['fwd']:.2f} / {n_['back']:.2f} < {FWD_MIN_NOMINAL}")
+    soft(min(b_["fwd"], b_["back"]) >= FWD_MIN_BAD, f"bad case fore-aft {b_['fwd']:.2f} / {b_['back']:.2f} < {FWD_MIN_BAD}")
+    soft(abs(n_["gx"]) < 0.01, f"trim plan misses plumb: {n_['gx']:+.3f}")
     arc = arc_profile(OUT / "cup-rock.stl", z0=0.005)
     rl, rr = np.hypot(arc[:, 1], arc[:, 0] - RR), np.hypot(arc[:, 2], arc[:, 0] - RR)
     R["arc"] = (float(np.max(np.abs(rl - rr))), float(np.max(np.abs(np.r_[rl, rr] - RR))))
@@ -1987,7 +2185,7 @@ def build():
         sf["ranges"] = [crest_range(pts["cup-flat"], sf["G"], ax, sg, lim)
                         for (ax, sg), lim in zip((("roll", 1), ("roll", -1), ("pitch", -1), ("pitch", 1)), sf["lim"])]
     for cn, sf in st_flat.items():
-        check(min(sf["lim"]) >= 25, f"stable cup, {cn}: tips at {min(sf['lim']):.0f} deg")
+        soft(min(sf["lim"]) >= 25, f"stable cup, {cn}: tips at {min(sf['lim']):.0f} deg")
     zb0 = DOOR_ZC - BAT_L / 2
     alt = (XOFF - BAT_HT / 2, Y_BOARD1 + BAT_GAP, zb0, XOFF + BAT_HT / 2, Y_BOARD1 + BAT_GAP + BAT_T, zb0 + BAT_L)
     st_alt = stability(pts["cup-rock"], mass_parts(mm("cup-rock"), n_["kept"], battery=alt, extra=[n_["cast"]] + [spot_part(x) for x in n_["spots"]]))
@@ -1999,10 +2197,30 @@ def build():
     for cn, c in C.items():
         boxes = segment_solids(c["kept"]) + [spot_box(x) for x in c["spots"]]
         for i, b in enumerate(boxes):
-            for n, o in (("body", body), ("cup-rock", cup_rock), ("battery", bat), *breakout_solids(0.0).items()):
+            for n, o in (("body", body), ("cup-rock", cup_rock), ("battery", bat), *usb_solids().items()):
                 check(overlap(b, o) < EPS_V, f"{cn} trim layout: piece {i} hits the {n}")
             for j in range(i):
                 check(overlap(b, boxes[j]) < EPS_V, f"{cn} trim layout: pieces {i} and {j} overlap")
+    seg_sets = {f"cup-rock {cn}": (cup_rock, segment_solids(c["kept"]) + [spot_box(x) for x in c["spots"]]) for cn, c in C.items()}
+    seg_sets["cup-flat"] = (cup_flat, segment_solids(cells["cup-flat"]))
+    if os.environ.get("ROLY_DUMP"):                  # the solids for the fault-injection harness (never fatal)
+        import pickle
+        import build123d as _b3d
+
+        def bare(o):                                 # base shapes without their (unpicklable) OCC history
+            if isinstance(o, _b3d.Shape):
+                return _b3d.Solid(o.wrapped) if isinstance(o, _b3d.Solid) else _b3d.Compound(o.wrapped)
+            if isinstance(o, dict):
+                return {k: bare(v) for k, v in o.items()}
+            if isinstance(o, (list, tuple)):
+                return type(o)(bare(v) for v in o)
+            return o
+        try:
+            pathlib.Path(os.environ["ROLY_DUMP"]).write_bytes(pickle.dumps(bare(dict(body=body, cups=dict(rock=cup_rock, flat=cup_flat),
+                door=door, bat=bat, bd=bd, rods=rods, cast=cast, seg_sets=seg_sets))))
+        except Exception as e:
+            log(f"ROLY_DUMP failed: {e!r}")
+    R["usb"] = usb_checks(body, dict(rock=cup_rock, flat=cup_flat), door, bat, bd, rods, cast, seg_sets)
     R["skin"] = logo_floor_check(body, f_out[0])
     R["logo_outline"] = logo_outline_check(S, body)
     R["logo_roof"] = logo_roof_check(S, OUT / "body.stl")
@@ -2036,12 +2254,19 @@ def build():
                  depth=cast_to - S.inner_z[0], half=(S.inner_z[0] + cast_to) / 2)
     balls["V1"] = vol(cast & box(-100, 100, -100, 100, -5, balls["half"])) / 1000
     balls["nom1"] = balls["V1"] * phi(RHO_CAST) * RHO_BALL
-    j5 = np.array([XOFF + hw.PCB_W / 2 + 2, Y_BOARD1 - 2, PCB_Z0 + hw.PLUG_Z["j5"]])
+    # round 6: three batches of 5-minute epoxy, each to a third of the cast's volume (levels by bisection on the solid)
+    lv = []
+    for k in (1, 2):
+        lo_, hi_ = S.inner_z[0], cast_to
+        for _ in range(14):
+            mid = (lo_ + hi_) / 2
+            lo_, hi_ = (mid, hi_) if vol(cast & box(-100, 100, -100, 100, -5, mid)) / 1000 < k * Vc / 3 else (lo_, mid)
+        lv.append((lo_ + hi_) / 2)
+    balls["levels"] = lv + [cast_to]
+    balls["batch_balls"] = Vc / 3 * phi(RHO_CAST) * RHO_BALL
+    balls["batch_epoxy"] = Vc / 3 * (1 - phi(RHO_CAST))
     i2c = np.array([XOFF + hw.PCB_W / 2 + 2, Y_BOARD1 - 2, PCB_Z0 + hw.PLUG_Z["i2c"]])
-    over = np.array([0.0, (BULK_Y0 + BULK_Y1) / 2, BULK_TOP + 2])
-    pads = np.array([0.0, BO_Y0 + 1, BO_Z1 + 2])
-    route = dict(j5=float(np.linalg.norm(over - pads) + np.linalg.norm(j5 - over)),
-                 led=float(np.linalg.norm(i2c - np.array([LOGO_X - 4, -12.0, i2c[2]])) + abs(i2c[2] - LOGO_ZC)))
+    route = dict(led=float(np.linalg.norm(i2c - np.array([LOGO_X - 4, -12.0, i2c[2]])) + abs(i2c[2] - LOGO_ZC)))
     R["service"] = 40.0                                    # the door comes this far out to reach the plugs
 
     info = dict(R=R, files=files, meshes={n: dict(m=v["m"], c=list(v["c"]), V=v["V"]) for n, v in meshes.items()},
@@ -2053,9 +2278,11 @@ def build():
         if cs:
             write_stl(Compound(segment_solids(cs)), OUT / f"dummy-{n}.stl")
     write_stl(Compound([spot_box(x) for x in TRIM_SPOTS]), OUT / "dummy-trim-spots.stl")
+    info["FAIL"] = FAIL
     report(info)
     build_sheet(info)
     focus(info)
+    check(not FAIL, "mass model (assumed masses): " + "; ".join(FAIL))
     log("done")
     return info
 
@@ -2075,12 +2302,33 @@ def report(I):
     ov, bl = I["ov"], I["balls"]
     L = []
     a = L.append
-    a(f"DESK HOUSING track B: roly-poly, FDM prototype, round 2  (outline: the study's XOFF {XOFF} Z2L {P['Z2L']:.0f} A2L {P['A2L']} "
+    a(f"DESK HOUSING track B: roly-poly, FDM prototype, round 6  (outline: the study's XOFF {XOFF} Z2L {P['Z2L']:.0f} A2L {P['A2L']} "
       f"Z2R {P['Z2R']:.0f} A2R {P['A2R']:.0f}; keel '{KEEL}' NC {P['NC']}; wall {WALL}; slot {SLOT_TYPE})")
     a("[m] measured on the exported files / solids; [d] designed; [calc] calculated from them with ASSUMED masses: nominal board "
       f"{M_BOARD:.0f} g, battery {M_BAT:.0f} g, misc {M_MISC:.0f} g, cast {RHO_CAST} g/cm3; bad case board {BAD['M_BOARD']:.0f}, battery "
       f"{BAD['M_BAT']:.0f}, cast {BAD['RHO_CAST']}")
     a("")
+    U = R["usb"]
+    if I["FAIL"]:
+        a("FAILED (mass model, assumed masses; the build raises after writing this report):")
+        for f_ in I["FAIL"]:
+            a(f"  {f_}")
+        a("")
+    a("ROUND 6 (first print)")
+    a(f"  usb        the breakout, its ledges / wall pocket / back hole / bulkhead notch and the J5 pigtail are gone; a right-angle "
+      f"USB-C extension plugs straight into the board's own port from below (head {HEAD_W:g} x {HEAD_L:g} x {HEAD_COLLAR + HEAD_T:g} ASSUMED, "
+      f"z {HEAD_Z0:.1f}..{HEAD_Z1:.1f}); its D{CABLE_D:g} cable leaves straight back at z {CABLE_Z:.1f}, x {HEAD_X:+g} through a round D{CABLE_HOLE_D:g} "
+      f"hole split by the seam (body notch open downward, a notch open upward in each cup): each cup comes off straight down "
+      f"with the plug in")
+    a(f"  battery    raised {BAT_Z0 - 23.0:g} to z {BAT_Z0:g} ({BAT_HEAD_MIN:g} over the head); bulkhead to z {BULK_TOP:g}, notched {2 * HEAD_NOTCH_X:g} wide to "
+      f"z {HEAD_NOTCH_TOP:g} for the head; its way up from below now has a {abs(BAT_PATH['X2'] - BAT_PATH['X1']):.2f} mm sideways step")
+    a(f"  cast       top lowered 17.9 -> {I['cast_to']:g} ({HEAD_CLR:g} under the head; the trim terrace with it); segments under the head "
+      f"and the cable dropped (rock {len(I['cells']['cup-rock'])} vs 6, flat {len(I['cells']['cup-flat'])} vs 12)")
+    a(f"  trim spot  bottom 27.5 -> {TRIM_SPOT_Z0:g} (lowest that clears the body, 0.5 steps)")
+    a(f"  slots      {SLOT_W:g} wide (was 8.6) with a {SLOT_LAND:g} straight land at the door's inner face, then 45 deg out to the face "
+      "(smooth shells' round 3)")
+    a(f"  logo       skin 0.8 -> {LOGO_SKIN:g} (per-letter pockets with 45 deg roofs kept)")
+    a(f"  masses     bad case board 40 -> {BAD['M_BOARD']:g} g; door tool path moved right of the USB head")
     a("ROUND 5: the letter pockets get 45 deg roofs (a slicer filled them with support); lit outline, floors and skin unchanged")
     a(f"ROUND 4: the logo moved from x {LOGO_X_OLD:g} to x {LOGO_X:g} (off the alcove's flare onto the plain belly; same 14 mm, z "
       f"{LOGO_ZC:g}, glow-through); everything else as round 3")
@@ -2119,8 +2367,12 @@ def report(I):
       f"face y {Y_PANEL:.2f}, set back {Y_PANEL - float(y_front(XOFF, DOOR_ZC)):.2f} at its centre")
     a(f"  opening    [d] {OPEN_W} x {OPEN_H} R{OPEN_R}; the board needs {need_w:.2f} x {need_h:.2f} (J5/I2C plugs {hw.PLUG_PROUD} assumed)")
     a(f"  way in     [m] door edge gap {R['door_gap']:.2f}; " + ", ".join(f"{k} {v:.2f}" for k, v in R["sweep"].items()) + f"; PCB to the tabs {R['tab_pcb']:.2f}")
-    a(f"  slots      [d] {hw.SLOT_W} x {SLOT_L:.2f} for {ROD_L} rods: 0.1 play per end, as track A (intended: the visible opening is the "
-      f"slot; the rod sits 0.1 short of each end); x {TUBE_X[0]:.2f} / {TUBE_X[1]:.2f}, z {AA_ZC - SLOT_L / 2:.2f}..{AA_ZC + SLOT_L / 2:.2f}")
+    a(f"  slots      [d] {SLOT_W} x {SLOT_L:.2f} for {ROD_L} rods ({hw.ROD_W:g} wide): 0.1 play per end, as track A (intended: the visible "
+      f"opening is the slot; the rod sits 0.1 short of each end); x {TUBE_X[0]:.2f} / {TUBE_X[1]:.2f}, z {AA_ZC - SLOT_L / 2:.2f}..{AA_ZC + SLOT_L / 2:.2f}")
+    SL = R["slots"]
+    a(f"  land       [m] on {SL[0]['n']} sections along each slot: at the door's inner (back) face {min(q['w'] for q in SL):.3f}..{max(q['w_max'] for q in SL):.3f} "
+      f"wide, straight for {min(q['depth'] for q in SL):.2f}..{max(q['depth_max'] for q in SL):.2f} from the inner face ({LAND_DY} steps), both sides, "
+      f"both slots; then 45 deg out to an opening of {min(q['face'] for q in SL):.2f} on the face; rods to the door {R['rod_slot']:.3f} at the closest")
     a(f"  stack      [d] board stack {hw.BOARD_T} (housing.py's measured value; the drawing says 9.3): battery to the board "
       f"{R['bat_board']:.2f} [m], {R['bat_board'] - 0.3:.2f} with the drawing's 9.3")
     a("  power      no hole for the slide switch (the user drills one if wanted); RST / BOOT behind the door")
@@ -2129,15 +2381,28 @@ def report(I):
     a("")
     a("INSIDE")
     a(f"  battery    [d] {BAT_L:.0f} x {BAT_HT:.0f} x {BAT_T:.0f} on its long edge, x {BAT_X:+.2f}, z {BAT_Z0}..{BAT_Z0 + BAT_HT:.0f}, taped to the "
-      f"bulkhead; [m] up through the seam {R['bat_sweep']:.2f}, to the body {R['bat_bulk']:.2f}")
-    a(f"  breakout   [d] up from below {BO_DY} in front of its seat (through a bulkhead notch {2 * BO_NOTCH_X:.1f} wide, to z {BO_NOTCH_TOP:.1f}), "
-      f"then {BO_DY} back: socket into the hole, PCB edge into the wall pocket, side strips onto two ledges; glued")
-    a(f"             [m] way up (PCB, socket, wire stubs): " + ", ".join(f"{k} {v:.2f}" for k, v in R["bo_up"].items()) +
-      "; sliding in: no overlap (touching its seat allowed: this proves no overlap, not a clearance); with the battery already in: "
-      + ", ".join(f"{k} {v:.2f}" for k, v in R["bo_up_bat"].items()))
+      f"bulkhead; [m] to the body {R['bat_bulk']:.2f}; its way up from below (cup off, before the board): straight up at x "
+      f"{BAT_PATH['X1']:+.2f} until its bottom is at z {BAT_PATH['Z_MID']:.2f}, {BAT_PATH['X2'] - BAT_PATH['X1']:+.2f} sideways, up to its seat at x "
+      f"{BAT_PATH['X2']:+.2f}: " + ", ".join(f"{k} {v:.2f}" for k, v in R["bat_sweep"].items()) + f" [m] (a straight way would leave "
+      f"{BAT_PATH['straight']:+.2f} per side [d])")
+    a(f"  usb head   [d] port at x {HEAD_X:+g}, y {PORT_Y:.2f} ({hw.PORT_Y_FROM_BOARD_BACK:g} in front of the board's back, ASSUMED); head x "
+      f"{HEAD_X - HEAD_W / 2:+.1f}..{HEAD_X + HEAD_W / 2:+.1f}, y {HEAD_Y0:.2f}..{HEAD_Y1:.2f}, z {HEAD_Z0:.1f}..{HEAD_Z1:.1f}; [m] seated: body {U['head_body']:.2f}, "
+      f"battery {U['head_bat']:.2f}, cast {U['head_cast']:.2f}, " + ", ".join(f"cup-{n} {U[f'head_cup-{n}']:.2f}" for n in ("rock", "flat")) +
+      f"; pushed up into the port from below (cup off, battery and board in): body {U['up_body']:.2f}, battery {U['up_bat']:.2f}, door "
+      f"{U['up_door']:.2f}, board (except the PCB edge it seats on) / rods {U['up_board']:.2f}; cups off straight down: " +
+      ", ".join(f"cup-{n} {U[f'off_head_cup-{n}']:.2f}" for n in ("rock", "flat")) + f" (asserted >= {HEAD_CLR}, battery >= {BAT_HEAD_MIN})")
+    a(f"  usb cable  [d] D{CABLE_D:g} straight back from y {HEAD_Y1:.2f} at z {CABLE_Z:.1f}; through the D{CABLE_HOLE_D:g} hole (body notch z {SEAM:g}.."
+      f"{CABLE_Z + CABLE_HOLE_D / 2:.1f}, cup notches z {CABLE_Z - CABLE_HOLE_D / 2:.1f}..{SEAM:g}); [m] in the hole: body {U['cable_body']:.2f}, "
+      + ", ".join(f"cup-{n} {U[f'cable_cup-{n}']:.2f}" for n in ("rock", "flat")) + f"; its run inside (to 1 mm before the wall): body "
+      f"{U['run_body']:.2f}, " + ", ".join(f"cup-{n} {U[f'run_cup-{n}']:.2f}" for n in ("rock", "flat")) + f", cast {U['cable_cast']:.2f}, "
+      f"battery {U['cable_bat']:.2f}; laid up into the body's notch {U['lay_body']:.2f}; cups off straight down: " +
+      ", ".join(f"cup-{n} {U[f'off_cable_cup-{n}']:.2f}" for n in ("rock", "flat")) + "; the passage (D" + f"{CABLE_HOLE_D - 0.02:g}) overlaps "
+      "nothing along the cable: " + ", ".join(f"{k} {v:.4f} mm3" for k, v in U["hole"].items()))
+    a(f"  segments   [m] to the USB head / cable (seated and as the cup comes off): " + ", ".join(f"{k} {v:.2f}" for k, v in U["segs"].items()) +
+      f" (asserted >= {HEAD_CLR}; the trim layouts of both cases, the bulkhead spots, the flat cup's segments)")
     a(f"  trim spots [m] x " + ", ".join(f"{x:+.1f}" for x in TRIM_SPOTS) + f", z {TRIM_SPOT_Z0}..{TRIM_SPOT_Z0 + SEG[1]:.1f} on the bulkhead's back: no "
-      "overlap with the body (they sit on the bulkhead: no overlap, not a clearance), >= 0.3 from the battery and the breakout; "
-      "final trim layouts (left out, slid, spots) checked against body, cup, battery, breakout and wires for both cases")
+      "overlap with the body (they sit on the bulkhead: no overlap, not a clearance), >= 0.3 from the battery; "
+      "final trim layouts (left out, slid, spots) checked against body, cup, battery, USB head and cable for both cases")
     a(f"  logo       [d] {LOGO_W:.0f} mm letters at x {LOGO_X}, z {LOGO_ZC}; [m] pockets with 45 deg roofs: lit outline within "
       f"{R['logo_outline']['off']} at the skin ({R['logo_outline']['n_in']} points inside / {R['logo_outline']['n_out']} outside the edges, "
       f"{R['logo_outline']['tops']} on top edges); faces steeper than 46 deg only within {R['logo_roof']['far']:.3f} of the skin "
@@ -2150,7 +2415,7 @@ def report(I):
       f"LEDs' room (4.5..8.5 behind the letters' centre" + (f", {LED_SHIFT:g} right" if LED_SHIFT else "") + ") "
       f"free: {'>= 6' if R['led_bat'] >= 5.99 else format(R['led_bat'], '.2f')} from the battery's way up, "
       f"{'>= 6' if R['led_board'] >= 5.99 else format(R['led_board'], '.2f')} from the board's way in (asserted >= {LED_MIN})")
-    a(f"  wiring     [d] J5 -> breakout {I['route']['j5']:.0f} mm over the bulkhead + {R['service']:.0f} service loop; I2C 3V3 -> LEDs "
+    a(f"  wiring     [d] no J5 wiring (USB through the board's own port); I2C 3V3 -> LEDs "
       f"{I['route']['led']:.0f} + {R['service']:.0f}; loops lie on the battery's top (z {BAT_Z0 + BAT_HT:.0f}..{BULK_TOP:.0f} behind the board)")
     a("")
     a("SEAM JOINT")
@@ -2164,7 +2429,7 @@ def report(I):
       f"at {RHO_CAST} ({b_['cast']['m']:.0f} g at {BAD['RHO_CAST']}); centroid ({n_['cast']['c'][0]:+.2f}, {n_['cast']['c'][1]:+.2f}, {n_['cast']['c'][2]:.2f}); "
       f"left out: {len(R['cast_frag'])} pockets in the dowel holes ({sum(R['cast_frag']):.1f} mm3)")
     a(f"  balls      [calc] 304 balls to fill by weight: {bl['nom']:.0f} g for {RHO_CAST} (packing {bl['phi'][0]:.2f}), {bl['low']:.0f} g gives "
-      f"{BAD['RHO_CAST']} (packing {bl['phi'][1]:.2f}); epoxy ~{bl['epoxy']:.0f} ml; two pours, the first to z {bl['half']:.1f}")
+      f"{BAD['RHO_CAST']} (packing {bl['phi'][1]:.2f}); epoxy ~{bl['epoxy']:.0f} ml; three batches of 5-minute epoxy, each a third of the volume: to z " + " / ".join(f"{z:.1f}" for z in bl["levels"]))
     a(f"  trim layer [m] {len(cr)} segments fit on the cast (z {I['cast_to']}..{I['cast_to'] + SEG[2]:.1f}); " + ", ".join(
       f"row y {r_['y']:+.1f}: {len(r_['idx'])}" for r_ in row_runs_cached(I)))
     a(f"  cup-flat   [m] " + ", ".join(f"z {z:.2f}: {len(I['pk_flat'][z])}" for z in I["lay_flat"]) + f" = {len(cf)} segments ({SEG_G * len(cf):.0f} g); floor {R['flat_floor']:.2f}")
@@ -2206,8 +2471,10 @@ def report(I):
         a(f"  {n:<15}STEP {s_['solids']} solid, {s_['faces']} faces, {s_['err'] * 100:+.4f} %, {s_['kb']:.0f} kB; STL {t_['tris']} triangles, "
           f"{t_['err'] * 100:+.3f} %, {t_['kb']:.0f} kB")
     a("")
-    a("NOT VERIFIED HERE: the real masses and the cast's packing, J5 plug + pigtail protrusion (4 assumed), the breakout's socket height, "
-      "magnet pull in the print, slicer toolpaths (supports, 0.8 logo skin, the opening's bridge), epoxy heat, cable lean, rocking feel, logo glow")
+    a("NOT VERIFIED HERE: the real masses and the cast's packing; the USB extension's head (12 x 21 x 8.5 envelope, plug axis 5 from its "
+      "closed end, cable at its mid-thickness, D5 cable: ASSUMED from housing.py's MOGOOD box), the port's position (2.0 in front of the "
+      "board's back, x centre, ASSUMED) and the cable's stiffness in the hole; the plugs' protrusion (4 assumed); magnet pull in the print; "
+      "slicer toolpaths (supports, 1.0 logo skin, the opening's bridge); 5-minute epoxy heat per batch; cable lean; rocking feel; logo glow")
     text = "\n".join(L)
     (OUT / "report.txt").write_text(text + "\n")
     print(text, flush=True)
@@ -2229,30 +2496,34 @@ def build_sheet(I):
     nm = sum(1 for s in I["bosses"] if s["kind"] == "mag")
     hang = I["meshes"]["cup-rock"]["m"] + n_["cast"]["m"] + SEG_G * len(n_["kept"])
     lo = n_["left"]
-    L = f"""ROLY-POLY: BUILD SHEET, round 2 (files in cad/desk/out-rolypoly/; numbers in report.txt)
+    lv = bl["levels"]
+    bp = BAT_PATH
+    L = f"""ROLY-POLY: BUILD SHEET, round 6, first print (files in cad/desk/out-rolypoly/, copies in cad/desk/to-print/rolypoly-*.stl;
+numbers in report.txt)
 
-PRINT
-  body.stl        PLA Matte ivory/white, 0.12 mm, 4+ perimeters. Seam ring on the bed, crown up. Tree supports from the build
-                  plate only: they reach the crown's inside ({I['ov']['body']['crown']:.0f} mm2 steeper than 45 deg) and the door opening's top edge
-                  (a ~29 mm bridge between the R7 corners; or let the slicer bridge it and clean the edge). Tabs, bosses,
-                  bulkhead and ledges start on the bed or have 45 deg undersides. The logo needs none: its pockets have 45 deg
-                  roofs; if the slicer still puts support there, block it (support blocker over the logo). Check in the
-                  slicer preview that the 0.8 logo skin prints as two full perimeters. No brim on the seam ring.
-                  Seen in one slicer run (OrcaSlicer 2.5, generic 0.4 nozzle profile, 0.12 layers, tree supports; a preview,
-                  not a real print): the opening's top edge (29.5 mm) is held by trees that stand in front of the body and
-                  lean in over the alcove; inside the crown only a cap of about 10 x 9 mm at the very top is supported;
+PRINT  (Bambu X1E, Bambu Studio, 0.4 nozzle)
+  body.stl        PLA Matte white, 0.12 mm (the "0.12mm Fine" process), 4+ walls. Seam ring on the plate, crown up. Supports:
+                  tree (auto), on build plate only: they reach the crown's inside ({I['ov']['body']['crown']:.0f} mm2 steeper than 45 deg) and the
+                  door opening's top edge (a ~29 mm bridge between the R7 corners; or let it bridge and clean the edge). Tabs,
+                  bosses and bulkhead start on the plate or have 45 deg undersides; the bulkhead's notch for the USB head is a
+                  {2 * HEAD_NOTCH_X:.0f} mm bridge at z {HEAD_NOTCH_TOP:g}. The logo needs none: its pockets have 45 deg roofs; if supports appear there,
+                  paint them off / add a support blocker over the logo. Check in the preview that the {LOGO_SKIN:g} logo skin is
+                  solid (no gap between its walls). No brim on the seam ring. Ironing (top surfaces) as on the smooth shells: optional.
+                  Seen in one OrcaSlicer run in round 5 (generic 0.4 profile, 0.12 layers, tree supports; a preview, not a
+                  print, before the round 6 changes): the opening's top edge (29.5 mm) is held by trees that stand in front of the
+                  body and lean in over the alcove; inside the crown only a cap of about 10 x 9 mm at the very top is supported;
                   cup-rock on its back touches the bed with 11 x 5 mm, the slicer's own support base of about 60 x 30 mm
                   carries it, and one of its eight seam holes gets a support tip (rim-down: all eight, and the last layer
                   at the pole is 2.2 x 13 mm).
-  cup-rock.stl    PLA Matte, same colour, 0.12 mm, 100 % infill. Standing on its BACK (the curved back down, seam ring vertical):
+  cup-rock.stl    PLA Matte white, 0.12 mm, 100 % infill. Standing on its BACK (the curved back down, seam ring vertical):
                   every layer then draws the R44 arc. It cannot stand on its own footprint (13.6 x 5.8 mm at 0.12 above the
                   bed, 25 x 11 at 0.6; its centre of mass is outside that): give it a broad support cradle from the build
                   plate under the back and the bowl ({I['ov']['cup_back']['total']:.0f} mm2 steeper than 45 deg in all, none on the rolling band),
-                  a brim on the supports, and no supports inside the magnet and dowel holes. Watch the first layers.
-                  Whether the rolling band needs sanding depends on the print: check it on the gauge (FINISH). (Rim-down would
-                  leave a {R['pole_flat_rim_down']:.1f} mm flat at the bottom from the last 0.12 layer and need the bowl ceiling supported.)
-  cup-flat.stl    same material, foot on the bed, no supports.
-  door.stl        PLA Matte black (or PETG-CF black), 0.12 mm, face DOWN on a smooth plate.
+                  a brim on the supports, and no supports inside the magnet and dowel holes or the cable notch. Watch the first
+                  layers. Whether the rolling band needs sanding depends on the print: check it on the gauge (FINISH). (Rim-down
+                  would leave a {R['pole_flat_rim_down']:.1f} mm flat at the bottom from the last 0.12 layer and need the bowl ceiling supported.)
+  cup-flat.stl    PLA Matte white, foot on the plate, no supports.
+  door.stl        PLA Matte white for this print (black later), 0.12 mm, face DOWN on a smooth plate.
   arc-gauge.stl   any PLA, flat side down: a concave R44 cradle.
 
 FINISH
@@ -2261,15 +2532,17 @@ FINISH
   sand that spot by hand and check again on the unlined gauge. Do not line the gauge with sandpaper to true the arc: paper of
   thickness t makes its radius R44 - t. Holes: the magnet and dowel holes printed horizontally: check each with a magnet / a
   pin, ream with a depth stop (D3.1 for the magnets, D3.2 for the dowels) before gluing. Break the seam ring's outer edge on
-  body and cup lightly with 400 so they meet without a lip.
+  body and cup lightly with 400 so they meet without a lip. Slots: a rod (8.0) should slide in with a little play (8.1 slot,
+  {SLOT_LAND:g} land at the door's back); if tight, a light pass with a flat needle file on the land only.
 
 PARTS
   {2 * nm} magnets D{SEAM_MAG_D} x {SEAM_MAG_H} (seam), 8 x D{DOOR_MAG_D} x {DOOR_MAG_H} (door), 2 steel dowels D{SEAM_PIN_D} x {SEAM_PIN_L}, gel CA glue or
-  5-minute epoxy for the magnets, a flat plate (glass), the USB-C breakout (Pololu 2585 class), an MX1.25 4-pin pigtail >= 150 mm
-  for J5, two warm-white 0603 LEDs with leads >= 150 mm (resistor per LED, ~100 ohm at 3.3 V) and an SH1.0 4-pin pigtail for
-  3V3/GND from the I2C header, Kapton, 1 mm foam tape, 304 stainless balls 2-6 mm (~{bl['nom']:.0f} g used of the set), slow
-  casting epoxy (~{bl['epoxy']:.0f} ml mixed), stick-on balancing weights (one 12 x 5 g strip), 2 rods 8 x 4 half-round cut to {ROD_L},
-  OCA tape, a small phone-screen suction cup (to pull the door), a kitchen scale (0.1 g or 1 g).
+  5-minute epoxy for the magnets, a flat plate (glass), the right-angle USB-C extension (head <= {HEAD_W:g} x {HEAD_COLLAR + HEAD_T:g} x {HEAD_L:g},
+  cable D{CABLE_D:g}), two warm-white 0603 LEDs with leads >= 150 mm (resistor per LED, ~100 ohm at 3.3 V) and an SH1.0 4-pin pigtail
+  for 3V3/GND from the I2C header, Kapton, 1 mm foam tape, 304 stainless balls 2-6 mm (~{bl['nom']:.0f} g used of the set), 5-minute
+  epoxy (2 x 50 ml; ~{bl['epoxy']:.0f} ml mixed in all, in three batches), stick-on balancing weights (one 12 x 5 g strip), 2 rods 8 x 4
+  half-round cut to {ROD_L}, OCA tape, a small phone-screen suction cup (to pull the door), a kitchen scale (0.1 g or 1 g),
+  disposable cups and sticks for mixing.
 
 ASSEMBLY (in this order)
   1. Magnets, flush: put a drop of glue in each pocket (the pocket is 0.1 deeper than the magnet), press the magnet in and hold
@@ -2279,44 +2552,47 @@ ASSEMBLY (in this order)
   3. Joint proof test, before any ballast: put the empty cup on, hang {2 * hang / 1000:.2f} kg (twice the {hang:.0f} g it will carry:
      e.g. the ball set and a water bottle in a bag) from the cup, lift by the body's crown, hold 10 s, shake lightly: it must
      stay closed. Then peel: push one end of the cup down with a thumb; it must come off by hand without loosening a magnet.
-  4. Breakout: solder the J5 pigtail (VBUS, D-, D+, GND; check the order on the board's silk) to the pads on the front edge, wires
-     standing up. Cup off, body upside down: bring the breakout up {BO_DY} mm in front of its seat (through the bulkhead's notch),
-     socket first towards the back, then slide it back: socket into the hole, the PCB's back edge into the wall pocket, its
-     sides onto the two ledges. Glue (hot glue or epoxy at the side strips). Run the pigtail up behind the bulkhead and over
-     its top. Do this before the battery (with the battery in, the way up is {min(R['bo_up_bat'].values()):.1f} mm from it).
-  5. LEDs: place the two LEDs in the checked room: 4.5-8.5 mm behind the logo's centre, along its normal
+  4. LEDs: place the two LEDs in the checked room: 4.5-8.5 mm behind the logo's centre, along its normal
      (dummy-led-room.stl), facing the letters; hold them with clear hot glue on their leads, bridged to the wall beside the
      letters (reach in from below or through the opening). Run the leads up the right side to the battery's top.
-  6. Battery: Kapton on its front, foam tape on its back; from below push it up along the bulkhead to z {BAT_Z0} (1 mm above the seam
-     plane), centred (x {BAT_X:+.1f}); press. Its lead goes up to its top.
-  7. Wiring: lay the J5 pigtail, the battery lead and the LED leads as loops on the battery's top behind the board, each with
-     {R['service']:.0f} mm spare (route J5 -> breakout ~{I['route']['j5']:.0f} mm, LEDs -> I2C ~{I['route']['led']:.0f} mm), so the door can come {R['service']:.0f} mm
-     out with everything plugged. The {R['service']:.0f} mm loop and the plugs' {hw.PLUG_PROUD:.0f} mm protrusion are ASSUMED, not checked: measure the
-     plugged board (plugs, leads and their bends) first.
-     Dry fit before anything is glued: with the real pigtails, LED leads and battery lead in place, close the door, then
-     pull it {R['service']:.0f} mm out with everything plugged. The loops must stay clear of the release tool's way (from below,
-     behind the door's lower edge) and of the trim segments and the bulkhead spots.
-  8. Door: face down; rods into the slots from behind (OCA on their flat), gasket tape on the glass's short-end borders, board
-     glass-down between the four corner ribs. Hold the door in front of the opening, plug the battery, J5 and the LED pigtail,
-     switch the board ON (the slide is not reachable when closed; no hole for it), push the loops in, set the door: the magnets
-     pull it home. To open: suction cup on the face, or a blunt tool from below on the door's back strip under the PCB.
-  9. Cast (cup-rock off the body; cure takes a day per pour):
+  5. Battery, from below (cup off, door out, body upside down or on its side): Kapton on its front, foam tape on its back.
+     Push it up along the bulkhead, centred at x {bp['X1']:+.1f} (the seam's opening is tight: {R['bat_sweep']['up']:.2f} a side), until its
+     bottom is {bp['Z_MID'] - SEAM:.1f} mm above the seam plane; then {abs(bp['X2'] - bp['X1']):.1f} mm to the {'left' if bp['X2'] < bp['X1'] else 'right'} (the body's right side narrows at the
+     top) and on up to its seat: bottom {BAT_Z0 - SEAM:g} mm above the seam plane (z {BAT_Z0:g}, {BAT_HEAD_MIN:g} over where the USB head will be),
+     x {BAT_X:+.1f}; press onto the bulkhead. Its lead goes up to its top.
+  6. Wiring: lay the battery lead and the LED leads as loops on the battery's top behind the board, each with {R['service']:.0f} mm spare
+     (LEDs -> I2C ~{I['route']['led']:.0f} mm), so the door can come {R['service']:.0f} mm out with everything plugged. The {R['service']:.0f} mm loop and
+     the plugs' {hw.PLUG_PROUD:.0f} mm protrusion are ASSUMED, not checked: measure the plugged board (plugs, leads and their bends) first.
+     Dry fit before anything is glued: with the real LED leads and battery lead in place, close the door, then pull it
+     {R['service']:.0f} mm out with everything plugged. The loops must stay clear of the trim segments and the bulkhead spots.
+  7. Door + board, in from the front: door face down; rods into the slots from behind (OCA on their flat), gasket tape on the
+     glass's short-end borders, board glass-down between the four corner ribs. Hold the door in front of the opening, plug the
+     battery and the LED pigtail, switch the board ON (the slide is not reachable when closed; no hole for it), push the
+     loops in, set the door: the magnets pull it home.
+  8. USB, from below (cup off): push the extension's right-angle plug straight up into the board's port (the head goes up
+     through the seam's opening and the bulkhead's notch; checked: {R['usb']['up_body']:.2f} to the body, {R['usb']['up_bat']:.2f} to the battery),
+     cable towards the back. Lay the cable into the round notch in the body's back rim (open downward, at x {HEAD_X:+g}).
+  9. Cast (cup-rock off the body), 5-minute epoxy in three small batches (small batches keep the heat low; each needs about
+     {bl['batch_epoxy']:.1f} ml of epoxy and {bl['batch_balls']:.0f} g of balls; a batch gels in ~5 min, so mix only one at a time):
      - stand the cup upright and level (in a roll of tape or a bowl of rice; phone level on the seam ring); weigh the empty cup;
-     - pour 1: about {bl['nom1']:.0f} g of balls, up to {SEAM - bl['half']:.1f} mm below the seam face (half the {bl['depth']:.1f} mm depth; measure
-       down from the rim with a ruler; largest first, small ones into the gaps, tap to settle), then slow casting epoxy until it
-       just covers them; cure as the resin says (do not rush with heat);
-     - pour 2: balls up to the step {SEAM - I['cast_to']:.1f} mm below the seam face (where the smooth bowl meets the terrace) until the cup has gained {bl['nom']:.0f} g of
-       balls in all ({bl['low']:.0f} g is still fine; if the step is reached first, stop and note the mass), epoxy to the step, level;
-       cure. Use a slow resin rated for this depth per pour; two half-depth pours keep the heat low without watching it.
+     - per batch: mix the epoxy, pour it into the bowl first, then drop the balls in (largest first, small ones into the gaps,
+       tap to settle), until the balls just stand under the epoxy's surface; let it gel (~15 min) before the next batch;
+     - batch 1 to {SEAM - lv[0]:.1f} mm below the seam face, batch 2 to {SEAM - lv[1]:.1f} mm, batch 3 to the step {SEAM - lv[2]:.1f} mm below the seam
+       face (where the smooth bowl meets the terrace; z {lv[2]:g}, {HEAD_CLR:g} under the USB head: do not overfill); measure down from the
+       rim with a ruler. Fill by weight: the cup gains {bl['nom']:.0f} g of balls in all ({bl['low']:.0f} g is still fine; if the step is
+       reached first, stop and note the mass). Level the last batch. Full cure: 24 h before the trim segments go on.
        The balls are 304 stainless: they do not stick to the magnets.
   10. Trim layer: {len(I['cells']['cup-rock'])} segments fit on the cast (dummy-segments-rock.stl). The plan (nominal masses): stick
       {len(n_['spots'])} segment(s) standing on the bulkhead's back at x {', '.join(f'{x:+.0f}' for x in n_['spots']) or '-'} (right of centre, from
-      z {TRIM_SPOT_Z0} up; dummy-trim-spots.stl shows both spots), leave out {len(lo)} of the trim layer
+      z {TRIM_SPOT_Z0:g} up; dummy-trim-spots.stl shows both spots), leave out {len(lo)} of the trim layer
       {(' (' + ', '.join(f'x {c[0]:+.0f} y {c[1]:+.0f}' for c in lo) + ')') if lo else ''} and slide the rest {n_['t'] * 100:.0f} % of their rows' slack
       to the right. The door and board sit 5 mm left: without the spot the clock leans left. Keep the second spot (x
       {TRIM_SPOTS[1]:+.0f}) free for later. Do not peel the adhesive yet.
-  11. Cup on: pins find the holes, the magnets close the seam. Trim the fully wired clock (door closed, cables in) on the
-      table (below), then stick the segments down.
+  11. Cup on, straight up: the cable slides into the cup's notch (open upward), pins find the holes, the magnets close the
+      seam. Trim the fully wired clock (door closed, cable in) on the table (below), then stick the segments down.
+  To open the door later: cup off (straight down), unplug the USB head from below first, then the suction cup on the door's
+  face (or a blunt tool from below on the door's back strip under the PCB, right of the USB head: its way is checked with
+  the head in, {R['tool']:.2f} at the closest).
 
 TRIM
   Level table, phone level on the flat door, everything wired and closed. The plan already uses about {n_['t'] * 100:.0f} % of
@@ -2340,7 +2616,7 @@ CHECK ON THE PRINT
 def focus(I):
     p, n, xd = logo_frame()
     d = dict(door_c=[XOFF, Y_PANEL, DOOR_ZC], logo=list(map(float, p)), logo_n=list(map(float, n)), seam=SEAM, RR=RR, H=H,
-             slot_top=[TUBE_X[0], Y_PANEL, AA_ZC + SLOT_L / 2], usb=[0.0, Y_BACK_OUT, Z_SOCK], cut_flat=CUT_FLAT,
+             slot_top=[TUBE_X[0], Y_PANEL, AA_ZC + SLOT_L / 2], usb=[HEAD_X, Y_BACK_OUT, CABLE_Z], cut_flat=CUT_FLAT,
              G_rock=list(map(float, I["C"]["nominal"]["st"]["G"])), cast_to=I["cast_to"], keels=KEELS, keel=KEEL,
              logo_x=LOGO_X, logo_x_old=LOGO_X_OLD)
     (OUT / "focus.json").write_text(json.dumps(d, indent=1))

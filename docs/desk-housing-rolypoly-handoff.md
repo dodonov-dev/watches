@@ -5,7 +5,39 @@ plumb. No stand and no mechanism: a rounded, weighted underside. The liquid on t
 Order of work: the decisions are settled and the clay views accepted; **the CAD for a cheap FDM print is built
 (round 2, see "CAD state"); then the user's print test, then the final white body by SLA.**
 
-## Start here (next session, 2026-11-20): battery position
+## Start here: round 6 built and on the printer (2026-11-20), worktree `../watches-rolypoly`, branch `rolypoly-print`
+Round 6 = first print: the USB extension plugs into the board's own port from below (breakout + J5 gone), cable out
+through a Ø5.6 hole split by the seam at x -5, z 21; slots 8.1 with a 0.6 land; logo skin 1.0; battery up to z 27
+(clears the plug head); cast top 17.0 (120 g), 4 trim segments in cup-rock (was 6), 7 in cup-flat (was 12); bad case
+board 52 g; 5-minute-epoxy cast in three batches; X1E / Bambu Studio / PLA Matte white (door white too).
+- **Build:** every geometry, fit and USB check passes; the STLs are identical over four builds and copied to
+  `to-print/`. Fault injection (`cad/desk/rolypoly_faults.py` on a `ROLY_DUMP` pickle): all 14 faults fire, baselines
+  silent. Plate: `to-print/_5_thith_plate_roly_poly_fixed.3mf` (cup turned onto its back with supports + brim; body
+  6 walls, supports from the plate only); sliced headless: 10 h 17 min, 105 g at 0.08. The filament profile in it
+  is still PLA Basic (the user switches to Matte).
+- **Mass model fails (assumed masses), the build raises after writing report + build sheet:**
+  nominal 8.11 mm, 1.10 s, fore-aft 28.5 / 29.7°, 315 g (passes) but a shallow rest lying on its side at ~94°
+  (round 5: upright only); bad case (board 52 g) 5.85 mm, 1.34 s, 26.0° forward, plumb needs both spots.
+  Masses change the fill and trim, not the print. **Weigh the board and battery.** Ideas if the margin is short: fill
+  the cast to 17.9 by hand except under the head; more steel at the trim spots; a lower head (other extension) so
+  the battery and cast go back down.
+- **Next:** weigh; Astra review (critical only, reproduce from the exports); docs (`desk-housing-plan.md` round 6,
+  `desk-housing-parts.md`: no breakout / J5 pigtail, the extension instead); commit; after the print: rocking, cable,
+  logo glow, trim.
+
+## Print round 6 results (user, 2026-11-21; photos `cad/desk/to-print/_5_thith_plate_res/`)
+- PLA Matte white at 0.08 HQ looks like cast alabaster / unglazed porcelain: the material for this line.
+- Rocking cup on its back: the rolling surface is perfect; the back is coarse from brim + supports (sand). The arc
+  gauge is not needed.
+- Door printed face down on textured PEI: the face took the plate's grain. Face up + ironing, or a smooth plate.
+- Line at the layer where the opening's top closes, on the right side (pebble stronger, roly-poly weaker); in the
+  first plates it was a ridge, now a trench. G-code of this plate: on that one layer the outer wall runs 10 mm/s
+  "overhang wall" over the opening and 60 mm/s elsewhere; the filament profile was PLA Basic with Matte loaded.
+  User: avoid it, or at least make it a ridge that can be sanded.
+- User: drop the door; keep the separate bottom cup (it is what makes the rolling surface perfect); front like the
+  oval / pebble. Codex concepts: `images/rolypoly-r7/r7-{1-inset,2-flush,3-facet}.png` (prompts beside them).
+
+## Earlier start (2026-11-20, done: battery settled below, round 6 above)
 The CAD below (round 5) is built but **not printed yet**. Before printing, the user wants to reconsider the battery:
 lower, or lying flat, or a smaller cell (the 3000 mAh 10 × 35 × 68 is not a requirement). See "Open idea" at the end.
 1. **Weigh** the real board and battery (the model assumes 30 g / 55 g; the rocking is most sensitive to them).
@@ -260,9 +292,32 @@ reproduced the numbers below and the fits: no CAD blocker, ready to print. Print
 - A hand-cast or thick shell raises the centre of mass; keep the upper walls thin.
 - agy's image quota is small; use codex for consistent pictures.
 
-## Open idea (user, 2026-11-20): battery lower or lying flat
-The battery is not a hard requirement (one 3000 mAh cell is plenty; a smaller one is fine). Lying flat low in the
-belly (just above the seam) or a flat cell in the bowl would turn its ~55 g into ballast: lower centre of mass,
-less steel or calmer rocking. Affects the bulkhead, insertion from below, the breakout and the logo LEDs' room.
-Next: compare positions and sizes with `cad/desk/concept/rolypoly.py` (centre of mass, period, tip limits, steel
-needed) before any CAD; weigh the real board and battery first.
+## Battery study (2026-11-20): settled, keep the 3000 mAh on its edge
+The user's idea: a smaller cell lying flat, low in the belly, to act as ballast. Study
+`cad/desk/concept/rolypoly_battery.py` (round-5 meshes, cast integrated from the CAD's inner sections, trimmed plumb;
+reproduces round 5: cast 132 g, 10.4 mm, 0.93 s). Board 30 g:
+
+| Cell | On its edge behind the board | Flat on the seam behind the board | Flat in the bowl (lowest fit, cast round it) |
+|---|---|---|---|
+| 3000 mAh 10 × 35 × 68 (have) | 10.4 mm, 0.93 s, fwd 30.7° | does not fit (35 deep, 26 free) | 9.5 mm, 1.02 s (z 15–25) |
+| 2000 mAh 103450 | 10.8 | does not fit | 9.6 |
+| 1500 mAh 103048 | 11.2 | does not fit | 9.9 |
+| 1000 mAh 102050 | 11.7 | 12.0 | 8.9 |
+
+- The bowl is the worst place: a cell (~2.3 g/cm³) displaces the cast (5.1 g/cm³), and the bowl is too narrow low down
+  (the cells fit only from z 13–16). The steel does the work; the battery moves the margin by 1.5 mm at most.
+- With the board at 52 g (the user's figure from online; which part it belongs to is unclear): 3000 mAh on its edge
+  8.5 mm, 1.07 s, forward 27.7°.
+- **Decision: keep the 3000 mAh cell on its long edge behind the board; nothing to order.**
+
+## Open idea (user, 2026-11-20): fewer parts after the FDM test
+Not for round 6; decide after the first print (size, rocking, trim known).
+- **One piece (body + cup), door kept:** suits the SLA body (no seam, no magnets or dowels). Ballast and trim go in
+  through the door opening; the battery is tilted in through it (68 long, opening 43 wide). Loses the cheap cup reprint
+  and the rock / stable swap. FDM is poor here: the rolling surface gets supports or a flat at the pole.
+- **Smooth face, no door (like the oval), bottom cup kept:** everything goes in from below. Removes the door's
+  seam, magnets, tabs and release tool; the dark panel becomes slots in the white face (a change of look). The seam can
+  become a design line (not level, e.g. merging with the alcove's lower flare), as long as it stays a single height
+  function over the plan (the cup comes off straight down). Limits: the seam opening must pass the battery (68 long
+  needs it at z ~21 at the sides; a cell ≤ 50 long allows ~z 14), and a lower cup holds less cast (most of the
+  132 g sits between z 10 and 18).
