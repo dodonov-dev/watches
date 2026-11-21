@@ -1,6 +1,38 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-21 (edge shade: perceptual profile, params v32; review 6)_
+_Last update: 2026-11-21 (edge shade: review 7, pooled plateau, ray tables in flash)_
+
+## Edge shade: review 7 (2026-11-21), branch `edge-shade`, host only (not flashed)
+
+- Pooled plateau (Astra review 7 item 1): rays off the drawn tube and past TIR count nowhere; rows from the boundary
+  nearest d_p on are ONE least-squares group, solved and clipped once (was: forced to 1 - s); a row no ray reaches takes
+  the plateau's value. 72-row 8 mm tube, q 1.5, fold 0.4, K rows 0..35: s 0.9 before `26 x13 38 48 59 70 81 91 101 111
+  121 131 141 150 159 168 176 184 192 199 205 211 216 220 223`, after `35 x13 38 48 ...` (rest unchanged); s 0.7 / 0.3 / 1
+  unchanged (77 / 179 / 0: the clip). check:layout's oracle pools the same way (s 0.9: plateau K 35); check_shade_rows pins
+  it (rows 0 / 35: 35 / 223).
+- Item 3: the sim's final surface-band write blends with the opacity rounded to 1/256 (pxaT, blend565T), as the
+  firmware's rowPxa: blood-big passes (6 px off, 0 > 12/255). Item 4: edgeShadeShape clamped to [0.5, 3] before the int
+  cast (firmware and sim). Item 5: one float32 opacity quantiser (opacityT) for the sim's floor transparency and Mark T.
+- Item 2: NVS v31 -> v32 on the device: the v31 CRC 0x6bb6cdaf with the exact blob size is accepted, edgeShadeShape set
+  to 1.5, v 32, saved at once under the new CRC; a static_assert on the current CRC forces a look at it on the next
+  schema change. Not run on the board (no flash this round).
+- Ray tables: rod.h (rod geometry, RodRays) shared by render.cpp and tools/gen_rod_rays.cpp; the PlatformIO pre-script
+  tools/gen_rod_rays.py compiles that with the build's -D flags on the host and writes the build's tables, one per
+  distinct rod, as const (flash) into $BUILD_DIR/rodgen/rod_rays_gen.h (-DROD_RAYS_GEN); render_init checks the
+  generated rod radius and row pitch against the build's and refuses the face on a mismatch. Without the generated
+  header (host tools) the tables are built at init, one per distinct rod in PSRAM. check_shade_rows builds both and
+  requires identical rows. Sizes: image +131.6 KB a distinct rod (8192 x 16 B; amoled191 1580667 -> 1712315 B, lcd316
+  320w8-8 2655495 -> 2787355 B); PSRAM 256 KB -> 0 at 8-8 (2 tubes, one rod); boot: the 2 x 475 ms ray build (board,
+  last round) goes away (not measured: not flashed).
+- Host: check_shade_rows 0 differ on 9 builds (5943 looks each, generated = init tables, pins ok); check_render_frames
+  13136 byte-identical (also `--tiles`), check_fizz_steps 80 / 80, check_shade_frames ok, check:layout 74 ok,
+  check:materials 1145, tsc. 38 shaded looks (looks/shade5): 38 / 38 within 12/255 on all seven paths (blood-big
+  cleared). edgeShade 0, every preset, sim vs firmware px off (round 6 -> now): 320w8-8 13954 -> 12461 (75 / 77 both:
+  cola, malt), 240f 7971 -> 7031 (75 -> 74 / 77: milk-big 1 px 16/255 new, with 1 and glycerol-dark as before),
+  amoled191 7935 -> 6983 (74 -> 75 / 77: cryo cleared). Builds: amoled191, lcd316@320w8-8; 288w10-8-6+t3 (3 rods,
+  3043559 B) builds too.
+- KAIZEN: milk-big at 240f (edgeShade 0): 1 px 16/255 since pxaT (the band's multi-layer composite is float in the
+  firmware, double in the sim; float-exact layers did not clear it).
 
 ## Edge shade: perceptual profile (2026-11-21), branch `edge-shade`
 

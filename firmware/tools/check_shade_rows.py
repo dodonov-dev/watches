@@ -7,13 +7,15 @@ render.ts edgeShadeRows) over a matrix of looks per board / canvas.
 Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.7 / 1 x edgeShadeShape 0.5 / 1 / 1.5 /
 2 / 3 x edgeShadeFold 0 / 0.4 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
 factors and the lens row map the fold uses (firmware lensSrc, sim lensSourceRows: float32 both), and pins one strong
-lenses (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36; H 25, lens 0.25 / 0.5: row 2 shows 2). Exits 1 on any difference, a missing or reordered
+lenses (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36; H 25, lens 0.25 / 0.5: row 2 shows 2) and the pooled
+plateau (H 72, s 0.9, shape 1.5, fold 0.4: K 35 on rows 0..12, 223 on row 35). Builds the firmware side twice, with the
+generated ray tables (tools/gen_rod_rays.py, as the board) and with the ones built at init: their rows must be equal. Exits 1 on any difference, a missing or reordered
 tube, a look with no shaded row, or a moved pin.
 """
 import argparse, glob, json, os, shutil, subprocess, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import boardtag
+import boardtag, gen_rod_rays
 
 ROOT = Path(__file__).resolve().parents[2]
 SIM = ROOT / 'sim'
@@ -98,6 +100,7 @@ def main():
                 for fo in (0, 0.4, 1): looks.append({**g, 'edgeShade': k, 'edgeShadeShape': q, 'edgeShadeFold': fo, 'fizz': False})
     looks.append(pin)
     looks.append({**pin, 'tubeHeight': 19, 'lens': 0.25, 'lensCurve': 0.5})   # H 25 at 320w8-8
+    looks.append({**pin, 'lens': 0, 'edgeShade': 0.9, 'edgeShadeFold': 0.4})   # the pooled plateau: K 35 (Astra review 7)
     env = dict(os.environ, LW_BOARD=a.board, LW_RES=a.res, LW_TUBES=str(a.tubes))
     with tempfile.TemporaryDirectory(prefix='watches-shrows-') as tmp:
         tmp = Path(tmp)
@@ -105,14 +108,20 @@ def main():
                                              'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
         (tmp / 'esp_random.h').write_text('#pragma once\n#include <cstdint>\ninline uint32_t esp_random() { return 0xabcdef01; }\n')
         (tmp / 'h.cpp').write_text(HARNESS)
-        subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', '-DSHADE_ROWS_DUMP', *boardtag.tubes_flags(a.tubes),
-                        *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else []),
-                        '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
-                        str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
-                        '-o', str(tmp / 'h')], check=True)
+        defs = [*boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(a.res, a.tubes)] if lcd else [])]
+        # the board's ray tables (tools/gen_rod_rays.py, -DROD_RAYS_GEN) and the ones built at init (shared per rod): both
+        gen_rod_rays.generate(defs, tmp / 'rodgen')
+        for exe, extra in (('h', ['-DROD_RAYS_GEN', '-I', str(tmp / 'rodgen')]), ('hr', [])):
+            subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-ffp-contract=off', '-DSHADE_ROWS_DUMP', *defs, *extra,
+                            '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
+                            str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/render.cpp'), str(ROOT / 'firmware/src/physics.cpp'),
+                            '-o', str(tmp / exe)], check=True)
         script = []
         for q in looks: script += [f'P {k}={fmt(v)}' for k, v in q.items() if k != 'v'] + ['R']
-        fw = subprocess.run([str(tmp / 'h')], input=('\n'.join(script) + '\n').encode(), stdout=subprocess.PIPE, check=True).stdout.decode().split('\n')
+        inp = ('\n'.join(script) + '\n').encode()
+        fw = subprocess.run([str(tmp / 'h')], input=inp, stdout=subprocess.PIPE, check=True).stdout.decode().split('\n')
+        fwr = subprocess.run([str(tmp / 'hr')], input=inp, stdout=subprocess.PIPE, check=True).stdout.decode().split('\n')
+        if fw != fwr: sys.exit(f'{a.board} {a.res}: generated ray tables and the ones built at init give different rows')
         cache = tmp / 'sim'
         subprocess.run([str(SIM / 'node_modules/.bin/tsc'), '-p', str(SIM / 'tools/shade-rows.tsconfig.json'), '--outDir', str(cache)], check=True)
         (cache / 'package.json').write_text('{}')
@@ -139,12 +148,14 @@ def main():
                 if fL != sL and mapdiff <= 3: print(f'look {i} tube {t}: lens maps differ (lens {q.get("lens")} / {q.get("lensCurve")}, H {len(A)})')
     # the pins: tube 0 of the last two looks at 320w8-8 (H 72, lens 1 / 3: rows 33..35 show 36; H 25, lens 0.25 / 0.5: row 2
     # shows 2, the board's fused multiply-add picked 3)
-    L = [int(v) for v in fw[len(looks) - 2].split(';')[0].split(':')[3].split(',') if v]
-    L25 = [int(v) for v in fw[len(looks) - 1].split(';')[0].split(':')[3].split(',') if v]
-    pinned = len(L) == 72 and L[33:36] == [36, 36, 36] and len(L25) == 25 and L25[2] == 2 if lcd and a.res == '320w8-8' else None
+    L = [int(v) for v in fw[len(looks) - 3].split(';')[0].split(':')[3].split(',') if v]
+    L25 = [int(v) for v in fw[len(looks) - 2].split(';')[0].split(':')[3].split(',') if v]
+    K9 = [256 - int(v) for v in fw[len(looks) - 1].split(';')[0].split(':')[2].split(',') if v]   # H 72, s 0.9, q 1.5, fold 0.4
+    pinned = (len(L) == 72 and L[33:36] == [36, 36, 36] and len(L25) == 25 and L25[2] == 2 and len(K9) == 72 and K9[:13] == [35] * 13
+              and K9[35] == 223) if lcd and a.res == '320w8-8' else None
     tag = f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
-    print(f'{tag}: {len(looks)} looks, {rows} shaded rows, {diff} differ (worst {worst}/256); {maps} lens maps, {mapdiff} differ'
-          + ('' if pinned is None else f'; pins: H 72 lens 1 / 3 rows 33..35 -> {L[33:36]}, H {len(L25)} lens 0.25 / 0.5 row 2 -> {L25[2:3]} {"ok" if pinned else "MOVED"}'))
+    print(f'{tag}: {len(looks)} looks, {rows} shaded rows, {diff} differ (worst {worst}/256); {maps} lens maps, {mapdiff} differ; generated ray tables = built at init'
+          + ('' if pinned is None else f'; pins: H 72 lens 1 / 3 rows 33..35 -> {L[33:36]}, H {len(L25)} lens 0.25 / 0.5 row 2 -> {L25[2:3]}, H 72 s 0.9 K rows 0 / 35 -> {K9[0:1]} / {K9[35:36]} {"ok" if pinned else "MOVED"}'))
     sys.exit(1 if diff or mapdiff or bad or pinned is False else 0)
 
 if __name__ == '__main__': main()

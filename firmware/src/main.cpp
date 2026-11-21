@@ -128,14 +128,24 @@ static void paramsChanged() {
 // What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only, and the autosave writes this
 // copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
 static Preferences prefs;
+#define PARAMS_SCHEMA_CRC_V31 0x6bb6cdafu   // params v31 (edgeShadePow): the layout of v32 (paramsLoad migrates it)
+static_assert(PARAMS_SCHEMA_CRC == 0xcd2763c1u, "params schema changed: drop or extend the v31 migration (paramsLoad)");
 static uint32_t paramsDirtyAt = 0;
 static Params *paramsSaved = nullptr;
 static void paramsLoad() {
   paramsSaved = (Params *)heap_caps_malloc(sizeof(Params), MALLOC_CAP_SPIRAM);
   if (!paramsSaved) out.println("error params: no PSRAM for the saved copy (p~ refused)");
   prefs.begin("lw", false);
-  if (prefs.getUInt("crc") == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
+  const uint32_t crc = prefs.getUInt("crc");
+  if (crc == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
     prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
+  } else if (crc == PARAMS_SCHEMA_CRC_V31 && prefs.getBytesLength("cur") == sizeof(Params)) {
+    // v31 -> v32: the same layout, edgeShadePow's slot is edgeShadeShape's (the perceptual profile): its default, saved
+    // at once under the new CRC (the next edit would otherwise overwrite the old look with the presets' defaults).
+    prefs.getBytes("cur", &params, sizeof(Params));
+    params.edgeShadeShape = 1.5f; params.v = 32;
+    prefs.putBytes("cur", &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
+    paramsChanged(); out.println("params: restored from nvs (v31, migrated to v32: edgeShadeShape 1.5)");
   }
   if (paramsSaved) *paramsSaved = params;
 }

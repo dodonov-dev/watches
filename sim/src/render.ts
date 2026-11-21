@@ -260,6 +260,14 @@ function pxa(x: number, y: number, c: number, t: number): void {
   const i = y * PANEL_W + x;
   fb[i] = t >= 1 ? c : blend565(fb[i], c, t);
 }
+/** An opacity in 1/256 as the firmware rounds a float one: (int)(t * 256 + 0.5f), every step in float32. */
+const opacityT = (t: number): number => Math.floor(Math.fround(Math.fround(Math.fround(t) * 256) + 0.5));
+/** pxa with the opacity rounded as the firmware's blend565 does (render.cpp rowPxa: blend565T). */
+function pxaT(x: number, y: number, c: number, t: number): void {
+  if (x < 0 || y < 0 || x >= PANEL_W || y >= PANEL_H) return;
+  const i = y * PANEL_W + x;
+  fb[i] = t >= 1 ? c : blend565T(fb[i], c, opacityT(t));
+}
 /** Firmware blend565T exactly: each channel expanded to 8 bits, out = (a·256 + (b − a)·T + 128) >> 8, then its top
  *  5 / 6 / 5 bits; T in 1/256 (<= 0 keeps a, >= 256 gives b). The marks blend with it (markFn), so a rear mark's
  *  write equals the firmware's for equal inputs (two mark writes on one pixel no longer stack two rounding steps). */
@@ -472,7 +480,7 @@ const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1
  *  1/1000), so the floor's direction test never flips between the two (a float unshaded floor and the integer shaded
  *  one disagreed on it near zero luma difference). */
 function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256, markU = 0, bodyU = 0): number {
-  const T = Math.floor(transparency * 256 + 0.5), C = Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5));
+  const T = opacityT(transparency), C = Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5));
   return m < 256 ? throughLiquidM(bg, mark, T, C, m, markU, bodyU) : throughLiquidInt(bg, mark, T, C);
 }
 /** The firmware's unshaded integer throughLiquid (render.cpp throughLiquid, m = 256). */
@@ -551,7 +559,7 @@ function floorBake(p: Params): [number, number] {
 function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: number, dryT: Float32Array | null = null, bakedT = false, floorBaked = false, wetT: Float32Array | null = null, shade: Uint16Array | null = null, bodyRows: Uint16Array | null = null): MarkFn {
   const H = edges.hi.length, band = onTop ? undefined : edges.band;
   const transK = Math.max(0, Math.min(1, p.liquidTransparency));
-  const Tq = Math.max(0, Math.min(256, Math.floor(p.liquidTransparency * 256 + 0.5)));   // firmware Mark::T
+  const Tq = Math.max(0, Math.min(256, opacityT(p.liquidTransparency)));   // firmware Mark::T
   const wallQ = (ry: number): number => wetT ? Math.floor(wetT[ry] * 256 + 0.5) : 256;   // firmware pal.wetT
   return (x, y, c, cov = 1, rel = 0) => {
     const ry = y - y0;
@@ -2020,8 +2028,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           // A single layer takes the plain path, byte-identical to the separate writes.
           nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
           layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(hiC, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
-          if (nL === 1) pxa(x, y, cLast, A);
-          else if (nL > 1) pxa(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
+          if (nL === 1) pxaT(x, y, cLast, A);   // the firmware's rowPxa: the opacity rounded to 1/256
+          else if (nL > 1) pxaT(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
         }
         return wEff;
       } else {   // convex: thin nose inside the profile back to the ring — limb-darkened for an
@@ -2261,12 +2269,14 @@ export function rodRays(R: number, g: number, n: number, pitch: number): RodRayT
   return { r, tau, tau2, j: [j0, j1] };
 }
 /** The per-group sums of one rebuild in single precision, every operation rounded (firmware rodSums, no fused
- *  multiply-add): rays on rows j < plateau, w = min(r cE, 1), L = Lc − D w^q2, Y_t, num += tau Y_t, den += tau². */
-function rodSums(ry: RodRayTable, J: Int16Array, plateau: number, cE: number, Lc: number, D: number, q2: number, num: Float32Array, den: Float32Array): void {
+ *  multiply-add): rays on the drawn tube (j < groups), rows from `plateau` on pooled, w = min(r cE, 1) (cE infinite: x_e
+ *  0), L = Lc − D w^q2, Y_t, num += tau Y_t, den += tau². */
+function rodSums(ry: RodRayTable, J: Int16Array, groups: number, plateau: number, cE: number, Lc: number, D: number, q2: number, num: Float32Array, den: Float32Array): void {
   const f = Math.fround, k116 = f(1 / 116), k903 = f(27 / 24389);
   for (let i = 0; i < ROD_RAYS; i++) {
-    const j = J[i];
-    if (j >= plateau) continue;
+    let j = J[i];
+    if (j >= groups) continue;   // off the drawn tube, past TIR
+    if (j > plateau) j = plateau;   // the plateau: one pooled group
     let w = f(ry.r[i] * cE); if (w > 1) w = 1;
     let vq = w;
     for (let m = 1; m < q2; m++) vq = f(vq * w);
@@ -2294,15 +2304,16 @@ const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: (RodRayTabl
  *  buildShade, the same double operations in the same order, fixed steps): target lightness along the apparent offset x
  *  L*(x) = Lc − (Lc − Le)·min(x / x_e, 1)^q, Le = 100 (1 − s), Lc = 100 − 12 s (s = edgeShade, q = edgeShadeShape in half
  *  steps), x_e the inner ray of the fold cover's row d_p (edgeShadeFold); the rays (rodRays) grouped by the panel row they
- *  land on, each group's least-squares linear factor Σ τ·Y_t / Σ τ² → code factor F = clip(a^(1/2.2), 1 − s, 1), rows
- *  from the boundary nearest d_p (and rows no ray reaches) at 1 − s. Canvas row y covers the panel's rows [bs(y), bs(y +
+ *  land on (rows from the boundary nearest d_p on: one pooled plateau group; rays off the drawn tube or past TIR
+ *  nowhere), each group's least-squares linear factor Σ τ·Y_t / Σ τ² → code factor F = clip(a^(1/2.2), 1 − s, 1), a
+ *  row no ray reaches the plateau's (an empty plateau 1 − s). Canvas row y covers the panel's rows [bs(y), bs(y +
  *  1)) (the LCD's nearest-neighbour upscale; one each at 320 and on the AMOLED): their mean F, T = 256 − round(256 F).
  *  One cache entry per tube (faces mix tube heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
   const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade)));
   const fo0 = f(p.edgeShadeFold), fold = fo0 !== fo0 ? f(0.4) : Math.max(0, Math.min(1, fo0));
-  const sh0 = f(p.edgeShadeShape), q2 = sh0 !== sh0 ? 3 : Math.max(1, Math.min(6, Math.floor(f(f(sh0 * 2) + 0.5))));
+  const sh0 = f(p.edgeShadeShape), sh = sh0 !== sh0 ? f(1.5) : Math.max(f(0.5), Math.min(3, sh0)), q2 = Math.floor(f(f(sh * 2) + 0.5));
   const key = `${y0}:${H}:${k}:${fold}:${q2}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
@@ -2318,14 +2329,20 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
     const sE = dP > 0 ? rodInner(dP, Rr, ROD_GAP_MM, ROD_N, sF) : 0;
     const groups = Math.floor((span + 1) / 2);
     const plateau = Math.min(groups, Math.max(0, Math.floor(dP / pitch - o + 1)));
-    const num = new Float32Array(plateau), den = new Float32Array(plateau), F = new Float64Array(plateau);
-    if (sE > 0) rodSums(ry, ry.j[span % 2], plateau, f(Math.sqrt(1 / sE)), f(100 - 12 * s), f((100 - 12 * s) - 100 * (1 - s)), q2, num, den);
-    for (let j = 0; j < plateau; j++) { const v = den[j] > 0 ? rodGammaInv(num[j] / den[j]) : 1 - s; F[j] = v < 1 - s ? 1 - s : v > 1 ? 1 : v; }
+    const num = new Float32Array(plateau + 1), den = new Float32Array(plateau + 1), F = new Float64Array(plateau + 1);
+    rodSums(ry, ry.j[span % 2], groups, plateau, sE > 0 ? f(Math.sqrt(1 / sE)) : Infinity, f(100 - 12 * s), f((100 - 12 * s) - 100 * (1 - s)), q2, num, den);
+    const solve = (j: number, empty: number): number => {
+      if (!(den[j] > 0)) return empty;
+      const v = rodGammaInv(num[j] / den[j]);
+      return v < 1 - s ? 1 - s : v > 1 ? 1 : v;
+    };
+    F[plateau] = solve(plateau, 1 - s);
+    for (let j = 0; j < plateau; j++) F[j] = solve(j, F[plateau]);
     rows = new Uint16Array(H);
     for (let y = 0; y < H; y++) {
       const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
       let sum = 0;
-      for (let q = p0; q < p1; q++) { const j = Math.floor(Math.abs(q + 0.5 - c) - o + 0.5); sum += j >= plateau ? 1 - k : F[j]; }
+      for (let q = p0; q < p1; q++) { const j = Math.floor(Math.abs(q + 0.5 - c) - o + 0.5); sum += F[j < plateau ? j : plateau]; }
       rows[y] = 256 - Math.floor(256 * (sum / (p1 - p0)) + 0.5);
     }
   }

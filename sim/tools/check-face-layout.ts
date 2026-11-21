@@ -75,7 +75,7 @@ const rodOf = (mm: number) => {
   const t0 = T2(0, R), rx = new Float64Array(NRAYS), rd = new Float64Array(NRAYS), rt = new Float64Array(NRAYS);
   for (let i = 0; i < NRAYS; i++) { const x = (i + 0.5) * R / NRAYS; rx[i] = x; rd[i] = source(x, R, ROD_GAP_MM, ROD_N); rt[i] = T2(x, R) / t0; }
   const cut = (f: number) => { const xC = xF + f * (xT - xF), dP = Math.max(0, source(xC, R, ROD_GAP_MM, ROD_N)); return { xC, dP, xE: dP > 0 ? xOf(dP) : 0 }; };
-  const target = (x: number, s: number, q: number, xE: number): number => { const Le = 100 * (1 - s), Lc = 100 - 12 * s; return Lc - (Lc - Le) * Math.min(1, x / xE) ** q; };
+  const target = (x: number, s: number, q: number, xE: number): number => { const Le = 100 * (1 - s), Lc = 100 - 12 * s; return Lc - (Lc - Le) * (xE > 0 ? Math.min(1, x / xE) : 1) ** q; };
   const Ylum = (L: number): number => L > 8 ? ((L + 16) / 116) ** 3 : L / (24389 / 27);
   const memo = new Map<string, { F: number[]; plateau: number }>();
   // the code factor of row distance j (in rows, o: 0.5 for an even span) for a tube of `span` panel rows
@@ -84,14 +84,16 @@ const rodOf = (mm: number) => {
     if (!e) {
       const o = span % 2 === 0 ? 0.5 : 0, half = span / 2 * PANEL_MM, { dP, xE } = cut(f);
       const plateau = Math.min(Math.floor((span + 1) / 2), Math.max(0, Math.floor(dP / PANEL_MM - o + 1)));
-      const num = new Array(plateau).fill(0), den = new Array(plateau).fill(0);
-      if (xE > 0) for (let i = 0; i < NRAYS; i++) {
+      const num = new Array(plateau + 1).fill(0), den = new Array(plateau + 1).fill(0);
+      for (let i = 0; i < NRAYS; i++) {   // rays off the drawn tube or past TIR count nowhere; rows from the plateau on pool
         const d = rd[i]; if (d !== d) continue;
         const ad = Math.abs(d); if (ad >= half) continue;
-        const j = Math.floor(ad / PANEL_MM - o + 0.5); if (j >= plateau) continue;
+        const j = Math.min(plateau, Math.floor(ad / PANEL_MM - o + 0.5));
         const Y = Ylum(target(rx[i], s, q, xE)); num[j] += rt[i] * Y; den[j] += rt[i] * rt[i];
       }
-      const F = num.map((v, j) => den[j] > 0 ? Math.max(1 - s, Math.min(1, (v / den[j]) ** (1 / 2.2))) : 1 - s);
+      const solve = (j: number, empty: number): number => den[j] > 0 ? Math.max(1 - s, Math.min(1, (num[j] / den[j]) ** (1 / 2.2))) : empty;
+      const F: number[] = []; F[plateau] = solve(plateau, 1 - s);
+      for (let j = 0; j < plateau; j++) F[j] = solve(j, F[plateau]);
       e = { F, plateau }; memo.set(key, e);
     }
     return e;
@@ -102,11 +104,13 @@ const rodModel = TUBE_ROD_MM.map(rodOf);
 if (BOARD_TAG === 'lcd316@320w8-8') {   // the profile on the 8 mm rod at the recommended look, and on every rod size at three covers
   const m = rodModel[0], s = 0.7, q = 1.5, f = Math.fround(0.4), c = m.cut(f), e = m.factors(72, s, q, f);
   console.log(`  rod 8 mm, s ${s} q ${q} fold 0.4: fold x ${m.xF.toFixed(4)} d ${m.dF.toFixed(4)}; TIR onset ${m.xT.toFixed(4)}; x_c ${c.xC.toFixed(4)} d_p ${c.dP.toFixed(4)} x_e ${c.xE.toFixed(4)}; plateau from row distance ${e.plateau}`);
-  console.log('    K per row distance j (rows 35 - j and 36 + j):', e.F.map((v) => Math.floor(256 * v + 0.5)).join(' '), `; plateau ${Math.floor(256 * (1 - s) + 0.5)}`);
+  const Ks = (F: number[]): string => F.map((v) => Math.floor(256 * v + 0.5)).join(' ');
+  console.log(`    K per row distance j (rows 35 - j and 36 + j; the last: the pooled plateau, j >= ${e.plateau}):`, Ks(e.F));
+  console.log(`    s 0.9 (same rod, shape, cover): K ${Ks(m.factors(72, Math.fround(0.9), q, f).F)}`);
   console.log('    x mm   target L*   predicted L* (quantised rows)');
   for (const x of [0, 1, 2, 2.5, 2.7, 3.48, 3.68, 3.8, 3.9, 3.96]) {
     const d = Math.abs(source(Math.max(x, 1e-9), m.R, ROD_GAP_MM, ROD_N)), j = Math.floor(d / PANEL_MM - 0.5 + 0.5);
-    const K = j >= e.plateau ? Math.floor(256 * (1 - s) + 0.5) : Math.floor(256 * e.F[j] + 0.5);
+    const K = Math.floor(256 * e.F[Math.min(j, e.plateau)] + 0.5);
     const Y = T2(x, m.R) / T2(0, m.R) * (K / 256) ** 2.2, L = Y > 216 / 24389 ? 116 * Math.cbrt(Y) - 16 : Y * 24389 / 27;
     console.log(`    ${x.toFixed(2)}   ${m.target(x, s, q, c.xE).toFixed(1).padStart(5)}       ${L.toFixed(1).padStart(5)}`);
   }
@@ -114,7 +118,7 @@ if (BOARD_TAG === 'lcd316@320w8-8') {   // the profile on the 8 mm rod at the re
     const r = rodOf(mm);
     for (const fo of [0, 0.4, 0.8]) {
       const cc = r.cut(Math.fround(fo)), span = Math.round(mm * 0.75 / PANEL_MM), ee = r.factors(span, 0.7, 1.5, Math.fround(fo));
-      console.log(`  rod ${mm} mm fold ${fo}: d_fold ${r.dF.toFixed(4)} d_p ${cc.dP.toFixed(4)} x_in(d_p) ${cc.xE.toFixed(4)}; ${span}-row tube, s 0.7 q 1.5: K ${ee.F.map((v) => Math.floor(256 * v + 0.5)).join(' ')} | ${Math.floor(256 * 0.3 + 0.5)}`);
+      console.log(`  rod ${mm} mm fold ${fo}: d_fold ${r.dF.toFixed(4)} d_p ${cc.dP.toFixed(4)} x_in(d_p) ${cc.xE.toFixed(4)}; ${span}-row tube, s 0.7 q 1.5: K ${ee.F.map((v) => Math.floor(256 * v + 0.5)).join(' ')} (the last: plateau)`);
     }
   }
 }
@@ -141,7 +145,7 @@ for (const [name, p] of cases) {
     const q = { ...ps[i], edgeShade: k, edgeShadeShape: pw, edgeShadeFold: fo }, T = edgeShadeRows(i, r.y, r.H, q)!;
     const p0 = bs(r.y), p1 = bs(r.y + r.H), c = (p0 + p1) / 2, o = (p1 - p0) % 2 === 0 ? 0.5 : 0;
     const e = rodModel[i].factors(p1 - p0, Math.fround(k), pw, Math.fround(fo));
-    const ideal = (n: number): number => { const j = Math.floor(Math.abs(n + 0.5 - c) - o + 0.5); return 256 * (1 - (j >= e.plateau ? 1 - Math.fround(k) : e.F[j])); };
+    const ideal = (n: number): number => { const j = Math.floor(Math.abs(n + 0.5 - c) - o + 0.5); return 256 * (1 - e.F[Math.min(j, e.plateau)]); };
     for (let n = p0; n < p1; n++) {
       const y = Math.floor(n * PANEL_H / PANEL_ROWS), g = [...Array(bs(y + 1) - bs(y))].map((_, j) => ideal(bs(y) + j));
       const t = T[y - r.y], mean = g.reduce((s, v) => s + v, 0) / g.length;   // the covered panel rows' mean, not just its range

@@ -5,6 +5,10 @@
 #include "gen/sprites_gen.h"
 #include "layout.h"
 #include "tiles.h"
+#include "rod.h"
+#ifdef ROD_RAYS_GEN
+#include "rod_rays_gen.h"   // ROD_GEN / ROD_GEN_R / ROD_GEN_OF / ROD_GEN_PITCH: tools/gen_rod_rays.py (pre-build), const = flash
+#endif
 #if defined(BOARD_LCD316) && defined(__XTENSA__)
 #include "esp_cache.h"   // the edge shade's spare rows (drawTube): written back for the push's DMA
 #endif
@@ -1400,21 +1404,16 @@ struct FizzFrame {
   int xsI, L; uint16_t blickC; bool mir;
 };
 struct MarkPlan;   // step 9, after the mark kernels
-// The edge shade's perceptual profile (buildShade, sim render.ts edgeShadeRows): ROD_RAYS rays at apparent offsets
-// x_i = (i + 0.5) R / ROD_RAYS through the tube's rod (RodRays, once at boot, doubles): per ray sqrt(x_i / R) (r), its
-// Fresnel transfer relative to the centre's (tau, tau^2) and the panel row it lands on, as the distance in rows from
-// the tube's centre for an even (j[0] = floor(u)) and an odd (j[1] = floor(u + 0.5)) number of panel rows, u = |d| /
-// pitch (ROD_NOROW past TIR). Per strength / shape / fold cover / tube position the rays are summed per row group in
-// single precision (rodSums, the FPU; ~1 ms) and each group's code factor solved (RodCache F, rows from `plateau` on at
-// full depth). Sized for the largest tube: a canvas row covers at most two panel rows (RENDER_H >= 240), so a group
+// The edge shade's perceptual profile (buildShade, sim render.ts edgeShadeRows): the rays of the tube's rod (rod.h
+// RodRays: generated into flash by tools/gen_rod_rays.py, -DROD_RAYS_GEN; else built at init, one per distinct rod in
+// PSRAM; immutable either way, shared by the tubes of one rod). Per strength / shape / fold cover / tube position the rays are summed per row group in
+// single precision (rodSums, the FPU) and each group's code factor solved (RodCache F, rows from `plateau` on one pooled
+// group). Sized for the largest tube: a canvas row covers at most two panel rows (RENDER_H >= 240), so a group
 // per panel row of half the tube is at most TUBE_HEIGHT_MAX + 1.
-#define ROD_RAYS 8192
 #define ROD_GROUPS (TUBE_HEIGHT_MAX + 2)
-#define ROD_NOROW INT16_MAX
-struct RodRays { float r[ROD_RAYS], tau[ROD_RAYS], tau2[ROD_RAYS]; int16_t j[2][ROD_RAYS]; };
 struct RodCache {
   int y0 = -1, H = 0; float k = -1, fold = -1; int q2 = 0;   // the key: position, rows, strength, fold cover, shape x 2
-  int plateau = 0;                                            // groups [0, plateau) solved, rows from `plateau` on full depth
+  int plateau = 0;                                            // groups [0, plateau] solved, rows from `plateau` on pooled
   float num[ROD_GROUPS], den[ROD_GROUPS];                     // per group: sum tau Y_t, sum tau^2 (rodSums)
   double F[ROD_GROUPS];                                       // per group: the code factor
   float cutFold = -1; double dP = 0, sE = 0;                  // the fold cover's row and its inner ray, for cutFold
@@ -1590,7 +1589,7 @@ struct Tube {
   void buildShade(const Params &p);
   double rodR = 0, rodSF = 0, rodST = 0;   // the edge shade's rod: radius mm (TUBE_ROD_MM / 2), its fold and TIR onset (rodFold), render_init
   struct RodCache *rod = nullptr;          // its row factors (buildShade), PSRAM, render_init
-  struct RodRays *rays = nullptr;          // its rays (rodRays), PSRAM, render_init
+  const RodRays *rays = nullptr;           // its rod's rays (rod.h): generated into flash, or shared PSRAM (render_init)
   void buildShadePal();
   void applyLens(const Params &p);
   void shadeRowTo(uint16_t *d, const uint16_t *s, int t);
@@ -4220,94 +4219,18 @@ void Tube::applyLens(const Params &p) {
   }
 }
 
-// The edge shade's rod (layout.h ROD_GAP_MM / ROD_N / TUBE_ROD_MM; sim render.ts rodScreen / rodFold / rodInner / rodRay /
-// rodRays, the same double operations in the same order: square roots and divisions are exact roundings on both sides,
-// so the two agree bit for bit; no library call). A ray leaving the rod's curved surface
-// toward a viewer at infinity, at angle alpha to its normal (s = sin alpha, apparent offset R s), refracts through the
-// PMMA and its flat base and lands on the pixel plane at rodScreen(s): docs/physical-tube-model.py source(R s, R, gap,
-// n) with its trigonometry written out (sin / cos of the refracted angles from s alone); NaN past total internal
-// reflection at the base, as source(). It grows with s to the fold (sF: the largest screen offset any ray reaches) and
-// turns back: past the fold the rod shows rows from further in again, up to the TIR onset sT (the last transmitting s).
-static double rodScreen(double s, double R, double g, double n) {
-  const double s1 = s / n, c1 = sqrt(1 - s1 * s1), ca = sqrt(1 - s * s);
-  const double st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
-  if (!(sa < 1 && sa > -1)) return NAN;
-  return R * s - (R * ca) * (st / ct) - g * (sa / sqrt(1 - sa * sa));
-}
-// s of the ray that lands at d on the rising branch [0, sF] (fixed bisection).
-static double rodInner(double d, double R, double g, double n, double sF) {
-  double lo = 0, hi = sF;
-  for (int i = 0; i < 60; i++) { const double m = (lo + hi) / 2; if (rodScreen(m, R, g, n) < d) lo = m; else hi = m; }
-  return (lo + hi) / 2;
-}
-// The rod's fixed points (fixed steps, no tolerance: the same on both sides): the TIR onset sT (the last transmitting s)
-// by bisection on n sin theta < 1, the fold sF (the largest screen offset) by golden section below it.
-static void rodFold(double R, double g, double n, double &sF, double &sT) {
-  double lo = 0, hi = 1;
-  for (int i = 0; i < 60; i++) {
-    const double m = (lo + hi) / 2, s1 = m / n, st = m * sqrt(1 - s1 * s1) - sqrt(1 - m * m) * s1;
-    if (n * st < 1) lo = m; else hi = m;
-  }
-  sT = lo;
-  double a = 0, b = sT;
-  for (int i = 0; i < 100; i++) {
-    const double c = b - (b - a) * 0.6180339887498949, e = a + (b - a) * 0.6180339887498949;
-    if (rodScreen(c, R, g, n) < rodScreen(e, R, g, n)) a = c; else b = e;
-  }
-  sF = (a + b) / 2;
-}
-// Fresnel power reflectances (s, p) of a lossless n1 -> n2 interface, cosines of incidence ci and transmission ct.
-static inline void fresnel(double n1, double ci, double n2, double ct, double &rs, double &rp) {
-  const double a = (n1 * ci - n2 * ct) / (n1 * ci + n2 * ct), b = (n2 * ci - n1 * ct) / (n2 * ci + n1 * ct);
-  rs = a * a; rp = b * b;
-}
-// The ray at s: the panel offset it lands on (rodScreen's operations, NaN past TIR) and its direct transfer (rays from
-// the viewer, unpolarised, products per polarisation): the curved surface, the PMMA -> air base and air -> cover glass
-// (index ROD_N: the base's reflectances again), T2 = 1/2 sum (1 - rc)(1 - rb)^2, 0 past TIR;
-// docs/edge-shade-session/astra-model.md section 1. Its cosines from s as rodScreen's (square roots and divisions).
-static void rodRay(double s, double R, double g, double n, double &d, double &t2) {
-  const double s1 = s / n, c1 = sqrt(1 - s1 * s1), ca = sqrt(1 - s * s);
-  const double st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
-  if (!(sa < 1 && sa > -1)) { d = NAN; t2 = 0; return; }
-  const double cb = sqrt(1 - sa * sa);
-  d = R * s - (R * ca) * (st / ct) - g * (sa / cb);
-  double cs, cp, bs, bp;
-  fresnel(1, ca, n, c1, cs, cp);
-  fresnel(n, ct, 1, cb, bs, bp);
-  t2 = 0.5 * ((1 - cs) * (1 - bs) * (1 - bs) + (1 - cp) * (1 - bp) * (1 - bp));
-}
-// The panel's row pitch in mm (the LCD's 320 rows / the AMOLED's own), as the canvas sees it.
-static double shadePitch() {
-#ifdef BOARD_LCD316
-  const int R = LCD_PANEL_H;
-#else
-  const int R = PANEL_H;
-#endif
-  const float pxmm = PX_PER_MM;
-  return (double)PANEL_H / R / (double)pxmm;
-}
-// The tube's rays (RodRays), panel rows `pitch` mm apart.
-static void rodRays(double R, double g, double n, double pitch, RodRays &r) {
-  double d0, t0; rodRay(0, R, g, n, d0, t0);
-  for (int i = 0; i < ROD_RAYS; i++) {
-    const double s = (i + 0.5) / ROD_RAYS;
-    double d, t2; rodRay(s, R, g, n, d, t2);
-    r.r[i] = (float)sqrt(s); r.tau[i] = (float)(t2 / t0); r.tau2[i] = r.tau[i] * r.tau[i];
-    if (!(d == d)) { r.j[0][i] = r.j[1][i] = ROD_NOROW; continue; }
-    const double u = fabs(d) / pitch, j0 = floor(u), j1 = floor(u + 0.5);
-    r.j[0][i] = (int16_t)(j0 < ROD_NOROW ? j0 : ROD_NOROW); r.j[1][i] = (int16_t)(j1 < ROD_NOROW ? j1 : ROD_NOROW);
-  }
-}
 // The per-group sums of one rebuild (single precision, every operation rounded: sim edgeShadeRows Math.fround; no fused
-// multiply-add): rays landing on rows j < plateau (J: RodRays j for the tube's parity), w = min(r cE, 1) = sqrt(min(x /
-// x_e, 1)), the target L* = Lc - D w^q2, its luminance Y_t, num += tau Y_t, den += tau^2.
-static void __attribute__((noinline, optimize("fp-contract=off"))) rodSums(const RodRays &ry, const int16_t *J, int plateau, float cE, float Lc, float D,
-                                                                          int q2, float *num, float *den) {
+// multiply-add): rays landing on the drawn tube (J: RodRays j for the tube's parity, j < groups; past TIR never), rows
+// from `plateau` on pooled into group `plateau`; w = min(r cE, 1) = sqrt(min(x / x_e, 1)) (cE infinite: x_e 0, every
+// ray at the edge's target), the target L* = Lc - D w^q2, its luminance Y_t, num += tau Y_t, den += tau^2.
+static void __attribute__((noinline, optimize("fp-contract=off"))) rodSums(const RodRays &ry, const int16_t *J, int groups, int plateau, float cE, float Lc,
+                                                                          float D, int q2, float *num, float *den) {
   const float k116 = (float)(1.0 / 116), k903 = (float)(27.0 / 24389);
-  for (int j = 0; j < plateau; j++) num[j] = den[j] = 0;
+  for (int j = 0; j <= plateau; j++) num[j] = den[j] = 0;
   for (int i = 0; i < ROD_RAYS; i++) {
-    const int j = J[i];
-    if (j >= plateau) continue;   // the plateau, off the drawn tube (plateau <= the tube's half), past TIR
+    int j = J[i];
+    if (j >= groups) continue;   // off the drawn tube, past TIR (ROD_NOROW)
+    if (j > plateau) j = plateau;
     float w = ry.r[i] * cE; if (w > 1.0f) w = 1.0f;
     float vq = w;
     for (int m = 1; m < q2; m++) vq = vq * w;
@@ -4335,8 +4258,9 @@ static double rodGammaInv(double a) {
 // Target lightness along the apparent offset x: L*(x) = Lc - (Lc - Le) min(x / x_e, 1)^q, Le = 100 (1 - s), Lc = 100 -
 // 12 s (s edgeShade, q edgeShadeShape in half steps: sqrt and products), x_e the inner ray of the fold cover's row dP
 // (edgeShadeFold, as before); Y_t its CIE luminance. Each panel row's group (rays that land on it, rows from the row
-// boundary nearest dP on are the plateau) takes the least-squares linear factor a = sum tau Y_t / sum tau^2, its code
-// factor F = clip(a^(1/2.2), 1 - s, 1); the plateau (and a row no ray reaches) 1 - s. A canvas row covers the panel's
+// boundary nearest dP on are one pooled group, the plateau) takes the least-squares linear factor a = sum tau Y_t / sum
+// tau^2, its code factor F = clip(a^(1/2.2), 1 - s, 1); a row no ray reaches the plateau's (an empty plateau 1 - s:
+// a tube shorter than one row past the cut). Rays off the drawn tube and past TIR count nowhere. A canvas row covers the panel's
 // rows [bs(y), bs(y + 1)) (display_lcd316.cpp bStart; one each at 320 and on the AMOLED): its factor the mean of
 // theirs, T = 256 - round(256 F). Again with the row cache (gen) and when the tube moves; ~ROD_RAYS ray steps a tube.
 void Tube::buildShade(const Params &p) {
@@ -4349,8 +4273,8 @@ void Tube::buildShade(const Params &p) {
   auto bs = [&](int y) { return (y * R + PANEL_H - 1) / PANEL_H; };
   const float k = p.edgeShade > 0 ? p.edgeShade < 1 ? p.edgeShade : 1.0f : 0.0f;
   const float fold = !(p.edgeShadeFold == p.edgeShadeFold) ? 0.4f : p.edgeShadeFold < 0 ? 0.0f : p.edgeShadeFold > 1 ? 1.0f : p.edgeShadeFold;
-  int q2 = !(p.edgeShadeShape == p.edgeShadeShape) ? 3 : (int)floorf(p.edgeShadeShape * 2 + 0.5f);   // half steps; a stored NaN: 1.5
-  q2 = q2 < 1 ? 1 : q2 > 6 ? 6 : q2;
+  const float sh = !(p.edgeShadeShape == p.edgeShadeShape) ? 1.5f : p.edgeShadeShape < 0.5f ? 0.5f : p.edgeShadeShape > 3 ? 3.0f : p.edgeShadeShape;
+  const int q2 = (int)floorf(sh * 2 + 0.5f);   // half steps (clamped before the cast); a stored NaN: 1.5
   const int p0t = bs(baseY), p1t = bs(baseY + H), span = p1t - p0t;
   const double c = (p0t + p1t) / 2.0, pitch = shadePitch(), o = span % 2 == 0 ? 0.5 : 0.0;
   rc.shadeOn = k > 0;
@@ -4367,13 +4291,16 @@ void Tube::buildShade(const Params &p) {
     int plateau = (int)floor(dP / pitch - o + 1.0); if (plateau < 0) plateau = 0;   // the row boundary nearest dP
     const int groups = (span + 1) / 2;
     if (plateau > groups) plateau = groups;
-    if (groups > ROD_GROUPS) abort();   // cannot happen (ROD_GROUPS): a tube taller than the strip
-    if (sE > 0) rodSums(*rays, rays->j[span % 2], plateau, (float)sqrt(1 / sE), (float)(100 - 12 * s), (float)((100 - 12 * s) - 100 * (1 - s)), q2, rd.num, rd.den);
-    else for (int j = 0; j < plateau; j++) rd.num[j] = rd.den[j] = 0;
-    for (int j = 0; j < plateau; j++) {
-      double F = rd.den[j] > 0 ? rodGammaInv((double)rd.num[j] / (double)rd.den[j]) : 1 - s;
-      rd.F[j] = F < 1 - s ? 1 - s : F > 1 ? 1 : F;
-    }
+    if (groups >= ROD_GROUPS) abort();   // cannot happen (ROD_GROUPS): a tube taller than the strip
+    rodSums(*rays, rays->j[span % 2], groups, plateau, sE > 0 ? (float)sqrt(1 / sE) : INFINITY, (float)(100 - 12 * s),
+            (float)((100 - 12 * s) - 100 * (1 - s)), q2, rd.num, rd.den);
+    auto solve = [&](int j, double empty) {
+      if (!(rd.den[j] > 0)) return empty;
+      const double F = rodGammaInv((double)rd.num[j] / (double)rd.den[j]);
+      return F < 1 - s ? 1 - s : F > 1 ? 1 : F;
+    };
+    rd.F[plateau] = solve(plateau, 1 - s);
+    for (int j = 0; j < plateau; j++) rd.F[j] = solve(j, rd.F[plateau]);
     rd.plateau = plateau;
     rd.y0 = baseY; rd.H = H; rd.k = k; rd.fold = fold; rd.q2 = q2;
     const uint32_t us = (uint32_t)(SHADE_NOW() - t0);
@@ -4386,7 +4313,7 @@ void Tube::buildShade(const Params &p) {
       double sum = 0;
       for (int q = p0; q < p1; q++) {
         const int j = (int)floor(fabs(q + 0.5 - c) - o + 0.5);
-        sum += j >= rd.plateau ? 1 - (double)k : rd.F[j];
+        sum += rd.F[j < rd.plateau ? j : rd.plateau];
       }
       T = 256 - (int)floor(256 * (sum / (p1 - p0)) + 0.5);
     }
@@ -5670,10 +5597,21 @@ bool render_init(bool fast) {
     tb.palS = (ShadePal *)heap_caps_malloc(sizeof(ShadePal), MALLOC_CAP_SPIRAM);   // ~1.7 KB
     tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~1.7 KB
     if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; tb.rod->k = -1; tb.rod->cutFold = -1; }
-    tb.rays = (RodRays *)heap_caps_malloc(sizeof(RodRays), MALLOC_CAP_SPIRAM);    // 128 KB (ROD_RAYS x 16 B)
-    ok = ok && tb.rod && tb.rays;
     tb.rodR = TUBE_ROD_MM(i) / 2; rodFold(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodST);
-    if (tb.rays) { const int64_t t0 = SHADE_NOW(); rodRays(tb.rodR, ROD_GAP_MM, ROD_N, shadePitch(), *tb.rays); shadeRaysUs[i] = (uint32_t)(SHADE_NOW() - t0); }
+#ifdef ROD_RAYS_GEN
+    // the build's tables (flash): the generator's rod and pitch must be this build's, else the face does not start
+    tb.rays = ROD_GEN_R[ROD_GEN_OF[i]] == tb.rodR && ROD_GEN_PITCH == shadePitch() ? &ROD_GEN[ROD_GEN_OF[i]] : nullptr;
+#else
+    // one immutable table per distinct rod (128 KB PSRAM, ROD_RAYS x 16 B), built by the first tube with it
+    for (int k = 0; k < i && !tb.rays; k++) if (tubeAt(k).rodR == tb.rodR) tb.rays = tubeAt(k).rays;
+    if (!tb.rays) {
+      if (RodRays *r = (RodRays *)heap_caps_malloc(sizeof(RodRays), MALLOC_CAP_SPIRAM)) {
+        const int64_t t0 = SHADE_NOW(); rodRays(tb.rodR, ROD_GAP_MM, ROD_N, shadePitch(), *r); shadeRaysUs[i] = (uint32_t)(SHADE_NOW() - t0);
+        tb.rays = r;
+      }
+    }
+#endif
+    ok = ok && tb.rod && tb.rays;
     if (tb.palS) tb.palS->valid = false;
     ok = ok && tb.palS;
     {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)
