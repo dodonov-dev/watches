@@ -5,7 +5,7 @@ PlatformIO pre-script (platformio.ini extra_scripts): compiles tools/gen_rod_ray
 writes $BUILD_DIR/rodgen/rod_rays_gen.h (only when it changed) and adds -DROD_RAYS_GEN and that include path.
 Host tools: generate(defines, out_dir) with the -D flags of their own build (tools/check_shade_rows.py).
 """
-import os, shlex, subprocess, sys, tempfile
+import os, subprocess, sys, tempfile
 from pathlib import Path
 try:
     FW = Path(__file__).resolve().parents[1]
@@ -26,10 +26,13 @@ def generate(defines, out_dir):
 
 def _pio():
     Import("env")  # noqa: F821 (SCons)
-    flags = []
-    for f in list(env.get("BUILD_FLAGS", [])) + shlex.split(os.environ.get("PLATFORMIO_BUILD_FLAGS", "")):  # noqa: F821
-        flags += shlex.split(env.subst(f)) if isinstance(f, str) else []  # noqa: F821
-    defines = list(dict.fromkeys(f for f in flags if f.startswith('-D')))
+    # the defines exactly as PlatformIO parses build_flags (PLATFORMIO_BUILD_FLAGS included), in order: a repeated name
+    # resolves as in the firmware's own compile (the last one wins)
+    parsed = env.ParseFlagsExtended(env.get("BUILD_FLAGS", []))  # noqa: F821
+    defines = []
+    for d in parsed.get("CPPDEFINES", []):
+        if isinstance(d, (tuple, list)): defines.append("-D%s=%s" % (d[0], env.subst(str(d[1]))))  # noqa: F821
+        else: defines.append("-D%s" % d)
     out_dir = Path(env.subst("$BUILD_DIR")) / "rodgen"  # noqa: F821
     try:
         generate(defines, out_dir)

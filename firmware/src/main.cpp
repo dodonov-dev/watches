@@ -142,10 +142,17 @@ static void paramsLoad() {
   } else if (crc == PARAMS_SCHEMA_CRC_V31 && prefs.getBytesLength("cur") == sizeof(Params)) {
     // v31 -> v32: the same layout, edgeShadePow's slot is edgeShadeShape's (the perceptual profile): its default, saved
     // at once under the new CRC (the next edit would otherwise overwrite the old look with the presets' defaults).
-    prefs.getBytes("cur", &params, sizeof(Params));
-    params.edgeShadeShape = 1.5f; params.v = 32;
-    prefs.putBytes("cur", &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
-    paramsChanged(); out.println("params: restored from nvs (v31, migrated to v32: edgeShadeShape 1.5)");
+    // Read into a copy: a short read keeps the defaults and the old blob as they are; the CRC is relabelled only after the
+    // whole blob is written, and success is reported only once the CRC is.
+    Params old;   // (720 B of the boot stack)
+    if (prefs.getBytes("cur", &old, sizeof(Params)) != sizeof(Params)) out.println("error params: v31 blob unreadable, defaults (nvs kept)");
+    else {
+      old.edgeShadeShape = 1.5f; old.v = 32;
+      params = old; paramsChanged();
+      if (prefs.putBytes("cur", &params, sizeof(Params)) != sizeof(Params)) out.println("error params: v31 -> v32 not saved (blob write)");
+      else if (prefs.putUInt("crc", PARAMS_SCHEMA_CRC) != 4) out.println("error params: v31 -> v32 not saved (crc write)");
+      else out.println("params: restored from nvs (v31, migrated to v32: edgeShadeShape 1.5)");
+    }
   }
   if (paramsSaved) *paramsSaved = params;
 }

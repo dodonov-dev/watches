@@ -8,6 +8,7 @@
 #include "rod.h"
 #ifdef ROD_RAYS_GEN
 #include "rod_rays_gen.h"   // ROD_GEN / ROD_GEN_R / ROD_GEN_OF / ROD_GEN_PITCH: tools/gen_rod_rays.py (pre-build), const = flash
+static_assert(sizeof(ROD_GEN_OF) / sizeof(ROD_GEN_OF[0]) == TUBE_COUNT, "rod_rays_gen.h: generated for another tube count");
 #endif
 #if defined(BOARD_LCD316) && defined(__XTENSA__)
 #include "esp_cache.h"   // the edge shade's spare rows (drawTube): written back for the push's DMA

@@ -17,6 +17,7 @@
 // No tiles (tiles.h) for this renderer: the tile slots, their GDMA channels and tile_dma.cpp are the native renderer's
 // (sized for its canvas, one channel per tube), so the comparison tube draws on its strip as in step 6.
 #define TILE_RENDER 0
+#undef ROD_RAYS_GEN   // its own canvas (pitch): the ray tables built at init, not the primary build's generated ones
 namespace ab {
 #define clampf physics_clampf   // file-local helpers of both files, now in one translation unit
 #include "physics.cpp"

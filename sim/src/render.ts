@@ -1891,12 +1891,12 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         if (xr < L) {
           const a = Math.min(1, t * t * p.glowStrength * lightK);
           if (traceMode) pxa(xr, y0 + ry, bRows[ry], a);
-          else px(xr, y0 + ry, blend565(bBack[ry], bRows[ry], a));
+          else px(xr, y0 + ry, blend565T(bBack[ry], bRows[ry], opacityT(a)));   // the firmware's blend565: rounded opacity
         }
         if (p.freeLiquid && xl >= capX0[ry]) {
           const a = Math.min(1, t * t * p.glowStrength * lightKL);
           if (traceMode) pxa(xl, y0 + ry, bRows[ry], a);
-          else px(xl, y0 + ry, blend565(bBack[ry], bRows[ry], a));
+          else px(xl, y0 + ry, blend565T(bBack[ry], bRows[ry], opacityT(a)));
         }
       }
     }

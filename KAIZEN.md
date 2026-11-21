@@ -979,6 +979,3 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - NVS migration covers v31 -> v32 only (main.cpp paramsLoad, static_assert on the CRC); a general per-version field map
   would carry looks across every schema change.
 - Edge shade: the generated ray tables put 128 KB a rod in the image (flash time); rodFold still runs at boot (~ms).
-- milk-big at 240f (edgeShade 0): 1 px 16/255 since the sim's band write rounds its opacity (pxaT, review 7 item 3, which
-  clears blood-big); the band's multi-layer composite is float (maybe fused) in the firmware, double in the sim; float32
-  layers in the sim did not clear it.

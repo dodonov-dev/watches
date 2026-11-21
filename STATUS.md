@@ -1,6 +1,22 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-21 (edge shade: review 7, pooled plateau, ray tables in flash)_
+_Last update: 2026-11-21 (edge shade: review 8)_
+
+## Edge shade: review 8 (2026-11-21), branch `edge-shade`, host only (not flashed)
+
+- NVS v31 -> v32: the old blob is read into a copy and used only if the whole of it was read; the CRC is relabelled
+  only after the whole blob was written, success reported only when the CRC write returns 4 (errors printed otherwise).
+- gen_rod_rays.py takes PlatformIO's own parse of build_flags (ParseFlagsExtended, in order; a repeated name resolves
+  last-wins as in the firmware's compile; `-D NAME=V` kept): `-DRENDER_H=240 -DRENDER_H=288 -DRENDER_H=240` generates
+  the 240 pitch. render.cpp static_asserts the generated tube map's length against TUBE_COUNT; render_ab.cpp undefines
+  ROD_RAYS_GEN (its own canvas: tables built at init).
+- milk-big (Astra's trace): the sim's hard-edge glow (non-trace) blends with the opacity rounded to 1/256 (blend565T,
+  opacityT) as the firmware's blend565: 240f milk-big 130 -> 18 px off, 0 > 12/255.
+- Host: check_shade_rows 0 differ on 9 builds (generated = init tables, pins ok); check_render_frames 13136
+  byte-identical (also `--tiles`); check_fizz_steps 80 / 80; check_shade_frames ok; check:layout 74; check:materials 1145;
+  tsc. 38 shaded looks: 38 / 38 on all seven paths. edgeShade 0, every preset (review 7 -> now): 320w8-8 12461 -> 10591
+  px off (75 / 77: cola, malt as before), 240f 7031 -> 5935 (74 -> 75 / 77: 1, glycerol-dark as before), amoled191
+  6983 -> 5891 (75 / 77: frizzante-big, glycerol-dark as before). Builds amoled191 1712563 B, lcd316@320w8-8 2787583 B.
 
 ## Edge shade: review 7 (2026-11-21), branch `edge-shade`, host only (not flashed)
 
@@ -31,8 +47,7 @@ _Last update: 2026-11-21 (edge shade: review 7, pooled plateau, ray tables in fl
   cola, malt), 240f 7971 -> 7031 (75 -> 74 / 77: milk-big 1 px 16/255 new, with 1 and glycerol-dark as before),
   amoled191 7935 -> 6983 (74 -> 75 / 77: cryo cleared). Builds: amoled191, lcd316@320w8-8; 288w10-8-6+t3 (3 rods,
   3043559 B) builds too.
-- KAIZEN: milk-big at 240f (edgeShade 0): 1 px 16/255 since pxaT (the band's multi-layer composite is float in the
-  firmware, double in the sim; float-exact layers did not clear it).
+- milk-big at 240f (edgeShade 0): 1 px 16/255 after pxaT; cleared in review 8 (hard-edge glow).
 
 ## Edge shade: perceptual profile (2026-11-21), branch `edge-shade`
 
