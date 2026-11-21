@@ -467,18 +467,13 @@ const luma = (c: [number, number, number]): number => 0.299 * c[0] + 0.587 * c[1
  *  Firmware note: the liquid behind a mark is the per-row LUT colour, so this whole function
  *  collapses into one extra H-row table per mark colour, built when params change. */
 /** m: an edge-shaded row's 256 − factor (256 = none). bg and mark arrive darkened by m / 256, so the floor's constants
- *  are too (contrast, the near-black test, white, firmware throughLiquid): the unshaded result darkened, up to rounding. */
+ *  are too (contrast, the near-black test, white, firmware throughLiquid): the unshaded result darkened, up to rounding.
+ *  One floor calculation for shaded and unshaded rows: the firmware's integers (transparency in 1/256, contrast in
+ *  1/1000), so the floor's direction test never flips between the two (a float unshaded floor and the integer shaded
+ *  one disagreed on it near zero luma difference). */
 function throughLiquid(bg: number, mark: number, p: Params, contrast: number, transparency = p.liquidTransparency, m = 256, markU = 0, bodyU = 0): number {
-  if (m < 256) return throughLiquidM(bg, mark, Math.floor(transparency * 256 + 0.5), Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5)), m, markU, bodyU);
-  const B = rgb565to888(bg);
-  let c = mix(B, rgb565to888(mark), transparency);
-  const lb = luma(B), lc = luma(c), d = lc - lb;
-  if (Math.abs(d) >= contrast) return q(c);
-  const dir = d !== 0 ? Math.sign(d) : lb > 110 ? -1 : 1;      // no room to darken a near-black row: go up
-  const target = Math.max(0, Math.min(255, lb + dir * contrast));
-  c = dir < 0 ? scale(c, target / Math.max(1, lc))
-    : mix(c, [255, 255, 255], Math.min(1, (target - lc) / Math.max(1, 255 - lc)));
-  return q(c);
+  const T = Math.floor(transparency * 256 + 0.5), C = Math.floor(Math.fround(Math.fround(Math.fround(contrast) * 1000) + 0.5));
+  return m < 256 ? throughLiquidM(bg, mark, T, C, m, markU, bodyU) : throughLiquidInt(bg, mark, T, C);
 }
 /** The firmware's unshaded integer throughLiquid (render.cpp throughLiquid, m = 256). */
 function throughLiquidInt(bg: number, mark: number, T: number, C: number): number {
@@ -2235,22 +2230,51 @@ function fresnel(n1: number, ci: number, n2: number, ct: number): [number, numbe
   const a = (n1 * ci - n2 * ct) / (n1 * ci + n2 * ct), b = (n2 * ci - n1 * ct) / (n2 * ci + n1 * ct);
   return [a * a, b * b];
 }
-/** The direct transfer at s: curved surface, PMMA → air base, air → cover glass (the base's reflectances again),
- *  unpolarised with products per polarisation, T2 = ½ Σ (1 − rc)(1 − rb)²; 0 past TIR (firmware rodT2). */
-export function rodT2(s: number, n: number): number {
+/** The ray at s: [panel offset (rodScreen's operations, NaN past TIR), direct transfer T2]: curved surface, PMMA → air
+ *  base, air → cover glass (the base's reflectances again), unpolarised with products per polarisation, T2 = ½ Σ (1 −
+ *  rc)(1 − rb)², 0 past TIR (firmware rodRay). */
+export function rodRay(s: number, R: number, g: number, n: number): [number, number] {
   const s1 = s / n, c1 = Math.sqrt(1 - s1 * s1), ca = Math.sqrt(1 - s * s);
   const st = s * c1 - ca * s1, ct = ca * c1 + s * s1, sa = n * st;
-  if (!(sa < 1 && sa > -1)) return 0;
-  const [cs, cp] = fresnel(1, ca, n, c1), [bs, bp] = fresnel(n, ct, 1, Math.sqrt(1 - sa * sa));
-  return 0.5 * ((1 - cs) * (1 - bs) * (1 - bs) + (1 - cp) * (1 - bp) * (1 - bp));
+  if (!(sa < 1 && sa > -1)) return [NaN, 0];
+  const cb = Math.sqrt(1 - sa * sa);
+  const d = R * s - (R * ca) * (st / ct) - g * (sa / cb);
+  const [cs, cp] = fresnel(1, ca, n, c1), [bs, bp] = fresnel(n, ct, 1, cb);
+  return [d, 0.5 * ((1 - cs) * (1 - bs) * (1 - bs) + (1 - cp) * (1 - bp) * (1 - bp))];
 }
-/** Rays of the edge shade's profile (firmware ROD_RAYS / rodRays): apparent offsets x_i = (i + 0.5) R / ROD_RAYS, the panel
- *  offset each lands on (NaN past TIR) and its transfer relative to the centre's. */
-export const ROD_RAYS = 8192;
-export function rodRays(R: number, g: number, n: number): { d: Float64Array; tau: Float64Array } {
-  const d = new Float64Array(ROD_RAYS), tau = new Float64Array(ROD_RAYS), t0 = rodT2(0, n);
-  for (let i = 0; i < ROD_RAYS; i++) { const s = (i + 0.5) / ROD_RAYS; d[i] = rodScreen(s, R, g, n); tau[i] = rodT2(s, n) / t0; }
-  return { d, tau };
+/** Rays of the edge shade's profile (firmware ROD_RAYS / RodRays / rodRays): apparent offsets x_i = (i + 0.5) R /
+ *  ROD_RAYS; per ray sqrt(x_i / R), the transfer relative to the centre's and its square (single precision), and the
+ *  panel row it lands on as rows from the tube's centre, j[0] = floor(u) (even row count), j[1] = floor(u + 0.5) (odd),
+ *  u = |d| / pitch (ROD_NOROW past TIR). */
+export const ROD_RAYS = 8192, ROD_NOROW = 32767;
+export interface RodRayTable { r: Float32Array; tau: Float32Array; tau2: Float32Array; j: [Int16Array, Int16Array] }
+export function rodRays(R: number, g: number, n: number, pitch: number): RodRayTable {
+  const f = Math.fround, r = new Float32Array(ROD_RAYS), tau = new Float32Array(ROD_RAYS), tau2 = new Float32Array(ROD_RAYS);
+  const j0 = new Int16Array(ROD_RAYS), j1 = new Int16Array(ROD_RAYS), t0 = rodRay(0, R, g, n)[1];
+  for (let i = 0; i < ROD_RAYS; i++) {
+    const s = (i + 0.5) / ROD_RAYS, [d, t2] = rodRay(s, R, g, n);
+    r[i] = Math.sqrt(s); tau[i] = t2 / t0; tau2[i] = f(tau[i] * tau[i]);
+    if (d !== d) { j0[i] = j1[i] = ROD_NOROW; continue; }
+    const u = Math.abs(d) / pitch;
+    j0[i] = Math.min(Math.floor(u), ROD_NOROW); j1[i] = Math.min(Math.floor(u + 0.5), ROD_NOROW);
+  }
+  return { r, tau, tau2, j: [j0, j1] };
+}
+/** The per-group sums of one rebuild in single precision, every operation rounded (firmware rodSums, no fused
+ *  multiply-add): rays on rows j < plateau, w = min(r cE, 1), L = Lc − D w^q2, Y_t, num += tau Y_t, den += tau². */
+function rodSums(ry: RodRayTable, J: Int16Array, plateau: number, cE: number, Lc: number, D: number, q2: number, num: Float32Array, den: Float32Array): void {
+  const f = Math.fround, k116 = f(1 / 116), k903 = f(27 / 24389);
+  for (let i = 0; i < ROD_RAYS; i++) {
+    const j = J[i];
+    if (j >= plateau) continue;
+    let w = f(ry.r[i] * cE); if (w > 1) w = 1;
+    let vq = w;
+    for (let m = 1; m < q2; m++) vq = f(vq * w);
+    const L = f(Lc - f(D * vq));
+    let Y: number;
+    if (L > 8) { const t = f(f(L + 16) * k116); Y = f(f(t * t) * t); } else Y = f(L * k903);
+    num[j] = f(num[j] + f(ry.tau[i] * Y)); den[j] = f(den[j] + ry.tau2[i]);
+  }
 }
 /** The code factor of a linear panel factor a (gamma 2.2: F^11 = a^5), fixed 24-step bisection (firmware rodGammaInv). */
 export function rodGammaInv(a: number): number {
@@ -2264,7 +2288,7 @@ export function rodGammaInv(a: number): number {
   }
   return (lo + hi) / 2;
 }
-const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: ({ d: Float64Array; tau: Float64Array } | undefined)[] = [];
+const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: (RodRayTable | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. The perceptual profile (docs/edge-shade-session/astra-model.md section 3; firmware render.cpp
  *  buildShade, the same double operations in the same order, fixed steps): target lightness along the apparent offset x
@@ -2284,33 +2308,18 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
   let rows: Uint16Array | null = null;
   if (k > 0) {
     const Rr = TUBE_ROD_MM[idx] / 2, [sF, sT] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N);
-    const ry = rodRayTables[idx] ??= rodRays(Rr, ROD_GAP_MM, ROD_N);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
+    const pitch = PANEL_H / R / PX_PER_MM, ry = rodRayTables[idx] ??= rodRays(Rr, ROD_GAP_MM, ROD_N, pitch);
     const p0t = bs(y0), p1t = bs(y0 + H), span = p1t - p0t;
-    const c = (p0t + p1t) / 2, pitch = PANEL_H / R / PX_PER_MM, o = span % 2 === 0 ? 0.5 : 0;
-    const s = k, Le = 100 * (1 - s), Lc = 100 - 12 * s, half = span / 2 * pitch;
+    const c = (p0t + p1t) / 2, o = span % 2 === 0 ? 0.5 : 0;
+    const s = k;
     let dP = rodScreen(sF + fold * (sT - sF), Rr, ROD_GAP_MM, ROD_N);
     if (!(dP > 0)) dP = 0;
     const sE = dP > 0 ? rodInner(dP, Rr, ROD_GAP_MM, ROD_N, sF) : 0;
     const groups = Math.floor((span + 1) / 2);
     const plateau = Math.min(groups, Math.max(0, Math.floor(dP / pitch - o + 1)));
-    const num = new Float64Array(plateau), den = new Float64Array(plateau), F = new Float64Array(plateau);
-    if (sE > 0) for (let i = 0; i < ROD_RAYS; i++) {
-      const d = ry.d[i];
-      if (d !== d) continue;
-      const ad = Math.abs(d);
-      if (ad >= half) continue;
-      const j = Math.floor(ad / pitch - o + 0.5);
-      if (j >= plateau) continue;
-      let v = (i + 0.5) / ROD_RAYS / sE; if (v > 1) v = 1;
-      const r = Math.sqrt(v); let vq = r;
-      for (let m = 1; m < q2; m++) vq *= r;
-      const L = Lc - (Lc - Le) * vq;
-      let Y: number;
-      if (L > 8) { const t = (L + 16) / 116; Y = t * t * t; } else Y = L / (24389 / 27);
-      const tau = ry.tau[i];
-      num[j] += tau * Y; den[j] += tau * tau;
-    }
+    const num = new Float32Array(plateau), den = new Float32Array(plateau), F = new Float64Array(plateau);
+    if (sE > 0) rodSums(ry, ry.j[span % 2], plateau, f(Math.sqrt(1 / sE)), f(100 - 12 * s), f((100 - 12 * s) - 100 * (1 - s)), q2, num, den);
     for (let j = 0; j < plateau; j++) { const v = den[j] > 0 ? rodGammaInv(num[j] / den[j]) : 1 - s; F[j] = v < 1 - s ? 1 - s : v > 1 ? 1 : v; }
     rows = new Uint16Array(H);
     for (let y = 0; y < H; y++) {

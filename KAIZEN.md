@@ -974,3 +974,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Perceptual edge shade: the ray grid (ROD_RAYS 8192) is not converged to the last code: vs 65536 rays ~15% of looks have a
   row 1/256 apart (rounding ties; 32768 still differs). Harmless; a finer grid costs rebuild time and 128 KB PSRAM a step.
 - RodRays is per tube (128 KB PSRAM each) though tubes of one rod size could share one table.
+- NVS looks do not survive a params schema change (v30 -> v31 -> v32: new CRC, the saved look is ignored at boot and the
+  next persistent edit overwrites it with defaults). A per-version field map in main.cpp loadParams would migrate them.
+- Edge shade floor off the body: the folded framebuffer cannot tell a body pixel from a highlight that shades to the same
+  565 (Astra review 6 item 2: 4a69 vs 2124). Exact output needs shading deferred on those rows until rear marks are done.
+- Edge shade boot: RodRays take 475 ms a tube in soft doubles (~1 s of boot); float rays or one table per rod size halve it.
+- Edge shade rebuild 5-8 ms a tube (PSRAM ray table + rodInner); an internal-RAM table or fewer groups would cut it.
+- blood-big at 320w8-8 (lens -0.05 / -3, s 0.6, shape 1.5): 1 px 17/255 at the tube's right edge (rows 249 / 250), not
+  traced; gone at lens 0 or shape 1, so likely a lens-conflict row of the fold (lightest factor + postT).

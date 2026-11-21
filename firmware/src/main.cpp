@@ -653,6 +653,7 @@ static void report_fps() {
       out.printf("push-prof %d pushes %u (by record %u)  us hash %.0f store %.0f gather-wait %.0f  changed segs %.0f  units %.1f\n", i, (unsigned)k[i][0],
                  (unsigned)k[i][6], k[i][1] / 240.0f / n, k[i][2] / 240.0f / n, k[i][4] / 240.0f / n, k[i][3] / n, k[i][5] / n); } }
 #endif
+  if (!liquidOk) return;   // the renderer's profiles read every tube: only once the face came up (setup)
 #ifdef TUBE_PROF
   const uint32_t k0frames = render_tube_profile(0)[0];
   for (int i = 0; i < TUBE_COUNT; i++) {   // per-frame averages over the frames since the last `f` (cycles / 240 = us), TU_* order

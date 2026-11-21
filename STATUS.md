@@ -1,6 +1,43 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-21 (edge shade: fold cover, params v31; review 5)_
+_Last update: 2026-11-21 (edge shade: perceptual profile, params v32; review 6)_
+
+## Edge shade: perceptual profile (2026-11-21), branch `edge-shade`
+
+- Params v32 (material schema 4): `edgeShadePow` gives way to `edgeShadeShape` q (0.5..3 in steps of 0.5, default 1.5,
+  UI "· shade shape"); `edgeShade` (s) and `edgeShadeFold` kept. Astra's model (docs/edge-shade-session/astra-model.md
+  section 3): target L*(x) = L*_c - (L*_c - L*_e) min(x / x_e, 1)^q, L*_c = 100 - 12 s, L*_e = 100 (1 - s), x_e = x_in(d_p);
+  the rod's Fresnel transfer tau (unpolarised, per-polarisation products, relative to the centre, 0 past TIR); 8192
+  midpoint rays grouped by panel row (rows from the boundary nearest d_p on: the plateau at 1 - s; a row no ray reaches
+  too); a = sum tau Y_t / sum tau^2, F = clip(a^(1/2.2), 1 - s, 1) by a 24-step bisection on F^11 = a^5; a canvas row
+  takes the mean of its panel rows. No library call: q by sqrt and products.
+- Firmware: RodRays per tube at boot (128 KB PSRAM: sqrt(x / R), tau, tau^2 as floats, the row of each ray for an even
+  and an odd row count; 475 ms a tube, doubles), RodCache (factors, sums sized for the tallest tube, abort past it).
+  Rebuild only at a strength / shape / cover / position change: the ray sums in single precision on the FPU (rodSums, no
+  fused multiply-add: 0 madd.s), the cover's inner ray cached per cover. Board: 7.6 / 6.8 ms (h / m) on a cover change,
+  5.9 / 5.1 ms on a strength or shape change (a double-precision first cut took 159 / 147 ms). `f` prints it
+  (`shade-build h last/max us (count, rays us)`).
+- 320w8-8, s 0.7, q 1.5, fold 0.4 (the user's look, 72-row tubes), K = 256 F per row 0..35 (36..71 mirrored):
+  77 x13, 78 88 97 106 115 124 132 141 149 157 165 172 180 187 193 200 206 211 216 221 225 228 230: Astra's table
+  exactly. Predicted L* (target / quantised rows) at x 0 / 1 / 2 / 2.5 / 2.7 / 3.48 / 3.68 / 3.8 / 3.9 / 3.96 mm: 91.6 /
+  91.2, 82.1 / 82.9, 64.8 / 65.0, 54.2 / 55.2, 49.6 / 48.3, 30.1 / 31.6, 30.0 / 30.3, 30.0 / 29.4, 30.0 / 37.3, 30.0 /
+  59.6 (the last two: the fold-back band near TIR, which the panel rows cannot darken further than 1 - s).
+- Ray grid (double model, 8 rods x 37 spans x 10 strengths x 6 shapes x 6 covers): vs 65536 rays, 8192 / 16384 / 32768
+  differ by 1/256 on some row in 15 / 9 / 5 % of looks, worst 1; 65536 vs 262144 still 3 %. Rounding ties, so no N gives
+  identical rows; kept 8192.
+- Review 6: the sim's unshaded contrast floor is the firmware's integers too (one floor calculation; edgeShade 0 px off
+  at 320w8-8 15986 -> 13954, same presets within 12/255); renderer profiles and their resets only after a good boot;
+  pow is gone; the fold cover's help says the profile reaches full depth with a finite slope. Items 1 (NVS across schema
+  changes) and 2 (exact floor off the body): KAIZEN.
+- Host: check_shade_rows 0 differ on 320w8-8, 240f, 320f+t3, amoled191, 320w3-3, 240w10-10, 240w3-f, 320, 288w10-8-6+t3
+  (5942 looks each: strength 0.3 / 0.7 / 1 x shape 0.5 / 1 / 1.5 / 2 / 3 x fold 0 / 0.4 / 1 x geometry, lens sweep, pins);
+  check_render_frames 13136 byte-identical (also `--tiles`), check_fizz_steps 80 / 80, check_shade_frames ok; check:layout
+  74 ok, check:materials 1145. 38 shaded looks (looks/shade5): 38 / 38 within 12/255 at 240f (both) and amoled191, 37 / 38
+  on the four 320w8-8 paths: blood-big (lens -0.05 / -3, s 0.6) has 1 px at 17/255 on the tube's right edge (rows 249 /
+  250); gone at lens 0 or shape 1 (KAIZEN).
+- Board (lcd316@320w8-8, elf 27bfab50; NVS reset by the schema CRC, the user's look from `p?` written back with s 0.7,
+  shape 1.5, fold 0.4): `bench.py --fix-pose --runs 3`: 57.9 fps (16.78 ms); `--stage edgeShade=0`: 62.1 (15.63 ms),
+  cost 1.15 ms (1.09-1.21). compare-device settled (g -1 0): 20 px off, 0 > 12/255.
 
 ## Edge shade: fold cover, smooth join (2026-11-21), branch `edge-shade`
 
