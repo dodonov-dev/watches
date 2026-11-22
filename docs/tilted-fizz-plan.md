@@ -10,7 +10,7 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 | # | point | owner | status |
 |---|-------|-------|--------|
 | 1 | baseline + shared seeded jobs (state parity) | opus | in progress |
-| 2 | signed normal input | opus | in progress |
+| 2 | signed normal input | opus | done e44d4c3 (board normal sign: stand reads az +0.21 ≈ 12° back, consistent; face-up check pending) |
 | 3 | vertical kernel, continuous depth, valid births | opus | in progress |
 | 4 | free flight, wall convergence, stirring | opus | open |
 | 5 | endpoint rule (k, L, P) | opus | open |
