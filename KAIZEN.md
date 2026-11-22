@@ -981,3 +981,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - NVS migration covers v31 -> v32 only (main.cpp paramsLoad, static_assert on the CRC); a general per-version field map
   would carry looks across every schema change.
 - Edge shade: the generated ray tables put 128 KB a rod in the image (flash time); rodFold still runs at boot (~ms).
+- Fizz drawing has no sim-vs-firmware pixel check (check_board_render fizz off, check_render_frames never steps it, no
+  vertical scenes): the vertical pop / foam veil are mirrored by reading only. Point 1's shared fizz-state jobs could feed it.
+- sim blend565 (float t, unquantised) still feeds other band / edge colours; the firmware rounds t to 1/256. Each such mix
+  is a 1-step parity seed that a stacked write can cross a 565 boundary with (nocturne@240f, 2026-11-22).
+- The fill's foam veil is a front-glass wedge (FOAM_VEIL, linear across the band), not the fill as drawn (smoothstep,
+  coverage); blick and rim veil by their drawn opacity since 2026-11-22. One model for all three would be simpler.
