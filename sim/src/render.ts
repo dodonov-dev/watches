@@ -1621,44 +1621,50 @@ function foamContactV32(i: number, p: Params, cand: Uint8Array, k: number, r: nu
 }
 // settleFoamV: each slot's u and body (y, z) at the step's start (firmware FoamWork uS / yS / zS)
 const foamUSV = new Float32Array(FIZZ_POOL), foamYSV = new Float32Array(FIZZ_POOL), foamZSV = new Float32Array(FIZZ_POOL);
-const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL);
+const foamOrderV = new Int16Array(FIZZ_POOL), foamELoV = new Float32Array(FIZZ_POOL);   // foamELoV: firmware FoamWork eLo
+const FIZZ_END_BISECT = 6;   // firmware FIZZ_END_BISECT
 /** settleFoam of the vertical watch in float32 (firmware settleFoam with `band`): each parked bubble glides to its own
- *  endpoint target (the whole-disc support of L + P, k from its body at the step's start, on its display row); the
+ *  endpoint target (the whole-disc support of L + P, k from its current body, on its display row); the
  *  packing works in physical coordinates (point 6): u and the body's (y, z), kept current at every placement (display
  *  row and tint level derived, fizzRowOf32 / fizzLevelOf32: the row bias moves nothing). Two bubbles touch at a 3D
  *  distance < m. Foam spreads over the surface's cross-section first: a touching pair parts in the surface plane (y, z)
  *  to the in-plane √((m + FOAM_GAP)² − du²) at their u, inside the eroded disc; what the plane cannot part (the bore
  *  wall, other foam, the step's bound) stacks in the last sweep: the rear one steps back along the tube. Overdamped: a
  *  step moves a bubble at most speed dt in the plane and back down the tube (the profile's own recession excepted);
- *  its endpoint k falls no faster than that.
+ *  its k is always its current body's: a move in the plane that would sink its target below min(uS − speed dt, its
+ *  target at the step's start) is shortened to the farthest of FIZZ_END_BISECT halvings that keeps it (none: it stays).
  *  Visits pairs in the firmware's sweep order (it uses a grid to skip the far ones: the same answers). */
 function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float32Array, band: Float32Array, side: number, dt: number): void {
   const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), bias0 = fizzBias032(i), back = F(speed * dt);
-  const front = (s: number, y: number, r: number): number => fizzEndSupport32(surf, band, H, side, y, r, foamKV[s])[1];
+  // the endpoint target of a body (y, z) on display row yr (k from the body)
+  const endAt = (y: number, z: number, yr: number, r: number): number =>
+    fizzEndSupport32(surf, band, H, side, yr, r, fizzEndK32(y, z, F(R - r), r, rowLerp32(band, H, yr)))[1];
+  const front = (s: number, y: number, r: number): number => endAt(bd[2 * s], bd[2 * s + 1], y, r);
   const place = (s: number, u: number, y: number, z: number): void => {   // (y, z): the body's
     const f = arr[s], r = fizzR32(p, f.v), a = F(R - r), ey = F(y - foamYSV[s]), ez = F(z - foamZSV[s]), e2 = F(F(ey * ey) + F(ez * ez));
+    const bias = fizzRowBias32(s, f.v, bias0);
     let yp = y, zp = z;
     if (e2 > F(back * back)) { const q = F(back / F(Math.sqrt(e2))); yp = F(foamYSV[s] + F(ey * q)); zp = F(foamZSV[s] + F(ez * q)); }
     const d2 = F(F(yp * yp) + F(zp * zp));
     if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); yp = F(yp * q); zp = F(zp * q); }
-    bd[2 * s] = yp; bd[2 * s + 1] = zp; f.y = fizzRowOf32(H, yp, a, fizzRowBias32(s, f.v, bias0)); f.z = fizzLevelOf32(zp, a);
-    f.x = F(side * Math.min(Math.max(u, F(foamUSV[s] - back)), front(s, f.y, r)));   // pushed back at most the rise's worth a step
+    let yr = fizzRowOf32(H, yp, a, bias), ut = endAt(yp, zp, yr, r);
+    if (ut < foamELoV[s]) {   // the move would sink its endpoint faster than it may sink: shortened from where it is (t 0)
+      const y0 = bd[2 * s], z0 = bd[2 * s + 1], dy = F(yp - y0), dz = F(zp - z0); let lo = 0, hi = 1;
+      for (let it = 0; it < FIZZ_END_BISECT; it++) {
+        const mid = F(F(lo + hi) * 0.5), ym = F(y0 + F(dy * mid)), zm = F(z0 + F(dz * mid));
+        if (endAt(ym, zm, fizzRowOf32(H, ym, a, bias), r) >= foamELoV[s]) lo = mid; else hi = mid;
+      }
+      yp = F(y0 + F(dy * lo)); zp = F(z0 + F(dz * lo)); yr = fizzRowOf32(H, yp, a, bias); ut = endAt(yp, zp, yr, r);
+    }
+    bd[2 * s] = yp; bd[2 * s + 1] = zp; f.y = yr; f.z = fizzLevelOf32(zp, a);
+    f.x = F(side * Math.min(Math.max(u, F(foamUSV[s] - back)), ut));   // pushed back at most the rise's worth a step
   };
   let n = 0;
   for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0) {
     foamOrderV[n++] = s;
     const f = arr[s], r = fizzR32(p, f.v);
     foamYSV[s] = bd[2 * s]; foamZSV[s] = bd[2 * s + 1]; foamUSV[s] = F(side * f.x);
-    const kN = fizzEndK32(bd[2 * s], bd[2 * s + 1], F(R - r), r, rowLerp32(band, H, f.y));
-    let kq = kN;
-    if (kN < 1) {   // k falls only as fast as the bubble may sink (firmware): its target stays >= uS − back
-      const lo = F(foamUSV[s] - back), u0 = fizzEndSupport32(surf, band, H, side, f.y, r, kN)[1];
-      if (u0 < lo) {
-        const u1 = fizzEndSupport32(surf, band, H, side, f.y, r, 1)[1];
-        if (u1 > u0) kq = F(kN + F(F(1 - kN) * Math.min(1, F(F(lo - u0) / F(u1 - u0)))));
-      }
-    }
-    foamKV[s] = kq;
+    foamELoV[s] = Math.min(F(foamUSV[s] - back), front(s, f.y, r));   // the lowest target a move in the plane may give it
   }
   for (let a = 0; a < n; a++) {   // glide and slide, in slot order
     const s = foamOrderV[a], f = arr[s], r = fizzR32(p, f.v);
