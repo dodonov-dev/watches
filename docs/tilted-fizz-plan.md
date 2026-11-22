@@ -413,3 +413,11 @@ the band's full layer opacity (fill + blick + rim).
 Flashed b-2 merge; look kept; board-look parity 32 px off, 0 > 12/255. Pinned bench (g 0 0 = face-up for the new kernel:
 bubbles stall) 60.4 fps — not comparable; live on the stand 52.1 fps, fizz step 0.84 ms. Point 9 must pin the stand
 pose (along ≈ −0.976, normal ≈ +0.22). IRAM +5.9 KB for stepFizzVertical: measure flash vs IRAM on the board (review 2.5).
+
+## Review-2 fixes + "fizz explosion" (57ffb69), board elf 61951d55
+Items 1-4 fixed (release re-runs first contact; whole-disc render clamp on the drawn footprint; packing in physical
+(u, y) with √(m²−dz²); --free = common-input kernel parity, strokes/surfaces compared before injection, vertical foam
+tol 1e-3). User saw "a small fizz explosion, including downwards" at the surface: contact push moved bubbles down 7142×
+/60 s (worst 7.2 px/step), packing 3208× (worst 30 px); fixed: overdamped contacts, packing push-back ≤ fizzSpeed·dt.
+Side effect: foam grows down as a column (sink > 10 px 12/199 → 138/225) — foam packs only in (u, y) at fixed z while
+arrivals are single-file on the front ridge. Next: foam spreads over the surface disc (y, z) first (in progress).
