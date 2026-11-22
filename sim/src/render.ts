@@ -2024,7 +2024,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           if (coverage <= 0) continue;
           const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) * invWidth));
           const us = u * u * (3 - 2 * u);
-          const c = blend565(inner, outer, us);
+          const c = blend565T(inner, outer, opacityT(us));   // the firmware's blend565: the mix rounded to 1/256
           const af = a * fill * coverage * (1 - pull * us);
           const ab = a * blickK * coverage * 4 * u * (1 - u);
           const rimCoverage = Math.max(0, hi - Math.max(lo, Math.max(0, wEff - 1)));
@@ -2034,7 +2034,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           // same-direction layers (a tinted rim over the fill on a light back) stacked to 2 LSB before.
           // A single layer takes the plain path, byte-identical to the separate writes.
           nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
-          layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(blickN, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
+          layer(pull > 0 ? blend565T(c, bRows[ry], opacityT(pull)) : c, af); layer(shadeRow(blickN, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
           if (nL === 1) pxaT(x, y, cLast, A);   // the firmware's rowPxa: the opacity rounded to 1/256
           else if (nL > 1) pxaT(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
         }
