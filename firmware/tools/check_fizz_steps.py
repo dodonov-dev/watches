@@ -138,7 +138,29 @@ SIM_HARNESS = r"""
 #include <cstring>
 static double parkWorst = -1e30; static long parkN = 0;   // the vertical kernel's parks (FIZZ_PARK_HOOK): how far short of its zone
 #define FIZZ_PARK_HOOK(t, k, u, uc) (parkN++, parkWorst = (uc) - FOAM_CATCH - (u) > parkWorst ? (uc) - FOAM_CATCH - (u) : parkWorst)
+struct Tube; static void motionBirth(const Tube &t, int k);   // births (FIZZ_BIRTH_HOOK): the MOTION line
+#define FIZZ_BIRTH_HOOK(t, k) motionBirth(t, k)
 #include RENDER_SRC
+// MOTION (stderr, every job): over every step of a vertical tube, the largest move of a live bubble back down the tube
+// (away from the end the rise heads for; not born that step) as a multiple of fizzSpeed dt (the rise's own step: the
+// overdamped contact and the foam's packing stay within it), and the births: how many, the nearest to that end's
+// surface (px). The stand job's expectation reads it (the board's 'fizz explosion' at the surface, 2026-11-22).
+static float mvX0[TUBE_COUNT][FIZZ_POOL], mvV0[TUBE_COUNT][FIZZ_POOL]; static bool mvBorn[TUBE_COUNT][FIZZ_POOL];
+static int mvSide = 1; static double mvDownWorst = 0, mvBirthGap = 1e30; static long mvBirths = 0;
+static int mvTube(const Tube &t) { for (int i = 0; i < TUBE_COUNT; i++) if (&tubeAt(i) == &t) return i; return 0; }
+static void motionBirth(const Tube &t, int k) {
+  mvBorn[mvTube(t)][k] = true; mvBirths++; const Fizz &f = t.fizz[k];
+  const double g = mvSide > 0 ? foamFront(t.fizzSurf, t.H, f.y, 1) - f.x : foamFront(t.fizzSurfL, t.H, f.y, -1) + f.x;
+  if (g < mvBirthGap) mvBirthGap = g;
+}
+static void motionBefore(int i) { const Tube &t = tubeAt(i); for (int k = 0; k < FIZZ_POOL; k++) { mvX0[i][k] = k < t.fizzN ? t.fizz[k].x : 0; mvV0[i][k] = k < t.fizzN ? t.fizz[k].v : 0; mvBorn[i][k] = false; } }
+static void motionAfter(int i, const Params &p, float dt) {
+  const Tube &t = tubeAt(i); if (!t.bodyH || !(p.fizzSpeed > 0)) return;
+  for (int k = 0; k < t.fizzN; k++) if (!mvBorn[i][k] && mvV0[i][k] != 0 && t.fizz[k].v != 0) {
+    const double down = -mvSide * (double)(t.fizz[k].x - mvX0[i][k]) / (p.fizzSpeed * dt);
+    if (down > mvDownWorst) mvDownWorst = down;
+  }
+}
 static uint16_t strip[TUBE_COUNT][PANEL_W * TUBE_HEIGHT_MAX];
 static bool setParam(Params &p, const char *name, const char *val) {   // main.cpp setParam
   for (const ParamField &f : PARAM_FIELDS) if (!strcmp(f.name, name)) {
@@ -494,11 +516,13 @@ static int supportSelftest() {
          n, moved, slack, bad);
   return bad ? 14 : 0;
 }
-// `selftest`, packing in physical coordinates (point 6, review 2): settleFoam at dt 0 (no glide, no slide: the packing
-// alone) on pairs parked far from the surface. The review's repro (contact 5.5, axial 5, transverse 0, depth 3 apart: a
-// 3D distance of 5.83, no overlap) does not move; at depths 3 apart and 4 px along a pair parts to the in-plane
-// sqrt((m + FOAM_GAP)^2 - dz^2), 3D distance m + FOAM_GAP; an axial pair at one physical y in two slots (two row biases)
-// parts along the tube only, its bodies' y unchanged; every foam bubble's display row is fizzRowOf of its body.
+// `selftest`, packing in physical coordinates (point 6, review 2): one settleFoam step (dt 0.02) on pairs parked far from
+// the surface, so both glide the same fizzSpeed dt and the packing alone sets their separation. The review's repro
+// (contact 5.5, axial 5, transverse 0, depth 3 apart: a 3D distance of 5.83, no overlap) keeps its separation; at depths
+// 3 apart and 4 px along a pair parts to the in-plane sqrt((m + FOAM_GAP)^2 - dz^2), 3D distance m + FOAM_GAP,
+// symmetrically; an axial pair at one physical y in two slots (two row biases) parts along the tube only, its bodies' y
+// unchanged; every foam bubble's display row is fizzRowOf of its body. Then the overdamped bound: a pair overlapping
+// by 4 px parts by at most fizzSpeed dt a step backward (the rear never pushed back faster than the rise).
 static int packSelftest() {
   Tube &t = tubeAt(0); long bad = 0;
   auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest pack: %s: got %.9g want %.9g\n", what, got, want); };
@@ -506,21 +530,22 @@ static int packSelftest() {
   t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), r = fizzR(p, 1), m = 2 * r + 0.5f, a = R - r, bias0 = fizzBias0(t);
   for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = 5000; t.fizzSurfL[iy] = -5000; t.strokeR[iy] = t.strokeL[iy] = 0; }
   t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+  const float dt = 0.02f, g = p.fizzSpeed * dt;   // the step, the glide (and the push-back bound)
   auto pair = [&](float u0, float u1, float y0, float y1, float z0, float z1) {
     t.fizzN = 2; t.foam->nOrder = 0;
     const float y[2] = {y0, y1}, z[2] = {z0, z1}, u[2] = {u0, u1};
     for (int k = 0; k < 2; k++) { t.body[k] = {y[k], z[k], 0, {0, 0, 0}}; t.fizz[k] = {u[k], fizzRowOf(H, y[k], a, fizzRowBias(k, 1, bias0)), 1, 3, 0.5f}; }
-    settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, 0, false, 0, t.strokeR);
+    settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, dt, false, 0, t.strokeR);
     for (int k = 0; k < 2; k++) if (t.fizz[k].y != fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0))) fail("display row not derived from the body", t.fizz[k].y, fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0)));
   };
   if (m != 5.5f) fail("contact distance", m, 5.5);
   pair(100, 95, 0, 0, 1.5f, -1.5f);
-  if (t.fizz[0].x != 100 || t.fizz[1].x != 95 || t.body[0].y != 0 || t.body[1].y != 0) fail("repro: moved (x0, x1)", t.fizz[0].x, t.fizz[1].x);
+  if (t.fizz[0].x - t.fizz[1].x != 5 || t.body[0].y != 0 || t.body[1].y != 0) fail("repro: pushed (x0 - x1)", t.fizz[0].x - t.fizz[1].x, 5);
   pair(100, 96, 0, 0, 1.5f, -1.5f);   // 5 px apart in 3D: parts to m + FOAM_GAP
   {
     const double du = t.fizz[0].x - t.fizz[1].x, dy = t.body[0].y - t.body[1].y, dz = 3, d3 = sqrt(du * du + dy * dy + dz * dz);
     if (fabs(d3 - (m + FOAM_GAP)) > 1e-4) fail("depth 3 apart: 3D distance after the push", d3, m + FOAM_GAP);
-    if (fabs(t.fizz[0].x + t.fizz[1].x - 196) > 1e-4) fail("depth 3 apart: not symmetric", t.fizz[0].x + t.fizz[1].x, 196);
+    if (fabs(t.fizz[0].x + t.fizz[1].x - (196 + 2 * g)) > 1e-4) fail("depth 3 apart: not symmetric", t.fizz[0].x + t.fizz[1].x, 196 + 2 * g);
   }
   const float yb = 0.25f * a;
   pair(100, 96, yb, yb, 0, 0);   // one physical y, two slots (row biases differ): along the tube only
@@ -530,8 +555,10 @@ static int packSelftest() {
     if (t.body[0].y != yb || t.body[1].y != yb) fail("axial pair: physical y moved", t.body[1].y, yb);
     if (fabs(t.fizz[0].x - t.fizz[1].x - (m + FOAM_GAP)) > 1e-4) fail("axial pair: separation", t.fizz[0].x - t.fizz[1].x, m + FOAM_GAP);
   }
+  pair(100, 96.5f + 4, yb, yb, 0, 0);   // 4 px into each other (slot 1 ahead): the rear (slot 0) steps back at most g
+  if (t.fizz[0].x < 100 - g - 1e-4f) fail("overlap: the rear pushed back past fizzSpeed dt", t.fizz[0].x, 100 - g);
   t.fizzN = 0; t.bodyH = 0;
-  printf("SELFTEST pack repro (m 5.5, du 5, dz 3) unmoved; depth-3 pair parted to 3D m + gap; axial pair across two row biases: y kept, du m + gap; failures %ld\n", bad);
+  printf("SELFTEST pack repro (m 5.5, du 5, dz 3) unmoved; depth-3 pair parted to 3D m + gap; axial pair across two row biases: y kept, du m + gap; an overlap pushes the rear back <= fizzSpeed dt; failures %ld\n", bad);
   return bad ? 15 : 0;
 }
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
@@ -613,7 +640,8 @@ int main() {
       Pose pose = POSE_DEFAULT; updatePose(pose, along, across, normal);   // the run's gain-free pose (ImuFilter::pose's maths)
       for (int k = 0; k < n; k++) {
         for (int j = 0; j < TUBE_COUNT; j++) st[j].agitation = agit;
-        for (int j = 0; j < TUBE_COUNT; j++) stepFizzTube(j, p[j], dt, along, across, agit, pose);
+        mvSide = (mirrored(p[0]) ? -pose.x : pose.x) >= 0 ? 1 : -1;
+        for (int j = 0; j < TUBE_COUNT; j++) { motionBefore(j); stepFizzTube(j, p[j], dt, along, across, agit, pose); motionAfter(j, p[j], dt); }
         step++;
         if (step % every == 0) frame();
         for (int j = 0; j < TUBE_COUNT; j++) emit(step, j);   // after the step and its frame
@@ -623,6 +651,7 @@ int main() {
   }
   if (heapCalls() != bootAllocs) { fprintf(stderr, "%lu allocations after boot\n", heapCalls() - bootAllocs); return 8; }
   if (parkN) fprintf(stderr, "PARKS %ld worst %.6g px short of the zone\n", parkN, parkWorst);
+  fprintf(stderr, "MOTION down worst %.6g x fizzSpeed dt; births %ld, nearest %.6g px from the surface\n", mvDownWorst, mvBirths, mvBirthGap);
   return 0;
 }
 """
@@ -677,6 +706,7 @@ SIM_JOBS = {
     'back 15, 20 s': ({}, [_run(100, UP), _run(1000, _tilt(15))]),   # the stand: the rope forms
     'board look 60 s': ({}, [_run(3000, UP)]),   # the diagnosed pulse replay (docs/tilted-fizz-plan.md): parks, foam count
     'board look 60 s, across 0.05': ({}, [_run(3000, (-math.sqrt(1 - 0.05 ** 2), 0.05, 0.0))]),
+    'stand 13 back, 30 s': ({}, [_run(1500, (-0.976, -0.01, 0.22))]),   # the board's 'fizz explosion' pose (2026-11-22)
 }
 JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
 
@@ -691,10 +721,19 @@ def _contained(lines, err):   # no across rise: every live body stays in the bor
     out = [l for l in err.splitlines() if l.startswith('OUT ')]
     return f'{len(out)} steps with bodies outside, first: {out[0]}' if out else None
 
+def _overdamped(lines, err):   # the stand: nothing moves back down faster than the rise's own step; births far from the surface
+    m = next((l.split() for l in err.splitlines() if l.startswith('MOTION ')), None)
+    if not m: return 'no MOTION line'
+    down, gap = float(m[3]), float(m[10])
+    # fizzSpeed dt bounds the foam's push back (settleFoam's cap; the profile's own recession exempt) and is the rise's
+    # step: 1.3 leaves room for a front at a lower row after a slide along a curved meniscus (measured worst 1.0x)
+    return None if down <= 1.3 and gap >= 20 else f'moved down {down:.3g} x fizzSpeed dt (max 1.3), a birth {gap:.3g} px from the surface (min 20)'
+
 # name: (what, check over the firmware's state lines (split) -> None or why not)
 SIM_EXPECT = {'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
               'upright': ('containment', _contained), 'back 15': ('containment', _contained), 'height changes': ('containment', _contained),
-              'back 15, 20 s': ('containment', _contained), 'shaking': ('containment', _contained)}
+              'back 15, 20 s': ('containment', _contained), 'shaking': ('containment', _contained),
+              'stand 13 back, 30 s': ('overdamped contacts', _overdamped)}
 SIM_SEED = 0x2545F491
 # Sim vs firmware in lockstep (each step from the firmware's state): per field, the largest difference accepted. Slot and
 # draw counts, which slots are foam and on which side, are exact. Free bubbles: one step's float rounding. Parked foam
@@ -781,7 +820,8 @@ def sim_main(a):
             if a.free:   # the independent full pipeline (no injection): information, its first divergence
                 rf = sim(None, natf)
                 full = f'sim exited {rf.returncode}' if rf.returncode else (sim_compare(nat[0].stdout.decode(), rf.stdout.decode())[0] or 'matches')
-            return name, None, (*res_, gen, full)
+            mo = next((l[7:] for l in nat[0].stderr.decode().splitlines() if l.startswith('MOTION ')), '')
+            return name, None, (*res_, gen, full, mo)
 
         mode = 'free: common-input kernel parity (acceptance for vertical jobs)' if a.free else 'lockstep (diagnostic)'
         print(f'{"mode":24s} {mode}' + ('' if a.free else ': every step from the firmware state; --free is the acceptance mode for vertical jobs'))
@@ -792,11 +832,11 @@ def sim_main(a):
                 diag = a.free and name in LEGACY_JOBS   # the landscape kernel (doubles vs floats): a diagnostic in --free
                 tag_ = ' (legacy kernel, diagnostic)' if diag else ''
                 if err: jbad += 1; vbad += not diag; print(f'{name:24s} ERROR{tag_} {err}'); continue
-                diff, steps, worst, most, gen, full = res_
+                diff, steps, worst, most, gen, full, mo = res_
                 if full: fulls.append((name, full))
                 if diff: jbad += 1; vbad += not diag; print(f'{name:24s} DIFFERS{tag_} {diff}'); continue
                 print(f'{name:24s} {steps} steps match{tag_}; frame inputs generated alike over {gen[1]} frames' + (f'; slots max {"/".join(map(str, most))}; worst '
-                      + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) + f'; generation worst surf {gen[2]["surf"]:.2g} stroke {gen[2]["stroke"]:.2g}' if a.v else ''))
+                      + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) + f'; generation worst surf {gen[2]["surf"]:.2g} stroke {gen[2]["stroke"]:.2g}; motion: {mo}' if a.v else ''))
         if a.free:
             print('full pipeline, no input injection (information: expected to drift; the first divergence per job):')
             for name, full in fulls: print(f'  {name:24s} ' + ('all steps match' if full == 'matches' else f'first divergence: {full}'))

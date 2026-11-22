@@ -1619,6 +1619,7 @@ function foamContactV32(i: number, p: Params, cand: Uint8Array, k: number, r: nu
   }
   return best;
 }
+const foamUSV = new Float32Array(FIZZ_POOL);   // settleFoamV: each slot's u at the step's start (firmware FoamWork uS)
 const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL), foamYLoV = new Float32Array(FIZZ_POOL), foamYHiV = new Float32Array(FIZZ_POOL);
 /** settleFoam of the vertical watch in float32 (firmware settleFoam with `band`): each parked bubble glides to its own
  *  endpoint target (the whole-disc support of L + P, k from its body at the step's start, on its display row); the
@@ -1628,18 +1629,18 @@ const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POO
  *  a pushed pair parts to √((m + FOAM_GAP)² − dz²). Visits pairs in the firmware's sweep order (it uses a grid to skip
  *  the far ones: the same answers). */
 function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float32Array, band: Float32Array, side: number, dt: number): void {
-  const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), bias0 = fizzBias032(i);
+  const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), bias0 = fizzBias032(i), back = F(speed * dt);
   const front = (s: number, y: number, r: number): number => fizzEndSupport32(surf, band, H, side, y, r, foamKV[s])[1];
   const place = (s: number, u: number, y: number): void => {   // y: the body's physical y
     const f = arr[s], r = fizzR32(p, f.v), yp = clamp32(y, foamYLoV[s], foamYHiV[s]);
     bd[2 * s] = yp; f.y = fizzRowOf32(H, yp, F(R - r), fizzRowBias32(s, f.v, bias0));
-    f.x = F(side * Math.min(u, front(s, f.y, r)));
+    f.x = F(side * Math.min(Math.max(u, F(foamUSV[s] - back)), front(s, f.y, r)));   // pushed back at most the rise's worth a step
   };
   let n = 0;
   for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0) {
     foamOrderV[n++] = s;
     const f = arr[s], r = fizzR32(p, f.v), ar = F(R - r), z = bd[2 * s + 1], ya = F(Math.sqrt(Math.max(0, F(F(ar * ar) - F(z * z)))));
-    foamYLoV[s] = -ya; foamYHiV[s] = ya;
+    foamYLoV[s] = -ya; foamYHiV[s] = ya; foamUSV[s] = F(side * f.x);
     foamKV[s] = fizzEndK32(bd[2 * s], z, ar, r, rowLerp32(band, H, f.y));
   }
   for (let a = 0; a < n; a++) {   // glide and slide, in slot order
@@ -1736,6 +1737,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     }
     const r = fizzR32(p, f.v), a = F(R - r), U = F(F(U0 * F(r * r)) * invRef2);
     bb[0] = body[2 * k]; bb[1] = body[2 * k + 1]; bb[2] = contact[k];
+    const x0 = f.x, y0 = bb[0], z0 = bb[1];   // where the step starts (the foam contact removes its approach)
     if (stir > 0) { bb[0] = F(bb[0] + F(stir * F(F(2 * Math.random()) - 1))); bb[1] = F(bb[1] + F(stir * F(F(2 * Math.random()) - 1))); bb[2] &= ~FIZZ_C_WALL; }
     const tx = fizzMoveV32(bb, a, U, by, bz, inv, dt);
     let y = bb[0], z = bb[1], c = bb[2] & ~FIZZ_C_END;
@@ -1743,19 +1745,23 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     const bias = fizzRowBias32(k, f.v, bias0);
     f.y = fizzRowOf32(H, y, a, bias);
     body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
-    if (park) {   // pressed into the foam ahead: pushed back out of the deepest contact, never toward the surface (point 6)
+    if (park) {   // pressed into the foam ahead (point 6): an overdamped contact, never a repulsion (firmware)
+      // the step's displacement loses its part along −n (the approach to the deepest contact): it stops against the
+      // foam or slides along it, never farther than its own step, never down the tube past the step's start
       const j = foamContactV32(i, p, cand, k, r, park);
       if (j >= 0) {
-        const g = arr[j], m = F(F(F(r + fizzR32(p, g.v)) + 0.5) + FOAM_GAP), dx = F(f.x - g.x), dy = F(y - body[2 * j]), dz = F(z - body[2 * j + 1]);
-        const d = F(Math.sqrt(F(F(F(dx * dx) + F(dy * dy)) + F(dz * dz))));
-        let px: number, py: number, pz: number;
-        if (d > F(1e-4)) { const q = F(F(m - d) / d); px = F(dx * q); py = F(dy * q); pz = F(dz * q); }
-        else { px = F(-park * m); py = pz = 0; }
-        if (F(park * px) > 0) px = 0;
-        f.x = F(f.x + px); y = F(y + py); z = F(z + pz);
-        const d2 = F(F(y * y) + F(z * z));
-        if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
-        f.y = fizzRowOf32(H, y, a, bias); body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
+        const g = arr[j], nx = F(f.x - g.x), ny = F(y - body[2 * j]), nz = F(z - body[2 * j + 1]);
+        const n2 = F(F(F(nx * nx) + F(ny * ny)) + F(nz * nz));
+        const sn = F(F(F(F(f.x - x0) * nx) + F(F(y - y0) * ny)) + F(F(z - z0) * nz));
+        if (sn < 0 && n2 > F(1e-8)) {
+          const qn = F(sn / n2);
+          let px = F(-qn * nx);
+          if (F(park * F(F(f.x + px) - x0)) < 0) px = F(x0 - f.x);
+          f.x = F(f.x + px); y = F(y - F(qn * ny)); z = F(z - F(qn * nz));
+          const d2 = F(F(y * y) + F(z * z));
+          if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
+          f.y = fizzRowOf32(H, y, a, bias); body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
+        }
       }
     }
     if (side !== 0) {
