@@ -4118,36 +4118,46 @@ int fizzCounts(int idx, int &foam, int &slots) {
 // A bubble's move across the bore for one step (stepFizzVertical, docs/tilted-fizz-plan.md point 4): (y, z) its body,
 // c its contact, a = R - r the eroded radius, U its rise speed, (by, bz) the buoyancy direction's transverse part, inv
 // = 1 / |(by, bz)| (0 when the pose is exactly along the tube). Free: a straight line at U (by, bz), to its first contact
-// with the bore wall (the quadratic |p + w t| = a), then the rest of the step on the wall; on the wall while the
-// buoyancy presses outward: the tangential part of it at FIZZ_KW U, never past the ridge (y*, z*) = a (by, bz) / |b|,
-// back onto the circle; released into the liquid once the buoyancy turns inward. Against a closed end (FIZZ_C_END) the
-// glass slows the transverse motion to FIZZ_KW too. Returns the step's time-weighted axial mobility tx: the centre moves
-// U bx tx along the tube (dt free, FIZZ_KW dt on the wall).
+// with the bore wall (fizzFlyV), then the rest of the step on the wall; on the wall while the buoyancy presses outward:
+// the tangential part of it at FIZZ_KW U, never past the ridge (y*, z*) = a (by, bz) / |b|, back onto the circle;
+// released into the liquid once the buoyancy turns inward: free flight for the rest of the step, again to its first
+// contact (the far wall at most: never through it), then the remaining time on the wall there (one release a step).
+// Against a closed end (FIZZ_C_END) the glass slows the transverse motion to FIZZ_KW too. Returns the step's
+// time-weighted axial mobility tx: the centre moves U bx tx along the tube (dt free, FIZZ_KW dt on the wall).
+// Free flight from (y, z) at (wy, wz) for tw: true = it stays inside the eroded disc (moved to its end); false = it meets
+// the circle after th (moved there, contact set). The contact is the forward root of |p + w t| = a: from inside (C < 0)
+// the exit; from on or past the circle moving inward (B < 0: a release, or a stirring kick past the wall) the far side,
+// never the start; moving outward from on or past it, where it is (th 0).
+static inline bool fizzFlyV(float &y, float &z, uint8_t &c, float a, float wy, float wz, float tw, float &th) {
+  const float y1 = y + wy * tw, z1 = z + wz * tw;
+  if (y1 * y1 + z1 * z1 <= a * a) { y = y1; z = z1; return true; }
+  const float A = wy * wy + wz * wz, B = y * wy + z * wz, C = y * y + z * z - a * a;
+  th = 0;
+  if (A > 0 && (C < 0 || B < 0)) th = clampf((-B + sqrtExact(fmx(0, B * B - A * C))) / A, 0, tw);
+  y = y + wy * th; z = z + wz * th; c |= FIZZ_C_WALL;
+  return false;
+}
 static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, float by, float bz, float inv, float dt) {
-  const float mob = (c & FIZZ_C_END) ? FIZZ_KW : 1;
-  float tFree = 0;
-  if (!(c & FIZZ_C_WALL)) {
-    const float wy = mob * U * by, wz = mob * U * bz, y1 = y + wy * dt, z1 = z + wz * dt;
-    if (y1 * y1 + z1 * z1 <= a * a) { y = y1; z = z1; return dt; }
-    const float A = wy * wy + wz * wz, B = y * wy + z * wz, C = y * y + z * z - a * a;
-    float th = 0;   // the first contact (0: already on or past the circle, a stirring kick)
-    if (C < 0 && A > 0) th = clampf((-B + sqrtExact(fmx(0, B * B - A * C))) / A, 0, dt);
-    y = y + wy * th; z = z + wz * th; tFree = th; c |= FIZZ_C_WALL;
+  const float mob = (c & FIZZ_C_END) ? FIZZ_KW : 1, wy = mob * U * by, wz = mob * U * bz;
+  float tFree = 0, th;
+  if (!(c & FIZZ_C_WALL)) { if (fizzFlyV(y, z, c, a, wy, wz, dt, th)) return dt; tFree = th; }
+  for (int pass = 0;; pass++) {
+    const float d2 = y * y + z * z;
+    if (!(d2 > 0)) { c &= ~FIZZ_C_WALL; return tFree; }   // a bore of one point: nowhere to go
+    const float q = a / sqrtExact(d2); y = y * q; z = z * q;   // on the circle
+    const float inva = 1 / a, bn = (by * y + bz * z) * inva, tw = dt - tFree;
+    if (bn < 0 && pass == 0) {   // the buoyancy turned inward: released into the liquid for the rest of the step
+      c &= ~FIZZ_C_WALL;
+      if (fizzFlyV(y, z, c, a, wy, wz, tw, th)) return dt;
+      tFree = tFree + th; continue;   // across the bore onto the far wall: the rest of the step there
+    }
+    const float ty = by - bn * y * inva, tz = bz - bn * z * inva, s = FIZZ_KW * U * tw;
+    float y1 = y + s * ty, z1 = z + s * tz;
+    if ((y * bz - z * by) * (y1 * bz - z1 * by) < 0) { y1 = by * a * inv; z1 = bz * a * inv; }   // across the ridge: on it
+    const float d1 = y1 * y1 + z1 * z1;
+    if (d1 > 0) { const float q1 = a / sqrtExact(d1); y = y1 * q1; z = z1 * q1; }
+    return tFree + FIZZ_KW * tw;
   }
-  const float d2 = y * y + z * z;
-  if (!(d2 > 0)) { c &= ~FIZZ_C_WALL; return tFree; }   // a bore of one point: nowhere to go
-  const float q = a / sqrtExact(d2); y = y * q; z = z * q;   // on the circle
-  const float inva = 1 / a, bn = (by * y + bz * z) * inva, tw = dt - tFree;
-  if (bn < 0) {   // the buoyancy turned inward: released into the liquid for the rest of the step
-    c &= ~FIZZ_C_WALL; y = y + mob * U * by * tw; z = z + mob * U * bz * tw;
-    return dt;
-  }
-  const float ty = by - bn * y * inva, tz = bz - bn * z * inva, s = FIZZ_KW * U * tw;
-  float y1 = y + s * ty, z1 = z + s * tz;
-  if ((y * bz - z * by) * (y1 * bz - z1 * by) < 0) { y1 = by * a * inv; z1 = bz * a * inv; }   // across the ridge: on it
-  const float d1 = y1 * y1 + z1 * z1;
-  if (d1 > 0) { const float q1 = a / sqrtExact(d1); y = y1 * q1; z = z1 * q1; }
-  return tFree + FIZZ_KW * tw;
 }
 // The vertical watch's step (p.vertical; docs/tilted-fizz-plan.md points 4-6), on the physical state (FizzBody) and the
 // gain-free pose (b = the buoyancy direction: x along the tube toward its top, y across, z toward the viewer; the liquid

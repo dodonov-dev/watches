@@ -1553,38 +1553,48 @@ export function stepFizzTube(i: number, p: Params, dt: number, along: number, ac
   }
   if (side !== 0) settleFoam(fizz[i], p, H, speed, side > 0 ? surf : surfL, side, dt, glass ? vy : NaN);
 }
+/** Free flight of b = [y, z, contact] at (wy, wz) for tw (firmware fizzFlyV): -1 = it stays inside the eroded disc
+ *  (moved to its end), else th, the time it meets the circle (moved there, contact set): the forward root of
+ *  |p + w t| = a — from inside the exit, from on or past the circle moving inward (B < 0) the far side, moving outward
+ *  from on or past it where it is (0). */
+function fizzFlyV32(b: number[], a: number, wy: number, wz: number, tw: number): number {
+  const y = b[0], z = b[1], y1 = F(y + F(wy * tw)), z1 = F(z + F(wz * tw));
+  if (F(F(y1 * y1) + F(z1 * z1)) <= F(a * a)) { b[0] = y1; b[1] = z1; return -1; }
+  const A = F(F(wy * wy) + F(wz * wz)), B = F(F(y * wy) + F(z * wz)), C = F(F(F(y * y) + F(z * z)) - F(a * a));
+  let th = 0;
+  if (A > 0 && (C < 0 || B < 0)) th = clamp32(F(F(-B + F(Math.sqrt(Math.max(0, F(F(B * B) - F(A * C)))))) / A), 0, tw);
+  b[0] = F(y + F(wy * th)); b[1] = F(z + F(wz * th)); b[2] |= FIZZ_C_WALL;
+  return th;
+}
 /** A bubble's move across the bore for one step (firmware fizzMoveV): b = [y, z, contact] its body, a = R − r, U its rise
  *  speed, (by, bz) the buoyancy's transverse part, inv = 1/|(by, bz)| (0 along the tube). Free: a straight line to its
- *  first contact with the bore wall, then the rest of the step on the wall; on the wall while the buoyancy presses
- *  outward: its tangential part at FIZZ_KW U, never past the ridge, back onto the circle; released once it turns inward.
- *  Against a closed end the transverse motion is FIZZ_KW slower. Returns tx: the centre moves U bx tx along the tube. */
+ *  first contact with the bore wall (fizzFlyV32), then the rest of the step on the wall; on the wall while the buoyancy
+ *  presses outward: its tangential part at FIZZ_KW U, never past the ridge, back onto the circle; released once it turns
+ *  inward: free flight for the rest of the step, again to its first contact (the far wall at most), then the remaining
+ *  time on the wall there (one release a step). Against a closed end the transverse motion is FIZZ_KW slower. Returns
+ *  tx: the centre moves U bx tx along the tube. */
 function fizzMoveV32(b: number[], a: number, U: number, by: number, bz: number, inv: number, dt: number): number {
-  let y = b[0], z = b[1], c = b[2];
-  const mob = c & FIZZ_C_END ? FIZZ_KW : 1;
+  const mob = b[2] & FIZZ_C_END ? FIZZ_KW : 1, wy = F(F(mob * U) * by), wz = F(F(mob * U) * bz);
   let tFree = 0;
-  const done = (t: number): number => { b[0] = y; b[1] = z; b[2] = c; return t; };
-  if (!(c & FIZZ_C_WALL)) {
-    const wy = F(F(mob * U) * by), wz = F(F(mob * U) * bz), y1 = F(y + F(wy * dt)), z1 = F(z + F(wz * dt));
-    if (F(F(y1 * y1) + F(z1 * z1)) <= F(a * a)) { y = y1; z = z1; return done(dt); }
-    const A = F(F(wy * wy) + F(wz * wz)), B = F(F(y * wy) + F(z * wz)), C = F(F(F(y * y) + F(z * z)) - F(a * a));
-    let th = 0;
-    if (C < 0 && A > 0) th = clamp32(F(F(-B + F(Math.sqrt(Math.max(0, F(F(B * B) - F(A * C)))))) / A), 0, dt);
-    y = F(y + F(wy * th)); z = F(z + F(wz * th)); tFree = th; c |= FIZZ_C_WALL;
+  if (!(b[2] & FIZZ_C_WALL)) { const th = fizzFlyV32(b, a, wy, wz, dt); if (th < 0) return dt; tFree = th; }
+  for (let pass = 0; ; pass++) {
+    let y = b[0], z = b[1];
+    const d2 = F(F(y * y) + F(z * z));
+    if (!(d2 > 0)) { b[2] &= ~FIZZ_C_WALL; return tFree; }
+    const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); b[0] = y; b[1] = z;
+    const inva = F(1 / a), bn = F(F(F(by * y) + F(bz * z)) * inva), tw = F(dt - tFree);
+    if (bn < 0 && pass === 0) {   // released into the liquid for the rest of the step
+      b[2] &= ~FIZZ_C_WALL;
+      const th = fizzFlyV32(b, a, wy, wz, tw); if (th < 0) return dt;
+      tFree = F(tFree + th); continue;   // across the bore onto the far wall: the rest of the step there
+    }
+    const ty = F(by - F(F(bn * y) * inva)), tz = F(bz - F(F(bn * z) * inva)), s = F(F(FIZZ_KW * U) * tw);
+    let y1 = F(y + F(s * ty)), z1 = F(z + F(s * tz));
+    if (F(F(F(y * bz) - F(z * by)) * F(F(y1 * bz) - F(z1 * by))) < 0) { y1 = F(F(by * a) * inv); z1 = F(F(bz * a) * inv); }
+    const d1 = F(F(y1 * y1) + F(z1 * z1));
+    if (d1 > 0) { const q1 = F(a / F(Math.sqrt(d1))); b[0] = F(y1 * q1); b[1] = F(z1 * q1); }
+    return F(tFree + F(FIZZ_KW * tw));
   }
-  const d2 = F(F(y * y) + F(z * z));
-  if (!(d2 > 0)) { c &= ~FIZZ_C_WALL; return done(tFree); }
-  const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q);
-  const inva = F(1 / a), bn = F(F(F(by * y) + F(bz * z)) * inva), tw = F(dt - tFree);
-  if (bn < 0) {
-    c &= ~FIZZ_C_WALL; y = F(y + F(F(F(mob * U) * by) * tw)); z = F(z + F(F(F(mob * U) * bz) * tw));
-    return done(dt);
-  }
-  const ty = F(by - F(F(bn * y) * inva)), tz = F(bz - F(F(bn * z) * inva)), s = F(F(FIZZ_KW * U) * tw);
-  let y1 = F(y + F(s * ty)), z1 = F(z + F(s * tz));
-  if (F(F(F(y * bz) - F(z * by)) * F(F(y1 * bz) - F(z1 * by))) < 0) { y1 = F(F(by * a) * inv); z1 = F(F(bz * a) * inv); }
-  const d1 = F(F(y1 * y1) + F(z1 * z1));
-  if (d1 > 0) { const q1 = F(a / F(Math.sqrt(d1))); y = F(y1 * q1); z = F(z1 * q1); }
-  return done(F(tFree + F(FIZZ_KW * tw)));
 }
 /** The vertical watch's contact of a free bubble (slot k, radius r) with the foam parked on `side` (point 6): in 3D, along
  *  the tube and the bodies' (y, z), so bubbles at different depths do not touch; candidates: the step's starting foam

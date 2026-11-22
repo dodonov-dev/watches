@@ -377,6 +377,46 @@ static int motionSelftest() {
          flightErr, tauErr, rollMax, FIZZ_KW * U * dt, rollEnd, bad);
   return bad ? 11 : 0;
 }
+// `selftest`, containment of the move (point 4, fizzMoveV): from inside, on the wall (c WALL) or kicked past it (a stir,
+// c free), with contact bits incl. a closed end, at eroded radii down to nearly fitting bubbles (a 1e-3 px), speeds up
+// to far past the sliders' (2000 px/s) and steps up to 0.1 s, the forcing reversing at random between steps: every end
+// point inside the eroded disc. The review's repro (a 0.5 on the front wall z 0.5, face down at 60 px/s, dt 0.02: 1.2
+// px of flight) ends on the back wall, z -0.5, in contact, not past it at z -0.7.
+static int containSelftest() {
+  long bad = 0, n = 0, rel = 0, far = 0; double worst = 0;
+  auto fail = [&](const char *what, double a, double y, double z) { if (bad++ < 8) fprintf(stderr, "selftest contain: %s: a %g y %g z %g\n", what, a, y, z); };
+  {
+    float y = 0, z = 0.5f; uint8_t c = FIZZ_C_WALL;
+    fizzMoveV(y, z, c, 0.5f, 60, 0, -1, 1, 0.02f);
+    if (fabsf(z + 0.5f) > 1e-5f || y != 0 || !(c & FIZZ_C_WALL)) fail("repro: not on the back wall", 0.5, y, z);
+    if (!(z * z <= 0.25f * (1 + 1e-5f))) fail("repro: past the back wall", 0.5, y, z);
+  }
+  uint32_t s = 0x9E3779B9u;
+  auto rnd = [&]() { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return (s >> 8) * (1.0f / 16777216); };
+  const float A[] = {1e-3f, 0.05f, 0.5f, 3, 20}, US[] = {1, 48, 270, 2000}, DT[] = {0.002f, 0.02f, 0.1f};
+  for (float a : A) for (float U : US) for (float dt : DT) for (int trial = 0; trial < 150; trial++) {
+    const int kind = trial % 3;   // 0 inside, 1 on the wall, 2 kicked past it
+    const float rho = kind == 0 ? a * sqrtf(rnd()) : kind == 1 ? a : a * (1 + 0.5f * rnd()), phi = 6.2831853f * rnd();
+    float y = rho * cosf(phi), z = rho * sinf(phi); uint8_t c = (uint8_t)((kind == 1 ? FIZZ_C_WALL : 0) | (rnd() < 0.3f ? FIZZ_C_END : 0));
+    float bx = 2 * rnd() - 1, by = 2 * rnd() - 1, bz = 2 * rnd() - 1;
+    for (int k = 0; k < 24; k++) {
+      if (rnd() < 0.3f) { by = -by; bz = -bz; }   // the forcing reverses
+      if (rnd() < 0.1f) { by = 0; bz = 0; }        // along the tube only
+      const float m = sqrtf(bx * bx + by * by + bz * bz) + 1e-6f, qy = by / m, qz = bz / m, bp2 = qy * qy + qz * qz;
+      const float inv = bp2 > 0 ? 1 / sqrtExact(bp2) : 0;
+      const bool wall = c & FIZZ_C_WALL, inward = wall && qy * y + qz * z < 0;
+      fizzMoveV(y, z, c, a, U, qy, qz, inv, dt); n++;
+      if (inward) { rel++; if (U * dt * sqrtf(bp2) > 2 * a && (c & FIZZ_C_WALL)) far++; }
+      const double e = sqrt((double)y * y + (double)z * z) / a - 1; worst = fmax(worst, e);
+      if (!(y * y + z * z <= a * a * (1 + 1e-5f) + 1e-12f)) { fail("outside the eroded disc", a, y, z); break; }
+      c &= ~FIZZ_C_END;
+    }
+  }
+  if (!rel || !far) fail("no inward releases (or none across the bore) tried", rel, far, 0);
+  printf("SELFTEST contain %ld moves (%ld inward releases, %ld across the bore onto the far wall), worst |p| / a - 1 %.2g; review repro on the back wall; failures %ld\n",
+         n, rel, far, worst, bad);
+  return bad ? 13 : 0;
+}
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
 // bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
 // life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
@@ -407,8 +447,8 @@ static int chainSelftest() {
   return bad ? 12 : 0;
 }
 static int selftests() {
-  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4;
+  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
