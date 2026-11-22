@@ -649,6 +649,47 @@ static int sideSelftest() {
          n, worstR, worstS, worstP, g, worstE, crossed, 2 * 4 * 2 * 4 * 2, bad);
   return bad ? 16 : 0;
 }
+// `selftest`, the wall contact after a held contact (review 3 item 2): a big free bubble (r 7.5, eroded radius 16) on the
+// front wall, nearly along the tube, meets a smaller foam bubble (r 2.5) ahead and nearer the glass: the contact deflects
+// it inward, off the wall, so it is no longer on the wall (FIZZ_C_WALL clear). The foam gone, the following step is
+// free flight from there (x by U bx dt, z by U bz dt), not put back on the wall and slid at FIZZ_KW. A deflection
+// that leaves it on the circle (no inward part) keeps the contact.
+static int wallFlagSelftest() {
+  Tube &t = tubeAt(0); long bad = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest wall flag: %s: got %.9g want %.9g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 10; p.fizzSizeVar = 1; p.fizzSpeed = 48;
+  p.fizzSource = 1; p.fizzSourceRate = 0; p.fizzFoamLife = 3; p.freeLiquid = false;
+  t.H = tubeLayout(p).H; t.fizzShift = 0; t.fizzLen = 9000; t.fizzExposed = 1; t.springClock = 0; t.springScatter = 0;
+  for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 5000; t.fizzSurfL[r] = -5000; t.strokeR[r] = t.strokeL[r] = 0; } t.surfH = t.H;
+  const float R = boreR(p), rB = fizzR(p, 1.5f), rS = fizzR(p, 0.5f), a = R - rB, rref = fizzR(p, 1), U = p.fizzSpeed * rB * rB / (rref * rref), dt = 0.02f;
+  t.bodyH = t.H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar; t.foam->nOrder = 0;
+  const float bz = 0.05f, bx = sqrtf(1 - bz * bz); const Pose q{bx, 0, bz};
+  float zHeld = 0, dx2 = 0, dz2 = 0;
+  for (int kind = 0; kind < 2; kind++) {   // 0: the foam nearer the glass (inward deflection), 1: straight ahead on the axis line (none)
+    t.fizzN = 2;
+    t.fizz[0] = {100, 0, 1.5f, 0, 0.5f}; t.body[0] = {0, a, FIZZ_C_WALL, {0, 0, 0}};
+    t.fizz[1] = {109, 0, 0.5f, 3, 0.5f}; t.body[1] = {0, kind == 0 ? a + 3 : a, 0, {0, 0, 0}};
+    for (int k = 0; k < 2; k++) { const float ak = R - fizzR(p, t.fizz[k].v); t.fizz[k].y = fizzRowOf(t.H, t.body[k].y, ak, fizzRowBias(k, t.fizz[k].v, fizzBias0(t))); t.fizz[k].z = fizzLevelOf(t.body[k].z, ak); }
+    if (fabsf(a - 16) > 1e-5f || !(rS < rB)) fail("setup: eroded radius", a, 16);
+    stepFizzTube(0, p, dt, -bx, 0, 0, q);
+    const FizzBody &b = t.body[0]; const float d = hypotf(b.y, b.z);
+    if (kind == 0) {
+      zHeld = b.z;
+      if (!(d < a - 0.1f)) fail("inward deflection: not moved off the wall", d, a - 0.1);
+      if (b.contact & FIZZ_C_WALL) fail("inward deflection: still on the wall", b.contact, 0);
+      const float x1 = t.fizz[0].x, z1 = b.z;
+      t.fizz[1].v = 0; t.fizz[1].life = 0;   // the foam gone: the following step
+      stepFizzTube(0, p, dt, -bx, 0, 0, q);
+      dx2 = t.fizz[0].x - x1; dz2 = t.body[0].z - z1;
+      if (fabsf(dx2 - U * bx * dt) > 1e-3f) fail("following step: not free flight along the tube", dx2, U * bx * dt);
+      if (fabsf(dz2 - U * bz * dt) > 1e-4f) fail("following step: not free flight across (put back on the wall?)", dz2, U * bz * dt);
+    } else if (!(b.contact & FIZZ_C_WALL) || fabsf(d - a) > 1e-4f) fail("held on the axis line: left the wall", d, a);
+  }
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST wall flag: r 7.5 held by r 2.5 foam, z %.6g -> %.6g, off the wall; the following step free (dx %.4g = U bx dt %.4g, dz %.4g = U bz dt %.4g); held on the axis line it stays on the wall; failures %ld\n",
+         a, zHeld, dx2, U * bx * dt, dz2, U * bz * dt, bad);
+  return bad ? 17 : 0;
+}
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
 // bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
 // life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
@@ -680,8 +721,8 @@ static int chainSelftest() {
 }
 static int selftests() {
   int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest(), e7 = packSelftest();
-  const int e8 = sideSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8;
+  const int e8 = sideSelftest(), e9 = wallFlagSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;

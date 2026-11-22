@@ -1244,6 +1244,7 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
 const F = Math.fround;
 const FIZZ_KW = F(0.6), FIZZ_STIR = F(3), FIZZ_ROW_BIAS = F(0.75), FOAM_GAP = F(0.01);   // firmware FIZZ_KW, FIZZ_STIR, FIZZ_ROW_BIAS, FOAM_GAP
 const FIZZ_C_WALL = 1, FIZZ_C_END = 2;   // contact bits (firmware FizzBody)
+const FIZZ_WALL_TOL = F(1e-3);   // firmware FIZZ_WALL_TOL
 const FOAM_CATCH32 = F(FOAM_CATCH);
 const fizzR32 = (p: Params, v: number): number => F(F(F(p.fizzSize) / 2) * F(1 + F(F(v - 1) * F(p.fizzSizeVar))));
 const fizzV32 = (): number => F(0.5 + F((Math.trunc(F(Math.random() * FIZZ_SIZES)) + 0.5) * F(1 / FIZZ_SIZES)));
@@ -1789,8 +1790,11 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
           let px = F(-qn * nx);
           if (F(park * F(F(f.x + px) - x0)) < 0) px = F(x0 - f.x);
           f.x = F(f.x + px); y = F(y - F(qn * ny)); z = F(z - F(qn * nz));
-          const d2 = F(F(y * y) + F(z * z));
+          // the wall contact follows where the correction put it: on (or within FIZZ_WALL_TOL of) the circle, else free
+          const d2 = F(F(y * y) + F(z * z)), ai = Math.max(0, F(a - FIZZ_WALL_TOL));
           if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
+          else if (d2 >= F(ai * ai)) c |= FIZZ_C_WALL;
+          else c &= ~FIZZ_C_WALL;
           f.y = fizzRowOf32(H, y, a, bias); body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
         }
       }

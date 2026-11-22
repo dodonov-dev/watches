@@ -3800,6 +3800,7 @@ static inline bool springBirth(const Tube &t) { return t.springScatter <= 0 || f
 #define FIZZ_KW 0.6f         // wall mobility: a bubble pressed on the glass slides along it at FIZZ_KW x its free rise (one documented constant)
 #define FIZZ_STIR 3.0f       // stirring: agitation 1 kicks a bubble across the bore by up to FIZZ_STIR x fizzSpeed x dt a step (zero mean)
 #define FIZZ_ROW_BIAS 0.75f  // design px: the largest display-row offset of a bubble (x the tube's px scale)
+#define FIZZ_WALL_TOL 1e-3f  // px: a body this close to its eroded circle counts as on the wall (the held contact's correction)
 #define FIZZ_END_BISECT 6    // settleFoam: halvings of a move in the surface plane that would sink a bubble's endpoint too fast
 #ifndef FIZZ_PARK_HOOK
 #define FIZZ_PARK_HOOK(t, k, u, uc) ((void)0)   // host tests: a bubble k of tube t parks at u, its zone from uc - FOAM_CATCH
@@ -4327,8 +4328,12 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
           if (park * (f.x + px - x0) < 0) px = x0 - f.x;   // never back down the tube past the step's start
           FIZZ_HELD_HOOK(t, k, px);
           f.x = f.x + px; y = y - qn * ny; z = z - qn * nz;
-          const float d2 = y * y + z * z;
+          // its wall contact follows where the correction put it: on the circle (projected back from past it, or within
+          // FIZZ_WALL_TOL of it) on the wall, inside it free (fizzMoveV would put a deflected bubble back on the wall)
+          const float d2 = y * y + z * z, ai = fmx(0, a - FIZZ_WALL_TOL);
           if (d2 > a * a) { const float qq = a / sqrtExact(d2); y = y * qq; z = z * qq; c |= FIZZ_C_WALL; }
+          else if (d2 >= ai * ai) c |= FIZZ_C_WALL;
+          else c &= ~FIZZ_C_WALL;
           f.y = fizzRowOf(H, y, a, bias); b.y = y; b.z = z; f.z = fizzLevelOf(z, a);
         }
       }
