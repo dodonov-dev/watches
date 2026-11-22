@@ -9,12 +9,12 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 ## Status
 | # | point | owner | status |
 |---|-------|-------|--------|
-| 1 | baseline + shared seeded jobs (state parity) | opus | in progress |
+| 1 | baseline + shared seeded jobs (state parity) | opus | done d9832c5, in review |
 | 2 | signed normal input | opus | done e44d4c3 (board normal sign: stand reads az +0.21 ≈ 12° back, consistent; face-up check pending) |
-| 3 | vertical kernel, continuous depth, valid births | opus | in progress |
-| 4 | free flight, wall convergence, stirring | opus | open |
-| 5 | endpoint rule (k, L, P) | opus | open |
-| 6 | chain parking | opus | open |
+| 3 | vertical kernel, continuous depth, valid births | opus | done ff7a67b, in review |
+| 4 | free flight, wall convergence, stirring | opus | in progress |
+| 5 | endpoint rule (k, L, P) | opus | in progress |
+| 6 | chain parking | opus | in progress |
 | 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
 | 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | in progress |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
