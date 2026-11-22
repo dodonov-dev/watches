@@ -4,11 +4,17 @@
 // Board: LW_BOARD / LW_RES / LW_TUBES (spec/layout.ts), as the device reports it (`v`); params are the device's (design px).
 // Three tubes: `seconds` is the seconds tube's state (required then).
 // Run: see compare-device.py (compiles with tsc like check:imu).
+// Stepped fizz job (`fizzSteps` in the job; firmware/tools/check_fizz_steps.py --sim): params are design params (a preset
+// file's fields over DEFAULT_PARAMS); the fizz draws come from the shared seeded generator (xorshift32, (word >>> 8) / 2^24,
+// the native stub's); a frame before the first step, after every `every`-th and before a run that changes params; after
+// each step (and its frame) one state line per tube to argv[3] ('-' = stdout): `S step tube fizzN draws springClock
+// springScatter bodyH blocked`, x y v life z and the vertical body's y z per slot, then the frame's surfaces it steps on: `len exposed shift H` + surf, surfL per
+// row. lockstep (a file of the firmware's lines): each step starts from the firmware's state and surfaces.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
-import { renderFrame, fb, setSprite } from '../src/render';
+import { renderFrame, fb, setSprite, stepFizz, fizzTestState, fizzTestLoad } from '../src/render';
 import { newTube, type TubeState } from '../src/physics';
-import { tubeParams } from '../src/params';
+import { tubeParams, migrateParams, DEFAULT_PARAMS, type Params } from '../src/params';
 import { TUBE_COUNT, TUBE_LENGTH_PX, SPRITE_CELL_H } from '@spec/layout';
 
 const job = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
@@ -40,6 +46,56 @@ const names = ['hours', 'minutes', 'seconds'].slice(0, TUBE_COUNT);
 if (names.some((k) => !job[k])) throw new Error(`render-ref: the job needs ${names.join(', ')} (LW_TUBES=${TUBE_COUNT})`);
 const tubes: TubeState[] = names.map((k) => ({ ...newTube(), ...job[k] }));   // device STATE carries only the drawn fields
 names.forEach((k, i) => trace(job[k].trace, job[k].traceWet, tubes[i]));
-renderFrame(tubes, tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)
-fs.writeFileSync(process.argv[3], Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength));
-console.log('ok');
+if (job.fizzSteps) fizzJob(job.fizzSteps);
+else {
+  renderFrame(tubes, tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)
+  fs.writeFileSync(process.argv[3], Buffer.from(fb.buffer, fb.byteOffset, fb.byteLength));
+  console.log('ok');
+}
+
+interface FizzRun { n: number; dt: number; along: number; across: number; normal?: number; agitation: number; set?: Partial<Params> }
+// lockstep: the firmware's state lines of the same job (a file): each step starts from the firmware's state after the
+// step before (and its frame), so a comparison sees one step's arithmetic, not doubles and floats drifting apart.
+function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: string }): void {
+  let x = fj.seed >>> 0 || 1, draws = 0;
+  Math.random = (): number => {   // the fizz's only random source: the native stub's xorshift32, counted
+    x = (x ^ (x << 13)) >>> 0; x = (x ^ (x >>> 17)) >>> 0; x = (x ^ (x << 5)) >>> 0; draws++;
+    return (x >>> 8) / 16777216;
+  };
+  const ref: string[][] = fj.lockstep ? fs.readFileSync(fj.lockstep, 'utf8').split('\n').filter((l: string) => l).map((l: string) => l.split(' ')) : [];
+  let design: Params = { ...DEFAULT_PARAMS, ...migrateParams(job.params) }, ps = tubeParams(design);
+  const g = (v: number): string => (Object.is(v, -0) ? 0 : v).toPrecision(9);
+  const out: string[] = [];
+  let step = 0;
+  for (const run of fj.runs) {
+    if (run.set) { design = { ...design, ...run.set }; ps = tubeParams(design); }
+    if (step === 0 || run.set) renderFrame(tubes, ps);   // the first frame, and one after a params change (the native job's)
+    for (let k = 0; k < run.n; k++) {
+      if (ref.length && step > 0 && !(k === 0 && run.set)) tubes.forEach((_, i) => {
+        const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], body = new Float32Array(2 * n), e = 9 + 7 * n, H = +w[e + 3];
+        if (+w[1] !== step || +w[2] !== i) throw new Error(`render-ref: lockstep line ${w.slice(0, 3).join(' ')}, want step ${step} tube ${i}`);
+        for (let s = 0, o = 9; s < n; s++, o += 7) {
+          slots.push({ x: +w[o], y: +w[o + 1], v: +w[o + 2], life: +w[o + 3], z: +w[o + 4] }); body[2 * s] = +w[o + 5]; body[2 * s + 1] = +w[o + 6];
+        }
+        const rows = (o: number): Float32Array => Float32Array.from(w.slice(o, o + H), Number);
+        fizzTestLoad(i, { fizz: slots, springClock: +w[5], springScatter: +w[6], body, bodyH: +w[7], blocked: +w[8],
+          len: +w[e], exposed: +w[e + 1], shift: +w[e + 2], surf: rows(e + 4), surfL: rows(e + 4 + H) });
+      });
+      for (const t of tubes) t.agitation = run.agitation;
+      stepFizz(ps, run.dt, run.along, run.across, run.agitation);
+      step++;
+      if (step % fj.every === 0) renderFrame(tubes, ps);
+      tubes.forEach((_, i) => {   // after the step and its frame
+        const st = fizzTestState(i);
+        let line = `S ${step} ${i} ${st.fizz.length} ${draws} ${g(st.springClock)} ${g(st.springScatter)} ${st.bodyH} ${st.blocked}`;
+        st.fizz.forEach((f, k) => { line += ` ${g(f.x)} ${g(f.y)} ${g(f.v)} ${g(f.life)} ${g(f.z)} ${g(st.body[2 * k])} ${g(st.body[2 * k + 1])}`; });
+        line += ` ${g(st.len)} ${st.exposed} ${g(st.shift)} ${st.surf.length}`;
+        for (const v of st.surf) line += ` ${g(v)}`;
+        for (const v of st.surfL) line += ` ${g(v)}`;
+        out.push(line);
+      });
+    }
+  }
+  out.push('');
+  if (process.argv[3] === '-') process.stdout.write(out.join('\n')); else fs.writeFileSync(process.argv[3], out.join('\n'));
+}
