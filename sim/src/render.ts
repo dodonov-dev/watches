@@ -1121,6 +1121,22 @@ const springScatter: number[] = Array(TUBE_COUNT).fill(0);
 const springClock: number[] = Array(TUBE_COUNT).fill(0);
 /** This spring birth in tube i comes from the spring itself (covered by the liquid), not scattered. */
 const springBirth = (i: number): boolean => springScatter[i] <= 0 || Math.random() >= springScatter[i];
+/** Tube i's stepped fizz state, read by the shared stepped-state jobs (tools/render-ref.ts, check_fizz_steps.py --sim). */
+export interface FizzTestState {
+  fizz: readonly Fizz[]; springClock: number; springScatter: number;
+  len: number; exposed: number; shift: number; surf: Float32Array; surfL: Float32Array;   // the last frame's, stepFizz's input
+}
+export function fizzTestState(i: number): FizzTestState {
+  return { fizz: fizz[i], springClock: springClock[i], springScatter: springScatter[i],
+    len: fizzLen[i], exposed: fizzExposed[i], shift: fizzShift[i], surf: fizzSurf[i], surfL: fizzSurfL[i] };
+}
+/** Replaces tube i's stepped fizz state and the frame's surfaces it steps on (the lockstep jobs: each step starts from
+ *  the firmware's). */
+export function fizzTestLoad(i: number, s: FizzTestState): void {
+  fizz[i] = s.fizz.map((f) => ({ ...f })); springClock[i] = s.springClock; springScatter[i] = s.springScatter;
+  fizzLen[i] = s.len; fizzExposed[i] = s.exposed; fizzShift[i] = s.shift;
+  fizzSurf[i] = Float32Array.from(s.surf); fizzSurfL[i] = Float32Array.from(s.surfL);
+}
 /** Half-height of the surface blick's row tent as a fraction of the tube height (firmware BLICK_H). */
 const BLICK_H = 0.18;
 
