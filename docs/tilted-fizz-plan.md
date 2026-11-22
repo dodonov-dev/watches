@@ -16,7 +16,7 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 | 5 | endpoint rule (k, L, P) | opus | in progress |
 | 6 | chain parking | opus | in progress |
 | 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
-| 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board flash + bench running; k hook awaits point 5 |
+| 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board e9c924a9: pulse gone, 56.5 vs 57.6 fps (render +0.3 ms), parity 0 > 12/255, NVS kept; user: too glossy → blick grey at liquidHi luma (in progress); k hook awaits point 5 |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
 
 ## Physical model (Astra v1, kept parts)
