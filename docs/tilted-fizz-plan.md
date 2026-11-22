@@ -9,14 +9,14 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 ## Status
 | # | point | owner | status |
 |---|-------|-------|--------|
-| 1 | baseline + shared seeded jobs (state parity) | opus | open |
-| 2 | signed normal input | opus | open |
-| 3 | vertical kernel, continuous depth, valid births | opus | open |
+| 1 | baseline + shared seeded jobs (state parity) | opus | in progress |
+| 2 | signed normal input | opus | in progress |
+| 3 | vertical kernel, continuous depth, valid births | opus | in progress |
 | 4 | free flight, wall convergence, stirring | opus | open |
 | 5 | endpoint rule (k, L, P) | opus | open |
 | 6 | chain parking | opus | open |
 | 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
-| 8 | pop pulse (blue/grey wash at the band) | opus | open |
+| 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | in progress |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
 
 ## Physical model (Astra v1, kept parts)
@@ -402,3 +402,9 @@ and agitation re-scatter; the user retunes this later. Surface rule unchanged.
 - Rim body-colour mix ruled out (depthK >= 0.80, bubbleDark 0). Firmware draw path matches the sim.
 - Fix directions: cap chain-parking (one hop per step, or only foam already at the front); pop fades under the band
   veil instead of a translucent rim over the band.
+
+## Pulse diagnosis (board, round 2) and decision
+The blue is the surface band's blick (surfaceBlick, painted in liquidHi at full strength, ignoring surfaceFill and
+transparency); foam veiled by the fill only cuts dark rings into it and each pop reveals it. Board A/B: blick 0 → no
+blue. Sim and firmware agree. User (2026-11-22): blick becomes neutral room light (every preset) and foam is veiled by
+the band's full layer opacity (fill + blick + rim).
