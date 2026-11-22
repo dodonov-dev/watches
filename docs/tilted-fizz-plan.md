@@ -432,3 +432,9 @@ within a pixel of depth). Host replay, stand pose 60 s: foam
 lives sinking > 10 px 138/225 → 0/241 (worst 8.6 px); down moves > fizzSpeed·dt 0; foam count std 3.99/3.07 →
 3.67/2.88; foam depth z std 1.1 → 4.5 px (22% veiled, k < 0.5). Open: free bubbles held behind a lone ridge foam
 (KAIZEN).
+
+## Board c6e77da (elf d2501f68) + Astra review 3
+Foam spreading flashed, look kept. Review 3 (docs/tilted-fizz-review3.md): point 7 and review-2 fixes settled; open:
+k floor causes a 10 px rendered jump when foam crosses the side wall (remove floor, bound the coupled move), stale wall
+contact after inward deflection, offset approaches behind a lone foam bubble should slide around (centred wait OK).
+Fixing on the host. Point 9 (stand-pose bench, IRAM vs flash with BLE, look review) still open.
