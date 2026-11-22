@@ -15,7 +15,7 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 | 4 | free flight, wall convergence, stirring | opus | done 6fe1a63, in review (--free: vertical jobs exact on common frame inputs) |
 | 5 | endpoint rule (k, L, P) | opus | done b9acc26, in review (render clamp + k to the point-8 hook; veil x (1 - k) for all bubbles: point 7) |
 | 6 | chain parking | opus | done (block 2 last commit), in review; board look: park distance median 21 -> 8 px, max 70 -> 18, Fano 3.8 -> 1.3 |
-| 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
+| 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | done (host): back half then front half, veil x (1 - k) every vertical bubble, pinpoint x (1 - zc)^2; 4 levels kept (step = 1/2/1 565 LSB on the board look, no interpolation) |
 | 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board e9c924a9: pulse gone, 56.5 vs 57.6 fps (render +0.3 ms), parity 0 > 12/255, NVS kept; user: too glossy → blick grey at liquidHi luma (in progress); k hook awaits point 5 |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
 
