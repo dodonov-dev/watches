@@ -161,7 +161,9 @@ struct ImuFilter {
   float lpAlong = 0, lpAcross = 0, lpAlong2 = 0, lpAcross2 = 0, hpPrevIn = 0, hpPrevOut = 0, lpGyroAcross = 0, lpGyroAlong = 0;
   float lpNormal = 0, lpNormal2 = 0;
   Pose pose = POSE_DEFAULT;
+  bool poseValid = false;   // a valid sample has set pose (before it: POSE_DEFAULT, face up; the lid's tau stays 0, backTilt())
   bool init = false;
+  float backTilt() const { return poseValid ? poseBackTilt(pose) : 0.0f; }   // desk view: the stand's back tilt, 0 before a valid sample
   void reset() { init = false; hpPrevIn = hpPrevOut = lpGyroAcross = lpGyroAlong = 0; }
   TiltInput step(const TiltInput &raw, const Params &p, float dt = PHYS_DT);
 };

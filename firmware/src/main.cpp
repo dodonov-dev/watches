@@ -365,9 +365,9 @@ static void physStep(int k) {
   stepTube(tubeM, in, effM, PHYS_DT, TUBE_PX_SCALE(1));
 #if TUBE_COUNT == 3
   stepTube(tubeS, in, effS, PHYS_DT, TUBE_PX_SCALE(2));
-  tubeS.backTilt = poseBackTilt(pose);
+  tubeS.backTilt = have_imu ? imuFilter.backTilt() : 0.0f;
 #endif
-  tubeH.backTilt = tubeM.backTilt = poseBackTilt(pose);   // desk view: the stand's back tilt, for the lid (render only)
+  tubeH.backTilt = tubeM.backTilt = have_imu ? imuFilter.backTilt() : 0.0f;   // desk view: the stand's back tilt, for the lid (render only; 0 before a valid sample)
   const uint32_t p1 = micros();
   if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation, in.normal, pose};
   else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation, pose);   // AB_COMPARE only: two tubes

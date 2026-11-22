@@ -588,6 +588,10 @@ export class ImuFilter {
   private lpAlong2 = 0; private lpAcross2 = 0; private lpNormal2 = 0; // stage 2
   /** The physical pose of the last step (updatePose of the filtered gravity, no inputGain); kept over a reset. */
   readonly pose: Pose = { ...POSE_DEFAULT };
+  /** A valid sample has set pose (before it POSE_DEFAULT, face up): the desk view's lid keeps τ 0 until then (firmware). */
+  poseValid = false;
+  /** Desk view: the stand's back tilt τ of the pose, 0 before a valid sample (firmware ImuFilter::backTilt). */
+  backTilt(): number { return this.poseValid ? poseBackTilt(this.pose) : 0; }
   private hpPrevIn = 0; private hpPrevOut = 0;
   private lpGyroAcross = 0; private lpGyroAlong = 0;
   private init = false;
@@ -609,7 +613,7 @@ export class ImuFilter {
     this.lpAcross2 += (this.lpAcross - this.lpAcross2) * a;
     this.lpNormal += (inNormal - this.lpNormal) * a;
     this.lpNormal2 += (this.lpNormal - this.lpNormal2) * a;
-    updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2);
+    if (updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2)) this.poseValid = true;
     let g: number;
     if (p.gyroHpHz <= 0) g = raw.gyroAcross;
     else {

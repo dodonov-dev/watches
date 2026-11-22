@@ -417,15 +417,19 @@ for (const e of [10, 20, 30, 60]) for (const backTilt of [0, 0.26, 0.6, 0.785, 1
   if (!(e === 20 || e === 60) || acrossTilt < 0) jobs.pop();   // parity on a subset (the native side builds every job)
   const b = R.markBounds[0].band, T = lidT(e, Math.min(backTilt, Math.PI / 4));
   assert.ok(b.lid, `lid flag (${tag})`);
+  // the full lid where the column has room for it (mid fill: far from the home end and the end glass); budgeted (never
+  // taller) at the ends of the fill range
+  const full = fillTarget === 0.5;
   if (acrossTilt === 0) {
     assert.ok(Math.abs(b.xm[0][30] + b.w[0][30] - side) < 1e-3, `back apex at the time edge (${tag}: ${b.xm[0][30] + b.w[0][30]} vs ${side})`);
-    assert.ok(Math.abs(b.w[0][30] - 2 * T * Rb) < 1e-3, `lid height 2 T R (${tag}: ${b.w[0][30]} vs ${2 * T * Rb})`);
+    if (full) assert.ok(Math.abs(b.w[0][30] - 2 * T * Rb) < 1e-3, `lid height 2 T R (${tag}: ${b.w[0][30]} vs ${2 * T * Rb})`);
   }
   for (let ry = 0; ry < H; ry++) {
     const dy = ry - 30, w = b.w[0][ry];
     assert.ok(Number.isFinite(b.xm[0][ry]) && w >= 0, `finite lid (${tag}, row ${ry})`);
     if (Math.abs(dy) >= Rb) assert.equal(w, 0, `lid closed past the bore (${tag}, row ${ry})`);
-    else if (w > 0) assert.ok(Math.abs(w - 2 * T * Math.sqrt(Rb * Rb - dy * dy)) < 1e-3, `lid height per row (${tag}, row ${ry})`);
+    else if (w > 0 && full) assert.ok(Math.abs(w - 2 * T * Math.sqrt(Rb * Rb - dy * dy)) < 1e-3, `lid height per row (${tag}, row ${ry})`);
+    else if (w > 0) assert.ok(w <= 2 * T * Math.sqrt(Rb * Rb - dy * dy) + 1e-3, `lid no taller than its ellipse (${tag}, row ${ry})`);
   }
   // nothing drawn past the back line (or the body's soft edge, edgeSoft / 2, where the lid is closed) + 1 px but the bare tube
   const bare = render('lid-bare', { ...changes, surfaceBand: 0 }, { ...state, fillTarget: 0 }); jobs.pop();
@@ -468,6 +472,45 @@ for (const e of [20, 30]) {
   const fl = Math.floor(xm);   // the pixel the front line crosses
   assert.ok(delta([at(r, fl)], [at(rn, fl)]) < delta([at(rn, fl)], [black]), `front rim kept over a black mark (e ${e})`);
 }
+// The lid's budget (Astra review 4 item 1): the front line never passes the home profile (a short free slug keeps its
+// body's bounds ordered; the stepper's surfaces too), the lid shuts as the time edge closes against the end glass
+// (fizzExposed bit 1 clear: no lid published), empty columns finite, remaining mode (vertical: not mirrored) the same. Item 2: under a cap (+-,
+// still and moving) the back line's centre apex stays at the time edge (the side view's centre-row edge).
+let lidBudget = 0;
+const lidCheck = (tag, changes, state) => {
+  const ch = { ...lidBase, viewElevation: 20, ...changes }, p = { ...base, ...ch }, H = R.tubeLayout(p).H;
+  render(`lid-budget-${tag}`, ch, state);
+  const b = R.markBounds[0].band, st = R.fizzTestState(0);
+  for (let ry = 0; ry < H; ry++) {
+    assert.ok(Number.isFinite(st.surf[ry]) && Number.isFinite(st.surfL[ry]) && st.strokeR[ry] >= 0, `lid inputs finite (${tag}, row ${ry})`);
+    // (a back line already behind the home profile, a bead's crossing caps: no lid there)
+    if (p.freeLiquid) assert.ok(st.surf[ry] >= st.surfL[ry] - 1e-3 || st.strokeR[ry] === 0, `front line behind the home profile (${tag}, row ${ry}: ${st.surf[ry]} vs ${st.surfL[ry]})`);
+    if (b && p.freeLiquid) assert.ok(b.xm[0][ry] >= b.xm[1][ry] - 1e-3 || b.w[0][ry] === 0, `body bounds crossed (${tag}, row ${ry})`);
+    if (!(st.exposed & 1)) assert.equal(st.strokeR[ry], 0, `a lid at a closed time edge (${tag}, row ${ry})`);
+  }
+  lidBudget++;
+  return { b, st };
+};
+for (const backTilt of [0, 0.26, 0.6]) for (const e of [20, 60]) {
+  lidCheck(`slug16-${backTilt}-${e}`, { freeLiquid: true, glassWall: 3, viewElevation: e }, { backTilt, slugPos: 60, fillTarget: 16.08 / 536 });
+  lidCheck(`slug4-${backTilt}-${e}`, { freeLiquid: true, glassWall: 3, viewElevation: e }, { backTilt, slugPos: 200, fillTarget: 4 / 536, slugVel: 30 }); jobs.pop();
+  for (const fillTarget of [0, 0.002, 0.95, 0.99, 0.999, 1]) { lidCheck(`fill-${fillTarget}-${backTilt}-${e}`, { viewElevation: e }, { backTilt, fillTarget }); jobs.pop(); }
+  const { b } = lidCheck(`remaining-${backTilt}-${e}`, { remaining: true, viewElevation: e }, { backTilt }); jobs.pop();
+  assert.ok(b && b.lid, `remaining mode (vertical: not mirrored) keeps the lid (${backTilt}, ${e})`);
+}
+{   // full: closed, no lid at all
+  const { st } = lidCheck('full-closed', { viewElevation: 60 }, { backTilt: 0.26, fillTarget: 1 }); jobs.pop();
+  assert.ok(!(st.exposed & 1) && st.strokeR.every((v) => v === 0), 'full column: closed time edge, no lid');
+}
+for (const cap of [-4, 4]) for (const fillVel of [0, 10, -10]) {
+  const state = { backTilt: 0.26, cap, fillVel };
+  render('lid-cap-side', { ...lidBase, viewElevation: 0 }, state); jobs.pop();
+  const side = R.markBounds[0].band ? R.markBounds[0].band.xm[0][30] : NaN;
+  const { b } = lidCheck(`cap${cap}-${fillVel}`, {}, state);
+  if (cap > 0 || fillVel !== 0) jobs.pop();
+  assert.ok(Math.abs(b.xm[0][30] + b.w[0][30] - side) < 1e-3, `back apex at the time edge under a cap (cap ${cap}, fillVel ${fillVel}: ${b.xm[0][30] + b.w[0][30]} vs ${side})`);
+}
+console.log(`Desk-view lid budget: ${lidBudget} scenes (short slugs, empty / full / closed, remaining, +-cap still and moving) passed.`);
 // parity scenes: the user's look ingredients (light back, see-through wash, blick, bitmap rear digits, residue, a receding
 // edge, the home edge of a free slug, hard edge, mirrored scale)
 const lidLook = { ...lidBase, viewElevation: 20, surfaceFill: 0.25, surfaceBlick: 0.9, surfaceTone: 1, surfaceRim: 0.6, liquidTransparency: 0.72 };

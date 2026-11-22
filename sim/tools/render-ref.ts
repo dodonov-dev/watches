@@ -15,7 +15,7 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
 import { renderFrame, fb, setSprite, stepFizz, fizzTestState, fizzTestLoad, fizzTestInputs } from '../src/render';
-import { newTube, type TubeState } from '../src/physics';
+import { newTube, poseBackTilt, type TubeState } from '../src/physics';
 import { tubeParams, migrateParams, DEFAULT_PARAMS, type Params } from '../src/params';
 import { TUBE_COUNT, TUBE_LENGTH_PX, SPRITE_CELL_H } from '@spec/layout';
 
@@ -79,17 +79,18 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
       const st = fizzTestState(i), H = st.surf.length, rows = [st.surf, st.surfL, st.strokeR, st.strokeL];
       let line = `G ${step} ${i} ${g9(st.len)} ${st.exposed} ${g9(st.shift)} ${H}`;
       for (const v of rows) for (let r = 0; r < H; r++) line += ` ${g9(v && v.length === H ? v[r] : 0)}`;
+      for (const v of st.lid ?? [0, 0, 0]) line += ` ${g9(v)}`;   // the desk view's lid: T, τ, δ
       out.push(line);
     });
     if (!inp.length) return;
     tubes.forEach((_, i) => {
       const w = inp[inpAt++], H = fizzTestState(i).surf.length, where = `render-ref: inputs line ${inpAt}`;
       if (!w || w[0] !== 'F' || +w[1] !== step || +w[2] !== i) throw new Error(`${where}: ${w ? w.slice(0, 3).join(' ') : 'missing'}, want F ${step} ${i}`);
-      if (+w[6] !== H || w.length !== 7 + 4 * H) throw new Error(`${where}: ${w.length} fields, rows ${w[6]}, want rows ${H} (${7 + 4 * H} fields)`);
+      if (+w[6] !== H || w.length !== 10 + 4 * H) throw new Error(`${where}: ${w.length} fields, rows ${w[6]}, want rows ${H} (${10 + 4 * H} fields)`);
       const bad = w.slice(3).findIndex((v) => v === '' || !Number.isFinite(Number(v)));
       if (bad >= 0) throw new Error(`${where}: field ${bad + 3} is ${w[bad + 3]}`);
       const rows = (k: number): Float32Array => Float32Array.from(w.slice(7 + k * H, 7 + (k + 1) * H), Number);
-      fizzTestInputs(i, Math.fround(+w[3]), +w[4], Math.fround(+w[5]), rows(0), rows(1), rows(2), rows(3));
+      fizzTestInputs(i, Math.fround(+w[3]), +w[4], Math.fround(+w[5]), rows(0), rows(1), rows(2), rows(3), [+w[7 + 4 * H], +w[8 + 4 * H], +w[9 + 4 * H]]);
     });
   };
   const ref: string[][] = fj.lockstep ? fs.readFileSync(fj.lockstep, 'utf8').split('\n').filter((l: string) => l).map((l: string) => l.split(' ')) : [];
@@ -101,6 +102,7 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
     const f = Math.fround, px = f(-f(run.along)), py = f(-f(run.across)), pz = f(run.normal ?? 1), m2 = f(f(f(px * px) + f(py * py)) + f(pz * pz));
     const ok = m2 >= f(f(0.3) * f(0.3)) && Number.isFinite(m2), inv = f(1 / f(Math.sqrt(m2)));
     const pose = ok ? { x: f(px * inv), y: f(py * inv), z: f(pz * inv) } : { x: 0, y: 0, z: 1 };
+    for (const t of tubes) t.backTilt = ok ? poseBackTilt(pose) : 0;   // desk view: the lid's τ (ImuFilter.backTilt)
     if (step === 0 || run.set) frame(ps);   // the first frame, and one after a params change (the native job's)
     for (let k = 0; k < run.n; k++) {
       if (ref.length && step > 0 && !(k === 0 && run.set)) tubes.forEach((_, i) => {
@@ -112,7 +114,8 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
         }
         const rows = (o: number): Float32Array => Float32Array.from(w.slice(o, o + H), Number);
         fizzTestLoad(i, { fizz: slots, springClock: f32(w[5]), springScatter: f32(w[6]), body, contact, bodyH: +w[7], blocked: +w[8],
-          len: f32(w[e]), exposed: +w[e + 1], shift: f32(w[e + 2]), surf: rows(e + 4), surfL: rows(e + 4 + H), strokeR: rows(e + 4 + 2 * H), strokeL: rows(e + 4 + 3 * H) });
+          len: f32(w[e]), exposed: +w[e + 1], shift: f32(w[e + 2]), surf: rows(e + 4), surfL: rows(e + 4 + H), strokeR: rows(e + 4 + 2 * H), strokeL: rows(e + 4 + 3 * H),
+          lid: [+w[e + 4 + 4 * H], +w[e + 5 + 4 * H], +w[e + 6 + 4 * H]] });
       });
       for (const t of tubes) t.agitation = run.agitation;
       stepFizz(ps, run.dt, run.along, run.across, run.agitation, pose);
@@ -126,6 +129,7 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
         for (const v of st.surf) line += ` ${g(v)}`;
         for (const v of st.surfL) line += ` ${g(v)}`;
         for (const v of [st.strokeR, st.strokeL]) for (let r = 0; r < st.surf.length; r++) line += ` ${g(v && v.length === st.surf.length ? v[r] : 0)}`;
+        for (const v of st.lid ?? [0, 0, 0]) line += ` ${g(v)}`;
         out.push(line);
       });
     }

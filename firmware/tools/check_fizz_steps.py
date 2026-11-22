@@ -195,7 +195,7 @@ static void emit(int step, int i) {   // one tube's state line (render-ref.ts fi
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurfL[r]);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.strokeR[r]);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.strokeL[r]);
-  printf("\n");
+  printf(" %.9g %.9g %.9g\n", t.fizzLidT, t.fizzLidTau, t.fizzLidDelta);   // the desk view's lid: T, tau, delta
   if (t.bodyH) {   // vertical: live bodies (free and foam) outside the eroded disc (stderr; the containment expectation reads it)
     const float R = boreR(*tubeP[i]); int out = 0;
     for (int k = 0; k < t.fizzN; k++) {
@@ -809,10 +809,64 @@ static int chainSelftest() {
   printf("SELFTEST chain %d bubbles: %ld parks, each inside its own zone (worst %.3g px past its start), %ld bubble-steps held back by the foam; failures %ld\n", N, parks, -worst, held, bad);
   return bad ? 12 : 0;
 }
+// `selftest`, the desk view's lid (docs/tilted-fizz-deskview.md "Fizz"): the time edge's S the front contact line W - T z_R,
+// B = 2 T z_R the lid (S + B the back line, S + B / 2 = W flat), the stand's tau / delta. Three same-row foam bubbles
+// (row yc: y = -bias) at the front glass, mid-bore and the back glass glide from 3r below to their endpoints: L = S + k B,
+// k = (z_R - z) / 2 z_R, less r, plus P = r pf; the front one ends at the front line, the back one at the back line, the
+// middle between; on the level plane nothing drifts in (y, z) (sigma_z = -tan tau, buoyancy along its normal); the render
+// clamp keeps each where it is (it sits on its own target), with the veil's exemption kR 1.
+static int lidSelftest() {
+  Tube &t = tubeAt(0); long bad = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest lid: %s: got %.9g want %.9g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 55; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), bias0 = fizzBias0(t), r = fizzR(p, 1), a = R - r, dt = 0.02f, yc = fizzYc(H);
+  const float tau = 0.2217f, delta = 0.1274f, T = tanf(tau) + tanf(delta), W = 300;   // the stand (13 deg back), e 20 deg
+  static float mag[TUBE_HEIGHT_MAX];
+  for (int iy = 0; iy < H; iy++) {
+    const float dy = iy - yc, zr = sqrtf(fmaxf(0, R * R - dy * dy));
+    t.fizzSurf[iy] = W - T * zr; t.strokeR[iy] = 2 * T * zr; t.fizzSurfL[iy] = -5000; t.strokeL[iy] = 0; mag[iy] = 1;
+  }
+  t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+  t.fizzLidT = T; t.fizzLidTau = tau; t.fizzLidDelta = delta; t.lid = fizzLidOf(T, tau, delta, R);
+  const float pf = 1 - cosf(tau) + sinf(tau) * tanf(delta);
+  if (!t.lid.on || fabsf(t.lid.pf - pf) > 1e-5f || fabsf(t.lid.tanT - tanf(tau)) > 1e-5f) fail("fizzLidOf pf", t.lid.pf, pf);
+  const float Z[3] = {a, 0, -a}; float end[3] = {0, 0, 0};
+  t.fizzN = 3; t.foam->nOrder = 0;
+  for (int k = 0; k < 3; k++) {
+    const float y = -fizzRowBias(k, 1, bias0);
+    t.body[k] = {y, Z[k] * sqrtf(fmaxf(0, 1 - (y * y) / (a * a))), FIZZ_C_WALL, {0, 0, 0}};
+    t.fizz[k] = {0, fizzRowOf(H, y, a, fizzRowBias(k, 1, bias0)), 1, 1000, fizzLevelOf(t.body[k].z, a)};
+    if (fabsf(t.fizz[k].y - yc) > 1e-4f) fail("not on row yc", t.fizz[k].y, yc);
+    const int iy = (int)yc; const float kk = fizzLidK(t.body[k].y, t.body[k].z, R);
+    end[k] = t.fizzSurf[iy] + kk * t.strokeR[iy] - r + r * t.lid.pf;   // its row is exactly yc (an integer row: H odd) or between two
+    t.fizz[k].x = end[k] - 3 * r;
+  }
+  if ((H & 1) == 0) fail("tube rows even (the test wants a centre row)", H, H + 1);
+  const float bu = cosf(tau), bz = sinf(tau);   // the stand's buoyancy: normal to the level plane
+  float y0[3], z0[3];
+  for (int k = 0; k < 3; k++) { y0[k] = t.body[k].y; z0[k] = t.body[k].z; }
+  for (int s = 0; s < 120; s++) { for (int k = 0; k < 3; k++) t.fizz[k].life = 1000; settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, dt, false, 0, t.strokeR, bu, 0, bz); }
+  const float S0 = t.fizzSurf[(int)yc], B0 = t.strokeR[(int)yc];
+  for (int k = 0; k < 3; k++) {
+    if (fabsf(t.fizz[k].x - end[k]) > 1e-3f) fail(k == 0 ? "front: not at L - r + P" : k == 1 ? "middle: not at L - r + P" : "back: not at L - r + P", t.fizz[k].x, end[k]);
+    if (hypotf(t.body[k].y - y0[k], t.body[k].z - z0[k]) > 1e-3f) fail("drifted on the level plane", hypotf(t.body[k].y - y0[k], t.body[k].z - z0[k]), 0);
+    float kR, kL; const float xd = fizzEndClampX(t, p, t.fizz[k], t.body[k], mag, kR, kL);
+    if (fabsf(xd - t.fizz[k].x) > 1e-3f) fail("render clamp moved it", xd, t.fizz[k].x);
+    if (kR != 1) fail("veil exemption under the lid", kR, 1);
+  }
+  const float fr = t.fizz[0].x + r - r * t.lid.pf, md = t.fizz[1].x + r - r * t.lid.pf, bk = t.fizz[2].x + r - r * t.lid.pf;   // their lines L
+  if (!(fr - S0 >= 0 && fr - S0 < 0.15f * B0)) fail("front: L not at the front line", fr, S0);
+  if (!(S0 + B0 - bk >= 0 && S0 + B0 - bk < 0.15f * B0)) fail("back: L not at the back line", bk, S0 + B0);
+  if (!(fabsf(md - (S0 + 0.5f * B0)) < 0.02f * B0)) fail("middle: L not between", md, S0 + 0.5f * B0);
+  printf("SELFTEST lid: front / middle / back glass end at L = S + %.3f / %.3f / %.3f B (S %.2f, B %.2f, P %.3f r); level plane drift 0, render clamp kept; failures %ld\n",
+         (fr - S0) / B0, (md - S0) / B0, (bk - S0) / B0, S0, B0, t.lid.pf, bad);
+  t.fizzN = 0; t.bodyH = 0; t.lid = {false, 0, 0, 0}; t.fizzLidT = t.fizzLidTau = t.fizzLidDelta = 0;
+  return bad ? 21 : 0;
+}
 static int selftests() {
   int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest(), e7 = packSelftest();
-  const int e8 = sideSelftest(), e9 = wallFlagSelftest(), e10 = loneSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9 ? e9 : e10;
+  const int e8 = sideSelftest(), e9 = wallFlagSelftest(), e10 = loneSelftest(), e11 = lidSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9 ? e9 : e10 ? e10 : e11;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
@@ -836,7 +890,7 @@ int main() {
       fprintf(stderr, "F %d %d %.9g %d %.9g %d", step, i, t.fizzLen, t.fizzExposed, t.fizzShift, t.H);
       const float *const rows[4] = {t.fizzSurf, t.fizzSurfL, t.strokeR, t.strokeL};
       for (const float *v : rows) for (int r = 0; r < t.H; r++) fprintf(stderr, " %.9g", v[r]);
-      fprintf(stderr, "\n");
+      fprintf(stderr, " %.9g %.9g %.9g\n", t.fizzLidT, t.fizzLidTau, t.fizzLidDelta);
     }
   };
   char line[512]; bool head = true;
@@ -855,9 +909,10 @@ int main() {
     else if (sscanf(line, "tube %d %63s %63s", &i, a, b) == 3) { if (i >= TUBE_COUNT || !setState(st[i], a, atof(b))) return 5; }
     else if (sscanf(line, "set %63s %63s", a, b) == 2) { if (!setParam(design, a, b)) return 6; derive(); changed = true; }
     else if (sscanf(line, "run %d %f %f %f %f %f", &n, &dt, &along, &across, &normal, &agit) == 6) {
+      Pose pose = POSE_DEFAULT; const bool valid = updatePose(pose, along, across, normal);   // the run's gain-free pose (ImuFilter::pose's maths)
+      for (int j = 0; j < TUBE_COUNT; j++) st[j].backTilt = valid ? poseBackTilt(pose) : 0;   // desk view: the lid's tau (ImuFilter::backTilt)
       if (!started || changed) frame();   // the first frame, and one after a params change: the new height's surfaces
       started = true; changed = false;
-      Pose pose = POSE_DEFAULT; updatePose(pose, along, across, normal);   // the run's gain-free pose (ImuFilter::pose's maths)
       for (int k = 0; k < n; k++) {
         for (int j = 0; j < TUBE_COUNT; j++) st[j].agitation = agit;
         mvSide = (mirrored(p[0]) ? -pose.x : pose.x) >= 0 ? 1 : -1;
@@ -904,6 +959,9 @@ def _shake(n):
     return [_run(1, (-1 + 0.3 * math.sin(k * DT * 25.13), 0.25 * math.sin(k * DT * 25.13), 0.2 * math.sin(k * DT * 25.13)),
                  0.8 * (1 - k / n)) for k in range(n)]
 
+# the lid fixture's fields over the board look (viewElevation 20, surfaceBlick 0.2: the user's look on the board)
+LID_OVER = (lambda a, b: {k: v for k, v in b.items() if a.get(k) != v})(   # v too: the sim migrates from it
+    json.load(open(ROOT / 'firmware/tools/testdata/tilted-fizz-board-look.json')), json.load(open(ROOT / 'firmware/tools/testdata/tilted-fizz-board-look-lid.json')))
 FILLS = {'hours': {'fillTarget': 0.85}, 'minutes': {'fillTarget': 0.4}, 'seconds': {'fillTarget': 0.5}}
 # name: (design params over the board look, runs). Most fill upright first, then hold the pose. Steps of PHYS_DT.
 SIM_JOBS = {
@@ -927,6 +985,11 @@ SIM_JOBS = {
     'board look 60 s': ({}, [_run(3000, UP)]),   # the diagnosed pulse replay (docs/tilted-fizz-plan.md): parks, foam count
     'board look 60 s, across 0.05': ({}, [_run(3000, (-math.sqrt(1 - 0.05 ** 2), 0.05, 0.0))]),
     'stand 13 back, 30 s': ({}, [_run(1500, (-0.976, -0.01, 0.22))]),   # the board's 'fizz explosion' pose (2026-11-22)
+    # the desk view's lid (testdata/tilted-fizz-board-look-lid.json: viewElevation 20): the time edge's endpoint rule flipped
+    'lid stand 13 back, 30 s': (LID_OVER, [_run(1500, (-0.976, -0.01, 0.22))]),
+    'lid back 15': (LID_OVER, [_run(100, UP), _run(250, _tilt(15))]),
+    'lid across + back': (LID_OVER, [_run(100, UP), _run(250, _tilt(15, 0.3))]),
+    'lid upright, shaking': (LID_OVER, [_run(80, UP), *_shake(200), _run(70, UP)]),
 }
 JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
 
@@ -953,7 +1016,8 @@ def _overdamped(lines, err):   # the stand: nothing moves back down faster than 
 SIM_EXPECT = {'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
               'upright': ('containment', _contained), 'back 15': ('containment', _contained), 'height changes': ('containment', _contained),
               'back 15, 20 s': ('containment', _contained), 'shaking': ('containment', _contained),
-              'stand 13 back, 30 s': ('overdamped contacts', _overdamped)}
+              'stand 13 back, 30 s': ('overdamped contacts', _overdamped), 'lid stand 13 back, 30 s': ('overdamped contacts', _overdamped),
+              'lid back 15': ('containment', _contained), 'lid upright, shaking': ('containment', _contained)}
 SIM_SEED = 0x2545F491
 # Sim vs firmware in lockstep (each step from the firmware's state): per field, the largest difference accepted. Slot and
 # draw counts, which slots are foam and on which side, are exact. Free bubbles: one step's float rounding. Parked foam
@@ -1103,6 +1167,11 @@ SURF_TOL = 1e-3
 # Stroke widths (strokeR / strokeL: min(surfaceWidth, the ring-profile separation), canvas px <= ~20): derived per row
 # from the same surfaces and walls, the sim in doubles; the same few-ulp argument as SURF_TOL.
 STROKE_TOL = 1e-3
+# The desk view's lid (T, tau, delta: the last fields of S / F / G records): float32 tanf / atan2f against the sim's doubles
+# rounded (an ulp or two); --free and lockstep hand the sim the firmware's.
+LID_TOL = 1e-5
+LID_N = 3
+LID_FIELDS = ('T', 'tau', 'delta')
 
 def _record(line, side):
     """(fields, why not) of one state line: 'S', HEAD + 8 * fizzN + 4 + 4 * H fields, all finite numbers."""
@@ -1115,13 +1184,13 @@ def _record(line, side):
     n = int(v[2]) if v[2] == int(v[2]) and v[2] >= 0 else -1
     e = HEAD + len(SLOT_FIELDS) * n
     H = int(v[e + 2]) if n >= 0 and e + 3 < len(p) and v[e + 2] == int(v[e + 2]) and v[e + 2] >= 0 else -1
-    if n < 0 or H < 0 or len(p) != e + 4 + 4 * H: return None, f'{side} step {p[1]} tube {p[2]}: {len(p)} fields for fizzN {p[3]}'
+    if n < 0 or H < 0 or len(p) != e + 4 + 4 * H + LID_N: return None, f'{side} step {p[1]} tube {p[2]}: {len(p)} fields for fizzN {p[3]}'
     return p, None
 
 def sim_compare(nat, sim):
     """(first mismatch or None, steps, worst difference per field, most slots per tube) of the two sides' state lines."""
     la, lb = nat.splitlines(), sim.splitlines()
-    worst = {**{f: 0.0 for f in SIM_TOL}, **{f'foam {f}': 0.0 for f in FOAM_FIELDS}, 'surf': 0.0, 'stroke': 0.0}; most = {}
+    worst = {**{f: 0.0 for f in SIM_TOL}, **{f'foam {f}': 0.0 for f in FOAM_FIELDS}, 'surf': 0.0, 'stroke': 0.0, 'lid': 0.0}; most = {}
     la = [l for l in la if not l.startswith('G ')]; lb = [l for l in lb if not l.startswith('G ')]   # state lines only
     if len(la) != len(lb): return f'{len(la)} native state lines, {len(lb)} sim', 0, worst, []
     if not la: return 'no state lines', 0, worst, []
@@ -1151,7 +1220,10 @@ def sim_compare(nat, sim):
         e = HEAD + w * int(p[3])   # the frame's surfaces the kernel steps on: exposed / rows exact, len shift surf surfL SURF_TOL
         if p[e + 1] != q[e + 1] or p[e + 3] != q[e + 3]: return f'{where}: exposed / rows native {p[e + 1]} {p[e + 3]} sim {q[e + 1]} {q[e + 3]}', 0, worst, []
         H = int(p[e + 3])
-        for i in [e, e + 2, *range(e + 4, len(p))]:
+        for i in range(len(p) - LID_N, len(p)):   # the lid's T, tau, delta
+            d = abs(float(p[i]) - float(q[i])); worst['lid'] = max(worst['lid'], d)
+            if d > LID_TOL: return f'{where}: lid {LID_FIELDS[i - len(p) + LID_N]} native {p[i]} sim {q[i]}', 0, worst, []
+        for i in [e, e + 2, *range(e + 4, len(p) - LID_N)]:
             d = abs(float(p[i]) - float(q[i])); j = i - e - 4; st = j >= 2 * H
             worst['stroke' if st else 'surf'] = max(worst['stroke' if st else 'surf'], d)
             k = 'len' if i == e else 'shift' if i == e + 2 else f'{("surf", "surfL", "strokeR", "strokeL")[j // H]} row {j % H}'
@@ -1160,7 +1232,7 @@ def sim_compare(nat, sim):
 
 def _frame_record(line, side, tag):
     """(fields, why not) of one frame-input line: tag ('F' native, 'G' sim), step, tube, len, exposed, shift, H, then
-    surf, surfL, strokeR, strokeL per row: 7 + 4 * H fields, all finite numbers."""
+    surf, surfL, strokeR, strokeL per row, the lid's T, tau, delta: 7 + 4 * H + 3 fields, all finite numbers."""
     p = line.split()
     if len(p) < 7 or p[0] != tag: return None, f'{side}: not a {tag} line: {line[:60]!r}'
     try: v = [float(x) for x in p[1:]]
@@ -1168,14 +1240,14 @@ def _frame_record(line, side, tag):
     bad = next((i for i, x in enumerate(v, 1) if not math.isfinite(x)), None)
     if bad is not None: return None, f'{side} {tag} step {p[1]} tube {p[2]}: field {bad} is {p[bad]}'
     H = int(v[5]) if v[5] == int(v[5]) and v[5] >= 0 else -1
-    if H < 0 or len(p) != 7 + 4 * H: return None, f'{side} {tag} step {p[1]} tube {p[2]}: {len(p)} fields for rows {p[6]}'
+    if H < 0 or len(p) != 7 + 4 * H + LID_N: return None, f'{side} {tag} step {p[1]} tube {p[2]}: {len(p)} fields for rows {p[6]}'
     return p, None
 
 def gen_compare(nat_err, sim_out):
     """(first mismatch or None, frames, worst surface / stroke difference) of the two sides' own frame inputs: the
     native F lines (stderr), the sim's G lines (generated before any replacement)."""
     fa = [l for l in nat_err.splitlines() if l.startswith('F')]; ga = [l for l in sim_out.splitlines() if l.startswith('G')]
-    worst = {'surf': 0.0, 'stroke': 0.0}
+    worst = {'surf': 0.0, 'stroke': 0.0, 'lid': 0.0}
     if len(fa) != len(ga): return f'{len(fa)} native frame records, {len(ga)} sim', 0, worst
     if not fa: return 'no frame records', 0, worst
     for x, y in zip(fa, ga):
@@ -1187,7 +1259,10 @@ def gen_compare(nat_err, sim_out):
         if p[1:3] != q[1:3]: return f'{where}: sim frame at step {q[1]} tube {q[2]}', 0, worst
         if p[4] != q[4] or p[6] != q[6]: return f'{where}: exposed / rows native {p[4]} {p[6]} sim {q[4]} {q[6]}', 0, worst
         H = int(p[6])
-        for i in [3, 5, *range(7, len(p))]:
+        for i in range(len(p) - LID_N, len(p)):   # the lid's T, tau, delta (the sim's atan2 / tan in doubles, rounded)
+            d = abs(float(p[i]) - float(q[i])); worst['lid'] = max(worst['lid'], d)
+            if d > LID_TOL: return f'{where}: lid {LID_FIELDS[i - len(p) + LID_N]} native {p[i]} sim {q[i]}', 0, worst
+        for i in [3, 5, *range(7, len(p) - LID_N)]:
             d = abs(float(p[i]) - float(q[i])); j = i - 7; st = j >= 2 * H
             worst['stroke' if st else 'surf'] = max(worst['stroke' if st else 'surf'], d)
             if d > (STROKE_TOL if st else SURF_TOL):
@@ -1198,8 +1273,8 @@ def gen_compare(nat_err, sim_out):
 def gen_compare_selftest(err, out):
     """gen_compare on one job's F lines against themselves as G lines (must match), then mutated (each rejected)."""
     fl = [l for l in err.splitlines() if l.startswith('F')]
-    k = next(i for i, l in enumerate(fl) if any(float(v) != 0 for v in l.split()[7 + 2 * int(l.split()[6]):]))   # a frame with a stroke
-    p = fl[k].split(); H = int(p[6]); so = 7 + 2 * H + next(j for j, v in enumerate(p[7 + 2 * H:]) if float(v) != 0)
+    k = next(i for i, l in enumerate(fl) if any(float(v) != 0 for v in l.split()[7 + 2 * int(l.split()[6]):-LID_N]))   # a frame with a stroke
+    p = fl[k].split(); H = int(p[6]); so = 7 + 2 * H + next(j for j, v in enumerate(p[7 + 2 * H:-LID_N]) if float(v) != 0)
     G = lambda ls: '\n'.join('G' + l[1:] for l in ls)
     def at(i, v, native=False):   # field i of record k set to v, on the sim (G) side or the native (F) side
         q = list(p); q[i] = v(q[i]) if callable(v) else v; m = [*fl[:k], ' '.join(q), *fl[k + 1:]]
@@ -1209,7 +1284,8 @@ def gen_compare_selftest(err, out):
         'G strokeL row NaN': at(7 + 3 * H, 'nan'), 'G exposed flipped': at(4, lambda s: str(3 - int(s))),
         'F frame index wrong': at(1, lambda s: str(int(s) + 1), True), 'F rows wrong': at(6, lambda s: str(int(s) + 1), True),
         'F record short': ('\n'.join([*fl[:k], ' '.join(p[:-1]), *fl[k + 1:]]), G(fl)), 'F inf': at(9, 'inf', True),
-        'F record missing': ('\n'.join(fl[:-1]), G(fl)),
+        'F record missing': ('\n'.join(fl[:-1]), G(fl)), 'G lid T +0.01': at(len(p) - 3, lambda s: repr(float(s) + 0.01)),
+        'G lid tau NaN': at(len(p) - 2, 'nan'), 'G lid delta +0.01': at(len(p) - 1, lambda s: repr(float(s) + 0.01)),
     }
     accepted = [n for n, (a_, b_) in muts.items() if gen_compare(a_, b_)[0] is None]
     return gen_compare('\n'.join(fl), G(fl))[0], accepted, len(muts)
@@ -1239,6 +1315,8 @@ def sim_compare_selftest(nat):
         'strokeR row NaN': at(e + 4 + 2 * H + 1, 'nan'),
         'vertical foam x +0.01': at(fo, lambda s: repr(float(s) + 0.01)), 'vertical foam y +0.01': at(fo + 1, lambda s: repr(float(s) + 0.01)),
         'vertical foam body y +0.01': at(fo + SLOT_FIELDS.index('by'), lambda s: repr(float(s) + 0.01)),
+        'lid T +0.01': at(len(p) - 3, lambda s: repr(float(s) + 0.01)), 'lid tau +0.01': at(len(p) - 2, lambda s: repr(float(s) + 0.01)),
+        'lid delta NaN': at(len(p) - 1, 'nan'),
     }
     accepted = [n for n, (a_, b_) in muts.items() if sim_compare(a_, b_)[0] is None]
     return sim_compare(nat, nat)[0], accepted, len(muts)

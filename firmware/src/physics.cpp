@@ -366,7 +366,7 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   lpAcross2 += (lpAcross - lpAcross2) * a;
   lpNormal += (inNormal - lpNormal) * a;
   lpNormal2 += (lpNormal - lpNormal2) * a;
-  updatePose(pose, lpAlong2, lpAcross2, lpNormal2);
+  if (updatePose(pose, lpAlong2, lpAcross2, lpNormal2)) poseValid = true;
   float g;
   if (p.gyroHpHz <= 0) g = raw.gyroAcross;
   else {
