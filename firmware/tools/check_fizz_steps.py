@@ -23,13 +23,15 @@ board's code: confirm a fizz rewrite on the board with tools/check_board_steps.p
 testdata/tilted-fizz-board-look.json; default lcd316 --res 320w8-8, the board it was saved on) runs in the native
 render.cpp + physics.cpp build and in sim/tools/render-ref.ts (its fizzSteps mode), both drawing from one seeded
 generator (xorshift32, (word >>> 8) / 2^24: a test-only esp_random stub, Math.random in the sim job): a frame before
-the first step and after every 2nd, the fizz stepped at fixed inputs (along, across, normal, agitation; normal is
-carried for the signed-normal input and not read yet). After every step each tube's slot count and the generator's
+the first step and after every 2nd, the fizz stepped at fixed inputs (along, across, normal, agitation; the vertical
+kernel reads only the gain-free pose updatePose makes of them, the landscape one along / across). After every step each tube's slot count and the generator's
 draw count, the vertical bodies' height key and postponed births (exact), the spring clocks and every slot's fields
 (x y v life z, and the body's y z: within SIM_TOL) and the frame's surfaces the kernel steps on (len, shift, surf / surfL
 rows: SURF_TOL; exposed, rows exact) are compared, every record's length checked and every field finite on both sides;
 the first mismatch is reported. Lockstep (each step from the firmware's state) is a diagnostic: it erases accumulated
-divergence. --free (the sim runs on its own state) is the acceptance mode for vertical jobs. The comparator's mutation
+divergence. --free (the sim runs on its own state) is the acceptance mode for vertical jobs: after each frame both
+kernels step on the firmware frame's fizz inputs (len, exposed, shift, surf / surfL, strokeR / strokeL: its F lines),
+since the sim's drawTube computes them in doubles; their generation is compared in lockstep (SURF_TOL). The comparator's mutation
 self-checks (NaN / inf, a record too short / long, a surface, len, shift moved) must all be rejected. Each native job runs twice (identical output: the jobs repeat exactly). The legacy kernel computes in doubles
 in the sim and in floats in the firmware (-ffp-contract=off): a decision a rounding flips shows as a count mismatch.
 """
@@ -54,6 +56,12 @@ HARNESS = r'''
 #include <cstdlib>
 #include <cstring>
 #include RENDER_SRC   // the side's render.cpp itself: its tubes' fizz state is hashed below
+#ifndef FIZZ_C_WALL   // a reference render.cpp from before the gain-free pose argument (tilted fizz point 4): seq.h steps through this
+void stepFizz(const Params &pH, const Params &pM, float dt, float along, float across, float agitation, const Pose &) { stepFizz(pH, pM, dt, along, across, agitation); }
+#if TUBE_COUNT == 3
+void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, float along, float across, float agitation, const Pose &) { stepFizz(pH, pM, pS, dt, along, across, agitation); }
+#endif
+#endif
 #include "seq.h"
 static uint16_t strip[TUBE_COUNT][PANEL_W * TUBE_HEIGHT_MAX];
 static uint32_t fizzHash(int i) {   // the stepped state of one tube: live slots, spring clocks
@@ -119,6 +127,8 @@ SIM_HARNESS = r"""
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+static double parkWorst = -1e30; static long parkN = 0;   // the vertical kernel's parks (FIZZ_PARK_HOOK): how far short of its zone
+#define FIZZ_PARK_HOOK(t, k, u, uc) (parkN++, parkWorst = (uc) - FOAM_CATCH - (u) > parkWorst ? (uc) - FOAM_CATCH - (u) : parkWorst)
 #include RENDER_SRC
 static uint16_t strip[TUBE_COUNT][PANEL_W * TUBE_HEIGHT_MAX];
 static bool setParam(Params &p, const char *name, const char *val) {   // main.cpp setParam
@@ -147,59 +157,229 @@ static void emit(int step, int i) {   // one tube's state line (render-ref.ts fi
   printf("S %d %d %d %llu %.9g %.9g %d %u", step, i, t.fizzN, (unsigned long long)fizzTestDraws(), t.springClock, t.springScatter, t.bodyH, (unsigned)t.fizzBlocked);
   for (int k = 0; k < t.fizzN; k++) {
     const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k];
-    printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", f.x, f.y, f.v, f.life, f.z, b.y, b.z);
+    printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g %d", f.x, f.y, f.v, f.life, f.z, b.y, b.z, (int)b.contact);
   }
   printf(" %.9g %d %.9g %d", t.fizzLen, t.fizzExposed, t.fizzShift, t.H);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurf[r]);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurfL[r]);
   printf("\n");
-  if (t.bodyH) {   // vertical: free bodies outside the eroded disc (stderr; the containment expectation reads it)
+  if (t.bodyH) {   // vertical: live bodies (free and foam) outside the eroded disc (stderr; the containment expectation reads it)
     const float R = boreR(*tubeP[i]); int out = 0;
     for (int k = 0; k < t.fizzN; k++) {
       const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k]; const float a = R - fizzR(*tubeP[i], f.v);
-      if (f.v != 0 && f.life == 0 && b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) out++;   // free: the parked foam packs on rows (settleFoam) until point 5
+      if (f.v != 0 && b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) out++;
     }
     if (out) fprintf(stderr, "OUT step %d tube %d: %d\n", step, i, out);
   }
 }
-// `selftest`: the vertical births (springSpawnV, fizzScatterV, ensureFizz) over tube heights, sizes, source rows and
-// spreads, against a straight column: contained in the eroded disc, the row and tint level derived from the body, a
-// spring within its spread of (fizzSourceY, z = 0), postponed only when the drawn size cannot fit, uniform over the disc.
+// `selftest`: the vertical births (springSpawnV, fizzScatterV, ensureFizz) over tube heights, sizes, source rows,
+// spreads and column profiles (a long straight column, a short one, a curved dish, a steep slant): contained in the
+// eroded disc, row and tint level derived from the body, inside the row's span (the whole disc FOAM_CATCH inside both
+// surfaces), a spring within its spread of (fizzSourceY, z = 0), postponed only without room (the size, or the span),
+// uniform over the disc.
+static void profileOf(Tube &t, int kind) {   // 0 straight 300 px, 1 short (6 px), 2 curved dish, 3 steep slant
+  const float yc = fizzYc(t.H);
+  for (int r = 0; r < t.H; r++) {
+    const float q = yc > 0 ? (r - yc) / yc : 0;
+    t.fizzSurf[r] = kind == 0 ? 300 : kind == 1 ? 6 : kind == 2 ? 40 + 30 * q * q : 20 + 3.0f * r;
+    t.fizzSurfL[r] = kind == 2 ? -8 * q * q : 0;
+    t.strokeR[r] = t.strokeL[r] = 0;
+  }
+  t.surfH = t.H;
+}
 static int birthSelftest() {
-  Tube &t = tubeAt(0); long n = 0, bad = 0, postponed = 0, wrongPostpone = 0; double sum2 = 0, sumY = 0, sumZ = 0; long nU = 0;
+  Tube &t = tubeAt(0); long n = 0, bad = 0, postponed = 0, wrongPostpone = 0, spanNone = 0; double sum2 = 0, sumY = 0, sumZ = 0; long nU = 0;
   auto fail = [&](const char *what, float H, float y, float z, float a) { if (bad++ < 5) fprintf(stderr, "selftest: %s H %g y %g z %g a %g\n", what, H, y, z, a); };
   const int HS[] = {4, 6, 8, 12, 20, 40, 54, 80};
   const float SIZE[] = {2, 5, 9, 14}, VAR[] = {0, 0.5f}, SY[] = {0, 0.5f, 1, 1.3f}, SP[] = {0, 1, 4, 30};
+  for (int prof = 0; prof < 4; prof++)
   for (int H : HS) for (float size : SIZE) for (float var : VAR) for (float sy : SY) for (float sp : SP) {
     Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = H; p.fizzSize = size; p.fizzSizeVar = var;
     p.fizzSourceY = sy; p.fizzSourceSpread = sp; p.fizzSourceX = 0.3f;
-    t.H = tubeLayout(p).H; t.fizzShift = 0;
-    for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 300; t.fizzSurfL[r] = 0; }
-    const float R = boreR(p), aMax = R - fizzR(p, 0.5f + (FIZZ_SIZES - 0.5f) / FIZZ_SIZES), yc = fizzYc(t.H);
-    for (int rep = 0; rep < 60; rep++) for (int kind = 0; kind < 3; kind++) {
-      Fizz f{}; FizzBody b{}; const uint32_t blk = t.fizzBlocked;
-      const int low = rep % 3 - 1;
-      const bool ok = kind == 0 ? springSpawnV(t, p, f, b) : fizzScatterV(t, p, f, b, kind == 2 ? low : 0, -1);
+    t.H = tubeLayout(p).H; t.fizzShift = 0; profileOf(t, prof);
+    const float R = boreR(p), aMax = R - fizzR(p, 0.5f + (FIZZ_SIZES - 0.5f) / FIZZ_SIZES);
+    for (int rep = 0; rep < (prof ? 20 : 60); rep++) for (int kind = 0; kind < 2; kind++) {
+      Fizz f{}; FizzBody b{}; const uint32_t blk = t.fizzBlocked; const int k = rep % 7;
+      const bool ok = kind == 0 ? springSpawnV(t, p, f, b, k) : fizzScatterV(t, p, f, b, k, -1);
       n++;
-      if (!ok) { postponed++; if (aMax > 0 || t.fizzBlocked != blk + 1 || f.v != 0) { wrongPostpone++; fail("postponed", H, 0, 0, aMax); } continue; }
       const float a = R - fizzR(p, f.v);
+      if (!ok) {
+        postponed++;
+        float lo, hi; const bool span = aMax > 0 && fizzSpanV(t, f.y, fizzR(p, 1.5f), lo, hi);   // f.v is 0 now: the largest size's span
+        if (!span) spanNone++;
+        if (t.fizzBlocked != blk + 1 || f.v != 0 || (aMax > 0 && prof == 0)) { wrongPostpone++; fail("postponed", H, 0, 0, aMax); }
+        continue;
+      }
+      const float r = fizzR(p, f.v);
       if (!(a > 0)) fail("born without room", H, b.y, b.z, a);
       if (b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) fail("outside the disc", H, b.y, b.z, a);
-      if (f.y != yc + b.y || f.z != fizzLevelOf(b.z, a)) fail("row / level not derived", H, b.y, b.z, a);
+      if (f.y != fizzRowOf(t.H, b.y, a, fizzRowBias(k, f.v, fizzBias0(t))) || f.z != fizzLevelOf(b.z, a)) fail("row / level not derived", H, b.y, b.z, a);
+      if (fabsf(f.y - fizzYc(t.H) - b.y) > fizzBias0(t) * (1 + 1e-5f)) fail("row bias past its bound", H, b.y, f.y, a);
       if (kind == 0) {
         const float y0 = (2 * sy - 1) * a;
         if (fabsf(b.z) > sp * (1 + 1e-5f) + 1e-5f) fail("spring off its depth", H, b.y, b.z, a);
         if (fabsf(b.y - y0) > sp * (1 + 1e-5f) + 1e-5f && b.y * b.y + b.z * b.z < a * a * (1 - 1e-4f)) fail("spring off its row", H, b.y, b.z, a);
       }
-      if (kind == 2 && low && b.y * low < 0) fail("recycle on the wrong half", H, b.y, b.z, a);
-      if (f.x < 0 || f.x > 300) fail("x outside the column", H, f.x, 0, a);
-      if (kind == 1 && H == 54 && size == 5) { sum2 += (b.y * b.y + b.z * b.z) / (a * a); sumY += b.y / a; sumZ += b.z / a; nU++; }
+      if (f.x > discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH + 1e-4f || -f.x > discFit(t.fizzSurfL, t.H, f.y, r, -1) - FOAM_CATCH + 1e-4f)
+        fail("born outside its row's span", H, f.x, f.y, a);
+      if (kind == 1 && prof == 0 && H == 54 && size == 5) { sum2 += (b.y * b.y + b.z * b.z) / (a * a); sumY += b.y / a; sumZ += b.z / a; nU++; }
     }
   }
   const double m2 = sum2 / nU, my = sumY / nU, mz = sumZ / nU;   // uniform over the disc: E rho^2 / a^2 = 1/2, E y = E z = 0
   if (fabs(m2 - 0.5) > 0.03 || fabs(my) > 0.05 || fabs(mz) > 0.05) { bad++; fprintf(stderr, "selftest: not uniform: E rho2 %g E y %g E z %g (%ld)\n", m2, my, mz, nU); }
-  printf("SELFTEST births %ld postponed %ld (wrongly %ld) failures %ld uniform E rho2/a2 %.3f E y %.3f E z %.3f\n", n, postponed, wrongPostpone, bad, m2, my, mz);
+  // ensureFizz (scattered, vertical) on each profile: every live slot in the disc and its row's span, the rest idle
+  long ensured = 0, idle = 0;
+  for (int prof = 0; prof < 4; prof++) {
+    Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 40; p.fizzSize = 5; p.fizzSizeVar = 0.5f; p.fizzSource = 0; p.fizzCount = 120;
+    t.H = tubeLayout(p).H; t.fizzShift = 0; profileOf(t, prof); t.fizzN = 0; t.bodyH = 0;
+    t.ensureFizz(p, 200, 0);
+    const float R = boreR(p);
+    for (int k = 0; k < t.fizzN; k++) {
+      const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k];
+      if (f.v == 0) { idle++; continue; }
+      ensured++;
+      const float r = fizzR(p, f.v), a = R - r;
+      if (b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) fail("ensureFizz outside the disc", t.H, b.y, b.z, a);
+      if (f.x > discFit(t.fizzSurf, t.H, f.y, r, 1) - FOAM_CATCH + 1e-4f || -f.x > discFit(t.fizzSurfL, t.H, f.y, r, -1) - FOAM_CATCH + 1e-4f)
+        fail("ensureFizz outside its row's span", t.H, f.x, f.y, a);
+    }
+    if (prof == 1 && ensured && idle == 0) fail("ensureFizz born in a 6 px column", t.H, 0, 0, 0);
+  }
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST births %ld postponed %ld (no span %ld, wrongly %ld) ensureFizz %ld live %ld idle; failures %ld uniform E rho2/a2 %.3f E y %.3f E z %.3f\n",
+         n, postponed, spanNone, wrongPostpone, ensured, idle, bad, m2, my, mz);
   return bad ? 9 : 0;
+}
+// `selftest`, the bodies' rebuild (fizzBodiesFor): after a change of rows, glassWall, fizzSize or fizzSizeVar every live
+// body is inside its new eroded disc at once (before any motion), its row and tint level derived; a body already inside
+// keeps its (y, z); a size that no longer fits is retired (idle, fizzBlocked); no draws.
+static int rebuildSelftest() {
+  Tube &t = tubeAt(0); long bad = 0, checked = 0, kept = 0, retired = 0;
+  auto fail = [&](const char *what, int k, float y, float z, float a) { if (bad++ < 5) fprintf(stderr, "selftest rebuild: %s slot %d y %g z %g a %g\n", what, k, y, z, a); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0.5f; p.fizzSource = 0;
+  t.H = tubeLayout(p).H; profileOf(t, 0); t.fizzN = 0; t.bodyH = 0;
+  for (int k = 0; k < 200; k++) { t.fizz[k] = {0, 0, 0, 0, 0}; t.body[k] = {0, 0, 0, {0, 0, 0}}; fizzScatterV(t, p, t.fizz[k], t.body[k], k, -1); t.fizzN++; }
+  fizzBodiesFor(t, p);
+  struct Change { const char *what; float H, wall, size, var; };
+  const Change CH[] = {{"rows 54 -> 20", 20, 3, 5, 0.5f}, {"rows 20 -> 54", 54, 3, 5, 0.5f}, {"glassWall 3 -> 8", 54, 8, 5, 0.5f},
+                       {"fizzSize 5 -> 14", 54, 8, 14, 0.5f}, {"fizzSizeVar 0.5 -> 1", 54, 8, 14, 1}, {"rows 54 -> 12", 12, 8, 14, 1}};
+  for (const Change &c : CH) {
+    static FizzBody was[FIZZ_POOL]; for (int k = 0; k < t.fizzN; k++) was[k] = t.body[k];
+    const uint64_t d0 = fizzTestDraws(); const uint32_t b0 = t.fizzBlocked;
+    p.tubeHeight = c.H; p.glassWall = c.wall; p.fizzSize = c.size; p.fizzSizeVar = c.var; t.H = tubeLayout(p).H; profileOf(t, 0);
+    fizzBodiesFor(t, p);
+    if (fizzTestDraws() != d0) fail("draws in the rebuild", -1, 0, 0, 0);
+    const float R = boreR(p); long ret = 0;
+    for (int k = 0; k < t.fizzN; k++) {
+      const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k];
+      if (f.v == 0) continue;
+      checked++;
+      const float a = R - fizzR(p, f.v);
+      if (!(a > 0)) { fail("kept without room", k, b.y, b.z, a); continue; }
+      if (b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) fail(c.what, k, b.y, b.z, a);
+      if (f.y != fizzRowOf(t.H, b.y, a, fizzRowBias(k, f.v, fizzBias0(t))) || f.z != fizzLevelOf(b.z, a)) fail("row / level not derived", k, b.y, b.z, a);
+      if (was[k].y * was[k].y + was[k].z * was[k].z <= a * a && (b.y != was[k].y || b.z != was[k].z)) fail("moved although inside", k, b.y, b.z, a);
+      else if (b.y == was[k].y && b.z == was[k].z) kept++;
+    }
+    for (int k = 0; k < t.fizzN; k++) if (t.fizz[k].v == 0 && was[k].y != 0) ret++;
+    retired += t.fizzBlocked - b0;
+    (void)ret;
+  }
+  if (retired == 0) fail("nothing retired by fizzSize 14 on a 12-row tube", -1, 0, 0, 0);
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST rebuild %d changes, %ld bodies checked inside at once (%ld kept their place), %ld retired; failures %ld\n", (int)(sizeof CH / sizeof CH[0]), checked, kept, retired, bad);
+  return bad ? 10 : 0;
+}
+// `selftest`, the motion (point 4) against its analytic cases, one bubble of the mean size (U = fizzSpeed) in a long
+// closed column far from both ends: free flight at 15 deg back keeps y and travels (z_w - z0) cot(theta) along the tube
+// to the front glass in (z_w - z0) / (U sin theta) (within a step); on the wall it converges to the ridge as tan(psi / 2)
+// = tan(psi0 / 2) exp(-t / tau_w), tau_w = (R - r) / (k_w U |b_perp|), never past it, x at k_w U b_x; face up / down it
+// does not move along the tube and settles on the front / back high point; a roll moves the ridge and the rope follows
+// without a jump (no step longer than k_w U dt); face up -> face down releases it into the liquid; an end closed by
+// the glass stops it with the whole disc inside, no foam.
+static int motionSelftest() {
+  Tube &t = tubeAt(0); long bad = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest motion: %s: got %g want %g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  p.fizzSource = 1; p.fizzSourceRate = 0; p.fizzFoamLife = 1.5f; p.freeLiquid = false;
+  t.H = tubeLayout(p).H; t.fizzShift = 0; t.fizzLen = 9000; t.fizzExposed = 0; t.springClock = 0; t.springScatter = 0;
+  for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 5000; t.fizzSurfL[r] = -5000; t.strokeR[r] = t.strokeL[r] = 0; } t.surfH = t.H;
+  const float R = boreR(p), r0 = fizzR(p, 1), a = R - r0, U = p.fizzSpeed, dt = 0.02f;
+  const double th = 15 * M_PI / 180;
+  auto put = [&](float x, float y, float z, int c) {
+    t.fizzN = 1; t.fizz[0] = {x, 0, 1, 0, 0.5f}; t.body[0] = {y, z, (uint8_t)c, {0, 0, 0}};
+    t.bodyH = t.H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+  };
+  auto step = [&](Pose q) { stepFizzTube(0, p, dt, -q.x, -q.y, 0, q); };
+  const Pose back{(float)cos(th), 0, (float)sin(th)};
+  double flightErr = 0, tauErr = 0, rollMax = 0, rollEnd = 0;
+  {   // free flight to the front glass
+    const float y0 = 0.3f * a, z0 = -0.2f * a, zw = sqrtf(a * a - y0 * y0);
+    put(0, y0, z0, 0);
+    const double want = (zw - z0) / tan(th), tw = (zw - z0) / (U * sin(th));
+    int n = 0; float xPrev = 0;
+    while (!(t.body[0].contact & FIZZ_C_WALL) && n < 2000) { xPrev = t.fizz[0].x; step(back); n++; if (!(t.body[0].contact & FIZZ_C_WALL) && t.body[0].y != y0) fail("y moved in free flight", t.body[0].y, y0); }
+    if (n * dt < tw - 1e-4 || (n - 1) * dt > tw + 1e-4) fail("time to the wall (s)", n * dt, tw);
+    if (xPrev > want + 1e-3 || xPrev + U * cos(th) * dt < want - 1e-3) fail("flight distance (px)", xPrev, want);
+    flightErr = fabs(xPrev + 0.5 * U * cos(th) * dt - want);
+  }
+  {   // on the wall: convergence to the ridge (0, a), tau_w
+    const double psi0 = 60 * M_PI / 180, tau = a / (FIZZ_KW * U * sin(th));
+    put(0, a * (float)sin(psi0), a * (float)cos(psi0), FIZZ_C_WALL);
+    double prev = psi0; float x0 = 0;
+    for (int n = 1; n * dt <= 2 * tau; n++) {
+      x0 = t.fizz[0].x; step(back);
+      const double psi = atan2(t.body[0].y, t.body[0].z);
+      if (psi > prev + 1e-6 || psi < -1e-6) fail("psi not monotone toward the ridge", psi, prev);
+      prev = psi;
+      if (fabs(t.fizz[0].x - x0 - FIZZ_KW * U * cos(th) * dt) > 1e-3) fail("x speed on the wall", t.fizz[0].x - x0, FIZZ_KW * U * cos(th) * dt);
+      if (!(t.body[0].contact & FIZZ_C_WALL)) fail("left the wall", 0, 1);
+      const double want = 2 * atan(tan(psi0 / 2) * exp(-n * dt / tau));
+      tauErr = fmax(tauErr, fabs(tan(psi / 2) / tan(want / 2) - 1));
+    }
+    if (tauErr > 0.03) fail("tan(psi/2) against the exponential (rel)", tauErr, 0);
+  }
+  for (int dn = 0; dn < 2; dn++) {   // face up / down: no axial motion, to the front / back high point
+    const Pose q{0, 0, dn ? -1.0f : 1.0f};
+    put(100, 0.5f * a, -0.3f * a, 0);
+    for (int n = 0; n < 500; n++) { step(q); if (t.fizz[0].x != 100) { fail("face up / down: axial motion", t.fizz[0].x, 100); break; } }
+    if (fabsf(t.body[0].y) > 0.02f * a || fabsf(t.body[0].z - (dn ? -a : a)) > 0.02f * a) fail(dn ? "face down: not on the back high point" : "face up: not on the front high point", t.body[0].z, dn ? -a : a);
+  }
+  {   // roll: the ridge swings, the rope follows without a jump
+    put(0, 0, a, FIZZ_C_WALL);
+    float yPrev = 0, zPrev = a; const int N = 300;
+    for (int n = 0; n < N; n++) {
+      const float ac = 0.3f * sinf((float)M_PI * n / N);   // roll 0 -> 0.3 -> 0
+      const Pose q{(float)cos(th), -ac, (float)sin(th)};
+      const float m = sqrtf(q.x * q.x + q.y * q.y + q.z * q.z);
+      step(Pose{q.x / m, q.y / m, q.z / m});
+      const double d = hypot(t.body[0].y - yPrev, t.body[0].z - zPrev); rollMax = fmax(rollMax, d);
+      if (d > FIZZ_KW * U * dt * 1.01 + 1e-4) fail("roll: a jump (px a step)", d, FIZZ_KW * U * dt);
+      yPrev = t.body[0].y; zPrev = t.body[0].z;
+    }
+    rollEnd = t.body[0].y;
+  }
+  {   // release: on the front glass face up, then face down
+    put(100, 0, a, FIZZ_C_WALL);
+    step(Pose{0, 0, -1});
+    if (t.body[0].contact & FIZZ_C_WALL) fail("face down: still on the front glass", t.body[0].contact, 0);
+    if (fabsf(t.body[0].z - (a - U * dt)) > 1e-3f) fail("face down: released z", t.body[0].z, a - U * dt);
+  }
+  {   // a closed end: stops with the whole disc inside, rests on the glass, no foam
+    for (int r = 0; r < t.H; r++) t.fizzSurf[r] = 150;
+    put(100, 0, 0, 0);
+    for (int n = 0; n < 300; n++) step(Pose{1, 0, 0});
+    const float lim = discFit(t.fizzSurf, t.H, t.fizz[0].y, r0, 1);
+    if (fabsf(t.fizz[0].x - lim) > 1e-4f || !(t.body[0].contact & FIZZ_C_END) || t.fizz[0].life != 0) fail("closed end", t.fizz[0].x, lim);
+  }
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST motion flight |dx - (z_w - z0) cot| %.3g px, ridge tan(psi/2) rel err %.3g, roll max %.3g px/step (k_w U dt %.3g), back from the roll at y %.3g; failures %ld\n",
+         flightErr, tauErr, rollMax, FIZZ_KW * U * dt, rollEnd, bad);
+  return bad ? 11 : 0;
+}
+static int selftests() {
+  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest();
+  return e ? e : e2 ? e2 : e3;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
@@ -218,6 +398,13 @@ int main() {
     const FaceLayout lay = faceLayout(p[0], p[1]);
 #endif
     for (int i = 0; i < TUBE_COUNT; i++) renderTube(i, st[i], p[i], gen, strip[i], nullptr, lay.top(i));
+    for (int i = 0; i < TUBE_COUNT; i++) {   // the frame's fizz inputs (stderr F lines): --free hands them to the sim kernel
+      const Tube &t = tubeAt(i);
+      fprintf(stderr, "F %d %d %.9g %d %.9g %d", step, i, t.fizzLen, t.fizzExposed, t.fizzShift, t.H);
+      const float *const rows[4] = {t.fizzSurf, t.fizzSurfL, t.strokeR, t.strokeL};
+      for (const float *v : rows) for (int r = 0; r < t.H; r++) fprintf(stderr, " %.9g", v[r]);
+      fprintf(stderr, "\n");
+    }
   };
   char line[512]; bool head = true;
   while (fgets(line, sizeof line, stdin)) {
@@ -229,7 +416,7 @@ int main() {
       continue;
     }
     char a[64], b[64]; int n, i; float dt, along, across, normal, agit; unsigned long seed;
-    if (!strcmp(line, "selftest")) return birthSelftest();
+    if (!strcmp(line, "selftest")) return selftests();
     if (sscanf(line, "seed %lu", &seed) == 1) fizzTestRng() = seed ? (uint32_t)seed : 1u;
     else if (sscanf(line, "every %d", &every) == 1) {}
     else if (sscanf(line, "tube %d %63s %63s", &i, a, b) == 3) { if (i >= TUBE_COUNT || !setState(st[i], a, atof(b))) return 5; }
@@ -237,9 +424,10 @@ int main() {
     else if (sscanf(line, "run %d %f %f %f %f %f", &n, &dt, &along, &across, &normal, &agit) == 6) {
       if (!started || changed) frame();   // the first frame, and one after a params change: the new height's surfaces
       started = true; changed = false;
+      Pose pose = POSE_DEFAULT; updatePose(pose, along, across, normal);   // the run's gain-free pose (ImuFilter::pose's maths)
       for (int k = 0; k < n; k++) {
         for (int j = 0; j < TUBE_COUNT; j++) st[j].agitation = agit;
-        for (int j = 0; j < TUBE_COUNT; j++) stepFizzTube(j, p[j], dt, along, across, agit);
+        for (int j = 0; j < TUBE_COUNT; j++) stepFizzTube(j, p[j], dt, along, across, agit, pose);
         step++;
         if (step % every == 0) frame();
         for (int j = 0; j < TUBE_COUNT; j++) emit(step, j);   // after the step and its frame
@@ -248,6 +436,7 @@ int main() {
     else return 7;
   }
   if (heapCalls() != bootAllocs) { fprintf(stderr, "%lu allocations after boot\n", heapCalls() - bootAllocs); return 8; }
+  if (parkN) fprintf(stderr, "PARKS %ld worst %.6g px short of the zone\n", parkN, parkWorst);
   return 0;
 }
 """
@@ -296,6 +485,12 @@ SIM_JOBS = {
                                    _run(60, UP, vertical=True), _run(60, _tilt(20, -0.4), tubeHeight=54)]),
     'landscape': ({'vertical': False, 'fizzSource': 0}, [_run(60, (0.0, 0.0, 1.0)), _run(150, (-0.3, 0.6, 0.74))]),
     'spring dry, slug away': ({}, [_run(150, UP)]),
+    # vertical only (the mode change above runs the legacy landscape kernel, doubles vs floats: diagnostic under --free)
+    'height changes': ({}, [_run(80, UP), _run(60, UP, tubeHeight=40), _run(60, _tilt(15), tubeHeight=54), _run(60, _tilt(15), glassWall=8),
+                            _run(60, (0.0, 0.0, 1.0), fizzSize=9), _run(60, UP, fizzSizeVar=1)]),
+    'back 15, 20 s': ({}, [_run(100, UP), _run(1000, _tilt(15))]),   # the stand: the rope forms
+    'board look 60 s': ({}, [_run(3000, UP)]),   # the diagnosed pulse replay (docs/tilted-fizz-plan.md): parks, foam count
+    'board look 60 s, across 0.05': ({}, [_run(3000, (-math.sqrt(1 - 0.05 ** 2), 0.05, 0.0))]),
 }
 JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
 
@@ -312,16 +507,17 @@ def _contained(lines, err):   # no across rise: every live body stays in the bor
 
 # name: (what, check over the firmware's state lines (split) -> None or why not)
 SIM_EXPECT = {'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
-              'upright': ('containment', _contained), 'back 15': ('containment', _contained)}
+              'upright': ('containment', _contained), 'back 15': ('containment', _contained), 'height changes': ('containment', _contained),
+              'back 15, 20 s': ('containment', _contained), 'shaking': ('containment', _contained)}
 SIM_SEED = 0x2545F491
 # Sim vs firmware in lockstep (each step from the firmware's state): per field, the largest difference accepted. Slot and
 # draw counts, which slots are foam and on which side, are exact. Free bubbles: one step's float rounding. Parked foam
 # (x, y): FOAM_TOL px, because the legacy packing tests contacts its last sweep left at exactly touching distance
 # (settleFoam), so doubles and floats take or skip a push or a slide (<= FOAM_SLIDE * speed * dt) at random there.
-SIM_TOL = {'x': 1e-3, 'y': 1e-3, 'v': 1e-6, 'life': 1e-4, 'z': 1e-6, 'by': 1e-3, 'bz': 1e-3, 'springClock': 1e-4, 'springScatter': 1e-4}
+SIM_TOL = {'x': 1e-3, 'y': 1e-3, 'v': 1e-6, 'life': 1e-4, 'z': 1e-6, 'by': 1e-3, 'bz': 1e-3, 'c': 0, 'springClock': 1e-4, 'springScatter': 1e-4}
 FOAM_TOL = 2.0
 FOAM_FIELDS = ('x', 'y', 'by')
-SLOT_FIELDS = ('x', 'y', 'v', 'life', 'z', 'by', 'bz')   # by, bz: the vertical watch's physical y, z (FizzBody)
+SLOT_FIELDS = ('x', 'y', 'v', 'life', 'z', 'by', 'bz', 'c')   # by, bz, c: the vertical watch's physical y, z and contact (FizzBody: exact)
 HEAD = 9   # S step tube fizzN draws springClock springScatter bodyH blocked
 
 def sim_main(a):
@@ -374,8 +570,10 @@ def sim_main(a):
             if nat[0].stdout != nat[1].stdout: return name, 'native: two runs of the job differ (not deterministic)', None
             jobf, natf = tmp / f'job{k}.json', tmp / f'native{k}.txt'
             natf.write_bytes(nat[0].stdout); natives.setdefault('job', (name, nat[0].stdout.decode()))
+            inf = tmp / f'inputs{k}.txt'   # --free: the frames' fizz inputs (the native F lines): common to both kernels
+            inf.write_text(''.join(l + '\n' for l in nat[0].stderr.decode().splitlines() if l.startswith('F ')))
             json.dump({'params': design, **tubes,
-                       'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({} if a.free else {'lockstep': str(natf)})}}, open(jobf, 'w'))
+                       'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({'inputs': str(inf)} if a.free else {'lockstep': str(natf)})}}, open(jobf, 'w'))
             r = subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jobf), '-'], env=env, capture_output=True)
             if r.returncode: return name, f'sim exited {r.returncode}: {r.stderr.decode()[-500:]}', None
             if a.keep: (a.keep / f'{name}.native.txt').write_bytes(nat[0].stdout); (a.keep / f'{name}.sim.txt').write_bytes(r.stdout)

@@ -333,14 +333,14 @@ static uint32_t workerUs = 0, workerPushUs = 0;   // last hours render / push ti
 #define FIZZ_SPLIT 0
 #endif
 // normal = the filtered signed normal (TiltInput.normal, + face up), pose = the physical buoyancy direction (physics.h
-// Pose, no inputGain): recorded for the vertical fizz kernel, read by nothing yet.
+// Pose, no inputGain): recorded per step, the pose for the vertical fizz kernel (stepFizzTube).
 struct FizzStepIn { float along, across, agitation, normal; Pose pose; };
 static FizzStepIn fizzIn[5]; static int fizzInN = 0;   // this frame's steps (<= 5)
 static uint32_t workerFizzUs[5];                        // the hours tube's fizz steps, each, written by the worker
 static void runFizzSteps(int idx, uint32_t *us) {
   for (int s = 0; s < fizzInN; s++) {
     const uint32_t t0 = micros();
-    stepFizzTube(idx, effOf(idx), PHYS_DT, fizzIn[s].along, fizzIn[s].across, fizzIn[s].agitation);
+    stepFizzTube(idx, effOf(idx), PHYS_DT, fizzIn[s].along, fizzIn[s].across, fizzIn[s].agitation, fizzIn[s].pose);
     us[s] = micros() - t0;
   }
 }
@@ -384,9 +384,9 @@ static void physStep(int k) {
 #endif
   const uint32_t p1 = micros();
   if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation, in.normal, pose};
-  else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation);   // AB_COMPARE only: two tubes
+  else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation, pose);   // AB_COMPARE only: two tubes
 #ifdef AB_COMPARE
-  abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
+  abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, pose.x, pose.y, pose.z, tubeM.fillTarget, params, paramsGen, PHYS_DT);
 #endif
   const uint32_t fz = micros() - p1;
   tubeStepUs += p1 - p0; fizzStepUs += fz; physSteps++;
@@ -649,6 +649,10 @@ static void report_fps() {
              fps, renderMs, waitMs, hoursMs, minutesMs, mode, params.liquidTransparency,
              (unsigned)frameP95Ms, stepsPerFrame, tubeStepMs, fizzStepMs, fizzStepMaxMs, pushMs, restMs, fizzH, foamH, slotsH, fizzM, foamM, slotsM, secs, scanPct,
              (unsigned)refill.late, (unsigned)refill.restarts, (unsigned)refill.worstPct);
+  {   // vertical fizz births postponed since boot (no room in the bore or along the column; bodies a geometry change retired)
+    int nb = 0; for (int i = 0; i < TUBE_COUNT; i++) nb += fizzBlocked(i);
+    if (nb) { out.printf("  births postponed"); for (int i = 0; i < TUBE_COUNT; i++) out.printf(" %d", fizzBlocked(i)); }
+  }
 #ifdef DIGIT_VERIFY
   { uint32_t px = 0, bad = 0; render_digit_verify(px, bad); out.printf("  digit-verify bad %u of %u px", (unsigned)bad, (unsigned)px); }
 #endif
@@ -783,6 +787,13 @@ static void liquid_tick() {
   {   // fizz asked past its fixed pool (params pushed past the sliders): say so once per new peak
     static int reported = 0; const int over = fizzOverflow();
     if (over > reported) { reported = over; out.printf("error fizz pool: %d bubbles requested, fixed pool holds fewer (capped)\n", over); }
+  }
+  {   // vertical fizz births postponed (no room in the bore or along the column): say so, at most every 10 s while it grows
+    static int reported = 0; static uint32_t at = 0; int nb = 0;
+    for (int i = 0; i < TUBE_COUNT; i++) nb += fizzBlocked(i);
+    if (nb > reported && (reported == 0 || millis() - at >= 10000)) {
+      reported = nb; at = millis(); out.printf("error fizz births: %d postponed since boot (no room: a bubble larger than the bore, or no span of the column)\n", nb);
+    }
   }
   {   // fizz size params past the sliders: the masks do not fit their pool, bubbles draw analytically (slower)
     static int reported = 0; const int over = fizzMaskOverflow();

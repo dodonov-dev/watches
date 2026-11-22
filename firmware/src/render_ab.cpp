@@ -40,12 +40,12 @@ bool init() {
 int width() { return PANEL_W; }
 int height() { return PANEL_H; }
 void layout(const Params &design, uint32_t gen, int &H, int &y) { scaled(design, gen); const ab::TubeLayout l = ab::tubeLayout(eff); H = l.H; y = l.yM; }
-void step(float along, float across, float gyroAlong, float gyroAcross, float fillTarget, const Params &design, uint32_t gen, float dt) {
+void step(float along, float across, float gyroAlong, float gyroAcross, float poseX, float poseY, float poseZ, float fillTarget, const Params &design, uint32_t gen, float dt) {
   scaled(design, gen);
   const ab::TiltInput t = {along, across, gyroAlong, gyroAcross};
   tube.fillTarget = fillTarget;   // the native minutes tube's shown fill (a share, the same on every canvas)
   ab::stepTube(tube, t, eff, dt, TUBE_PX_SCALE(1));
-  ab::stepFizz(eff, eff, dt, along, across, tube.agitation);
+  ab::stepFizz(eff, eff, dt, along, across, tube.agitation, ab::Pose{poseX, poseY, poseZ});
 }
 void render(uint16_t *strip, const Params &design, uint32_t gen, const int16_t **lensRows) {
   scaled(design, gen);

@@ -63,9 +63,9 @@ template <class Emit> void seqRun(TubeState *const tube[TUBE_COUNT], const Param
     const TiltInput in = filter.step(seqTilt(step), *ps[0]);
     for (int i = 0; i < TUBE_COUNT; i++) stepTube(*tube[i], in, *ps[i], PHYS_DT, TUBE_PX_SCALE(i));
 #if TUBE_COUNT == 3
-    stepFizz(*ps[0], *ps[1], *ps[2], PHYS_DT, in.along, in.across, tube[0]->agitation);
+    stepFizz(*ps[0], *ps[1], *ps[2], PHYS_DT, in.along, in.across, tube[0]->agitation, filter.pose);
 #else
-    stepFizz(*ps[0], *ps[1], PHYS_DT, in.along, in.across, tube[0]->agitation);
+    stepFizz(*ps[0], *ps[1], PHYS_DT, in.along, in.across, tube[0]->agitation, filter.pose);
 #endif
     if ((step + 1) % SEQ_FRAME_EVERY) continue;
     for (int i = 0; i < TUBE_COUNT; i++) {
