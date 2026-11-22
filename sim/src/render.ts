@@ -1617,23 +1617,25 @@ function foamContactV32(i: number, p: Params, cand: Uint8Array, k: number, r: nu
 }
 const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL), foamYLoV = new Float32Array(FIZZ_POOL), foamYHiV = new Float32Array(FIZZ_POOL);
 /** settleFoam of the vertical watch in float32 (firmware settleFoam with `band`): each parked bubble glides to its own
- *  endpoint target (the whole-disc support of L + P, k from its body at the step's start), its rows those its disc takes
- *  at its frozen depth, pairs at depths further apart than their contact distance do not touch, a pushed pair parts to
- *  m + FOAM_GAP. Visits pairs in the firmware's sweep order (it uses a grid to skip the far ones: the same answers). */
+ *  endpoint target (the whole-disc support of L + P, k from its body at the step's start, on its display row); the
+ *  packing works in physical coordinates (point 6): u and the body's transverse y, kept current at every placement inside
+ *  the disc its frozen depth allows (the display row derived, fizzRowOf32: the row bias moves nothing). Two bubbles
+ *  touch at a 3D distance < m: at fixed depth a pair needs the in-plane separation √(m² − dz²) (none past |dz| ≥ m),
+ *  a pushed pair parts to √((m + FOAM_GAP)² − dz²). Visits pairs in the firmware's sweep order (it uses a grid to skip
+ *  the far ones: the same answers). */
 function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float32Array, band: Float32Array, side: number, dt: number): void {
-  const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), yc = F((H - 1) * 0.5), bias0 = fizzBias032(i);
+  const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), bias0 = fizzBias032(i);
   const front = (s: number, y: number, r: number): number => fizzEndSupport32(surf, band, H, side, y, r, foamKV[s])[1];
-  const place = (s: number, u: number, y: number): void => {
-    const f = arr[s], r = fizzR32(p, f.v);
-    f.y = clamp32(y, foamYLoV[s], foamYHiV[s]);
+  const place = (s: number, u: number, y: number): void => {   // y: the body's physical y
+    const f = arr[s], r = fizzR32(p, f.v), yp = clamp32(y, foamYLoV[s], foamYHiV[s]);
+    bd[2 * s] = yp; f.y = fizzRowOf32(H, yp, F(R - r), fizzRowBias32(s, f.v, bias0));
     f.x = F(side * Math.min(u, front(s, f.y, r)));
   };
   let n = 0;
   for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0) {
     foamOrderV[n++] = s;
     const f = arr[s], r = fizzR32(p, f.v), ar = F(R - r), z = bd[2 * s + 1], ya = F(Math.sqrt(Math.max(0, F(F(ar * ar) - F(z * z)))));
-    const bias = fizzRowBias32(s, f.v, bias0);
-    foamYLoV[s] = Math.max(F(yc - ar), F(F(yc - ya) + bias)); foamYHiV[s] = Math.min(F(yc + ar), F(F(yc + ya) + bias));
+    foamYLoV[s] = -ya; foamYHiV[s] = ya;
     foamKV[s] = fizzEndK32(bd[2 * s], z, ar, r, rowLerp32(band, H, f.y));
   }
   for (let a = 0; a < n; a++) {   // glide and slide, in slot order
@@ -1644,14 +1646,13 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
     u = u < tu ? F(u + Math.min(F(F(tu - u) * follow), F(speed * dt))) : tu;
     const slope = F(F(side * F(surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0])) / 2);
     let slide = F(F(F(F(FOAM_SLIDE) * speed) * clamp32(F(2 * slope), -1, 1)) * dt);
-    if (slide !== 0) for (let b = 0; b < n; b++) {
-      const j = foamOrderV[b], g = arr[j];
-      if (j === s || F(slide * F(g.y - f.y)) <= 0) continue;
-      const m = F(F(r + fizzR32(p, g.v)) + 0.5), du = F(F(side * g.x) - u), dy = F(g.y - f.y);
-      if (Math.abs(F(bd[2 * j + 1] - bd[2 * s + 1])) >= m) continue;
-      if (F(F(du * du) + F(dy * dy)) < F(m * m)) { slide = 0; break; }
+    if (slide !== 0) for (let b = 0; b < n; b++) {   // in 3D, physical y
+      const j = foamOrderV[b], g = arr[j], dy = F(bd[2 * j] - bd[2 * s]);
+      if (j === s || F(slide * dy) <= 0) continue;
+      const m = F(F(r + fizzR32(p, g.v)) + 0.5), du = F(F(side * g.x) - u), dz = F(bd[2 * j + 1] - bd[2 * s + 1]);
+      if (F(F(du * du) + F(dy * dy)) < F(F(m * m) - F(dz * dz))) { slide = 0; break; }
     }
-    place(s, u, F(f.y + slide));
+    place(s, u, F(bd[2 * s] + slide));
   }
   for (let it = 0; it < FOAM_RELAX; it++) {   // pack, front to back (the sweep order: a stable sort of slot order by u)
     for (let a = 1; a < n; a++) {
@@ -1664,17 +1665,19 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
       for (let b = a + 1; b < n; b++) {
         const gs = foamOrderV[b], g = arr[gs];
         const m = F(F(rf + fizzR32(p, g.v)) + 0.5);
-        let du = F(side * F(g.x - f.x)), dy = F(g.y - f.y);
-        if (Math.abs(du) >= m || Math.abs(dy) >= m || F(F(du * du) + F(dy * dy)) >= F(m * m)) continue;
-        if (Math.abs(F(bd[2 * gs + 1] - bd[2 * fi + 1])) >= m) continue;
-        const mg = F(m + FOAM_GAP), d = F(Math.sqrt(F(F(du * du) + F(dy * dy)))), kk = F(F(mg - d) / 2);
+        let du = F(side * F(g.x - f.x)), dy = F(bd[2 * gs] - bd[2 * fi]);
+        const dz = F(bd[2 * gs + 1] - bd[2 * fi + 1]);
+        if (!(Math.abs(dz) < m)) continue;
+        const g1 = F(m + FOAM_GAP), m2 = F(F(m * m) - F(dz * dz)), mg = F(Math.sqrt(F(F(g1 * g1) - F(dz * dz))));
+        if (Math.abs(du) >= m || Math.abs(dy) >= m || F(F(du * du) + F(dy * dy)) >= m2) continue;
+        const d = F(Math.sqrt(F(F(du * du) + F(dy * dy)))), kk = F(F(mg - d) / 2);
         const nu = d > F(1e-4) ? F(du / d) : -1, ny = d > F(1e-4) ? F(dy / d) : 0;
-        place(fi, F(F(side * f.x) - F(kk * nu)), F(f.y - F(kk * ny)));
-        place(gs, F(F(side * g.x) + F(kk * nu)), F(g.y + F(kk * ny)));
-        du = F(side * F(g.x - f.x)); dy = F(g.y - f.y);
-        if (F(F(du * du) + F(dy * dy)) < F(m * m)) {
+        place(fi, F(F(side * f.x) - F(kk * nu)), F(bd[2 * fi] - F(kk * ny)));
+        place(gs, F(F(side * g.x) + F(kk * nu)), F(bd[2 * gs] + F(kk * ny)));
+        du = F(side * F(g.x - f.x)); dy = F(bd[2 * gs] - bd[2 * fi]);
+        if (F(F(du * du) + F(dy * dy)) < m2) {
           const gFront = du > 0, rs = gFront ? fi : gs, fr = gFront ? g : f;
-          place(rs, F(F(side * fr.x) - F(Math.sqrt(Math.max(0, F(F(mg * mg) - F(dy * dy)))))), arr[rs].y);
+          place(rs, F(F(side * fr.x) - F(Math.sqrt(Math.max(0, F(F(mg * mg) - F(dy * dy)))))), bd[2 * rs]);
         }
       }
     }
@@ -1796,14 +1799,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     }
     while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
   }
-  if (park) {
-    settleFoamV(i, p, H, U0, S, B, park, dt);
-    for (let k = 0; k < arr.length; k++) {   // the foam packed on display rows: its body's y back from them, inside the disc at its depth
-      const f = arr[k]; if (f.life === 0 || f.v === 0) continue;
-      const a = F(R - fizzR32(p, f.v)), z = body[2 * k + 1], ya = F(Math.sqrt(Math.max(0, F(F(a * a) - F(z * z)))));
-      body[2 * k] = clamp32(F(F(f.y - yc) - fizzRowBias32(k, f.v, bias0)), -ya, ya);
-    }
-  }
+  if (park) settleFoamV(i, p, H, U0, S, B, park, dt);   // packs the foam in physical (u, y), its display rows derived
   noteBlocked();
 }
 /** Furthest centre (in u = side · x) a bubble of radius r at row y can take with its whole disc inside the

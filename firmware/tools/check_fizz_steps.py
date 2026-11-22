@@ -483,6 +483,46 @@ static int supportSelftest() {
          n, moved, slack, bad);
   return bad ? 14 : 0;
 }
+// `selftest`, packing in physical coordinates (point 6, review 2): settleFoam at dt 0 (no glide, no slide: the packing
+// alone) on pairs parked far from the surface. The review's repro (contact 5.5, axial 5, transverse 0, depth 3 apart: a
+// 3D distance of 5.83, no overlap) does not move; at depths 3 apart and 4 px along a pair parts to the in-plane
+// sqrt((m + FOAM_GAP)^2 - dz^2), 3D distance m + FOAM_GAP; an axial pair at one physical y in two slots (two row biases)
+// parts along the tube only, its bodies' y unchanged; every foam bubble's display row is fizzRowOf of its body.
+static int packSelftest() {
+  Tube &t = tubeAt(0); long bad = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest pack: %s: got %.9g want %.9g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), r = fizzR(p, 1), m = 2 * r + 0.5f, a = R - r, bias0 = fizzBias0(t);
+  for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = 5000; t.fizzSurfL[iy] = -5000; t.strokeR[iy] = t.strokeL[iy] = 0; }
+  t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+  auto pair = [&](float u0, float u1, float y0, float y1, float z0, float z1) {
+    t.fizzN = 2; t.foam->nOrder = 0;
+    const float y[2] = {y0, y1}, z[2] = {z0, z1}, u[2] = {u0, u1};
+    for (int k = 0; k < 2; k++) { t.body[k] = {y[k], z[k], 0, {0, 0, 0}}; t.fizz[k] = {u[k], fizzRowOf(H, y[k], a, fizzRowBias(k, 1, bias0)), 1, 3, 0.5f}; }
+    settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, 0, false, 0, t.strokeR);
+    for (int k = 0; k < 2; k++) if (t.fizz[k].y != fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0))) fail("display row not derived from the body", t.fizz[k].y, fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0)));
+  };
+  if (m != 5.5f) fail("contact distance", m, 5.5);
+  pair(100, 95, 0, 0, 1.5f, -1.5f);
+  if (t.fizz[0].x != 100 || t.fizz[1].x != 95 || t.body[0].y != 0 || t.body[1].y != 0) fail("repro: moved (x0, x1)", t.fizz[0].x, t.fizz[1].x);
+  pair(100, 96, 0, 0, 1.5f, -1.5f);   // 5 px apart in 3D: parts to m + FOAM_GAP
+  {
+    const double du = t.fizz[0].x - t.fizz[1].x, dy = t.body[0].y - t.body[1].y, dz = 3, d3 = sqrt(du * du + dy * dy + dz * dz);
+    if (fabs(d3 - (m + FOAM_GAP)) > 1e-4) fail("depth 3 apart: 3D distance after the push", d3, m + FOAM_GAP);
+    if (fabs(t.fizz[0].x + t.fizz[1].x - 196) > 1e-4) fail("depth 3 apart: not symmetric", t.fizz[0].x + t.fizz[1].x, 196);
+  }
+  const float yb = 0.25f * a;
+  pair(100, 96, yb, yb, 0, 0);   // one physical y, two slots (row biases differ): along the tube only
+  {
+    const float b0 = fizzRowBias(0, 1, bias0), b1 = fizzRowBias(1, 1, bias0);
+    if (b0 == b1) fail("the two slots' row biases are equal (no test)", b0, b1);
+    if (t.body[0].y != yb || t.body[1].y != yb) fail("axial pair: physical y moved", t.body[1].y, yb);
+    if (fabs(t.fizz[0].x - t.fizz[1].x - (m + FOAM_GAP)) > 1e-4) fail("axial pair: separation", t.fizz[0].x - t.fizz[1].x, m + FOAM_GAP);
+  }
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST pack repro (m 5.5, du 5, dz 3) unmoved; depth-3 pair parted to 3D m + gap; axial pair across two row biases: y kept, du m + gap; failures %ld\n", bad);
+  return bad ? 15 : 0;
+}
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
 // bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
 // life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
@@ -513,8 +553,8 @@ static int chainSelftest() {
   return bad ? 12 : 0;
 }
 static int selftests() {
-  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6;
+  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest(), e7 = packSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;

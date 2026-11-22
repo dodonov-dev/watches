@@ -3676,8 +3676,9 @@ static inline void foamAdd(FoamWork &w, int s, float u, float y) {   // into the
   w.u0[s] = u; w.y0[s] = y; const int c = foamCy(w, y) * w.nu + foamCu(w, u); w.next[s] = w.head[c]; w.head[c] = (int16_t)s;
 }
 // A grid over list[0, nList) at its current (u, y) (R set), or none for a few bubbles. Cells: the largest R + 0.5 high,
-// so a contact reach spans about five; as wide, or wider when the foam is long.
-static void foamGridBuild(FoamWork &w, const Fizz *fz, int H, int side, bool moving) {
+// so a contact reach spans about five; as wide, or wider when the foam is long. bd (vertical settleFoam): y is the
+// physical row yc + body y (no display bias), else the Fizz row.
+static void foamGridBuild(FoamWork &w, const Fizz *fz, int H, int side, bool moving, const FizzBody *bd = nullptr, float yc = 0) {
   w.side = side; w.drift = 0; w.rMax = 0; w.uMin = INFINITY; w.uMax = -INFINITY; w.moved = false;
   for (int i = 0; i < w.nList; i++) { const int s = w.list[i]; const float u = side * fz[s].x; w.rMax = fmx(w.rMax, w.R[s]); w.uMin = fmn(w.uMin, u); w.uMax = fmx(w.uMax, u); }
   if (w.nList <= FOAM_BRUTE) { w.nu = 0; return; }
@@ -3689,7 +3690,7 @@ static void foamGridBuild(FoamWork &w, const Fizz *fz, int H, int side, bool mov
   if (nu * w.ny > FOAM_CELLS) { nu = FOAM_CELLS / w.ny; w.invCu = (nu - 1) / (span + 1); } else w.invCu = w.invCy;
   w.nu = nu; w.uLo = w.uMin;
   for (int c = 0; c < nu * w.ny; c++) w.head[c] = -1;
-  for (int i = w.nList - 1; i >= 0; i--) { const int s = w.list[i]; foamAdd(w, s, side * fz[s].x, fz[s].y); }
+  for (int i = w.nList - 1; i >= 0; i--) { const int s = w.list[i]; foamAdd(w, s, side * fz[s].x, bd ? yc + bd[s].y : fz[s].y); }
 }
 // Bubble s moved to (u, y) (settleFoam) past the drift bound from where the grid holds it: to its cell there.
 static void __attribute__((noinline)) foamMove(FoamWork &w, int s, float u, float y) {
@@ -3963,39 +3964,47 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
 // Vertical watch (band: the side's stroke widths, strokeR / strokeL): a bubble's front is its own endpoint target (the
-// whole-disc support of L + P, fizzEndSupport, k from its body at the step's start), its rows those its disc takes at its
-// frozen depth inside the bore's eroded disc (FoamWork yLo / yHi), pairs at depths further apart than their contact
-// distance do not touch, and a pushed pair parts to m + FOAM_GAP. See sim settleFoamV.
+// whole-disc support of L + P, fizzEndSupport, k from its body at the step's start, on its display row); the packing
+// works in physical coordinates (docs/tilted-fizz-plan.md point 6): u and the body's transverse y (kept current at every
+// placement, inside the disc its frozen depth z allows, FoamWork yLo / yHi; the display row follows, fizzRowOf), so the
+// cosmetic row bias moves nothing. Two bubbles touch at a 3D distance < m; with depth fixed a pair needs the in-plane
+// separation sqrt(m^2 - dz^2) (none past |dz| >= m), and a pushed pair parts to the in-plane sqrt((m + FOAM_GAP)^2 -
+// dz^2). See sim settleFoamV.
 FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy,
                                                            const float *band = nullptr) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
-  FoamWork &w = *t.foam; Fizz *const fz = t.fizz; const FizzBody *const bd = band ? t.body : nullptr;
+  FoamWork &w = *t.foam; Fizz *const fz = t.fizz; FizzBody *const bd = band ? t.body : nullptr;
+  const float yc = fizzYc(H), R = band ? boreR(p) : 0, bias0 = band ? fizzBias0(t) : 0;
+  // a slot's transverse coordinate in the packing (vertical: the body's physical y) and in the grid (its physical row)
+  auto py = [&](int s) { return bd ? bd[s].y : fz[s].y; };
+  auto gy = [&](int s) { return bd ? yc + bd[s].y : fz[s].y; };
   auto front = [&](int s, float y, float r) {
     if (band) { float uc, ut; fizzEndSupport(surf, band, H, side, y, r, w.kE[s], uc, ut); return ut; }
     return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side);
   };
-  auto place = [&](int s, float u, float y) {   // in the bore and not past the front of its row
+  auto place = [&](int s, float u, float y) {   // in the bore and not past the front of its row (y: py's coordinate)
     Fizz &f = fz[s]; const float r = fizzR(p, f.v);
-    if (band) f.y = clampf(y, w.yLo[s], w.yHi[s]);
-    else { const float lo = wall + r, hi = H - lo; f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi); }
+    float yq;   // its grid row
+    if (band) {   // the body's y inside the disc at its depth, the display row derived from it
+      const float yp = clampf(y, w.yLo[s], w.yHi[s]);
+      bd[s].y = yp; f.y = fizzRowOf(H, yp, R - r, fizzRowBias(s, f.v, bias0)); yq = yc + yp;
+    } else { const float lo = wall + r, hi = H - lo; f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi); yq = f.y; }
     const float un = fmn(u, front(s, f.y, r));   // its new u (side * x: side is +-1)
     f.x = side * un;
-    const float d = fmx(fabsf(un - w.u0[s]), fabsf(f.y - w.y0[s])); if (d > w.drift && w.nu) foamMove(w, s, un, f.y);
+    const float d = fmx(fabsf(un - w.u0[s]), fabsf(yq - w.y0[s])); if (d > w.drift && w.nu) foamMove(w, s, un, yq);
   };
   // The parked bubbles, in slot order (none parks or leaves in here): the slide pass and the packing sweep run over them.
   int n = 0;
   for (int i = 0; i < t.fizzN; i++) if (fz[i].life != 0) { w.list[n++] = (int16_t)i; w.R[i] = fizzR(p, fz[i].v); }
   w.nList = n;
-  if (band) {   // per parked bubble: k, and its rows (the row bias in, clipped to the bore as fizzRowOf)
-    const float R = boreR(p), yc = fizzYc(H), bias0 = fizzBias0(t);
+  if (band) {   // per parked bubble: k, and the physical y its disc may take at its frozen depth (inside the eroded disc)
     for (int a = 0; a < n; a++) {
       const int i = w.list[a]; const float r = w.R[i], ar = R - r, z = bd[i].z, ya = sqrtExact(fmx(0, ar * ar - z * z));
-      const float bias = fizzRowBias(i, fz[i].v, bias0);
-      w.yLo[i] = fmx(yc - ar, yc - ya + bias); w.yHi[i] = fmn(yc + ar, yc + ya + bias);
+      w.yLo[i] = -ya; w.yHi[i] = ya;
       w.kE[i] = fizzEndK(bd[i].y, z, ar, r, rowLerp(band, H, fz[i].y));
     }
   }
-  foamGridBuild(w, fz, H, side, true);
+  foamGridBuild(w, fz, H, side, true, bd, yc);
   for (int a = 0; a < n; a++) {
     const int i = w.list[a];
     Fizz &f = fz[i];
@@ -4009,21 +4018,26 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     // Touching a neighbour on the slide side: line up along the surface. Slide 0 skips every neighbour anyway.
     auto touch = [&](int j) {
       const Fizz &g = fz[j];
+      if (bd) {   // vertical: in 3D, physical y (the in-plane separation sqrt(m^2 - dz^2) at fixed depth)
+        const float dy = bd[j].y - bd[i].y;
+        if (j == i || slide * dy <= 0) return false;
+        const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dz = bd[j].z - bd[i].z;
+        return du * du + dy * dy < m * m - dz * dz;
+      }
       if (j == i || slide * (g.y - f.y) <= 0) return false;
       const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dy = g.y - f.y;
-      if (bd && fabsf(bd[j].z - bd[i].z) >= m) return false;   // vertical: at another depth
       return du * du + dy * dy < m * m;
     };
     if (slide != 0) {
       if (w.nu == 0) { for (int b = 0; b < n; b++) if (touch(w.list[b])) { slide = 0; break; } }
       else {
-        const FoamRange q = foamRange(w, u, f.y, r);
+        const FoamRange q = foamRange(w, u, gy(i), r);
         for (int cy = q.y0; cy <= q.y1 && slide != 0; cy++)
           for (int cu = q.u0; cu <= q.u1 && slide != 0; cu++)
             for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) if (touch(j)) { slide = 0; break; }
       }
     }
-    place(i, u, f.y + slide);
+    place(i, u, py(i) + slide);
   }
   // The sweep order: last step's, those still parked, then the newly parked in slot order. The first sort orders it
   // by u, front first, ties by slot: what a stable sort of slot order gives (the sim's), from a nearly sorted start.
@@ -4056,7 +4070,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         if (w.nu == 0) {
           for (int k = w0; k <= w1; k++) mark[k] = ~0u;
         } else {
-          q = foamRange(w, side * f.x, f.y, rf);
+          q = foamRange(w, side * f.x, gy(fi), rf);
           for (int cy = q.y0; cy <= q.y1; cy++)
             for (int cu = q.u0; cu <= q.u1; cu++)
               for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) { const int b = w.pos[j]; if (b > after) mark[b >> 5] |= 1u << (b & 31); }
@@ -4074,21 +4088,27 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         qb = (k << 5) + __builtin_ctz(bits);
         const int gs = order[qb]; Fizz &g = fz[gs];
         const float m = rf + fizzR(p, g.v) + 0.5f;
-        float du = side * (g.x - f.x), dy = g.y - f.y;
-        if (fabsf(du) >= m || fabsf(dy) >= m || du * du + dy * dy >= m * m) continue;
-        if (bd && fabsf(bd[gs].z - bd[fi].z) >= m) continue;   // vertical: at another depth
-        const float mg = bd ? m + FOAM_GAP : m;   // vertical: parted past the contact test's distance
+        float du = side * (g.x - f.x), dy = py(gs) - py(fi);
+        // the pair's in-plane contact distance^2 and the separation a push parts it to: m, m + FOAM_GAP (landscape: 2D);
+        // vertical, at fixed depths dz apart: m^2 - dz^2 and sqrt((m + FOAM_GAP)^2 - dz^2) (no contact past |dz| >= m)
+        float m2 = m * m, mg = m;
+        if (bd) {
+          const float dz = bd[gs].z - bd[fi].z;
+          if (!(fabsf(dz) < m)) continue;
+          const float g1 = m + FOAM_GAP; m2 = m * m - dz * dz; mg = sqrtExact(g1 * g1 - dz * dz);
+        }
+        if (fabsf(du) >= m || fabsf(dy) >= m || du * du + dy * dy >= m2) continue;
         const float d = sqrtExact(du * du + dy * dy), kk = (mg - d) / 2;
         const float nu = d > 1e-4f ? du / d : -1, ny = d > 1e-4f ? dy / d : 0;   // coincident: g (later in the sweep) steps back
-        place(fi, side * f.x - kk * nu, f.y - kk * ny);
-        place(gs, side * g.x + kk * nu, g.y + kk * ny);
-        du = side * (g.x - f.x); dy = g.y - f.y;
-        if (du * du + dy * dy < m * m) {
+        place(fi, side * f.x - kk * nu, py(fi) - kk * ny);
+        place(gs, side * g.x + kk * nu, py(gs) + kk * ny);
+        du = side * (g.x - f.x); dy = py(gs) - py(fi);
+        if (du * du + dy * dy < m2) {
           const bool gFront = du > 0; const int rs = gFront ? fi : gs; const Fizz &fr = gFront ? g : f;
-          place(rs, side * fr.x - sqrtExact(fmx(0, mg * mg - dy * dy)), fz[rs].y);
+          place(rs, side * fr.x - sqrtExact(fmx(0, mg * mg - dy * dy)), py(rs));
         }
         if (w.nu) {   // moves: a bubble that changed cells, or a's wider reach, may bring partners the gather left out
-          const FoamRange c = foamRange(w, side * f.x, f.y, rf);
+          const FoamRange c = foamRange(w, side * f.x, gy(fi), rf);
           if (w.moved || c.u0 < q.u0 || c.u1 > q.u1 || c.y0 < q.y0 || c.y1 > q.y1) { w.moved = false; gather(qb); }
         }
       }
@@ -4298,14 +4318,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
   }
   FS_ADD(FS_CYC_CADENCE, cd0);
   FZ_T0(se0);
-  if (park) {
-    settleFoam(t, p, U0, S, park, dt, false, 0, B);
-    for (int k = 0; k < t.fizzN; k++) {   // the foam packed on display rows: its body's y back from them, inside the disc at its depth
-      const Fizz &f = t.fizz[k]; if (f.life == 0 || f.v == 0) continue;
-      FizzBody &b = body[k]; const float a = R - fizzR(p, f.v), ya = sqrtExact(fmx(0, a * a - b.z * b.z));
-      b.y = clampf(f.y - yc - fizzRowBias(k, f.v, bias0), -ya, ya);
-    }
-  }
+  if (park) settleFoam(t, p, U0, S, park, dt, false, 0, B);   // packs the foam in physical (u, y), its display rows derived
   FS_ADD(FS_CYC_SETTLE, se0);
 }
 // One tube's step (idx): each tube steps only its own state, so two may step at once on two cores (main: each on the
