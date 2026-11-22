@@ -343,14 +343,26 @@ float GravityNorm::update(float n) {
   return fmaxf(0.5f, mag);
 }
 
+bool updatePose(Pose &pose, float along, float across, float normal) {
+  const float x = -along, y = -across, z = normal, m2 = x * x + y * y + z * z;
+  if (!(m2 >= POSE_MIN_G * POSE_MIN_G) || !isfinite(m2)) return false;
+  const float inv = 1 / sqrtf(m2);   // once per 50 Hz step
+  pose = {x * inv, y * inv, z * inv};
+  return true;
+}
+
 TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   const float inAlong = clampf(raw.along, -1.2f, 1.2f), inAcross = clampf(raw.across, -1.2f, 1.2f);
-  if (!init) { lpAlong = lpAlong2 = inAlong; lpAcross = lpAcross2 = inAcross; hpPrevIn = raw.gyroAcross; init = true; }
+  const float inNormal = clampf(raw.normal, -1.2f, 1.2f);
+  if (!init) { lpAlong = lpAlong2 = inAlong; lpAcross = lpAcross2 = inAcross; lpNormal = lpNormal2 = inNormal; hpPrevIn = raw.gyroAcross; init = true; }
   const float a = 1 - expf(-2 * (float)M_PI * p.accelLpHz * dt);
   lpAlong += (inAlong - lpAlong) * a;
   lpAcross += (inAcross - lpAcross) * a;
   lpAlong2 += (lpAlong - lpAlong2) * a;
   lpAcross2 += (lpAcross - lpAcross2) * a;
+  lpNormal += (inNormal - lpNormal) * a;
+  lpNormal2 += (lpNormal - lpNormal2) * a;
+  updatePose(pose, lpAlong2, lpAcross2, lpNormal2);
   float g;
   if (p.gyroHpHz <= 0) g = raw.gyroAcross;
   else {
@@ -361,5 +373,5 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   const float gl = 1 - expf(-2 * (float)M_PI * GYRO_LP_HZ * dt);
   lpGyroAcross += (clampf(dz(g, p.gyroDeadzone), -p.gyroMax, p.gyroMax) - lpGyroAcross) * gl;
   lpGyroAlong += (clampf(dz(raw.gyroAlong, p.gyroDeadzone), -p.gyroMax, p.gyroMax) - lpGyroAlong) * gl;
-  return { lpAlong2 * p.inputGain, lpAcross2 * p.inputGain, lpGyroAlong * p.inputGain, lpGyroAcross * p.inputGain };
+  return { lpAlong2 * p.inputGain, lpAcross2 * p.inputGain, lpGyroAlong * p.inputGain, lpGyroAcross * p.inputGain, lpNormal2 * p.inputGain };
 }

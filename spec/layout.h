@@ -199,3 +199,5 @@
 #define IMU_ALONG_TUBE_SIGN  -1      // tilt_along = IMU_ALONG_TUBE_SIGN * ay  → positive = right end down
 #define IMU_AXIS_ACROSS_TUBE  0
 #define IMU_ACROSS_TUBE_SIGN -1      // positive = top (far) edge up
+#define IMU_AXIS_NORMAL       2      // the out-of-plane axis (tilted-fizz signed normal; physics.h TiltInput.normal)
+#define IMU_NORMAL_SIGN       1      // normal = IMU_NORMAL_SIGN * az → positive = face up (screen up reads +az above)

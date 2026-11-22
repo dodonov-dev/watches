@@ -17,18 +17,20 @@
 #define SEQ_MINUTES_FILL (9.5f / 60)
 #define SEQ_SECONDS_FILL (30.0f / 60)
 
-// The raw tilt (g, dps) at a step.
+// The raw tilt (g, dps) at a step. Every phase is face up: normal = sqrt(1 - along^2 - across^2) (a scripted pose; the
+// frames do not read it yet).
 inline TiltInput seqTilt(int step) {
   const float t = step * PHYS_DT;
   auto swing = [&](float a, float b, float T) { return fmodf(t, T) < T / 2 ? a : b; };
+  auto up = [](float a, float c, float ga, float gc) { return TiltInput{a, c, ga, gc, sqrtf(fmaxf(0, 1 - a * a - c * c))}; };
   switch (step / SEQ_PHASE_STEPS) {
-    case 0: return {0, 0, 0, 0};                                     // face up
-    case 1: return {-1, 0, 0, 0};                                    // vertical watch upright: springs fill
-    case 2: return {swing(-1, 0.6f, 3), 0, 0, 0};                    // pitching with across ~0 (the fizz-collapse case)
-    case 3: return {-0.3f, swing(-0.7f, 0.7f, 2), 0, 0};             // across sweeps: the slug slides, residue
-    case 4: return {-0.7f, 0.7f, 0, 0};                              // held sideways
-    case 5: { const float s = sinf(t * 25.13f); return {0.5f * s, 0.2f * s, 300 * s, 200 * s}; }   // shaking: agitation
-    default: return {-0.5f, 0, 0, 0};                                // slug home
+    case 0: return up(0, 0, 0, 0);                                   // face up
+    case 1: return up(-1, 0, 0, 0);                                  // vertical watch upright: springs fill
+    case 2: return up(swing(-1, 0.6f, 3), 0, 0, 0);                  // pitching with across ~0 (the fizz-collapse case)
+    case 3: return up(-0.3f, swing(-0.7f, 0.7f, 2), 0, 0);           // across sweeps: the slug slides, residue
+    case 4: return up(-0.7f, 0.7f, 0, 0);                            // held sideways
+    case 5: { const float s = sinf(t * 25.13f); return up(0.5f * s, 0.2f * s, 300 * s, 200 * s); }   // shaking: agitation
+    default: return up(-0.5f, 0, 0, 0);                              // slug home
   }
 }
 

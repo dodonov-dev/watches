@@ -172,7 +172,7 @@ static TubeState &tubeOf(int idx) { return idx ? tubeM : tubeH; }
 #endif
 static GravityNorm gnorm;
 static ImuFilter imuFilter;
-static TiltInput rawTilt = {0, 0, 0, 0};
+static TiltInput rawTilt = {0, 0, 0, 0, 1};   // face up until the IMU or a `g` says otherwise
 static float demoSpeed = 1;          // time multiplier (d<N>); NVS key "demo", so demo mode survives resets and power loss
 // Wall clock lives in the RTC-backed system time (settimeofday): survives the USB-CDC DTR/RTS reset
 // that every host port open/close triggers. Power-on starts at 0 → last saved sim time from NVS, else 10:09:30.
@@ -332,7 +332,9 @@ static uint32_t workerUs = 0, workerPushUs = 0;   // last hours render / push ti
 #else
 #define FIZZ_SPLIT 0
 #endif
-struct FizzStepIn { float along, across, agitation; };
+// normal = the filtered signed normal (TiltInput.normal, + face up), pose = the physical buoyancy direction (physics.h
+// Pose, no inputGain): recorded for the vertical fizz kernel, read by nothing yet.
+struct FizzStepIn { float along, across, agitation, normal; Pose pose; };
 static FizzStepIn fizzIn[5]; static int fizzInN = 0;   // this frame's steps (<= 5)
 static uint32_t workerFizzUs[5];                        // the hours tube's fizz steps, each, written by the worker
 static void runFizzSteps(int idx, uint32_t *us) {
@@ -372,7 +374,8 @@ static void physStep(int k) {
   demoOffset += PHYS_DT * (demoSpeed - 1);
   if (sweepPeriod > 0) sweepPhase = fmod(sweepPhase + PHYS_DT / sweepPeriod, 1.0);
   updateTimeTargets(PHYS_DT);
-  TiltInput in = have_imu ? imuFilter.step(rawTilt, effH) : TiltInput{0, 0, 0, 0};   // no px params
+  TiltInput in = have_imu ? imuFilter.step(rawTilt, effH) : TiltInput{0, 0, 0, 0, 1};   // no px params; no IMU: flat, face up
+  const Pose pose = have_imu ? imuFilter.pose : POSE_DEFAULT;
   const uint32_t p0 = micros();
   stepTube(tubeH, in, effH, PHYS_DT, TUBE_PX_SCALE(0));
   stepTube(tubeM, in, effM, PHYS_DT, TUBE_PX_SCALE(1));
@@ -380,7 +383,7 @@ static void physStep(int k) {
   stepTube(tubeS, in, effS, PHYS_DT, TUBE_PX_SCALE(2));
 #endif
   const uint32_t p1 = micros();
-  if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation};
+  if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation, in.normal, pose};
   else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation);   // AB_COMPARE only: two tubes
 #ifdef AB_COMPARE
   abcmp::step(in.along, in.across, in.gyroAlong, in.gyroAcross, tubeM.fillTarget, params, paramsGen, PHYS_DT);
@@ -823,6 +826,7 @@ static void imu_poll() {
   rawTilt.across = IMU_ACROSS_TUBE_SIGN * a[IMU_AXIS_ACROSS_TUBE] / n;
   rawTilt.gyroAlong = g[IMU_AXIS_ALONG_TUBE];
   rawTilt.gyroAcross = g[IMU_AXIS_ACROSS_TUBE];
+  rawTilt.normal = IMU_NORMAL_SIGN * a[IMU_AXIS_NORMAL] / n;   // measured, signed (+ face up)
   static uint32_t next = 0;
   if (imu_stream && millis() >= next) {
     next = millis() + 20;
@@ -889,13 +893,14 @@ static void handleLine(char *line) {
     case 'h': case 'c': case 'm': case 'l': show(c); break;
     case 'f': report_fps(); break;   // query only: does not change the face
     case 'i': imu_stream = !imu_stream; out.printf("imu stream %s\n", imu_stream ? "on (t_ms,ax,ay,az,gx,gy,gz)" : "off"); break;
-    case 'g': {
-      float v[4] = {0, 0, 0, 0}; const int n = sscanf(arg, "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]);
-      if (n >= 2 && !(isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]) && isfinite(v[3]))) { out.println("usage: g <along> <across> [gyroAlong gyroAcross] | g"); break; }   // sscanf takes nan / inf: they would stick in the filters
+    case 'g': {   // normal omitted: face up, sqrt(1 - along^2 - across^2) (a test pose, not a measurement)
+      float v[5] = {0, 0, 0, 0, 0}; const int n = sscanf(arg, "%f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4]);
+      if (n >= 2 && !(isfinite(v[0]) && isfinite(v[1]) && isfinite(v[2]) && isfinite(v[3]) && isfinite(v[4]))) { out.println("usage: g <along> <across> [gyroAlong gyroAcross [normal]] | g"); break; }   // sscanf takes nan / inf: they would stick in the filters
+      if (n < 5) v[4] = sqrtf(fmaxf(0, 1 - v[0] * v[0] - v[1] * v[1]));
       tiltOverride = n >= 2;
-      if (tiltOverride) { rawTilt = {v[0], v[1], v[2], v[3]}; have_imu = true; }   // a dead IMU still takes the override
+      if (tiltOverride) { rawTilt = {v[0], v[1], v[2], v[3], v[4]}; have_imu = true; }   // a dead IMU still takes the override
       else have_imu = imu_ok;
-      out.printf(tiltOverride ? "tilt override %.3f %.3f gyro %.1f %.1f\n" : "tilt from imu\n", v[0], v[1], v[2], v[3]);
+      out.printf(tiltOverride ? "tilt override %.3f %.3f gyro %.1f %.1f normal %.3f\n" : "tilt from imu\n", v[0], v[1], v[2], v[3], v[4]);
       break; }
     case 'b': { int v = atoi(arg); display_set_brightness(constrain(v, 0, 255)); out.printf("brightness %d\n", v); break; }
     case 'H': { bool on = atoi(arg) != 0; display_set_hbm(on); out.printf("hbm %s\n", on ? "on" : "off"); break; }   // experiment only: tints cyan, browns out the board
@@ -999,9 +1004,9 @@ static void handleLine(char *line) {
       out.printf("SEQ END %d frames %lu ms%s\n", SEQ_FRAMES, (unsigned long)(millis() - t0), seeded ? "" : " (fizz unseeded: esp_random)");
       clockJumped = true;   // the fills jump back to the clock
       break; }
-    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f fillH %.3f fillM %.3f heap %u worker-stack-free %u loop-stack-free %u",
+    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f normal %.3f fillH %.3f fillM %.3f heap %u worker-stack-free %u loop-stack-free %u",
                  mode, fps, (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60,
-                 rawTilt.along, rawTilt.across, rawTilt.gyroAcross, tubeH.fillTarget, tubeM.fillTarget,
+                 rawTilt.along, rawTilt.across, rawTilt.gyroAcross, rawTilt.normal, tubeH.fillTarget, tubeM.fillTarget,
                  ESP.getFreeHeap(), (unsigned)workerStackFree, loopTask ? (unsigned)uxTaskGetStackHighWaterMark(loopTask) : 0u);
 #if TUBE_COUNT == 3
       out.printf(" fillS %.3f", tubeS.fillTarget);

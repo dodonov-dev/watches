@@ -40,7 +40,18 @@
 #define FILM_ETA_MAX 0.1f         // thin-film limit of the film thickness eta = h / R
 #define GYRO_LP_HZ 12.0f          // smooths both gyro outputs (sensor noise twitches fizz/agitation)
 
-struct TiltInput { float along, across, gyroAlong, gyroAcross; };
+// normal (g): the measured out-of-plane component, + = face up (IMU +Z out of the screen, layout.h IMU_AXIS_NORMAL);
+// signed, never reconstructed from along / across. Last so the {along, across, gyroAlong, gyroAcross} initialisers
+// keep their meaning (normal 0 there: no information). stepTube does not read it. See sim TiltInput.
+struct TiltInput { float along, across, gyroAlong, gyroAcross, normal; };
+
+// Physical pose: the unit buoyancy direction b = normalize(-along, -across, +normal) in tube coordinates (x along the
+// tube toward its top, y across, z toward the viewer; docs/tilted-fizz-plan.md), from the filtered gravity without
+// inputGain. updatePose leaves it as it was (the last valid one) and returns false below POSE_MIN_G g or non-finite.
+struct Pose { float x, y, z; };
+#define POSE_MIN_G 0.3f
+#define POSE_DEFAULT Pose{0, 0, 1}   // before any valid sample: face up (the legacy zero along / across: flat)
+bool updatePose(Pose &pose, float along, float across, float normal);
 
 struct TubeState {
   // fillTarget: 0..1 from time, as shown (followClock): clockPrev = the clock's fill at the previous call (wrap
@@ -138,8 +149,11 @@ struct GravityNorm {
 };
 
 // accel: two cascaded one-pole LPs; gyro: one-pole HP + deadzone + clamp.
+// pose: the physical pose of the last step (updatePose of the filtered gravity, no inputGain); kept over a reset.
 struct ImuFilter {
   float lpAlong = 0, lpAcross = 0, lpAlong2 = 0, lpAcross2 = 0, hpPrevIn = 0, hpPrevOut = 0, lpGyroAcross = 0, lpGyroAlong = 0;
+  float lpNormal = 0, lpNormal2 = 0;
+  Pose pose = POSE_DEFAULT;
   bool init = false;
   void reset() { init = false; hpPrevIn = hpPrevOut = lpGyroAcross = lpGyroAlong = 0; }
   TiltInput step(const TiltInput &raw, const Params &p, float dt = PHYS_DT);

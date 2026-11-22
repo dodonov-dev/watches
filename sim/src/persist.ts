@@ -24,12 +24,12 @@ export interface ViewState {
   sweep: boolean;
   sweepPeriod: number;
   setClock: { h: number; m: number; s?: number };   // s: the frozen seconds (three tubes; 0 when unset)
-  manual: { along: number; across: number };
+  manual: { along: number; across: number; face: 1 | -1 };   // face: +1 face up, -1 face down (signed normal)
   overlay: OverlayOpts;
 }
 export const DEFAULT_VIEW: ViewState = {
   scale: 0.5, showGrid: false, paused: false, timeMode: 'real', demoSpeed: 60, sweep: false, sweepPeriod: 10,
-  setClock: { h: 10, m: 9, s: 0 }, manual: { along: 0, across: 0 }, overlay: { ...DEFAULT_OVERLAY },
+  setClock: { h: 10, m: 9, s: 0 }, manual: { along: 0, across: 0, face: 1 }, overlay: { ...DEFAULT_OVERLAY },
 };
 /** Physical-material mode (material/ui.ts): in 'material' mode `params` is derive(material, design).
  *  `name` / `provenance` are the envelope metadata of the loaded material (a preset's or an imported
@@ -89,6 +89,7 @@ export function loadSession(fresh = false): Session {
     delete (view.overlay as any).lensCurve;
     view.setClock = { ...DEFAULT_VIEW.setClock, ...v.setClock };
     view.manual = { ...DEFAULT_VIEW.manual, ...v.manual };
+    view.manual.face = view.manual.face === -1 ? -1 : 1;
   }
   return { params, view, material: loadMaterialState(stored?.material) };
 }

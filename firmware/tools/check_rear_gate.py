@@ -78,7 +78,7 @@ const f = new ph.ImuFilter(), PI = Math.PI, sin = Math.sin, cos = Math.cos, out 
 const A = new Function('t', 'PI', 'sin', 'cos', 'return ' + along), C = new Function('t', 'PI', 'sin', 'cos', 'return ' + across);
 for (let n = 0; n < +steps; n++) {
   const t = n * ph.PHYS_DT;
-  const inp = f.step({ along: Math.fround(A(t, Math.fround(PI), sin, cos)), across: Math.fround(C(t, PI, sin, cos)), gyroAlong: 0, gyroAcross: 0 }, ps[0], ph.PHYS_DT);
+  const inp = f.step({ along: Math.fround(A(t, Math.fround(PI), sin, cos)), across: Math.fround(C(t, PI, sin, cos)), gyroAlong: 0, gyroAcross: 0, normal: 0 }, ps[0], ph.PHYS_DT);
   out.push(tubes.map((s, i) => { ph.stepTube(s, inp, ps[i], ph.PHYS_DT, L.TUBE_PX_SCALE[i]); return `${s.rearX16} ${s.rearY16} ${s.rearX16w} ${s.rearY16w}`; }).join(' '));
 }
 console.log(out.join('\n'));

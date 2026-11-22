@@ -1,11 +1,11 @@
 // IMU feed over a line transport (serial or BLE): the board's `i` stream (t_ms,ax,ay,az,gx,gy,gz at 50 Hz),
 // mapped to the tube frame using spec/layout IMU_* constants.
-import { IMU_AXIS_ALONG_TUBE, IMU_ALONG_TUBE_SIGN, IMU_AXIS_ACROSS_TUBE, IMU_ACROSS_TUBE_SIGN } from '@spec/layout';
+import { IMU_AXIS_ALONG_TUBE, IMU_ALONG_TUBE_SIGN, IMU_AXIS_ACROSS_TUBE, IMU_ACROSS_TUBE_SIGN, IMU_AXIS_NORMAL, IMU_NORMAL_SIGN } from '@spec/layout';
 import { GravityNorm, type TiltInput } from './physics';
 import type { LineTransport } from './transport/line';
 
 export class SerialImu {
-  last: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0 };
+  last: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0, normal: 1 };   // face up until a sample
   raw = '';
   private norm = new GravityNorm();
 
@@ -32,6 +32,7 @@ export class SerialImu {
       across: (IMU_ACROSS_TUBE_SIGN * a[IMU_AXIS_ACROSS_TUBE]) / n,
       gyroAlong: g[IMU_AXIS_ALONG_TUBE],
       gyroAcross: g[IMU_AXIS_ACROSS_TUBE],
+      normal: (IMU_NORMAL_SIGN * a[IMU_AXIS_NORMAL]) / n,   // measured, signed (+ face up)
     };
     this.raw = line;
   }
