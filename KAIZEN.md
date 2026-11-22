@@ -8,6 +8,8 @@
 ## Visual / layout
 - Tilt pose currently uses the two in-plane gravity axes; face-down horizontal is indistinguishable
   from face-up. Carry signed normal gravity through the input pipeline if upside-down release is wanted.
+- Vertical watch tilted back θ: the free surface stays level, so in the tube it slopes front-to-back (front lower by
+  D·tanθ, ~1.6 mm at 15° in a 6 mm bore). Seen from the front it should read as an elliptical band, not a line. Not modelled.
 - Rear ticks still round their parallax to whole pixels (each tick at its own depth, so the ladder steps one tick at a time). The same bilinear placement would smooth the ticks.
 - `tickParallax` has no physical basis (2026-11-06 verdict that removed `digitParallax`: with the eye fixed to the watch the liquid
   fills the bore and gravity does not change the path behind a full column). The digits' gated view-angle model
