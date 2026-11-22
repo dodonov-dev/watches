@@ -3707,6 +3707,9 @@ static inline float discFitLow(const float *surf, int H, float y, float r, int s
 // `order` (the packing sweep order) is kept from step to step: it is re-sorted, not rebuilt from slot order.
 #define FOAM_CELLS 1024   // grid cells (u x y) at most: the u cells widen past it
 #define FOAM_BRUTE 8      // up to this many bubbles a grid costs more than it saves: every pass scans them all
+#ifndef FOAM_BRUTE_V
+#define FOAM_BRUTE_V 24   // the vertical packing's (3D tests, a gather per bubble and sweep: lcd316, stand pose, 2026-11-22)
+#endif
 struct FoamWork {
   int16_t order[FIZZ_POOL]; int nOrder;       // the packing sweep order (parked, front first), kept between steps
   int16_t list[FIZZ_POOL]; int nList;         // settleFoam: the parked in slot order; stepFizz: touchesFoam's candidates
@@ -3722,6 +3725,8 @@ struct FoamWork {
   // move back and its move in the surface plane are bounded from there)
   float eLo[FIZZ_POOL], yS[FIZZ_POOL], zS[FIZZ_POOL];
   float uS[FIZZ_POOL];
+  float LB[FIZZ_POOL], LBh[FIZZ_POOL];         // settleFoam (vertical), per parked slot: fizzEndLowBox's bound, its box's half size
+  float rC[FIZZ_SIZES], aC[FIZZ_SIZES], iaC[FIZZ_SIZES];   // stepFizzVertical, per size class: r, the eroded radius a, 1 / a
   float uLo, invCu, invCy, cell;              // grid origin in u, 1 / cell size in u and y, cell size in y
   float uMin, uMax, drift, rMax;              // u extent of everything in it; bound on |u - u0|, |y - y0| (a bubble moving
                                               // farther is moved to its new cell); largest R
@@ -3740,7 +3745,7 @@ static inline void foamAdd(FoamWork &w, int s, float u, float y) {   // into the
 static void foamGridBuild(FoamWork &w, const Fizz *fz, int H, int side, bool moving, const FizzBody *bd = nullptr, float yc = 0) {
   w.side = side; w.drift = 0; w.rMax = 0; w.uMin = INFINITY; w.uMax = -INFINITY; w.moved = false;
   for (int i = 0; i < w.nList; i++) { const int s = w.list[i]; const float u = side * fz[s].x; w.rMax = fmx(w.rMax, w.R[s]); w.uMin = fmn(w.uMin, u); w.uMax = fmx(w.uMax, u); }
-  if (w.nList <= FOAM_BRUTE) { w.nu = 0; return; }
+  if (w.nList <= (bd ? FOAM_BRUTE_V : FOAM_BRUTE)) { w.nu = 0; return; }
   w.cell = fmx(1, w.rMax + 0.5f); w.invCy = 1 / w.cell; w.drift = moving ? 0.5f * w.cell : 0;
   w.ny = (int)(H * w.invCy) + 2; if (w.ny > FOAM_CELLS / 4) w.ny = FOAM_CELLS / 4;
   const float span = w.uMax - w.uMin;
@@ -3877,7 +3882,22 @@ static inline bool springBirth(const Tube &t) { return t.springScatter <= 0 || f
 #define FOAM_SEAT 0.5f         // px: a foam bubble this close to its endpoint target is seated (at the surface: a resident)
 #define FOAM_GAP 0.01f       // vertical packing: pairs pushed to m + FOAM_GAP and tested at < m, so a contact a sweep left is never decided by rounding
 static inline float fizzYc(int H) { return (H - 1) * 0.5f; }
-static inline float fizzLevelOf(float z, float a) { return (fizzLevel((a - z) / (2 * a)) + 0.5f) * (1.0f / FIZZ_DEPTHS); }
+// The level is floor(4 q) of q = (a - z) / 2a (clamped): q >= 1/4, 1/2, 3/4 where a - z >= a / 2, a, 3a / 2. Where a - z is
+// clear of every threshold by a relative 1e-5 (far above the quotient's rounding, 6e-8) the comparisons give the
+// quotient's level without the division (a call on the S3); near one, the division as before. Bit for bit the same.
+static inline float fizzLevelOf(float z, float a) {
+  const float x = a - z;
+  if (a > 0 && x == x) {
+    const float t1 = 0.5f * a, t3 = 1.5f * a;
+    int l = -1;
+    if (x < t1 * (1 - 1e-5f)) l = 0;
+    else if (x > t1 * (1 + 1e-5f) && x < a * (1 - 1e-5f)) l = 1;
+    else if (x > a * (1 + 1e-5f) && x < t3 * (1 - 1e-5f)) l = 2;
+    else if (x > t3 * (1 + 1e-5f)) l = 3;
+    if (l >= 0) return (l + 0.5f) * (1.0f / FIZZ_DEPTHS);
+  }
+  return (fizzLevel(x / (2 * a)) + 0.5f) * (1.0f / FIZZ_DEPTHS);
+}
 // The stable display-row offset of the bubble in slot k with size v: a hash of both, in [-bias0, bias0).
 static inline float fizzRowBias(int k, float v, float bias0) {
   uint32_t h = (uint32_t)k * 0x9E3779B1u + (uint32_t)fizzClass(v) * 0x85EBCA77u;
@@ -4007,6 +4027,58 @@ FIZZ_IRAM static void fizzEndSupportE(const float *S, const float *B, int H, int
 static inline void fizzEndSupport(const float *S, const float *B, int H, int s, float yr, float r, float k, float &uc, float &ut) {
   fizzEndSupportE(S, B, H, s, yr, r, r, 1, k, uc, ut);
 }
+// Lower bounds lc <= uc, lt <= ut of the stepper's endpoint support of a body (y, z) (k from it, as fizzEndK) on display
+// row yr, without the support's roots: a row's half chord sqrt(r^2 - dy^2) is at most r - dy^2 / 2r, so each row's term
+// is at least L (+ P) - r + dy^2 / 2r. Less FIZZ_END_SLACK, far above the float rounding of either side (coordinates of
+// a few thousand px at most; this k's last bit against the caller's), their minima bound the support's. A caller whose
+// decision a bound settles skips the support (the same answers, bit for bit), otherwise it computes it as before. No rows
+// (the support's centre-row path) or no radius: -inf (no bound). Its own function: none of its roundings reach a caller.
+#define FIZZ_END_SLACK 1e-2f
+static void __attribute__((noinline)) fizzEndLow(const float *S, const float *B, int H, int s, float y, float z, float a, float yr, float r,
+                                                 float &lc, float &lt) {
+  const int a0 = (int)fmx(0, fceil(yr - r)), b0 = (int)fmn(H - 1, ffloor(yr + r));
+  if (a0 > b0 || !(r > 0)) { lc = lt = -INFINITY; return; }
+  const float k = fizzEndK(y, z, a, r, rowLerp(B, H, yr)), inv2r = 0.5f / r;
+  float c = INFINITY, t = INFINITY;
+  for (int iy = a0; iy <= b0; iy++) {
+    const float dy = iy - yr, q = dy * dy * inv2r - r, L = s * S[iy] + k * B[iy];
+    c = fmn(c, L + q); t = fmn(t, L + r * fmx(0.3f, 1 - B[iy] * inv2r) + q);
+  }
+  lc = c - FIZZ_END_SLACK; lt = t - FIZZ_END_SLACK;
+}
+// fizzEndLow's lt over a whole box: a bound <= the stepper's endpoint target ut of every body (y, z) with |y - y0|,
+// |z - z0| <= h on any display row yr in [fizzRowOf(y0 - h), fizzRowOf(y0 + h)] (row bias `bias`): k at least its least
+// value over the box (kLo: the circle's depth zc and the fade's width w bounded over the box's y, the ramp's B0 over its
+// rows; a fade narrower than half a px: 0), every row's half chord at most r - dmin^2 / 2r (dmin: the row's distance to
+// the rows' interval). Margins far above the rounding of either side. settleFoam takes it once a step per parked bubble
+// for every placement inside its in-plane bound (FOAM_PUSH U_i dt), instead of a bound per placement. -inf: none (a
+// bubble under 1 px, a row interval off the tube).
+static float __attribute__((noinline)) fizzEndLowBox(const float *S, const float *B, int H, int s, float y0, float z0, float h, float a, float r,
+                                                     float bias) {
+  const float yLo = y0 - h, yHi = y0 + h, zLo = z0 - h, rLo = fizzRowOf(H, yLo, a, bias) - 1e-3f, rHi = fizzRowOf(H, yHi, a, bias) + 1e-3f;
+  if (!(r >= 0.5f) || !(rLo >= 0) || !(rHi <= H - 1)) return -INFINITY;   // r >= 0.5: every row interval of 2r holds a row
+  const int a0 = (int)fmx(0, fceil(rLo - r)), b0 = (int)fmn(H - 1, ffloor(rHi + r));
+  if (a0 > b0) return -INFINITY;
+  // kLo: d = zc - z at most zcMax - zLo, w = min(zc, B0 + r) at least min(zcMin, B0min + r)
+  const float ay = yLo <= 0 && yHi >= 0 ? 0 : fmn(fabsf(yLo), fabsf(yHi)), by = fmx(fabsf(yLo), fabsf(yHi));
+  const float zcMax = sqrtExact(fmx(0, a * a - ay * ay)) * (1 + 1e-5f) + 1e-3f, zcMin = sqrtExact(fmx(0, a * a - by * by)) * (1 - 1e-5f) - 1e-3f;
+  float B0 = INFINITY, bad = 0;   // B0: the least stroke of the rows rowLerp reads over [rLo, rHi]
+  for (int iy = (int)ffloor(rLo), j = (int)fmn(H - 1, fceil(rHi)); iy <= j; iy++) B0 = fmn(B0, B[iy]);
+  const float wMin = fmn(zcMin, B0 + r) * (1 - 1e-5f) - 1e-3f;
+  float kLo = 0;
+  if (wMin >= 0.5f) {
+    const float tt = clampf(1 - fmx(0, zcMax - zLo) / wMin, 0, 1);
+    kLo = fmx(0, tt * tt * (3 - 2 * tt) - 1e-5f);
+  }
+  const float inv2r = 0.5f / r;
+  float t = INFINITY;
+  for (int iy = a0; iy <= b0; iy++) {
+    const float d = iy < rLo ? rLo - iy : iy > rHi ? iy - rHi : 0, b = B[iy];
+    t = fmn(t, s * S[iy] + (b >= 0 ? kLo : 1) * b + r * fmx(0.3f, 1 - b * inv2r) - r + d * d * inv2r);
+    bad = b == b ? bad : 1;
+  }
+  return bad ? -INFINITY : t - FIZZ_END_SLACK;
+}
 int fizzBlocked(int idx) {
 #if TUBE_COUNT == 3
   if (idx == 2 && !tubeS) return 0;
@@ -4035,6 +4107,22 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
   }
   while (fizzN < want) { float v = fizzV(); fizz[fizzN++] = { frand() * len, fizzSpawnY(p, H, v), v, 0, fizzZ() }; }
   fizzN = want;
+}
+// settleFoam (vertical), slot s (fz, bd its Fizz and body; w.R, yS, zS set): its box, the in-plane bound FOAM_PUSH U_i dt
+// about where its step starts (U_i dt = k2 r^2, k2 = fizzSpeed dt / r_ref^2), and fizzEndLowBox's bound of its target
+// over it. Out of settleFoam (IRAM): once a step per parked bubble.
+static void __attribute__((noinline)) foamBox(FoamWork &w, const Fizz &f, const FizzBody &b, int s, const float *surf, const float *band, int H,
+                                              int side, float R, float bias0, float k2) {
+  const float r = w.R[s], h = FOAM_PUSH * (k2 * (r * r)) * (1 + 1e-5f) + 1e-4f;
+  w.LBh[s] = h; w.LB[s] = fizzEndLowBox(surf, band, H, side, b.y, b.z, h, R - r, r, fizzRowBias(s, f.v, bias0));
+}
+// settleFoam (vertical): a bound <= slot s's endpoint target at its body now (radius r): its box's (foamBox) while the
+// body is inside the box on its derived row, else fizzEndLow's.
+static float __attribute__((noinline)) foamLowNow(const FoamWork &w, const Fizz &f, const FizzBody &b, int s, float r, const float *surf,
+                                                  const float *band, int H, int side, float R, float bias0) {
+  const float h = w.LBh[s];
+  if (fabsf(b.y - w.yS[s]) <= h && fabsf(b.z - w.zS[s]) <= h && f.y == fizzRowOf(H, b.y, R - w.R[s], fizzRowBias(s, f.v, bias0))) return w.LB[s];
+  float lc, lt; fizzEndLow(surf, band, H, side, b.y, b.z, R - r, f.y, r, lc, lt); return lt;
 }
 // Parked bubbles: sit centred on the surface front — foam floats half out of the liquid — lagging behind an
 // advance (and gliding on after being caught) no faster than the rise, pushed back by a recession; slide along
@@ -4076,6 +4164,8 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   auto endAt = [&](float y, float z, float yr, float r) {
     float uc, ut; fizzEndSupport(surf, band, H, side, yr, r, fizzEndK(y, z, R - r, r, rowLerp(band, H, yr)), uc, ut); return ut;
   };
+  // vertical: the bound of slot s's target at its body now (<= front: foamLowNow)
+  auto lowNow = [&](int s, float r) { return foamLowNow(w, fz[s], bd[s], s, r, surf, band, H, side, R, bias0); };
   auto front = [&](int s, float y, float r) {
     if (band) return endAt(bd[s].y, bd[s].z, y, r);
     return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side);
@@ -4092,18 +4182,27 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
       }
       const float d2 = yp * yp + zp * zp;
       if (d2 > a * a) { const float q = a / sqrtExact(d2); yp = yp * q; zp = zp * q; }
-      float yr = fizzRowOf(H, yp, a, bias), ut = endAt(yp, zp, yr, r);
-      if (ut < w.eLo[s]) {   // the move would sink its endpoint faster than it may sink: shortened from where it is (t 0)
-        const float y0 = bd[s].y, z0 = bd[s].z, dy = yp - y0, dz = zp - z0; float lo = 0, hi = 1;
-        for (int it = 0; it < FIZZ_END_BISECT; it++) {
-          const float mid = (lo + hi) * 0.5f, ym = y0 + dy * mid, zm = z0 + dz * mid;
-          if (endAt(ym, zm, fizzRowOf(H, ym, a, bias), r) >= w.eLo[s]) lo = mid; else hi = mid;
+      float yr = fizzRowOf(H, yp, a, bias);
+      // overdamped: back at most the rise step from where the step began, the surface's own recession excepted (its target
+      // holds): un = min(A, ut). The target's bound (fizzEndLow, <= ut) at or above A and eLo settles both: un = A, no
+      // shortening, ut unread.
+      const float A = fmx(u, w.uS[s] - back), need = fmx(A, w.eLo[s]);
+      float lc, lt;
+      if (fabsf(yp - w.yS[s]) <= w.LBh[s] && fabsf(zp - w.zS[s]) <= w.LBh[s] && w.LB[s] >= need) un = A;   // its box's bound (yr: fizzRowOf of yp)
+      else if (fizzEndLow(surf, band, H, side, yp, zp, a, yr, r, lc, lt), lt >= need) un = A;
+      else {
+        float ut = endAt(yp, zp, yr, r);
+        if (ut < w.eLo[s]) {   // the move would sink its endpoint faster than it may sink: shortened from where it is (t 0)
+          const float y0 = bd[s].y, z0 = bd[s].z, dy = yp - y0, dz = zp - z0; float lo = 0, hi = 1;
+          for (int it = 0; it < FIZZ_END_BISECT; it++) {
+            const float mid = (lo + hi) * 0.5f, ym = y0 + dy * mid, zm = z0 + dz * mid;
+            if (endAt(ym, zm, fizzRowOf(H, ym, a, bias), r) >= w.eLo[s]) lo = mid; else hi = mid;
+          }
+          yp = y0 + dy * lo; zp = z0 + dz * lo; yr = fizzRowOf(H, yp, a, bias); ut = endAt(yp, zp, yr, r);
         }
-        yp = y0 + dy * lo; zp = z0 + dz * lo; yr = fizzRowOf(H, yp, a, bias); ut = endAt(yp, zp, yr, r);
+        un = fmn(fmx(u, w.uS[s] - back), ut);
       }
       bd[s].y = yp; bd[s].z = zp; f.y = yr; f.z = fizzLevelOf(zp, a); yq = yc + yp;
-      // overdamped: back at most the rise step from where the step began, the surface's own recession excepted (its target holds)
-      un = fmn(fmx(u, w.uS[s] - back), ut);
     } else { const float lo = wall + r, hi = H - lo; f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi); yq = f.y; un = fmn(u, front(s, f.y, r)); }
     f.x = side * un;
     const float d = fmx(fabsf(un - w.u0[s]), fabsf(yq - w.y0[s])); if (d > w.drift && w.nu) foamMove(w, s, un, yq);
@@ -4116,7 +4215,9 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     for (int a = 0; a < n; a++) {
       const int i = w.list[a];
       w.yS[i] = bd[i].y; w.zS[i] = bd[i].z; w.uS[i] = side * fz[i].x;
-      w.eLo[i] = fmn(w.uS[i] - back, front(i, fz[i].y, w.R[i]));
+      foamBox(w, fz[i], bd[i], i, surf, band, H, side, R, bias0, speed * invRef2 * dt);   // its target's bound over its in-plane box
+      const float A = w.uS[i] - back;   // eLo = min(A, its target): A when the target's bound is at or above it
+      w.eLo[i] = lowNow(i, w.R[i]) >= A ? A : fmn(w.uS[i] - back, front(i, fz[i].y, w.R[i]));
     }
   }
   foamGridBuild(w, fz, H, side, true, bd, yc);
@@ -4147,9 +4248,10 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     Fizz &f = fz[i];
     const float r = fizzR(p, f.v);
     const int fy = (int)clampf(jround(f.y), 0, H - 1);
-    const float tu = front(i, f.y, r);
     float u = side * f.x;
-    u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu;   // buoyancy: no faster than the rise
+    float lt;   // vertical: far enough below its target's bound (<= tu) it takes the whole rise step, tu unread
+    if (band && u < (lt = lowNow(i, r)) && (lt - u) * follow >= speed * dt) u = u + fmn((lt - u) * follow, speed * dt);
+    else { const float tu = front(i, f.y, r); u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu; }   // buoyancy: no faster than the rise
     const float slope = side * (surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0]) / 2;   // px per row
     if (band) {   // vertical: the drift along the surface it rides (see above)
       const float y = bd[i].y, z = bd[i].z, ar = R - r, B0 = rowLerp(band, H, f.y);
@@ -4274,7 +4376,8 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
             if (du * du + q2 < m * m) {
               const bool fBack = du > 0; const int rs = fBack ? fi : gs; const Fizz &fr = fBack ? g : f;
               const float ur = side * fz[rs].x, uw = fmx(w.uS[rs], fmn(ur, side * fr.x - sqrtExact(fmx(0, g2 - q2))));
-              if (uw != ur && ur < front(rs, fz[rs].y, fizzR(p, fz[rs].v)) - FOAM_SEAT) { FIZZ_PACK_HOOK(t, rs, fBack ? gs : fi, 1); place(rs, uw, py(rs), bd[rs].z); }
+              // short of its seat: below its target's bound less FOAM_SEAT settles it (lt <= the target)
+              if (uw != ur && (ur < lowNow(rs, fizzR(p, fz[rs].v)) - FOAM_SEAT || ur < front(rs, fz[rs].y, fizzR(p, fz[rs].v)) - FOAM_SEAT)) { FIZZ_PACK_HOOK(t, rs, fBack ? gs : fi, 1); place(rs, uw, py(rs), bd[rs].z); }
             }
           }
         } else {   // landscape: in (u, y), parted to m
@@ -4338,7 +4441,7 @@ static inline bool fizzFlyV(float &y, float &z, uint8_t &c, float a, float wy, f
   y = y + wy * th; z = z + wz * th; c |= FIZZ_C_WALL;
   return false;
 }
-static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, float by, float bz, float inv, float dt) {
+static inline float fizzMoveVI(float &y, float &z, uint8_t &c, float a, float inva, float U, float by, float bz, float inv, float dt) {   // inva = 1 / a
   const float mob = (c & FIZZ_C_END) ? FIZZ_KW : 1, wy = mob * U * by, wz = mob * U * bz;
   float tFree = 0, th;
   if (!(c & FIZZ_C_WALL)) { if (fizzFlyV(y, z, c, a, wy, wz, dt, th)) return dt; tFree = th; }
@@ -4346,7 +4449,7 @@ static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, 
     const float d2 = y * y + z * z;
     if (!(d2 > 0)) { c &= ~FIZZ_C_WALL; return tFree; }   // a bore of one point: nowhere to go
     const float q = a / sqrtExact(d2); y = y * q; z = z * q;   // on the circle
-    const float inva = 1 / a, bn = (by * y + bz * z) * inva, tw = dt - tFree;
+    const float bn = (by * y + bz * z) * inva, tw = dt - tFree;
     if (bn < 0 && pass == 0) {   // the buoyancy turned inward: released into the liquid for the rest of the step
       c &= ~FIZZ_C_WALL;
       if (fizzFlyV(y, z, c, a, wy, wz, tw, th)) return dt;
@@ -4359,6 +4462,9 @@ static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, 
     if (d1 > 0) { const float q1 = a / sqrtExact(d1); y = y1 * q1; z = z1 * q1; }
     return tFree + FIZZ_KW * tw;
   }
+}
+static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, float by, float bz, float inv, float dt) {
+  return fizzMoveVI(y, z, c, a, 1 / a, U, by, bz, inv, dt);
 }
 // The vertical watch's step (p.vertical; docs/tilted-fizz-plan.md points 4-6), on the physical state (FizzBody) and the
 // gain-free pose (b = the buoyancy direction: x along the tube toward its top, y across, z toward the viewer; the liquid
@@ -4410,6 +4516,18 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
     for (int j = 0; j < t.fizzN; j++) if (t.fizz[j].life * park > 0) { w.list[w.nList++] = (int16_t)j; w.R[j] = fizzR(p, t.fizz[j].v); }
   }
   foamGridBuild(w, t.fizz, H, park, false);
+  for (int cl = 0; cl < FIZZ_SIZES; cl++) {   // per size class: the eroded radius a of its v (fizzV's) and 1 / a
+    const float v = 0.5f + (cl + 0.5f) * (1.0f / FIZZ_SIZES), r = fizzR(p, v), a = R - r;
+    w.rC[cl] = r; w.aC[cl] = a; w.iaC[cl] = 1 / a;   // r kept: a plain difference, as the bubble loop's
+  }
+  // The least s * surf over all rows, per side ([1] the time edge, [0] the home edge): a bubble's discFitLow on that side
+  // is at least it less r (and a margin over r1's rounding and this sum's), so the bubbles far from a surface (most of the
+  // column) skip its rows: the same answers. Rows of its disc: r > 0.5 on a row of the tube.
+  float gLow[2] = {INFINITY, INFINITY};
+  for (int iy = 0; iy < H; iy++) { gLow[1] = fmn(gLow[1], t.fizzSurf[iy]); gLow[0] = fmn(gLow[0], -t.fizzSurfL[iy]); }
+  auto farFrom = [&](int s, float u, float y, float r, float gap) {   // u <= discFitLow(surf of s, H, y, r, s) - gap, by the least row
+    return r >= 0.51f && y >= 0 && y <= H - 1 && u <= gLow[s > 0] - r * (1 + 4e-6f) - 1e-3f - gap;
+  };
   FZ_T0(lp0);
   for (int k = 0; k < t.fizzN; k++) {
     Fizz &f = t.fizz[k]; FizzBody &b = body[k];
@@ -4430,7 +4548,8 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
     float y = b.y, z = b.z; uint8_t c = b.contact;
     const float x0 = f.x, y0 = y, z0 = z;   // where the step starts (the foam contact removes its approach)
     if (stir > 0) { y = y + stir * (2 * frand() - 1); z = z + stir * (2 * frand() - 1); c &= ~FIZZ_C_WALL; }
-    const float tx = fizzMoveV(y, z, c, a, U, by, bz, inv, dt);
+    const int cl = fizzClass(f.v);   // 1 / a: its size class's, the same a (else divided)
+    const float tx = fizzMoveVI(y, z, c, a, a == w.aC[cl] ? w.iaC[cl] : 1 / a, U, by, bz, inv, dt);
     c &= ~(FIZZ_C_END | FIZZ_C_HELD);
     f.x = f.x + U * bx * tx;
     const float bias = fizzRowBias(k, f.v, bias0);
@@ -4466,10 +4585,11 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
     if (side != 0) {   // the end the rise heads for
       const float u = side * f.x;
       if (!open) {   // closed: the glass, the whole disc inside
-        if (u > discFitLow(S, H, f.y, r, side)) { const float lim = discFit(S, H, f.y, r, side); if (u > lim) { f.x = side * lim; c |= FIZZ_C_END; } }
+        if (!farFrom(side, u, f.y, r, 0) && u > discFitLow(S, H, f.y, r, side)) { const float lim = discFit(S, H, f.y, r, side); if (u > lim) { f.x = side * lim; c |= FIZZ_C_END; } }
       } else {
         bool zone = false; float uc = INFINITY, ut = INFINITY;
-        if (u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH) {   // else short of uc - FOAM_CATCH and of ut (k B, P >= 0)
+        float lc, lt;   // else short of uc - FOAM_CATCH and of ut (k B, P >= 0); then of uc's bound (lc <= uc): uc, ut unread
+        if (!farFrom(side, u, f.y, r, FOAM_CATCH) && u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH && (fizzEndLow(S, B, H, side, y, z, a, f.y, r, lc, lt), u > lc - FOAM_CATCH)) {
           fizzEndSupport(S, B, H, side, f.y, r, fizzEndK(y, z, a, r, rowLerp(B, H, f.y)), uc, ut);
           zone = u > uc - FOAM_CATCH;
         }
@@ -4485,12 +4605,16 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
       if (s == side || f.life != 0) continue;
       const float *const Ss = s > 0 ? t.fizzSurf : t.fizzSurfL;
       const float u = s * f.x;
-      if (!(exposed & (s > 0 ? 1 : 2))) {
+      if (farFrom(s, u, f.y, r, 0)) {}   // short of either bound below
+      else if (!(exposed & (s > 0 ? 1 : 2))) {
         if (u > discFitLow(Ss, H, f.y, r, s)) { const float lim = discFit(Ss, H, f.y, r, s); if (u > lim) { f.x = s * lim; c |= FIZZ_C_END; } }
       } else if (u > discFitLow(Ss, H, f.y, r, s)) {   // else short of its target (every row's L + P - h > s S - r)
         const float *const Bs = s > 0 ? t.strokeR : t.strokeL;
-        float uc, ut; fizzEndSupport(Ss, Bs, H, s, f.y, r, fizzEndK(y, z, a, r, rowLerp(Bs, H, f.y)), uc, ut);
-        if (u > ut) f.x = s * ut;
+        float lc, lt; fizzEndLow(Ss, Bs, H, s, y, z, a, f.y, r, lc, lt);
+        if (u > lt) {   // else short of its target's bound (lt <= ut)
+          float uc, ut; fizzEndSupport(Ss, Bs, H, s, f.y, r, fizzEndK(y, z, a, r, rowLerp(Bs, H, f.y)), uc, ut);
+          if (u > ut) f.x = s * ut;
+        }
       }
     }
     b.contact = c;

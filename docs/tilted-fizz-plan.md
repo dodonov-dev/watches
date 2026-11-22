@@ -463,3 +463,19 @@ block 2.0 KB; stand bench in the window 52.2 fps. Decision: stepFizzVertical in 
   median / p90 0.68 / 1.14 -> 0.78 / 1.46 s; waits >= 0.5 s 44 -> 118 (queues under the front cap).
 - Lone ridge foam (selftest 'lone'): centred waits; offsets slide round at the frictionless rate (tau 0.21 s measured,
   0.196 s analytic): slow when near-centred, not stuck; no kernel change.
+
+## Point 9 perf: bit-exact pass on the vertical kernel (2026-11-22, lcd316@320w8-8, board look, stand pose)
+- Board profile (-DFIZZ_PROF, per step both tubes, h 125 / 13-16 foam, m 22 / 10): settle 62 %, bubble loop 26 %. Placements
+  ~200 a step (~10 a foam bubble: drift, 3 sweeps of a jammed cap, held arrivals), ~2000 cycles each; the endpoint support
+  (whole-disc rows, one root a row) ~800 cycles a call, ~280 calls. Division ~50, sqrtExact ~33 cycles; IRAM placement of
+  the lambdas / sqrtExact and internal RAM for the fizz data gained little (I-cache / PSRAM not the bottleneck).
+- Exact skips, same answers bit for bit (host contract-off: all sim jobs, self-tests and 80 presets identical):
+  fizzEndLow (root-free lower bound of uc / ut: h <= r - dy^2 / 2r, slack 1e-2) gates every support whose decision it
+  settles (zone, other end, placement un = A, eLo, glide, seat); fizzEndLowBox, once a step per foam bubble, bounds the
+  target over its in-plane box (FOAM_PUSH U_i dt); the least surface over all rows skips discFitLow for the column;
+  fizzLevelOf by comparisons away from the thresholds; 1 / a per size class; brute-force packing up to 24 foam.
+  Host asserts (every bound <= the exact value, all jobs + the X sequence, contract off and fma): no failure.
+- Board, same-session A/B (bench --runs 3): fizz step 3.09 -> 2.46 ms, 44.5 -> 45.6 fps (fizz_bench 120 / 240 / 480:
+  3.80 / 17.2 / 34.6 -> 3.17 / 10.8 / 42.0 ms, 480 noisy at the 5-step cap); IRAM -128 B, DRAM 0, PSRAM +8.0 KB (FoamWork: box bounds,
+  size-class table). The placement rewrite moves the board's madd.s contraction: X sequence identical for 238 frames, the
+  minutes tube differs from frame 239 (last bit); parity lines unchanged. ~1 ms needs a behaviour change (KAIZEN).
