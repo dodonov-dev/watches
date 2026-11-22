@@ -720,6 +720,55 @@ static int wallFlagSelftest() {
          a, zHeld, dx2, U * bx * dt, dz2, U * bz * dt, bad);
   return bad ? 17 : 0;
 }
+// `selftest`, a free bubble behind a lone foam bubble on the front ridge (review 3 item 5), stand-like pose (13 deg back,
+// no roll: the ridge at y 0 on the front glass), a 6 px band, the foam at its target with a long life. Exactly centred
+// (the same (y, z)) it waits behind the foam: an admissible symmetric rest (held, never parked by the contact, nothing
+// recycled). Offset across by 0.05 .. 3 px, with the bore clear beside the foam, it slides round it and parks in its
+// own zone beside it: 1 px and more within LONE_T; a near-symmetric one later, its offset growing at the frictionless
+// contact's rate (the approach's tangential share, ~ e^(t / tau), tau = m / (k_w U b_x): t(0.05) - t(0.25) = tau ln 5,
+// within 25%), not stuck; the foam never moves for it (seniority), keeps its slot and its life runs down.
+static int loneSelftest() {
+  Tube &t = tubeAt(0); long bad = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest lone: %s: got %.9g want %.9g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  p.fizzSource = 1; p.fizzSourceRate = 0; p.fizzFoamLife = 10; p.freeLiquid = false;
+  t.H = tubeLayout(p).H; t.fizzShift = 0; t.fizzLen = 400; t.fizzExposed = 1; t.springClock = 0; t.springScatter = 0;
+  for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 300; t.fizzSurfL[r] = 0; t.strokeR[r] = 6; t.strokeL[r] = 0; } t.surfH = t.H;
+  const int H = t.H; const float R = boreR(p), r = fizzR(p, 1), a = R - r, dt = 0.02f, bias0 = fizzBias0(t);
+  const double th = 13 * M_PI / 180; const Pose q{(float)cos(th), 0, (float)sin(th)};
+  t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+  const float OFF[] = {0, 0.05f, 0.25f, 1, 3};   // px across (along the wall) from the ridge
+  const float LONE_T = 1.0f;
+  float tPark[5]; long held0 = 0;
+  for (int c = 0; c < 5; c++) {
+    t.fizzN = 2; t.foam->nOrder = 0;
+    t.body[0] = {0, a, (uint16_t)(400 << FIZZ_C_AGE), {0, 0}}; t.fizz[0] = {0, fizzRowOf(H, 0, a, fizzRowBias(0, 1, bias0)), 1, 9, fizzLevelOf(a, a)};
+    { float uc, ut; fizzEndSupport(t.fizzSurf, t.strokeR, H, 1, t.fizz[0].y, r, fizzEndK(0, a, a, r, rowLerp(t.strokeR, H, t.fizz[0].y)), uc, ut); t.fizz[0].x = ut; }
+    const float ps = OFF[c] / a;   // the free bubble on the wall, behind
+    t.body[1] = {a * sinf(ps), a * cosf(ps), FIZZ_C_WALL, {0, 0}}; t.fizz[1] = {t.fizz[0].x - 20, fizzRowOf(H, t.body[1].y, a, fizzRowBias(1, 1, bias0)), 1, 0, fizzLevelOf(t.body[1].z, a)};
+    const float fx = t.fizz[0].x, fy = t.body[0].y, fz = t.body[0].z; float life = t.fizz[0].life;
+    parkWorst = -1e30; parkN = 0; tPark[c] = -1; long held = 0;
+    for (int n = 0; n < 150; n++) {
+      const float x1 = t.fizz[1].x;
+      stepFizzTube(0, p, dt, -q.x, 0, 0, q);
+      if (t.fizzN < 2 || t.fizz[0].v != 1 || !(t.fizz[0].life > 0 && t.fizz[0].life < life)) { fail("the foam recycled / its life not running down", t.fizz[0].life, life); break; }
+      life = t.fizz[0].life;
+      if (t.fizz[0].x != fx || t.body[0].y != fy || t.body[0].z != fz) { fail("the foam moved for the arrival", t.fizz[0].x - fx, 0); break; }
+      if (t.fizz[1].life != 0) { tPark[c] = (n + 1) * dt; break; }
+      if (t.fizz[1].x - x1 < 0.5f * p.fizzSpeed * dt * FIZZ_KW) held++;
+    }
+    if (c == 0) held0 = held;
+    if (parkN && !(parkWorst < 0)) fail("parked short of its own zone (by the contact)", parkWorst, 0);
+    if (c == 0 && (tPark[c] >= 0 || held < 50)) fail("centred: did not wait behind the foam", tPark[c], -1);
+    if (c > 0 && !(tPark[c] >= 0 && tPark[c] <= (OFF[c] >= 1 ? LONE_T : 3 * LONE_T))) fail("offset: did not slide round the foam in time (s)", tPark[c], OFF[c] >= 1 ? LONE_T : 3 * LONE_T);
+  }
+  const double tau = (2 * r + 0.5) / (FIZZ_KW * p.fizzSpeed * cos(th)), tauM = (tPark[1] - tPark[2]) / log(5.0);
+  if (!(fabs(tauM / tau - 1) < 0.25)) fail("near-symmetric: the offset's growth time (s)", tauM, tau);
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST lone ridge foam: centred waits (%ld steps held of 150), offset 0.05 / 0.25 / 1 / 3 px parks beside it after %.2f / %.2f / %.2f / %.2f s, offset growth time %.3f s (m / k_w U b_x %.3f), the foam unmoved, not recycled; failures %ld\n",
+         held0, tPark[1], tPark[2], tPark[3], tPark[4], tauM, tau, bad);
+  return bad ? 18 : 0;
+}
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
 // bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
 // life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
@@ -751,8 +800,8 @@ static int chainSelftest() {
 }
 static int selftests() {
   int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest(), e7 = packSelftest();
-  const int e8 = sideSelftest(), e9 = wallFlagSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9;
+  const int e8 = sideSelftest(), e9 = wallFlagSelftest(), e10 = loneSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9 ? e9 : e10;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
