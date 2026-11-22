@@ -430,7 +430,8 @@ TUBE_IRAM static void __attribute__((noinline)) rampRowL(uint16_t *row, int xSta
 }
 // sqrtf is two out-of-line calls here (see sqrtExact). Reciprocal-sqrt seed + 3 Newton steps: relative error <= 2.1e-7
 // against sqrtf for 1e-30 <= x < 1200 (below that it returns < 1e-10); as an 8-bit coverage it moved 1 step in
-// 2.5e-7 of the samples. Not for values that must match the sim bit for bit.
+// 2.5e-7 of the samples. The vertical fizz's clamps take rsqrtApprox inside its contraction pin: the sim's rsqrt32 is the
+// same float32 sequence (bit casts, three Newton steps), so those match bit for bit; elsewhere it is not matched.
 // The bits move with __builtin_bit_cast: the build has -fno-builtin-memcpy, so a memcpy here was two out-of-line calls
 // (and window spills) per root — most of the fizz kernel's time (step 5, 2026-10-29).
 static inline float rsqrtApprox(float x) {   // 1/sqrt(x), same seed and Newton steps as sqrtApprox
@@ -4246,10 +4247,10 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
       float yp = y, zp = z;
       if (push > 0) {
         const float ey = y - w.yS[s], ez = z - w.zS[s], e2 = ey * ey + ez * ez, lim = push * su;
-        if (e2 > lim * lim) { const float q = lim / sqrtExact(e2); yp = w.yS[s] + ey * q; zp = w.zS[s] + ez * q; }
+        if (e2 > lim * lim) { const float q = lim * rsqrtApprox(e2); yp = w.yS[s] + ey * q; zp = w.zS[s] + ez * q; }   // (sim rsqrt32)
       }
       const float d2 = yp * yp + zp * zp;
-      if (d2 > a * a) { const float q = a / sqrtExact(d2); yp = yp * q; zp = zp * q; }
+      if (d2 > a * a) { const float q = a * rsqrtApprox(d2); yp = yp * q; zp = zp * q; }
       float yr = fizzRowOf(H, yp, a, bias);
       // overdamped: back at most the rise step from where the step began, the surface's own recession excepted (its target
       // holds): un = min(A, ut). The target's bound (fizzEndLow, <= ut) at or above A and eLo settles both: un = A, no
@@ -4317,9 +4318,21 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     const float r = fizzR(p, f.v);
     const int fy = (int)clampf(jround(f.y), 0, H - 1);
     float u = side * f.x;
+    // vertical: its endpoint coefficient k now and the band's depth slope sigma_z: one root and division for the drift and
+    // its target (fizzEndK's zc, w, t: the same expressions, so the same k as front() would take)
+    float kS = 0, szB = 0;
+    if (band) {
+      const float y = bd[i].y, z = bd[i].z;
+      if (lid) kS = fizzLidK(y, z, lid->R);
+      else {
+        const float ar = R - r, B0 = rowLerp(band, H, f.y);
+        const float zc = sqrtExact(fmx(0, ar * ar - y * y)), ww = fmn(zc, B0 + r);
+        if (ww > 1e-4f) { const float tt = clampf(1 - (zc - z) / ww, 0, 1); szB = B0 * (6 * tt * (1 - tt)) / ww; kS = tt * tt * (3 - 2 * tt); }
+      }
+    }
     float lt;   // vertical: far enough below its target's bound (<= tu) it takes the whole rise step, tu unread
     if (band && u < (lt = lowNow(i, r)) && (lt - u) * follow >= speed * dt) u = u + fmn((lt - u) * follow, speed * dt);
-    else { const float tu = front(i, f.y, r); u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu; }   // buoyancy: no faster than the rise
+    else { const float tu = band ? endK(f.y, r, kS) : front(i, f.y, r); u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu; }   // buoyancy: no faster than the rise
     const float slope = side * (surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0]) / 2;   // px per row
     if (band) {   // vertical: the drift along the surface it rides (see above)
       const float y = bd[i].y, z = bd[i].z;
@@ -4328,11 +4341,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
                    // meniscus only: the row slope of its mid line S + B / 2 (the ring's tilt skew and across sag, not the ellipse)
         const int ra = fy + 1 < H ? fy + 1 : H - 1, rb = fy > 0 ? fy - 1 : 0;
         sz = -lid->tanT; sy = ((surf[ra] + 0.5f * band[ra]) - (surf[rb] + 0.5f * band[rb])) / 2;
-      } else {
-        const float ar = R - r, B0 = rowLerp(band, H, f.y);
-        const float zc = sqrtExact(fmx(0, ar * ar - y * y)), ww = fmn(zc, B0 + r);
-        if (ww > 1e-4f) { const float tt = clampf(1 - (zc - z) / ww, 0, 1); sz = B0 * (6 * tt * (1 - tt)) / ww; }
-      }
+      } else sz = szB;
       const float slope = sy;
       const float sb = slope * by + sz * bz, cc = (bu - sb) / (1 + slope * slope + sz * sz), st = FIZZ_KW * stepOf(r);
       float dy = st * (by + slope * cc), dz = st * (bz + sz * cc);
@@ -4394,6 +4403,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   // Pack: pairwise relaxation swept front to back; an overlapping pair is pushed apart, clamped to the bore
   // and the front, and whatever overlap the clamps leave the rear one takes by stepping back. See sim.
   for (int it = 0; it < FOAM_RELAX; it++) {
+    int contacts = 0;   // vertical: a sweep without one moved nothing, so the rest (the last's waits included) would find none
     for (int a = 1; a < n; a++) {   // insertion sort: nearly sorted (the last sweep's order; the first: the last step's)
       const int16_t k = order[a]; const float uk = side * fz[k].x; int b = a - 1;
       if (it == 0) while (b >= 0 && (side * fz[order[b]].x < uk || (side * fz[order[b]].x == uk && order[b] > k))) { order[b + 1] = order[b]; b--; }
@@ -4434,6 +4444,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         if (bd) {   // vertical: in 3D; parted in the surface plane (y, z) at their u, stacked only where that is blocked
           float dz = bd[gs].z - bd[fi].z;
           if (fabsf(du) >= m || fabsf(dy) >= m || !(fabsf(dz) < m) || du * du + dy * dy + dz * dz >= m * m) continue;
+          contacts++;
           const float g1 = m + FOAM_GAP, g2 = g1 * g1, rho = sqrtExact(dy * dy + dz * dz), kk = (sqrtExact(g2 - du * du) - rho) / 2;
           float ny, nz;
           if (rho > 1e-4f) { const float inv = 1 / rho; ny = dy * inv; nz = dz * inv; }
@@ -4473,6 +4484,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         }
       }
     }
+    if (bd && contacts == 0) break;   // exact: no placement this sweep, the same state for the next
   }
 }
 // Rises against in-plane gravity at fizzSpeed px/s on both axes; face up = slow screen-up rise plus a drift
@@ -4540,7 +4552,7 @@ static inline float fizzMoveVI(float &y, float &z, uint8_t &c, float a, float in
   for (int pass = 0;; pass++) {
     const float d2 = y * y + z * z;
     if (!(d2 > 0)) { c &= ~FIZZ_C_WALL; return tFree; }   // a bore of one point: nowhere to go
-    const float q = a / sqrtExact(d2); y = y * q; z = z * q;   // on the circle
+    const float q = a * rsqrtApprox(d2); y = y * q; z = z * q;   // on the circle (the clamps' a / |p|: a reciprocal root, no division; sim rsqrt32)
     const float bn = (by * y + bz * z) * inva, tw = dt - tFree;
     if (bn < 0 && pass == 0) {   // the buoyancy turned inward: released into the liquid for the rest of the step
       c &= ~FIZZ_C_WALL;
@@ -4551,7 +4563,7 @@ static inline float fizzMoveVI(float &y, float &z, uint8_t &c, float a, float in
     float y1 = y + s * ty, z1 = z + s * tz;
     if ((y * bz - z * by) * (y1 * bz - z1 * by) < 0) { y1 = by * a * inv; z1 = bz * a * inv; }   // across the ridge: on it
     const float d1 = y1 * y1 + z1 * z1;
-    if (d1 > 0) { const float q1 = a / sqrtExact(d1); y = y1 * q1; z = z1 * q1; }
+    if (d1 > 0) { const float q1 = a * rsqrtApprox(d1); y = y1 * q1; z = z1 * q1; }
     return tFree + FIZZ_KW * tw;
   }
 }
@@ -4669,7 +4681,7 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
           // its wall contact follows where the correction put it: on the circle (projected back from past it, or within
           // FIZZ_WALL_TOL of it) on the wall, inside it free (fizzMoveV would put a deflected bubble back on the wall)
           const float d2 = y * y + z * z, ai = fmx(0, a - FIZZ_WALL_TOL);
-          if (d2 > a * a) { const float qq = a / sqrtExact(d2); y = y * qq; z = z * qq; c |= FIZZ_C_WALL; }
+          if (d2 > a * a) { const float qq = a * rsqrtApprox(d2); y = y * qq; z = z * qq; c |= FIZZ_C_WALL; }
           else if (d2 >= ai * ai) c |= FIZZ_C_WALL;
           else c &= ~FIZZ_C_WALL;
           f.y = fizzRowOf(H, y, a, bias); b.y = y; b.z = z; f.z = fizzLevelOf(z, a);

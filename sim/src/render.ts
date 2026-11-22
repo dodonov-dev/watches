@@ -1267,6 +1267,15 @@ const FIZZ_C_WALL = 1, FIZZ_C_END = 2, FIZZ_C_HELD = 4;   // contact bits (firmw
 const FIZZ_WALL_TOL = F(1e-3);   // firmware FIZZ_WALL_TOL
 const FOAM_PUSH = F(0.35355339), FOAM_SEAT = F(0.5);   // firmware FOAM_PUSH (a contact's in-plane share, x U_i dt), FOAM_SEAT (px: seated)
 const FOAM_CATCH32 = F(FOAM_CATCH);
+/** 1/√x in float32 as the firmware's rsqrtApprox (bit-cast seed 0x5f3759df, three Newton steps, no fused multiply-add:
+ *  the vertical kernel's clamps, the same bits). */
+const rsqF = new Float32Array(1), rsqU = new Uint32Array(rsqF.buffer);
+function rsqrt32(x: number): number {
+  rsqF[0] = x; rsqU[0] = (0x5f3759df - (rsqU[0] >>> 1)) >>> 0;
+  let y = rsqF[0]; const hx = F(0.5 * x);
+  y = F(y * F(1.5 - F(F(hx * y) * y))); y = F(y * F(1.5 - F(F(hx * y) * y))); y = F(y * F(1.5 - F(F(hx * y) * y)));
+  return y;
+}
 const fizzR32 = (p: Params, v: number): number => F(F(F(p.fizzSize) / 2) * F(1 + F(F(v - 1) * F(p.fizzSizeVar))));
 const fizzV32 = (): number => F(0.5 + F((Math.trunc(F(Math.random() * FIZZ_SIZES)) + 0.5) * F(1 / FIZZ_SIZES)));
 const boreR32 = (p: Params): number => F(Math.max(1, F((Math.max(4, Math.min(TUBE_HEIGHT_MAX, Math.round(p.tubeHeight))) - 1) / 2 - Math.max(0, F(p.glassWall)))));
@@ -1631,7 +1640,7 @@ function fizzMoveV32(b: number[], a: number, U: number, by: number, bz: number, 
     let y = b[0], z = b[1];
     const d2 = F(F(y * y) + F(z * z));
     if (!(d2 > 0)) { b[2] &= ~FIZZ_C_WALL; return tFree; }
-    const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); b[0] = y; b[1] = z;
+    const q = F(a * rsqrt32(d2)); y = F(y * q); z = F(z * q); b[0] = y; b[1] = z;
     const inva = F(1 / a), bn = F(F(F(by * y) + F(bz * z)) * inva), tw = F(dt - tFree);
     if (bn < 0 && pass === 0) {   // released into the liquid for the rest of the step
       b[2] &= ~FIZZ_C_WALL;
@@ -1642,7 +1651,7 @@ function fizzMoveV32(b: number[], a: number, U: number, by: number, bz: number, 
     let y1 = F(y + F(s * ty)), z1 = F(z + F(s * tz));
     if (F(F(F(y * bz) - F(z * by)) * F(F(y1 * bz) - F(z1 * by))) < 0) { y1 = F(F(by * a) * inv); z1 = F(F(bz * a) * inv); }
     const d1 = F(F(y1 * y1) + F(z1 * z1));
-    if (d1 > 0) { const q1 = F(a / F(Math.sqrt(d1))); b[0] = F(y1 * q1); b[1] = F(z1 * q1); }
+    if (d1 > 0) { const q1 = F(a * rsqrt32(d1)); b[0] = F(y1 * q1); b[1] = F(z1 * q1); }
     return F(tFree + F(FIZZ_KW * tw));
   }
 }
@@ -1700,10 +1709,10 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
     let yp = y, zp = z;
     if (push > 0) {
       const ey = F(y - foamYSV[s]), ez = F(z - foamZSV[s]), e2 = F(F(ey * ey) + F(ez * ez)), lim = F(push * su);
-      if (e2 > F(lim * lim)) { const q = F(lim / F(Math.sqrt(e2))); yp = F(foamYSV[s] + F(ey * q)); zp = F(foamZSV[s] + F(ez * q)); }
+      if (e2 > F(lim * lim)) { const q = F(lim * rsqrt32(e2)); yp = F(foamYSV[s] + F(ey * q)); zp = F(foamZSV[s] + F(ez * q)); }
     }
     const d2 = F(F(yp * yp) + F(zp * zp));
-    if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); yp = F(yp * q); zp = F(zp * q); }
+    if (d2 > F(a * a)) { const q = F(a * rsqrt32(d2)); yp = F(yp * q); zp = F(zp * q); }
     let yr = fizzRowOf32(H, yp, a, bias), ut = endAt(yp, zp, yr, r);
     if (ut < foamELoV[s]) {   // the move would sink its endpoint faster than it may sink: shortened from where it is (t 0)
       const y0 = bd[2 * s], z0 = bd[2 * s + 1], dy = F(yp - y0), dz = F(zp - z0); let lo = 0, hi = 1;
@@ -1889,7 +1898,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
           f.x = F(f.x + px); y = F(y - F(qp * ny)); z = F(z - F(qp * nz));
           // the wall contact follows where the correction put it: on (or within FIZZ_WALL_TOL of) the circle, else free
           const d2 = F(F(y * y) + F(z * z)), ai = Math.max(0, F(a - FIZZ_WALL_TOL));
-          if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
+          if (d2 > F(a * a)) { const q = F(a * rsqrt32(d2)); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
           else if (d2 >= F(ai * ai)) c |= FIZZ_C_WALL;
           else c &= ~FIZZ_C_WALL;
           f.y = fizzRowOf32(H, y, a, bias); body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
