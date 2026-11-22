@@ -10,8 +10,8 @@ ASSETS = os.path.join(ROOT, 'sim', 'public', 'assets')
 SHEETS = [
     'digits-steel', 'digits-brass-steampunk', 'digits-copper-gauge',
     'digits-forged-iron', 'digits-ivory-enamel', 'digits-carved-slate',
-    'digits-amber-resin',
-]  # digitFont 5..11 (sim render.ts SPRITE_SHEETS)
+    'digits-amber-resin', 'digits-ochre-pebble', 'digits-ochre-stroke',
+]  # digitFont 5..13 (sim render.ts SPRITE_SHEETS)
 SPRITE_FONT = 5
 CELL_HEIGHTS = (64, 100)   # every value SPRITE_CELL_H takes
 

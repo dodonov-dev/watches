@@ -867,6 +867,22 @@ const PRESET_CUVEE: Partial<Params> = {
   digitBright: 1.65, ambientLight: 0.7,
 };
 
+/** Rock pool: clear spring water over a pale stone, for the pebble desk housing. Cuvée's rod, glass and physics;
+ *  childish ochre brush numerals (font 13, untinted) and ochre ticks configured but off (straight bars clash with the strokes). */
+const PRESET_ROCKPOOL: Partial<Params> = {
+  ...PRESET_CUVEE,
+  remaining: false,
+  liquid: '#4f958c', liquidHi: '#e6fbf5', liquidLo: '#1b4c47', liquidThin: 0.5, liquidTransparency: 0.6,
+  tubeBack: '#e8dfce', tubeBack2: '#d3c7b2', tubeBackGradient: 1, glassHi: '#a3a49a', bubbleRim: '#f3fbf7',
+  surfaceTone: 0,
+  ticksH: false, tickStepH: 1, tickMajorEveryH: 0, tickMinorHeightH: 12, tickMajorHeightH: 12, tickMinorWidthH: 3, tickMajorWidthH: 3,
+  tickColorH: '#a86f35', tickMajorColorH: '#a86f35', tickPosH: 2,
+  ticksM: false, tickStepM: 5, tickMajorEveryM: 0, tickMinorHeightM: 12, tickMajorHeightM: 12, tickMinorWidthM: 3, tickMajorWidthM: 3,
+  tickColorM: '#a86f35', tickMajorColorM: '#a86f35', tickPosM: 2, tickEmboss: 0,
+  digitFont: 13, digitTint: '#e2b46a', digitTintAmount: 0, digitTone: -0.15, digitShadowStrength: 0.25,
+  tickBright: 1, digitBright: 1,
+};
+
 /** Nocturne: opaque blue-black ink in smoked glass, with silver front markings.
  *  A soft reflective band and a wetting surface reveal the dark column; medium
  *  drag and draining residue make the ink feel weighty. Standard rod only. */
@@ -1501,6 +1517,7 @@ PRESETS.push({ id: 'spritz', name: 'Aperol spritz', note: 'vivid orange aperitiv
 PRESETS.push({ id: 'cuvee', name: 'Cuvée', note: 'straw-gold sparkling wine, ivory backing, bronze numerals and a fine pale bead', p: PRESET_CUVEE, gas: gases('pearl-bead', SODA) });
 
 PRESETS.push({ id: 'nocturne', name: 'Nocturne', note: 'blue-black ink, smoked glass, silver front markings and lingering wet residue', p: PRESET_NOCTURNE, gas: gases('none', ['slow-bubbles']), mat: M('medium', 'opaque', false, true, 'none') });
+PRESETS.push({ id: 'rockpool', name: 'Rock pool', note: 'clear spring water over pale stone, childish ochre brush numerals, no ticks (pebble housing)', p: PRESET_ROCKPOOL, gas: gases('none', ['slow-bubbles']) });
 PRESETS.push({ id: 'tide', name: 'Bioluminescent tide', note: 'night-sea water glowing cyan at the edge, drifting plankton sparks, steel marks behind black glass', p: PRESET_TIDE, gas: gases('sparks', SODA) });
 // User looks recovered from presets.zip (2026-09-27): standard rod, exempt from the material ranges.
 PRESETS.push(

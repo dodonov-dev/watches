@@ -14,6 +14,7 @@ Every preset is one real liquid in one real vessel, declared with a *material* (
 | spritz | Aperol spritz | vivid orange-red aperitivo (translucent), watery, wetting, carbonated with a foam ring (2026-09-23), exempt from material ranges | white bar-glass backing, navy enamel numerals behind the liquid |
 | cuvee | Cuvée | straw-gold sparkling wine, wetting, carbonated (2026-09-23), exempt from historical material ranges | ivory backing, bronze rear numerals, pale bead, restrained reflections |
 | nocturne | Nocturne | opaque blue-black ink, medium viscosity, wetting, no gas | smoked glass, silver front markings, draining residue |
+| rockpool | Rock pool | clear blue-green spring water, watery, wetting, no gas (2026-11-22), Cuvée's rod and physics, exempt from material ranges | pale stone backing for the pebble housing, childish ochre brush numerals (font 13) behind the water, no ticks |
 | tide | Bioluminescent tide | dark teal night-sea water, self-lit cyan edge, watery, wetting, plankton sparks (2026-09-23), exempt from material ranges | near-black vial, dim steel graduations and digits behind the glass |
 | phosphor | Phosphor sample | pale green watery solution (translucent), wetting, no gas (2026-09-23) | clear lab vial on white paper, marker labels on the glass; see-through meniscus (`surfaceFill` 0.25, `surfaceBlick` 0.8) |
 | urine | Urine sample | tinted amber (translucent), watery, wetting | specimen cup graduations on the glass |
