@@ -10,6 +10,7 @@ int width();                                     // its canvas, PANEL_W x PANEL_
 int height();
 void layout(const Params &design, uint32_t gen, int &H, int &y);   // its minutes tube: rows, top canvas row
 // one physics step; the filtered tilt (TiltInput fields, g / dps) as floats: physics.h is this file's namespace's own
-void step(float along, float across, float gyroAlong, float gyroAcross, float fillTarget, const Params &design, uint32_t gen, float dt);
+// pose: the gain-free physical buoyancy direction (main ImuFilter::pose), x y z
+void step(float along, float across, float gyroAlong, float gyroAcross, float poseX, float poseY, float poseZ, float fillTarget, const Params &design, uint32_t gen, float dt);
 void render(uint16_t *strip, const Params &design, uint32_t gen, const int16_t **lensRows);       // strip stride = width()
 }

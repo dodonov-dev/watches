@@ -7,14 +7,15 @@
 #include "physics.h"
 
 // Fizz animation state (sim: stepFizz), call at PHYS_HZ; each tube on its own params (pH hours, pM minutes: boardParams
-// at its px scale).
-void stepFizz(const Params &pH, const Params &pM, float dt, float along = 0, float across = 0, float agitation = 0);
+// at its px scale). along / across: the legacy (gain, deadzone) tilt the landscape kernel reads; pose: the gain-free
+// physical buoyancy direction (ImuFilter::pose, physics.h), all the vertical watch's kernel reads.
+void stepFizz(const Params &pH, const Params &pM, float dt, float along, float across, float agitation, const Pose &pose);
 #if TUBE_COUNT == 3
-void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, float along = 0, float across = 0, float agitation = 0);
+void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, float along, float across, float agitation, const Pose &pose);
 #endif
 // One tube's share of stepFizz (idx 0 hours, 1 minutes, 2 seconds): the tubes are independent, so they may step at once
 // on two cores.
-void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation);
+void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation, const Pose &pose);
 // Largest fizz count requested past the fixed pool since boot (0 = everything fitted); main reports it.
 int fizzOverflow();
 // Vertical-watch births tube idx postponed since boot because no bubble of the drawn size fits the bore (0 = none).

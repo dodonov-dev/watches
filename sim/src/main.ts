@@ -559,7 +559,7 @@ function physics(dt: number) {
   if (TUBE_COUNT === 3) followClock(tubes[2], f.seconds, dt, clockSet);
   clockSet = false;
   tubes.forEach((t, i) => stepTube(t, input, ps[i], dt, TUBE_PX_SCALE[i]));
-  stepFizz(ps, dt, input.along, input.across, hours.agitation);
+  stepFizz(ps, dt, input.along, input.across, hours.agitation, imuFilter.pose);   // pose: gain-free, the vertical kernel's
 }
 function frame(now: number) {
   requestAnimationFrame(frame);
