@@ -3673,6 +3673,14 @@ static inline float fizzHideY(const Params &p, float v) { float w = fizzWall(p);
 // Random row with the whole bubble in the bore, so bubbles never sit half behind the wall.
 static inline float fizzSpawnY(const Params &p, int H, float v) { float lo = fizzWall(p) + fizzR(p, v), hi = H - lo; return hi <= lo ? H / 2.0f : lo + frand() * (hi - lo); }
 // Surface front `surf` (liquid frame) at float row y, in u = side * x: where a parked bubble's centre sits.
+// The fizz stepping (from foamFront to stepFizz, both kernels; the vertical one is bit-matched to the sim's float32 port,
+// check_fizz_steps --sim) without fused multiply-add: the LCD build contracts float products into madd.s by default,
+// and which products a rewrite fuses then moves the board's last bits off the host's (tilted-fizz point 9: the X
+// sequence from frame 239). Pinned off here, every function and lambda of the region (0 madd.s / msub.s, objdump),
+// the board computes what the host's -ffp-contract=off build does (check_board_steps.py). Helpers defined in here and
+// used outside (fizzEndClampX: its own pin) do not inline into differently optimised callers.
+#pragma GCC push_options
+#pragma GCC optimize("fp-contract=off")
 FIZZ_IRAM static float foamFront(const float *surf, int H, float y, int side) {
   const float yc = clampf(y, 0, H - 1); const int i = (int)ffloor(yc), j = i + 1 < H ? i + 1 : H - 1;
   return side * (surf[i] + (surf[j] - surf[i]) * (yc - i));
@@ -4034,10 +4042,13 @@ static inline float fizzEndKS(const FizzLid *l, int s, float y, float z, float a
 // Side s's protrusion factor for the support: the lid's pf (P = r pf, the same on every row), or -1: the band rule
 // (P = r max(0.3, 1 - B / 2r)).
 static inline float fizzEndLp(const FizzLid *l, int s) { return l && l->on && s > 0 ? l->pf : -1.0f; }
+// The rim's protrusion on a row of stroke b (inv2r = 1 / 2r): the lid's r lp (lp >= 0), else the band's r max(0.3, 1 - b / 2r).
+static inline float fizzEndP(float r, float b, float inv2r, float lp) { return lp >= 0 ? r * lp : r * fmx(0.3f, 1 - b * inv2r); }
 // The lid's rule from the frame's T, tau (>= 0), delta (fizzSinCos: the sim's float32 port gives the same bits).
 static FizzLid fizzLidOf(float T, float tau, float delta, float R) {
   if (!(T > 0)) return {false, 0, 0, 0};
-  float st, ct, sd, cd; fizzSinCos(tau, st, ct); fizzSinCos(fabsf(delta), sd, cd);
+  float st, ct, sd, cd; fizzSinCos(fabsf(tau), st, ct); fizzSinCos(fabsf(delta), sd, cd);   // tau signed (< 0 forward)
+  if (tau < 0) st = -st;
   const float td = (delta < 0 ? -sd : sd) / cd;
   return {true, R, fmx(0, 1 - ct + st * td), st / ct};
 }
@@ -4053,7 +4064,7 @@ FIZZ_IRAM static void fizzEndSupportE(const float *S, const float *B, int H, int
   const float inv2r = 0.5f / r;
   if (a0 > b0) {
     const float Bc = rowLerp(B, H, yr);
-    uc = foamFront(S, H, yr, s) + k * Bc - r; ut = uc + (lp >= 0 ? r * lp : r * fmx(0.3f, 1 - Bc * inv2r));
+    uc = foamFront(S, H, yr, s) + k * Bc - r; ut = uc + fizzEndP(r, Bc, inv2r, lp);
     return;
   }
   float c = INFINITY, t = INFINITY;
@@ -4066,7 +4077,7 @@ FIZZ_IRAM static void fizzEndSupportE(const float *S, const float *B, int H, int
   } else {
     for (int iy = a0; iy <= b0; iy++) {
       const float dy = (iy - yr) * m, h = sqrtExact(fmx(0, r * r - dy * dy)), L = s * S[iy] + k * B[iy];
-      c = fmn(c, L - h); t = fmn(t, L + r * fmx(0.3f, 1 - B[iy] * inv2r) - h);
+      c = fmn(c, L - h); t = fmn(t, L + fizzEndP(r, B[iy], inv2r, -1) - h);
     }
   }
   uc = c; ut = t;
@@ -4081,15 +4092,18 @@ static inline void fizzEndSupport(const float *S, const float *B, int H, int s, 
 // decision a bound settles skips the support (the same answers, bit for bit), otherwise it computes it as before. No rows
 // (the support's centre-row path) or no radius: -inf (no bound). Its own function: none of its roundings reach a caller.
 #define FIZZ_END_SLACK 1e-2f
+// kOut: its k (fizzEndKS), for the caller's support (the same k bit for bit, whatever a compiler contracts: review 4).
 static void __attribute__((noinline)) fizzEndLow(const float *S, const float *B, int H, int s, float y, float z, float a, float yr, float r,
-                                                 float &lc, float &lt, const FizzLid *lid = nullptr) {
+                                                 float &lc, float &lt, const FizzLid *lid = nullptr, float *kOut = nullptr) {
+  const float k = fizzEndKS(lid, s, y, z, a, r, B, H, yr);
+  if (kOut) *kOut = k;
   const int a0 = (int)fmx(0, fceil(yr - r)), b0 = (int)fmn(H - 1, ffloor(yr + r));
   if (a0 > b0 || !(r > 0)) { lc = lt = -INFINITY; return; }
-  const float k = fizzEndKS(lid, s, y, z, a, r, B, H, yr), inv2r = 0.5f / r, lp = fizzEndLp(lid, s);
+  const float inv2r = 0.5f / r, lp = fizzEndLp(lid, s);
   float c = INFINITY, t = INFINITY;
   for (int iy = a0; iy <= b0; iy++) {
     const float dy = iy - yr, q = dy * dy * inv2r - r, L = s * S[iy] + k * B[iy];
-    c = fmn(c, L + q); t = fmn(t, L + (lp >= 0 ? r * lp : r * fmx(0.3f, 1 - B[iy] * inv2r)) + q);
+    c = fmn(c, L + q); t = fmn(t, L + fizzEndP(r, B[iy], inv2r, lp) + q);
   }
   lc = c - FIZZ_END_SLACK; lt = t - FIZZ_END_SLACK;
 }
@@ -4103,7 +4117,7 @@ static void __attribute__((noinline)) fizzEndLow(const float *S, const float *B,
 static float __attribute__((noinline)) fizzEndLowBox(const float *S, const float *B, int H, int s, float y0, float z0, float h, float a, float r,
                                                      float bias, const FizzLid *lid = nullptr) {
   const float yLo = y0 - h, yHi = y0 + h, zLo = z0 - h, rLo = fizzRowOf(H, yLo, a, bias) - 1e-3f, rHi = fizzRowOf(H, yHi, a, bias) + 1e-3f;
-  if (!(r >= 0.5f) || !(rLo >= 0) || !(rHi <= H - 1)) return -INFINITY;   // r >= 0.5: every row interval of 2r holds a row
+  if (!(a > 0) || !(r >= 0.5f) || !(rLo >= 0) || !(rHi <= H - 1)) return -INFINITY;   // r >= 0.5: every row interval of 2r holds a row
   const int a0 = (int)fmx(0, fceil(rLo - r)), b0 = (int)fmn(H - 1, ffloor(rHi + r));
   if (a0 > b0) return -INFINITY;
   // kLo: d = zc - z at most zcMax - zLo, w = min(zc, B0 + r) at least min(zcMin, B0min + r)
@@ -4127,7 +4141,7 @@ static float __attribute__((noinline)) fizzEndLowBox(const float *S, const float
   float t = INFINITY;
   for (int iy = a0; iy <= b0; iy++) {
     const float d = iy < rLo ? rLo - iy : iy > rHi ? iy - rHi : 0, b = B[iy];
-    t = fmn(t, s * S[iy] + (b >= 0 ? kLo : 1) * b + (lp >= 0 ? r * lp : r * fmx(0.3f, 1 - b * inv2r)) - r + d * d * inv2r);
+    t = fmn(t, s * S[iy] + (b >= 0 ? kLo : 1) * b + fizzEndP(r, b, inv2r, lp) - r + d * d * inv2r);
     bad = b == b ? bad : 1;
   }
   return bad ? -INFINITY : t - FIZZ_END_SLACK;
@@ -4216,9 +4230,8 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   auto pz = [&](int s) { return bd ? bd[s].z : 0.0f; };   // vertical: the body's depth (landscape: unused)
   auto gy = [&](int s) { return bd ? yc + bd[s].y : fz[s].y; };
   // vertical: the endpoint target of a body (y, z) on display row yr (k from the body)
-  auto endAt = [&](float y, float z, float yr, float r) {
-    float uc, ut; fizzEndSupport(surf, band, H, side, yr, r, fizzEndKS(lid, side, y, z, R - r, r, band, H, yr), uc, ut, lp); return ut;
-  };
+  auto endK = [&](float yr, float r, float k) { float uc, ut; fizzEndSupport(surf, band, H, side, yr, r, k, uc, ut, lp); return ut; };
+  auto endAt = [&](float y, float z, float yr, float r) { return endK(yr, r, fizzEndKS(lid, side, y, z, R - r, r, band, H, yr)); };
   // vertical: the bound of slot s's target at its body now (<= front: foamLowNow)
   auto lowNow = [&](int s, float r) { return foamLowNow(w, fz[s], bd[s], s, r, surf, band, H, side, R, bias0, lid); };
   auto front = [&](int s, float y, float r) {
@@ -4242,11 +4255,11 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
       // holds): un = min(A, ut). The target's bound (fizzEndLow, <= ut) at or above A and eLo settles both: un = A, no
       // shortening, ut unread.
       const float A = fmx(u, w.uS[s] - back), need = fmx(A, w.eLo[s]);
-      float lc, lt;
+      float lc, lt, kp;
       if (fabsf(yp - w.yS[s]) <= w.LBh[s] && fabsf(zp - w.zS[s]) <= w.LBh[s] && w.LB[s] >= need) un = A;   // its box's bound (yr: fizzRowOf of yp)
-      else if (fizzEndLow(surf, band, H, side, yp, zp, a, yr, r, lc, lt, lid), lt >= need) un = A;
+      else if (fizzEndLow(surf, band, H, side, yp, zp, a, yr, r, lc, lt, lid, &kp), lt >= need) un = A;
       else {
-        float ut = endAt(yp, zp, yr, r);
+        float ut = endK(yr, r, kp);   // fizzEndLow's k
         if (ut < w.eLo[s]) {   // the move would sink its endpoint faster than it may sink: shortened from where it is (t 0)
           const float y0 = bd[s].y, z0 = bd[s].z, dy = yp - y0, dz = zp - z0; float lo = 0, hi = 1;
           for (int it = 0; it < FIZZ_END_BISECT; it++) {
@@ -4471,6 +4484,23 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
 // popping frees its slot. A slug sliding off the spring leaves it dry, and its births go scattered instead
 // (springScatter). The glass holds a spring's bubbles (see SPRING_BACK). See sim stepFizz.
 int fizzOverflow() { return fizzOverflowPeak.load(std::memory_order_relaxed); }
+// The stepped fizz state of tube idx (live slots' Fizz words, spring clocks, slot count) as one FNV-1a hash: the board's
+// `X` lines carry it, so the stepper is compared with the host's (check_fizz_steps.py HARNESS fizzHash: the same
+// formula) apart from the strips, whose render the board contracts into madd.s and the host does not.
+uint32_t fizzStateHash(int idx) {
+#if TUBE_COUNT == 3
+  if (idx == 2 && !tubeS) return 0;
+#endif
+  const Tube &t = tubeAt(idx);
+  // the floats' bytes in memory order (__builtin_bit_cast: a uint16_t view of them is undefined under strict aliasing,
+  // and the LCD build then hashed stale words)
+  auto fnv = [](uint32_t h, float f) { const uint32_t u = __builtin_bit_cast(uint32_t, f);
+    for (int b = 0; b < 32; b += 8) h = (h ^ ((u >> b) & 0xff)) * 16777619u; return h; };
+  uint32_t h = 2166136261u;
+  for (int k = 0; t.fizz && k < t.fizzN; k++) { const Fizz &f = t.fizz[k]; h = fnv(fnv(fnv(fnv(fnv(h, f.x), f.y), f.v), f.life), f.z); }
+  static_assert(sizeof(Fizz) == 5 * sizeof(float), "Fizz: five floats");
+  return h ^ fnv(fnv(2166136261u, t.springScatter), t.springClock) * 31u ^ (uint32_t)t.fizzN;
+}
 int fizzCounts(int idx, int &foam, int &slots) {
   foam = slots = 0;
 #if TUBE_COUNT == 3
@@ -4652,9 +4682,9 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
         if (!farFrom(side, u, f.y, r, 0) && u > discFitLow(S, H, f.y, r, side)) { const float lim = discFit(S, H, f.y, r, side); if (u > lim) { f.x = side * lim; c |= FIZZ_C_END; } }
       } else {
         bool zone = false; float uc = INFINITY, ut = INFINITY;
-        float lc, lt;   // else short of uc - FOAM_CATCH and of ut (k B, P >= 0); then of uc's bound (lc <= uc): uc, ut unread
-        if (!farFrom(side, u, f.y, r, FOAM_CATCH) && u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH && (fizzEndLow(S, B, H, side, y, z, a, f.y, r, lc, lt, lid), u > lc - FOAM_CATCH)) {
-          fizzEndSupport(S, B, H, side, f.y, r, fizzEndKS(lid, side, y, z, a, r, B, H, f.y), uc, ut, fizzEndLp(lid, side));
+        float lc, lt, ke;   // else short of uc - FOAM_CATCH and of ut (k B, P >= 0); then of uc's bound (lc <= uc): uc, ut unread
+        if (!farFrom(side, u, f.y, r, FOAM_CATCH) && u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH && (fizzEndLow(S, B, H, side, y, z, a, f.y, r, lc, lt, lid, &ke), u > lc - FOAM_CATCH)) {
+          fizzEndSupport(S, B, H, side, f.y, r, ke, uc, ut, fizzEndLp(lid, side));   // fizzEndLow's k
           zone = u > uc - FOAM_CATCH;
         }
         if (zone) {   // its own endpoint zone: foam, or (no foam) it pops
@@ -4674,9 +4704,9 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
         if (u > discFitLow(Ss, H, f.y, r, s)) { const float lim = discFit(Ss, H, f.y, r, s); if (u > lim) { f.x = s * lim; c |= FIZZ_C_END; } }
       } else if (u > discFitLow(Ss, H, f.y, r, s)) {   // else short of its target (every row's L + P - h > s S - r)
         const float *const Bs = s > 0 ? t.strokeR : t.strokeL;
-        float lc, lt; fizzEndLow(Ss, Bs, H, s, y, z, a, f.y, r, lc, lt, lid);
+        float lc, lt, ke; fizzEndLow(Ss, Bs, H, s, y, z, a, f.y, r, lc, lt, lid, &ke);
         if (u > lt) {   // else short of its target's bound (lt <= ut)
-          float uc, ut; fizzEndSupport(Ss, Bs, H, s, f.y, r, fizzEndKS(lid, s, y, z, a, r, Bs, H, f.y), uc, ut, fizzEndLp(lid, s));
+          float uc, ut; fizzEndSupport(Ss, Bs, H, s, f.y, r, ke, uc, ut, fizzEndLp(lid, s));
           if (u > ut) f.x = s * ut;
         }
       }
@@ -4866,6 +4896,7 @@ void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, fl
 
 // Magnification for a bubble of radius r at float row y: mean of the row table over the rows the
 // pre-squashed sprite covers, iterated once (see sim fizzMag). Single-row reads snap between rows.
+#pragma GCC pop_options
 static float fizzMag(const float *mag, int H, float y, float r) {
   float m = 1;
   for (int it = 0; it < 2; it++) {
@@ -4935,7 +4966,8 @@ static float lensRow(float d, const Params &p) {
 // Cox–Voinov. side = across follower (sag ∝ Bond number), cap = wobble, k = per-end short-column limit
 // (sim capScale).
 #define MENISCUS_SAG_K 1.0f
-CapShape Tube::capShape(const Params &p, float len, float tilt, float side, float cap, float pin, float lineV) const {
+// Pinned like the fizz stepping (no fused multiply-add): its shape feeds the fizz's frame inputs (drawTube).
+__attribute__((optimize("fp-contract=off"))) CapShape Tube::capShape(const Params &p, float len, float tilt, float side, float cap, float pin, float lineV) const {
   const ContactLeads cl = contactLeads(p, len, tilt, MM_PER_PX_AT(TUBE_PX_SCALE(idx)));
   const float R = cl.R, rad = (float)M_PI / 180, PI = (float)M_PI;
   // the held ring's lead inside the band, back to its angle (lead = R·tan(pi/4 - theta/2))
@@ -4993,13 +5025,26 @@ inline float Tube::wallXL(int ry, float xs, float tanA, const CapShape &c) const
 // back tilt (TubeState.backTilt), e = viewElevation; 0 = off (landscape, or viewElevation 0).
 // lidAngles: tau clamped to poseBackTilt's range (t) and delta = e - t, the view's elevation above the screen normal.
 static inline void lidAngles(const Params &p, float tau, float &t, float &d) {
-  const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad;
-  t = fmn(BACK_TILT_MAX_DEG * rad, fmx(0, tau)); d = e - t;   // poseBackTilt's range
+  const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad, hi = BACK_TILT_MAX_DEG * rad;
+  t = fmn(hi, fmx(-hi, tau)); d = e - t;   // poseBackTilt's range (signed: < 0 forward)
 }
+// The viewing angle is unknown: the lid assumes the eye at viewElevation e and scales with the stand's tilt tau (sim
+// lidSlope): far back the eye sits below the screen normal and looks along the tube's end, the capillary-held end
+// meniscus edge-on, so the lid fades out, 1 - smoothstep(e + LID_BACK_FADE0, e + LID_BACK_FADE0 + LID_BACK_FADE_W, tau);
+// tipped forward (the user tilts it to look in) it grows, 1 + LID_FWD_GAIN smoothstep(0, LID_FWD_FULL, -tau).
+#define LID_BACK_FADE0 10.0f
+#define LID_BACK_FADE_W 25.0f
+#define LID_FWD_GAIN 0.5f
+#define LID_FWD_FULL 30.0f
+static inline float lidSmooth(float x) { const float t = clampf(x, 0, 1); return t * t * (3 - 2 * t); }
 static inline float lidSlope(const Params &p, float tau) {
   if (!p.vertical || !(p.viewElevation > 0)) return 0;
+  const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad;
   float t, d; lidAngles(p, tau, t, d);
-  return tanf(t) + tanf(d);
+  const float geo = tanf(t) + tanf(d);
+  const float back = 1 - lidSmooth((t - (e + LID_BACK_FADE0 * rad)) * (1 / (LID_BACK_FADE_W * rad)));
+  const float fwd = 1 + LID_FWD_GAIN * lidSmooth(-t * (1 / (LID_FWD_FULL * rad)));
+  return fmx(1e-6f, geo * back * fwd);   // on stays on (a faded lid is a flat line, not the side view's band: no jump)
 }
 
 
@@ -5294,7 +5339,9 @@ const uint16_t *Tube::effectTable(EffectTable &T, const Params &p, const uint16_
   return T.c;
 }
 
-void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN) {
+// No fused multiply-add here (its pixel kernels keep theirs): the fizz's frame inputs it publishes (fizzSurf / strokes,
+// fizzLen, the lid) are then the host's, so the board's fizz state matches the host's (`X`, check_fizz_steps HARNESS).
+__attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN) {
   TU_T0();
   TubeState s = st;
   const bool mir = mirrored(p);
@@ -5340,7 +5387,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // >= L - 0.5), over 2 R tan tau of fill: the fill over which the level plane meets the glass (at least 1 px).
   const float lidT = mir || !(hasLiquid && p.surfaceBand > 0) ? 0.0f : lidSlope(p, st.backTilt), lidR = rc.boreR, lidYc = (H - 1) / 2.0f;   // only where the band is drawn
   float lidTau = 0, lidDelta = 0, lidEnd = 1;
-  if (lidT > 0) { lidAngles(p, st.backTilt, lidTau, lidDelta); lidEnd = clampf((L - 0.5f - xe) / fmx(1, 2 * lidR * tanf(lidTau)), 0, 1); }
+  if (lidT > 0) { lidAngles(p, st.backTilt, lidTau, lidDelta); lidEnd = clampf((L - 0.5f - xe) / fmx(1, 2 * lidR * fabsf(tanf(lidTau))), 0, 1); }
   fizzLidT = lidT; fizzLidTau = lidT > 0 ? lidTau : 0; fizzLidDelta = lidT > 0 ? lidDelta : 0;   // the stepper's lid inputs (with strokeR)
   lid = fizzLidOf(fizzLidT, fizzLidTau, fizzLidDelta, boreR(p));
   for (int ry = 0; ry < H; ry++) {
@@ -6268,7 +6315,8 @@ static int fizzMaskWorst() {
 // across (m = fizzMag: the lens magnifies the rows, so the sprite is pre-squashed). Once per bubble; an edge farther
 // than r from every row of the footprint (u <= min s S - r < every row's L + P - h, P >= 0.3 r) skips its roots.
 // kR / kL: its endpoint coefficients (the body, the band at its row; the veil's front exemption). See sim fizzEndClampX.
-static inline float fizzEndClampX(const Tube &t, const Params &p, const Fizz &f, const FizzBody &bd, const float *mag, float &kR, float &kL) {
+// Pinned like the stepper (no fused multiply-add; its helpers inline into it): the drawn endpoint the host computes.
+static float __attribute__((noinline, optimize("fp-contract=off"))) fizzEndClampX(const Tube &t, const Params &p, const Fizz &f, const FizzBody &bd, const float *mag, float &kR, float &kL) {
   const int H = t.H; const float r = fizzR(p, f.v), a = boreR(p) - r, m = fizzMag(mag, H, f.y, r), ry = r / m;
   const FizzLid *const lid = t.lid.on ? &t.lid : nullptr;
   kR = fizzEndKS(lid, 1, bd.y, bd.z, a, r, t.strokeR, H, f.y); kL = fizzEndK(bd.y, bd.z, a, r, rowLerp(t.strokeL, H, f.y));

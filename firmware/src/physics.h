@@ -53,7 +53,8 @@ struct Pose { float x, y, z; };
 #define POSE_DEFAULT Pose{0, 0, 1}   // before any valid sample: face up (the legacy zero along / across: flat)
 bool updatePose(Pose &pose, float along, float across, float normal);
 // Desk view: the stand's back tilt tau = atan2(z, x) of the pose (the top end leaning away from the viewer), rad,
-// clamped to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). See sim poseBackTilt.
+// signed: < 0 tipped forward (the screen toward the viewer); clamped to +-BACK_TILT_MAX_DEG (face up / down, turned over:
+// the caps). See sim poseBackTilt.
 #define BACK_TILT_MAX_DEG 45.0f
 float poseBackTilt(const Pose &pose);
 

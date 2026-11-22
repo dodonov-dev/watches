@@ -403,11 +403,14 @@ assert.ok(sloshCases === 864, `slosh cases: ${sloshCases}`);
 // T = tan tau + tan(e - tau); off (viewElevation 0) byte-identical to the side view; the marks behind it see liquid only
 // where the path has liquid (most at the front line, none at the back line).
 const lidBase = { vertical: true, freeLiquid: false };
-const lidT = (e, tau) => Math.tan(tau) + Math.tan(e * Math.PI / 180 - tau);
+// T = (tan τ + tan(e − τ)) · (1 − smoothstep(e + 10°, e + 35°, τ)) · (1 + 0.5 smoothstep(0°, 30°, −τ)), τ in ±45° (render lidSlope)
+const lidSS = (x) => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); }, DEG = Math.PI / 180;
+const lidT = (e, tau) => { const t = Math.max(-45 * DEG, Math.min(45 * DEG, tau));
+  return Math.max(1e-6, (Math.tan(t) + Math.tan(e * DEG - t)) * (1 - lidSS((t - (e + 10) * DEG) / (25 * DEG))) * (1 + 0.5 * lidSS(-t / (30 * DEG)))); };
 const lidOff = render('lid-off-ref', lidBase), lidZero = render('lid-off-0', { ...lidBase, viewElevation: 0 }, { backTilt: 0.3 });
 assert.equal(delta(lidOff, lidZero), 0, 'viewElevation 0 must be the side view exactly');
 let lidScenes = 0;
-for (const e of [10, 20, 30, 60]) for (const backTilt of [0, 0.26, 0.6, 0.785, 1.2]) for (const acrossTilt of [0, 0.6, -0.6]) for (const fillTarget of [0.03, 0.5, 0.97]) {
+for (const e of [10, 20, 30, 60]) for (const backTilt of [-0.6, -0.3, 0, 0.26, 0.6, 0.785, 1.2]) for (const acrossTilt of [0, 0.6, -0.6]) for (const fillTarget of [0.03, 0.5, 0.97]) {
   const changes = { ...lidBase, viewElevation: e }, state = { backTilt, acrossTilt, fillTarget };
   const tag = JSON.stringify({ e, ...state }), p = { ...base, ...changes }, H = R.tubeLayout(p).H, Rb = (H - 1) / 2 - p.glassWall;
   // the side view of the same state: its time-edge profile at the centre row is the edge centre xe
@@ -415,11 +418,11 @@ for (const e of [10, 20, 30, 60]) for (const backTilt of [0, 0.26, 0.6, 0.785, 1
   const side = R.markBounds[0].band.xm[0][30];
   const f = render(`lid-${e}-${backTilt}-${acrossTilt}-${fillTarget}`, changes, state);
   if (!(e === 20 || e === 60) || acrossTilt < 0) jobs.pop();   // parity on a subset (the native side builds every job)
-  const b = R.markBounds[0].band, T = lidT(e, Math.min(backTilt, Math.PI / 4));
+  const b = R.markBounds[0].band, T = lidT(e, backTilt);
   assert.ok(b.lid, `lid flag (${tag})`);
   // the full lid where the column has room for it (mid fill: far from the home end and the end glass); budgeted (never
   // taller) at the ends of the fill range
-  const full = fillTarget === 0.5;
+  const full = fillTarget === 0.5 && 2 * T * Rb < side - 1;   // (a tall lid at e 60 tipped forward meets the home end: budgeted)
   if (acrossTilt === 0) {
     assert.ok(Math.abs(b.xm[0][30] + b.w[0][30] - side) < 1e-3, `back apex at the time edge (${tag}: ${b.xm[0][30] + b.w[0][30]} vs ${side})`);
     if (full) assert.ok(Math.abs(b.w[0][30] - 2 * T * Rb) < 1e-3, `lid height 2 T R (${tag}: ${b.w[0][30]} vs ${2 * T * Rb})`);
@@ -455,7 +458,8 @@ for (const e of [20, 30]) {
   const scene = { ...markScene, ...lidBase, viewElevation: e, surfaceFill: 0, surfaceRim: 0, surfaceBlick: 0, tickMinorWidthH: 30, tickMajorWidthH: 30, tickPosH: 0 };
   const f = render(`lid-marks-${e}`, scene, { backTilt: 0.26 }), b = R.markBounds[0].band, xm = b.xm[0][30], w = b.w[0][30], hw = b.hw;
   const g = render(`lid-marks-noticks-${e}`, { ...scene, ticksH: false }, { backTilt: 0.26 });
-  const d = render('lid-marks-dry', { ...scene, surfaceBand: 0 }, { backTilt: 0.26 }); jobs.pop();   // no band: dry past the body
+  // dry past the body: a band below visible opacity (strokeA < 1/255: no lid layers; surfaceBand 0 has no lid at all)
+  const d = render('lid-marks-dry', { ...scene, surfaceBand: 0.002 }, { backTilt: 0.26 }); jobs.pop();
   const at = (fr, x) => fr[30 * 536 + x];
   // under the lid (full pixel past the body ramp) the mark shows its dry share u of what it shows dry, u = 0 at the
   // body's ramp, 1 at the back line (the liquid path thinning to nothing)
@@ -509,6 +513,28 @@ for (const cap of [-4, 4]) for (const fillVel of [0, 10, -10]) {
   const { b } = lidCheck(`cap${cap}-${fillVel}`, {}, state);
   if (cap > 0 || fillVel !== 0) jobs.pop();
   assert.ok(Math.abs(b.xm[0][30] + b.w[0][30] - side) < 1e-3, `back apex at the time edge under a cap (cap ${cap}, fillVel ${fillVel}: ${b.xm[0][30] + b.w[0][30]} vs ${side})`);
+}
+// The stand's tilt (signed, < 0 forward) at e 20: the lid height 2 T R per τ (the user's table), and a continuous sweep
+// of τ from -45° to 45° in 0.25° steps: the centre lid height and the frame move without a jump.
+{
+  const e = 20, Rb = (R.tubeLayout({ ...base, ...lidBase }).H - 1) / 2 - base.glassWall, rows = [];
+  for (const deg of [-30, -10, 0, 13, e + 10, e + 20, e + 35]) {
+    render(`lid-tau-${deg}`, { ...lidBase, viewElevation: e }, { backTilt: deg * DEG });
+    const w = R.markBounds[0].band.w[0][30], T = lidT(e, deg * DEG);
+    assert.ok(Math.abs(w - 2 * T * Rb) < 1e-3, `lid height at tau ${deg} deg: ${w} vs ${2 * T * Rb}`);
+    rows.push(`${deg}° T ${T.toFixed(4)} (${w.toFixed(2)} px)`);
+  }
+  let prev = null, prevW = null, worstW = 0, worstD = 0, worstAt = 0, worstPx = null;
+  for (let q = -900; q <= 900; q++) {   // 0.05 deg steps: the height follows T(tau) exactly, each frame within a rounding step of the last
+    const tau = q * 0.05 * DEG, f = render('lid-sweep', { ...lidBase, viewElevation: e }, { backTilt: tau }); jobs.pop();
+    const w = R.markBounds[0].band.w[0][30];
+    assert.ok(Math.abs(w - 2 * lidT(e, tau) * Rb) < 1e-3, `lid height off T(tau) at ${(tau / DEG).toFixed(2)} deg: ${w}`);
+    if (prev) { worstW = Math.max(worstW, Math.abs(w - prevW)); const dd = Math.abs(w - prevW) <= 0.2 ? delta(prev, f) : 0; if (dd > worstD) {   // (steeper steps: the front line itself moves; its height is checked above) worstD = dd; worstAt = tau / DEG;
+      let k = 0; for (let i = 0; i < f.length; i++) if (delta([f[i]], [prev[i]]) === dd) { k = i; break; } worstPx = [k % 536, Math.floor(k / 536), w]; } }
+    prev = f; prevW = w;
+  }
+  assert.ok(worstD <= 17, `lid frame jumps while tau sweeps: ${worstD}/255 in a 0.05 deg step moving the lid <= 0.2 px, at ${worstAt.toFixed(2)} deg, px ${worstPx}`);
+  console.log(`Desk-view lid tilt (e ${e}): ${rows.join(', ')}; sweep -45..45 deg in 0.05 deg: height = 2 T R throughout, worst step ${worstW.toFixed(3)} px, frame step <= ${worstD}/255 where the lid moves <= 0.2 px.`);
 }
 console.log(`Desk-view lid budget: ${lidBudget} scenes (short slugs, empty / full / closed, remaining, +-cap still and moving) passed.`);
 // parity scenes: the user's look ingredients (light back, see-through wash, blick, bitmap rear digits, residue, a receding

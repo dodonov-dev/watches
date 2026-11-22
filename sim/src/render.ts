@@ -1366,7 +1366,8 @@ const fizzEndSupport32 = (S: Float32Array, B: Float32Array, H: number, s: number
 interface FizzLid { on: boolean; R: number; pf: number; tanT: number }
 function fizzLidOf32(T: number, tau: number, delta: number, R: number): FizzLid {
   if (!(T > 0)) return { on: false, R: 0, pf: 0, tanT: 0 };
-  const [st, ct] = fizzSinCos32(tau), [sd0, cd] = fizzSinCos32(Math.abs(delta)), td = F((delta < 0 ? -sd0 : sd0) / cd);
+  const [st0, ct] = fizzSinCos32(Math.abs(tau)), [sd0, cd] = fizzSinCos32(Math.abs(delta)), td = F((delta < 0 ? -sd0 : sd0) / cd);
+  const st = tau < 0 ? -st0 : st0;   // τ signed (< 0 forward)
   return { on: true, R, pf: Math.max(0, F(F(1 - ct) + F(st * td))), tanT: F(st / ct) };
 }
 function fizzLidK32(y: number, z: number, R: number): number {
@@ -2159,16 +2160,25 @@ function wallXL(ry: number, xs: number, tanA: number, p: Params, c: CapShape, k:
 // (the home edge of a free slug keeps its band); off (0) without vertical or at viewElevation 0.
 const LID_BACK_W = 0.5;   // px: the back contour, thinner than the front rim's 1 px
 /** The lid's slope T (0 = off), in float32 as the firmware's lidSlope. */
-/** [τ clamped to poseBackTilt's range, δ = e − τ] in float32 (firmware lidAngles). */
+/** [τ clamped to poseBackTilt's range (signed: < 0 forward), δ = e − τ] in float32 (firmware lidAngles). */
 export function lidAngles(p: Params, tau: number): [number, number] {
-  const F = Math.fround, rad = F(F(Math.PI) / 180);
-  const e = F(Math.min(80, p.viewElevation) * rad), t = F(Math.min(F(BACK_TILT_MAX_DEG * rad), Math.max(0, tau)));   // poseBackTilt's range
+  const F = Math.fround, rad = F(F(Math.PI) / 180), hi = F(BACK_TILT_MAX_DEG * rad);
+  const e = F(Math.min(80, p.viewElevation) * rad), t = F(Math.min(hi, Math.max(-hi, tau)));   // poseBackTilt's range
   return [t, F(e - t)];
 }
+// The viewing angle is unknown: the lid assumes the eye at viewElevation e and scales with the stand's tilt τ (internal
+// constants, firmware LID_*): far back the eye sits below the screen normal and looks along the tube's end, the
+// capillary-held end meniscus edge-on, so the lid fades out, 1 − smoothstep(e + 10°, e + 35°, τ); tipped forward (the
+// user tilts it to look in) it grows, 1 + 0.5 smoothstep(0°, 30°, −τ) (≈ 1.5× at −30°). Float32, + − × only.
+const LID_BACK_FADE0 = 10, LID_BACK_FADE_W = 25, LID_FWD_GAIN = 0.5, LID_FWD_FULL = 30;   // degrees, gain
+const smooth32 = (x: number): number => { const F = Math.fround, t = x < 0 ? 0 : x > 1 ? 1 : x; return F(F(t * t) * F(3 - F(2 * t))); };
 export function lidSlope(p: Params, tau: number): number {
   if (!p.vertical || !(p.viewElevation > 0)) return 0;
-  const F = Math.fround, [t, d] = lidAngles(p, tau);
-  return F(F(Math.tan(t)) + F(Math.tan(d)));
+  const F = Math.fround, rad = F(F(Math.PI) / 180), [t, d] = lidAngles(p, tau), e = F(Math.min(80, p.viewElevation) * rad);
+  const geo = F(F(Math.tan(t)) + F(Math.tan(d)));
+  const back = F(1 - smooth32(F(F(t - F(e + F(LID_BACK_FADE0 * rad))) * F(1 / F(LID_BACK_FADE_W * rad)))));
+  const fwd = F(1 + F(LID_FWD_GAIN * smooth32(F(F(-t) * F(1 / F(LID_FWD_FULL * rad))))));
+  return Math.max(F(1e-6), F(F(geo * back) * fwd));   // on stays on (a faded lid is a flat line, not the side view's band: no jump)
 }
 
 /** Stable per-column streak factor 0.82..1 for the dried traces — a subtle texture, not stripes.
@@ -2274,7 +2284,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   // closes against the end glass (xe ≥ L − 0.5) over 2 R tan τ of fill (at least 1 px). Firmware drawTube.
   const lidT = mir || !(hasLiquid && p.surfaceBand > 0) ? 0 : lidSlope(p, state.backTilt), lidH = new Float32Array(H), lidR = boreR(p), lidYc = (H - 1) / 2;
   const [lidTau, lidDelta] = lidT > 0 ? lidAngles(p, state.backTilt) : [0, 0];
-  const lidEnd = lidT > 0 ? Math.max(0, Math.min(1, (L - 0.5 - xe) / Math.max(1, 2 * lidR * Math.tan(lidTau)))) : 1;
+  const lidEnd = lidT > 0 ? Math.max(0, Math.min(1, (L - 0.5 - xe) / Math.max(1, 2 * lidR * Math.abs(Math.tan(lidTau))))) : 1;
   fizzLidT[idx] = lidT; fizzLidTau[idx] = lidTau; fizzLidDelta[idx] = lidDelta;   // the stepper's lid inputs (with the strokes)
   for (let ry = 0; ry < H; ry++) {
     let ex: number;

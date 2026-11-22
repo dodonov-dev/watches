@@ -1034,3 +1034,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   (240: ~16 placements a foam bubble a step); a gather costs ~1100 cycles (grid range scan, PSRAM lists).
 - Desk-view lid fizz: P = r max(0, 1 - cos tau + sin tau tan delta) is clamped at 0 (tau well past e makes it negative); sigma_y under the lid is the mid line's row slope (the ring), the dish's own rise toward the side walls is not published there.
 - Desk-view lid: the closed-end transition shrinks the lid over 2 R tan tau of fill (a geometric stand-in for the plane meeting the end glass, not a volume model).
+- Board vs host fizz state (`X` state hashes, seqhost-style host build, contract off): equal through frame 119 of 350 on the board look and the lid fixture, then the hours tube differs in X's pitching phase (2nd foam wave). Unproven cause; likely newlib vs glibc libm in physics.cpp (asinf / cosf / sinf of the contact leads and tilt) - a libm-free physics path would settle it.
+- Board `X` strip hashes never matched the host's (the render's pixel kernels keep madd.s); only the new state hashes are host-comparable.
+- check_board_steps.py is a board A/B tool; a --host mode (build the seq harness with the board's X seed, compare state hashes) would make the host == board check one command.

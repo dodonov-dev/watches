@@ -991,6 +991,8 @@ static void handleLine(char *line) {
         for (int i = 0; i < TUBE_COUNT; i++) out.printf(" %08lx", (unsigned long)hash[i]);
         out.print(" fizz");
         for (int i = 0; i < TUBE_COUNT; i++) { int f, sl; const int live = fizzCounts(i, f, sl); out.printf(" %d/%d", live, f); }
+        out.print(" state");   // the stepped fizz state: comparable with the host's (the strips are not: the board contracts the render)
+        for (int i = 0; i < TUBE_COUNT; i++) out.printf(" %08lx", (unsigned long)fizzStateHash(i));
         out.println();
         delay(1);   // the idle task (task watchdog)
         diag_feed();

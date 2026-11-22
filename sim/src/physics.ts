@@ -54,12 +54,13 @@ export function phoneTilt(betaDeg: number, gammaDeg: number, vertical: boolean):
 }
 /** Before any valid sample: face up (what the legacy zero along / across means: flat on the table). */
 export const POSE_DEFAULT: Readonly<Pose> = { x: 0, y: 0, z: 1 };
-/** Desk view: the stand's back tilt τ = atan2(z, x) of the pose (the top end leaning away from the viewer), rad, clamped
- *  to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). In float32 as physics.cpp. */
+/** Desk view: the stand's tilt τ = atan2(z, x) of the pose, rad, signed: > 0 back (the top end leaning away from the
+ *  viewer), < 0 forward (the screen tipped toward the viewer); clamped to ±BACK_TILT_MAX_DEG (face up / down, turned over:
+ *  the caps). In float32 as physics.cpp. */
 export const BACK_TILT_MAX_DEG = 45;
 export function poseBackTilt(pose: Readonly<Pose>): number {
   const F = Math.fround, t = F(Math.atan2(F(pose.z), F(pose.x))), hi = F(F(BACK_TILT_MAX_DEG * F(Math.PI)) / 180);
-  return t > 0 ? (t < hi ? t : hi) : 0;
+  return t > hi ? hi : t < -hi ? -hi : t;
 }
 /** Sets `pose` to normalize(-along, -across, normal) and returns true; a vector shorter than POSE_MIN_G or not
  *  finite leaves `pose` as it was (the last valid orientation) and returns false. Same maths in physics.cpp. */
