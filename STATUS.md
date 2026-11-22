@@ -1,6 +1,22 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-22 (tilted fizz point 8: surface pulse)_
+_Last update: 2026-11-22 (tilted fizz point 7: depth presentation)_
+
+## Tilted fizz point 7: depth presentation (2026-11-22), branch `tilted_rise`, host only
+
+- Vertical only (landscape byte-identical): two passes over the pool, back half (tint level >= 2, body z <= 0) then front
+  half, slot order within each (sim drawTube step 5, firmware planFizz: the tile band lists keep the plan's order). Veil
+  opacity x (1 - k) for every vertical bubble (fizzVeilK: foam its surface's k, a free bubble the nearer surface's; k a
+  while popping). Pinpoint weight fizzBlick (1 - zc)^2, zc = (a - z) / 2a continuous from the body (none on the back glass).
+- Tint stays on the 4 cached levels: board look per level step 1/2/1 565 LSB (R/G/B, ~8/255) at every light angle, the
+  pinpoint colour 1/1/1; the full front-to-back range is 3-4 LSB, so interpolation could only halve the green steps. Not
+  done. Depth at wall contact: back 15 job, 92 contacts, |dz| on the contact step <= a free step's, 0 level changes there.
+- Proof: check_render_frames (also --tiles) byte-identical (13136 strips, no vertical scenes); check_fizz_steps --reference: only
+  'spring, vertical' pixels differ (state identical); check_board_render 320w8-8 (+ --tiles), 240f, amoled191 output
+  identical to tilted_rise (76/78: cola, malt known; board look 0 > 12/255); check_fizz_steps --sim lockstep 16/16,
+  --free 14/16 (the two landscape-kernel jobs, as before). Scratch native harness: front/back pair on one spot is
+  slot-order invariant, the front's full ring shows over the back (before: the back's); tiles == strip on 176 frames.
+- Builds: lcd316@320w8-8 RAM +0, IRAM/DIRAM +148 B, flash +264 B; amoled191 RAM +0, flash +332 B. Not flashed.
 
 ## Tilted fizz point 8: the pulse where fizz meets the surface (2026-11-22), branch `tilted_rise`, host only
 
