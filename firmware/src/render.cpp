@@ -1328,9 +1328,10 @@ static_assert(sizeof(FizzBody) == 12, "FizzBody: 12 B a slot");
 // bubble glides onto the surface), how far short of the profile a free bubble's rim is caught (or recycled, at
 // a surface foam can't form on), how much a concave surface band veils the foam behind it at the profile.
 #define FOAM_POP_T 0.3f
-// Tilted-fizz point 5 hook: the endpoint coefficient k of a bubble at the surface (1 on the front glass, 0 from mid-bore
-// back), its exemption from the band's veil. Not modelled yet: 0 (the veil in full). A vertical pop takes k a (bandVeil).
-static inline float fizzEndpointK(const Fizz &) { return 0; }
+// Tilted-fizz point 5: the endpoint coefficient k of a bubble at the surface (1 on the front glass, 0 from mid-bore back),
+// its exemption from the band's veil: the k of the surface it is foam at (kR time edge, kL home edge: planBubble's, from
+// its body and this frame's bands, fizzEndK). A vertical pop takes k a (bandVeil).
+static inline float fizzEndpointK(const Fizz &f, float kR, float kL) { return f.life > 0 ? kR : f.life < 0 ? kL : 0; }
 #define FOAM_SLIDE 0.5f
 #define FOAM_FOLLOW 6.0f
 #define FOAM_CATCH (2.0f * PX_SCALE_FIZZ)   // the liquid's px
@@ -1615,7 +1616,7 @@ struct Tube {
   void labelBand(int y0, const Labels &lb, const Warp &warp, const Mark &mark, bool rowFacts, int r0, int r1) const;
   void planFizz(const Params &p, const FizzFrame &ff);
   void fizzBand(int r0, int r1);
-  void planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b);
+  void planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd);
   void bubbleRows(const struct BubblePlan &b, int r0, int r1);
   void discOf(const struct BubblePlan &b, DiscRow &d) const;
   inline void discRowOf(const struct BubblePlan &b, DiscRow &d, int iy, float wallT, float dy);
@@ -3658,9 +3659,9 @@ struct FoamWork {
   float R[FIZZ_POOL];                         // fizzR per slot of list: only bounds the reach (rMax); the tests call fizzR,
                                               // whose products fuse into their sums on the board as before
   float u0[FIZZ_POOL], y0[FIZZ_POOL];         // the slot's (u, y) at the grid's build
-  // vertical watch (settleFoam vert): per parked slot the display rows its disc may take at its frozen depth (inside the
-  // bore's eroded disc, the row bias included)
-  float yLo[FIZZ_POOL], yHi[FIZZ_POOL];
+  // vertical watch (settleFoam vert): per parked slot its endpoint coefficient k (fizzEndK, at the step's start) and the
+  // display rows its disc may take at its frozen depth (inside the bore's eroded disc, the row bias included)
+  float kE[FIZZ_POOL], yLo[FIZZ_POOL], yHi[FIZZ_POOL];
   float uLo, invCu, invCy, cell;              // grid origin in u, 1 / cell size in u and y, cell size in y
   float uMin, uMax, drift, rMax;              // u extent of everything in it; bound on |u - u0|, |y - y0| (a bubble moving
                                               // farther is moved to its new cell); largest R
@@ -3859,6 +3860,46 @@ static void __attribute__((noinline)) fizzBodiesFor(Tube &t, const Params &p) {
   }
   t.bodyH = t.H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
 }
+// The endpoint rule (docs/tilted-fizz-plan.md "Exact endpoint rule"; one helper set, see sim fizzEndK32 / fizzEndSupport32).
+// Side s (+1 time edge, -1 home edge) in outward u = s x: the surface profile S (fizzSurf / fizzSurfL, u = s S) and the
+// local positive stroke width B (strokeR / strokeL, canvas px, 0 where no concave band is drawn), both published by
+// drawTube for the frame the step reads. k: the bubble's endpoint coefficient, 1 on the front glass, fading over at most
+// B0 + r of depth (B0 the band at its row), 0 from mid-bore back; L = S + k B the local contact boundary; P =
+// r max(0.3, 1 - B / 2r) the leading rim's allowed protrusion past it.
+static inline float rowLerp(const float *v, int H, float y) {   // v at float row y (foamFront without the side)
+  const float yc = clampf(y, 0, H - 1); const int i = (int)ffloor(yc), j = i + 1 < H ? i + 1 : H - 1;
+  return v[i] + (v[j] - v[i]) * (yc - i);
+}
+static inline float fizzEndK(float y, float z, float a, float r, float B0) {
+  const float zc = sqrtExact(fmx(0, a * a - y * y)), d = zc - z, w = fmn(zc, B0 + r);
+  if (!(w > 1e-4f)) return 0;
+  const float tt = clampf(1 - d / w, 0, 1);
+  return tt * tt * (3 - 2 * tt);
+}
+// Whole-disc support of a bubble of radius r at display row yr: uc = min over its rows of L - h (its rim reaches L: the
+// endpoint zone starts FOAM_CATCH short of it), ut = min of L + P - h (where its centre parks), h the disc's axial half
+// chord at the row (the discFit footprint). A disc between two rows: the centre row's interpolation.
+FIZZ_IRAM static void fizzEndSupport(const float *S, const float *B, int H, int s, float yr, float r, float k, float &uc, float &ut) {
+  const int a0 = (int)fmx(0, fceil(yr - r)), b0 = (int)fmn(H - 1, ffloor(yr + r));
+  const float inv2r = 0.5f / r;
+  if (a0 > b0) {
+    const float Bc = rowLerp(B, H, yr);
+    uc = foamFront(S, H, yr, s) + k * Bc - r; ut = uc + r * fmx(0.3f, 1 - Bc * inv2r);
+    return;
+  }
+  float c = INFINITY, t = INFINITY;
+  for (int iy = a0; iy <= b0; iy++) {
+    const float dy = iy - yr, h = sqrtExact(fmx(0, r * r - dy * dy)), L = s * S[iy] + k * B[iy];
+    c = fmn(c, L - h); t = fmn(t, L + r * fmx(0.3f, 1 - B[iy] * inv2r) - h);
+  }
+  uc = c; ut = t;
+}
+// The centre row's endpoint target L + P - r (u): the render-time clamp and the free bubbles' clamp at an end the rise
+// does not head for (B = 0: the profile itself, the legacy half-out limit).
+static inline float fizzEndCentre(const float *S, const float *B, int H, int s, float yr, float r, float k) {
+  const float Bc = rowLerp(B, H, yr);
+  return foamFront(S, H, yr, s) + k * Bc + r * fmx(0.3f, 1 - Bc * (0.5f / r)) - r;
+}
 int fizzBlocked(int idx) {
 #if TUBE_COUNT == 3
   if (idx == 2 && !tubeS) return 0;
@@ -3894,16 +3935,21 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // meniscus from its front backward. Against a closed end (glass: glassVy = the across rise px/s) the whole disc
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
-// Vertical watch (vert): its rows are those its disc takes at its frozen depth inside the bore's eroded disc (FoamWork
-// yLo / yHi), and a pushed pair parts to m + FOAM_GAP. See sim settleFoamV.
+// Vertical watch (band: the side's stroke widths, strokeR / strokeL): a bubble's front is its own endpoint target (the
+// whole-disc support of L + P, fizzEndSupport, k from its body at the step's start), its rows those its disc takes at its
+// frozen depth inside the bore's eroded disc (FoamWork yLo / yHi), and a pushed pair parts to m + FOAM_GAP. See sim
+// settleFoamV.
 FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy,
-                                                           bool vert = false) {
+                                                           const float *band = nullptr) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
-  FoamWork &w = *t.foam; Fizz *const fz = t.fizz; const FizzBody *const bd = vert ? t.body : nullptr;
-  auto front = [&](int, float y, float r) { return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side); };
+  FoamWork &w = *t.foam; Fizz *const fz = t.fizz; const FizzBody *const bd = band ? t.body : nullptr;
+  auto front = [&](int s, float y, float r) {
+    if (band) { float uc, ut; fizzEndSupport(surf, band, H, side, y, r, w.kE[s], uc, ut); return ut; }
+    return glass ? discFit(surf, H, y, r, side) : foamFront(surf, H, y, side);
+  };
   auto place = [&](int s, float u, float y) {   // in the bore and not past the front of its row
     Fizz &f = fz[s]; const float r = fizzR(p, f.v);
-    if (vert) f.y = clampf(y, w.yLo[s], w.yHi[s]);
+    if (band) f.y = clampf(y, w.yLo[s], w.yHi[s]);
     else { const float lo = wall + r, hi = H - lo; f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi); }
     const float un = fmn(u, front(s, f.y, r));   // its new u (side * x: side is +-1)
     f.x = side * un;
@@ -3913,12 +3959,13 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   int n = 0;
   for (int i = 0; i < t.fizzN; i++) if (fz[i].life != 0) { w.list[n++] = (int16_t)i; w.R[i] = fizzR(p, fz[i].v); }
   w.nList = n;
-  if (vert) {   // per parked bubble: its rows (the row bias in, clipped to the bore as fizzRowOf)
+  if (band) {   // per parked bubble: k, and its rows (the row bias in, clipped to the bore as fizzRowOf)
     const float R = boreR(p), yc = fizzYc(H), bias0 = fizzBias0(t);
     for (int a = 0; a < n; a++) {
       const int i = w.list[a]; const float r = w.R[i], ar = R - r, z = bd[i].z, ya = sqrtExact(fmx(0, ar * ar - z * z));
       const float bias = fizzRowBias(i, fz[i].v, bias0);
       w.yLo[i] = fmx(yc - ar, yc - ya + bias); w.yHi[i] = fmn(yc + ar, yc + ya + bias);
+      w.kE[i] = fizzEndK(bd[i].y, z, ar, r, rowLerp(band, H, fz[i].y));
     }
   }
   foamGridBuild(w, fz, H, side, true);
@@ -4080,10 +4127,11 @@ static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, 
 // sets the direction. Its display row f.y and tint level f.z are derived from the body after every move.
 // Along the tube: the end the rise heads for (side = sign bx) stops it. A closed end (the column against the glass) is a
 // physical constraint: the whole disc stays inside (discFit), the bubble rests on the glass (FIZZ_C_END), submerged:
-// no foam life. A free surface: a bubble whose whole disc comes FOAM_CATCH short of the profile parks as foam there
-// (fizzFoamLife > 0; without foam it pops at once), and settleFoam glides it onto the profile (point 5: its own endpoint); a bubble touching the foam joins it (the landscape kernel's chain, point 6 replaces it). Foam leaves the
+// no foam life. A free surface: a bubble reaching its own endpoint zone (fizzEndSupport: its rim FOAM_CATCH short of
+// L = S + k B) parks as foam there (fizzFoamLife > 0; without foam it pops at once), and settleFoam glides it to its
+// target L + P; a bubble touching the foam joins it (the landscape kernel's chain, point 6 replaces it). Foam leaves the
 // surface when the pose turns away from it or the column closes it, and pops after its life. At the other end the
-// centre stays inside (the profile; a closed end, discFit). Face up exactly (bx 0): no axial motion, nothing parks; the pool fills
+// centre stays inside (its centre target, fizzEndCentre; a closed end, discFit). Face up exactly (bx 0): no axial motion, nothing parks; the pool fills
 // to its cap and births wait (no drift, no teleport). See sim stepFizzVertical.
 FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p, float dt, const Pose &pose, float agitation) {
   const float bx = mirrored(p) ? -pose.x : pose.x, by = pose.y, bz = pose.z;
@@ -4106,7 +4154,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
   const int side = bx > 0 ? 1 : bx < 0 ? -1 : 0;   // the end the rise heads for
   const bool open = side != 0 && (exposed & (side > 0 ? 1 : 2));   // a free surface there
   const int park = open && foamOn ? side : 0;
-  const float *const S = side >= 0 ? t.fizzSurf : t.fizzSurfL;
+  const float *const S = side >= 0 ? t.fizzSurf : t.fizzSurfL, *const B = side >= 0 ? t.strokeR : t.strokeL;
   FS_ADD(FS_CYC_SPRINGPT, sp0); FS_CNT(FS_SLOTS, t.fizzN);
   // touchesFoam's candidates: the foam on that surface now, and every bubble that parks during the loop
   FoamWork &w = *t.foam;
@@ -4149,12 +4197,15 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
       if (!open) {   // closed: the glass, the whole disc inside
         if (u > discFitLow(S, H, f.y, r, side)) { const float lim = discFit(S, H, f.y, r, side); if (u > lim) { f.x = side * lim; c |= FIZZ_C_END; } }
       } else {
-        bool zone = false; float uc = INFINITY;
-        if (u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH) { uc = discFit(S, H, f.y, r, side); zone = u > uc - FOAM_CATCH; }   // its rim FOAM_CATCH short of the profile
-        if (zone) {   // foam, or (no foam) it pops
+        bool zone = false; float uc = INFINITY, ut = INFINITY;
+        if (u > discFitLow(S, H, f.y, r, side) - FOAM_CATCH) {   // else short of uc - FOAM_CATCH and of ut (k B, P >= 0)
+          fizzEndSupport(S, B, H, side, f.y, r, fizzEndK(y, z, a, r, rowLerp(B, H, f.y)), uc, ut);
+          zone = u > uc - FOAM_CATCH;
+        }
+        if (zone) {   // its own endpoint zone: foam, or (no foam) it pops
           if (!foamOn) { if (spring) fizzFree(f); else fizzScatterV(t, p, f, b, k, side < 0 ? 0 : 1); b.contact = 0; continue; }
           FIZZ_PARK_HOOK(t, k, u, uc);
-          f.x = side * fmn(u, foamFront(S, H, f.y, side));
+          f.x = side * fmn(u, ut);
           f.life = side * p.fizzFoamLife * (0.5f + frand()); parked(k, r);
         }
         else if (park && touchesFoam(t, w, f, r, p, park)) { f.life = side * p.fizzFoamLife * (0.5f + frand()); parked(k, r); }   // into the foam: joins it
@@ -4166,7 +4217,11 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
       const float u = s * f.x;
       if (!(exposed & (s > 0 ? 1 : 2))) {
         if (u > discFitLow(Ss, H, f.y, r, s)) { const float lim = discFit(Ss, H, f.y, r, s); if (u > lim) { f.x = s * lim; c |= FIZZ_C_END; } }
-      } else { const float lim = foamFront(Ss, H, f.y, s); if (u > lim) f.x = s * lim; }   // a surface: the centre on the profile at most
+      } else if (u > foamFront(Ss, H, f.y, s) - r) {   // else short of the centre target (>= S - 0.7 r)
+        const float *const Bs = s > 0 ? t.strokeR : t.strokeL;
+        const float lim = fizzEndCentre(Ss, Bs, H, s, f.y, r, fizzEndK(y, z, a, r, rowLerp(Bs, H, f.y)));
+        if (u > lim) f.x = s * lim;
+      }
     }
     b.contact = c;
   }
@@ -4191,7 +4246,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
   FS_ADD(FS_CYC_CADENCE, cd0);
   FZ_T0(se0);
   if (park) {
-    settleFoam(t, p, U0, S, park, dt, false, 0, true);
+    settleFoam(t, p, U0, S, park, dt, false, 0, B);
     for (int k = 0; k < t.fizzN; k++) {   // the foam packed on display rows: its body's y back from them, inside the disc at its depth
       const Fizz &f = t.fizz[k]; if (f.life == 0 || f.v == 0) continue;
       FizzBody &b = body[k]; const float a = R - fizzR(p, f.v), ya = sqrtExact(fmx(0, a * a - b.z * b.z));
@@ -5692,7 +5747,7 @@ static int fizzMaskWorst() {
 // Step 5, one bubble (drawTube): its disc setup (planBubble, once a frame), then its rows (bubbleRows, discRow; step 9:
 // band by band). Out of drawTube (noinline, in IRAM on the LCD): inside it the setup spilled and its code competed for
 // the instruction cache with the other core's render.
-FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b) {
+FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd) {
   const float *mag = ff.mag; const float yHi = ff.yHi, invHalfH = ff.invHalfH, lxSign = ff.lxSign;
   const float lxS = -0.7f;   // light from screen-left (a constant, as it was in drawTube: lxS * lxS folds)
   const FizzLook &fl = *look;
@@ -5700,7 +5755,14 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const P
   int fy = (int)clampf(jround(f.y), 0, H - 1);
   // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface pushes
   // them back here): whatever touches a surface floats at most half out of it, like the foam.
-  const float fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
+  // Vertical (bd: its body; tilted-fizz point 5): its own endpoint targets L + P - r at the centre row instead (k per
+  // edge from its body and this frame's bands; no band: the profile, as before).
+  float fx, kR = 0, kL = 0;
+  if (bd) {
+    const float r0 = fizzR(p, f.v), a0 = boreR(p) - r0;
+    kR = fizzEndK(bd->y, bd->z, a0, r0, rowLerp(strokeR, H, f.y)); kL = fizzEndK(bd->y, bd->z, a0, r0, rowLerp(strokeL, H, f.y));
+    fx = fmx(-fizzEndCentre(fizzSurfL, strokeL, H, -1, f.y, r0, kL), fmn(fizzEndCentre(fizzSurf, strokeR, H, 1, f.y, r0, kR), f.x));
+  } else fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
   // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface (no size class then).
   // Vertical (tilted-fizz point 8): no swell, a smoothstep fade a, and toward the composed band where the band covers
   // it (bandVeil: x [1 - C_B (1 - a)]), the veil's front exemption k a (fizzEndpointK). See sim.
@@ -5728,7 +5790,7 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const P
   b.ixa = (int16_t)(int)ffloor(b.fx - r - 1); b.ixb = (int16_t)(int)fceil(b.fx + r);
   b.iyA = (int16_t)(int)ffloor(f.y - ry - 1); b.iyB = (int16_t)(int)fceil(f.y + ry);
   b.y = f.y; b.m = m; b.pop = vPop ? popA : pop;
-  b.popA = popA; b.kPop = vPop ? fizzEndpointK(f) * popA : 0;
+  b.popA = popA; b.kPop = vPop ? fizzEndpointK(f, kR, kL) * popA : 0;
 #ifdef FIZZ_PROF
   fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
 #endif
@@ -5907,7 +5969,8 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
     look->veilHi[iy] = strokeL[iy] > 0 ? (int16_t)(int)clampf(hi, -32767, 32767) : INT16_MIN;
   }
   mp.nBub = 0;
-  for (int k = 0; k < fizzN; k++) if (fizz[k].v != 0) planBubble(fizz[k], p, ff, mp.bub[mp.nBub++]);
+  const bool vb = p.vertical && bodyH == H;   // the bodies describe these rows (the render-time endpoint clamp)
+  for (int k = 0; k < fizzN; k++) if (fizz[k].v != 0) planBubble(fizz[k], p, ff, mp.bub[mp.nBub++], vb ? &body[k] : nullptr);
 #if TILE_RENDER
   const int nb = (H + TUBE_BAND - 1) / TUBE_BAND;
   int16_t *const start = mp.bandStart;
