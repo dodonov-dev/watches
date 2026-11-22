@@ -420,4 +420,15 @@ Items 1-4 fixed (release re-runs first contact; whole-disc render clamp on the d
 tol 1e-3). User saw "a small fizz explosion, including downwards" at the surface: contact push moved bubbles down 7142×
 /60 s (worst 7.2 px/step), packing 3208× (worst 30 px); fixed: overdamped contacts, packing push-back ≤ fizzSpeed·dt.
 Side effect: foam grows down as a column (sink > 10 px 12/199 → 138/225) — foam packs only in (u, y) at fixed z while
-arrivals are single-file on the front ridge. Next: foam spreads over the surface disc (y, z) first (in progress).
+arrivals are single-file on the front ridge.
+
+## Foam over the surface plane (y, z)
+settleFoam (vertical): a touching foam pair parts in the surface plane (y, z) at its u to the in-plane
+√((m + gap)² − du²), inside the eroded disc, each bubble ≤ fizzSpeed·dt a step in the plane (FoamWork yS / zS);
+only what the plane leaves in the last sweep stacks (rear back ≤ fizzSpeed·dt); one above the other: along the wall
+tangent, side by slot parity. k (veil, endpoint) follows each bubble's (y, z); the endpoint's k falls no faster than
+the bubble may sink (target >= uS − fizzSpeed·dt, chord of the concave support; round the side wall k turns over
+within a pixel of depth). Host replay, stand pose 60 s: foam
+lives sinking > 10 px 138/225 → 0/241 (worst 8.6 px); down moves > fizzSpeed·dt 0; foam count std 3.99/3.07 →
+3.67/2.88; foam depth z std 1.1 → 4.5 px (22% veiled, k < 0.5). Open: free bubbles held behind a lone ridge foam
+(KAIZEN).

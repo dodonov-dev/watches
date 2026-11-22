@@ -516,49 +516,85 @@ static int supportSelftest() {
          n, moved, slack, bad);
   return bad ? 14 : 0;
 }
-// `selftest`, packing in physical coordinates (point 6, review 2): one settleFoam step (dt 0.02) on pairs parked far from
-// the surface, so both glide the same fizzSpeed dt and the packing alone sets their separation. The review's repro
-// (contact 5.5, axial 5, transverse 0, depth 3 apart: a 3D distance of 5.83, no overlap) keeps its separation; at depths
-// 3 apart and 4 px along a pair parts to the in-plane sqrt((m + FOAM_GAP)^2 - dz^2), 3D distance m + FOAM_GAP,
-// symmetrically; an axial pair at one physical y in two slots (two row biases) parts along the tube only, its bodies' y
-// unchanged; every foam bubble's display row is fizzRowOf of its body. Then the overdamped bound: a pair overlapping
-// by 4 px parts by at most fizzSpeed dt a step backward (the rear never pushed back faster than the rise).
+// `selftest`, packing in physical coordinates (point 6, review 2; foam in the surface plane): settleFoam steps (dt 0.02)
+// on pairs parked far from the surface, so both glide the same fizzSpeed dt and the packing alone sets their
+// separation. The review's repro (contact 5.5, axial 5, transverse 0, depth 3 apart: a 3D distance of 5.83, no overlap)
+// keeps its separation; at depths 3 apart and 4 px along a pair parts in the surface plane (y, z) at its u, to the 3D
+// distance m + FOAM_GAP, symmetrically; one above the other (one physical (y, z), two slots: two row biases) it parts
+// along the bore wall's tangent, each at most fizzSpeed dt in the plane, the rest the rear takes stepping back at most
+// fizzSpeed dt; at its surface (a profile 20 px ahead) the same pair ends side by side, each at its own target (one u
+// but the row biases'), in-plane about m + FOAM_GAP apart, inside the eroded disc; bubbles too big for two to sit side by side in the bore (2 (R - r) < m) stack: the
+// rear steps back fizzSpeed dt a step, the plane cannot part them. Every foam bubble's display row is fizzRowOf of its
+// body, its tint level fizzLevelOf of its depth.
 static int packSelftest() {
   Tube &t = tubeAt(0); long bad = 0;
   auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest pack: %s: got %.9g want %.9g\n", what, got, want); };
   Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
-  t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), r = fizzR(p, 1), m = 2 * r + 0.5f, a = R - r, bias0 = fizzBias0(t);
-  for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = 5000; t.fizzSurfL[iy] = -5000; t.strokeR[iy] = t.strokeL[iy] = 0; }
+  t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), bias0 = fizzBias0(t);
+  float r = fizzR(p, 1), m = 2 * r + 0.5f, a = R - r;
+  auto surf = [&](float S) { for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = S; t.fizzSurfL[iy] = -5000; t.strokeR[iy] = t.strokeL[iy] = 0; } };
+  surf(5000);
   t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
-  const float dt = 0.02f, g = p.fizzSpeed * dt;   // the step, the glide (and the push-back bound)
-  auto pair = [&](float u0, float u1, float y0, float y1, float z0, float z1) {
+  const float dt = 0.02f, g = p.fizzSpeed * dt;   // the step, the glide (and the push-back / in-plane bound)
+  auto derived = [&]() {
+    for (int k = 0; k < 2; k++) {
+      if (t.fizz[k].y != fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0))) fail("display row not derived from the body", t.fizz[k].y, fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0)));
+      if (t.fizz[k].z != fizzLevelOf(t.body[k].z, a)) fail("tint level not derived from the depth", t.fizz[k].z, fizzLevelOf(t.body[k].z, a));
+      if (t.body[k].y * t.body[k].y + t.body[k].z * t.body[k].z > a * a * (1 + 1e-5f)) fail("outside the eroded disc", hypot(t.body[k].y, t.body[k].z), a);
+    }
+  };
+  auto pair = [&](float u0, float u1, float y0, float y1, float z0, float z1, int steps = 1) {
     t.fizzN = 2; t.foam->nOrder = 0;
     const float y[2] = {y0, y1}, z[2] = {z0, z1}, u[2] = {u0, u1};
-    for (int k = 0; k < 2; k++) { t.body[k] = {y[k], z[k], 0, {0, 0, 0}}; t.fizz[k] = {u[k], fizzRowOf(H, y[k], a, fizzRowBias(k, 1, bias0)), 1, 3, 0.5f}; }
-    settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, dt, false, 0, t.strokeR);
-    for (int k = 0; k < 2; k++) if (t.fizz[k].y != fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0))) fail("display row not derived from the body", t.fizz[k].y, fizzRowOf(H, t.body[k].y, a, fizzRowBias(k, 1, bias0)));
+    for (int k = 0; k < 2; k++) { t.body[k] = {y[k], z[k], 0, {0, 0, 0}}; t.fizz[k] = {u[k], fizzRowOf(H, y[k], a, fizzRowBias(k, 1, bias0)), 1, 3, fizzLevelOf(z[k], a)}; }
+    for (int n = 0; n < steps; n++) { t.fizz[0].life = t.fizz[1].life = 3; settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, dt, false, 0, t.strokeR); derived(); }
   };
   if (m != 5.5f) fail("contact distance", m, 5.5);
   pair(100, 95, 0, 0, 1.5f, -1.5f);
-  if (t.fizz[0].x - t.fizz[1].x != 5 || t.body[0].y != 0 || t.body[1].y != 0) fail("repro: pushed (x0 - x1)", t.fizz[0].x - t.fizz[1].x, 5);
-  pair(100, 96, 0, 0, 1.5f, -1.5f);   // 5 px apart in 3D: parts to m + FOAM_GAP
+  if (t.fizz[0].x - t.fizz[1].x != 5 || t.body[0].y != 0 || t.body[1].y != 0 || t.body[0].z != 1.5f) fail("repro: pushed (x0 - x1)", t.fizz[0].x - t.fizz[1].x, 5);
+  pair(100, 96, 0, 0, 1.5f, -1.5f);   // 5 px apart in 3D: parts in the plane to m + FOAM_GAP
   {
-    const double du = t.fizz[0].x - t.fizz[1].x, dy = t.body[0].y - t.body[1].y, dz = 3, d3 = sqrt(du * du + dy * dy + dz * dz);
+    const double du = t.fizz[0].x - t.fizz[1].x, dy = t.body[0].y - t.body[1].y, dz = t.body[0].z - t.body[1].z, d3 = sqrt(du * du + dy * dy + dz * dz);
     if (fabs(d3 - (m + FOAM_GAP)) > 1e-4) fail("depth 3 apart: 3D distance after the push", d3, m + FOAM_GAP);
-    if (fabs(t.fizz[0].x + t.fizz[1].x - (196 + 2 * g)) > 1e-4) fail("depth 3 apart: not symmetric", t.fizz[0].x + t.fizz[1].x, 196 + 2 * g);
+    if (fabs(du - 4) > 1e-4) fail("depth 3 apart: pushed along the tube", du, 4);
+    if (fabs(t.body[0].z + t.body[1].z) > 1e-5 || t.body[0].y != 0) fail("depth 3 apart: not symmetric in the plane", t.body[0].z + t.body[1].z, 0);
+    if (fabs(t.fizz[0].x + t.fizz[1].x - (196 + 2 * g)) > 1e-4) fail("depth 3 apart: glide", t.fizz[0].x + t.fizz[1].x, 196 + 2 * g);
   }
   const float yb = 0.25f * a;
-  pair(100, 96, yb, yb, 0, 0);   // one physical y, two slots (row biases differ): along the tube only
+  pair(100, 96, yb, yb, 0, 0);   // one physical (y, z), two slots (row biases differ): along the wall's tangent there
   {
     const float b0 = fizzRowBias(0, 1, bias0), b1 = fizzRowBias(1, 1, bias0);
     if (b0 == b1) fail("the two slots' row biases are equal (no test)", b0, b1);
-    if (t.body[0].y != yb || t.body[1].y != yb) fail("axial pair: physical y moved", t.body[1].y, yb);
-    if (fabs(t.fizz[0].x - t.fizz[1].x - (m + FOAM_GAP)) > 1e-4) fail("axial pair: separation", t.fizz[0].x - t.fizz[1].x, m + FOAM_GAP);
+    for (int k = 0; k < 2; k++) {
+      const double e = hypot(t.body[k].y - yb, t.body[k].z);
+      if (e > g * (1 + 1e-5)) fail("one above the other: moved in the plane past fizzSpeed dt", e, g);
+      if (fabs(t.body[k].y - yb) > 1e-5) fail("one above the other: not along the wall's tangent (y moved)", t.body[k].y, yb);
+    }
+    if (fabs(t.body[0].z + t.body[1].z) > 1e-5 || fabs(t.body[0].z - t.body[1].z) < 1.9f * g) fail("one above the other: parted in the plane", t.body[0].z - t.body[1].z, 2 * g);
+    if (t.fizz[1].x < 96 - g - 1e-4f || t.fizz[1].x > 96 + g - 1e-4f) fail("one above the other: the rear stepped back, at most fizzSpeed dt", t.fizz[1].x, 96 - g);
   }
-  pair(100, 96.5f + 4, yb, yb, 0, 0);   // 4 px into each other (slot 1 ahead): the rear (slot 0) steps back at most g
-  if (t.fizz[0].x < 100 - g - 1e-4f) fail("overlap: the rear pushed back past fizzSpeed dt", t.fizz[0].x, 100 - g);
+  surf(120);   // their surface 20 px ahead: side by side there, one u
+  pair(100, 96, yb, yb, 0, 0, 150);
+  {
+    const double du = t.fizz[0].x - t.fizz[1].x, q = hypot(t.body[0].y - t.body[1].y, t.body[0].z - t.body[1].z);
+    for (int k = 0; k < 2; k++) {   // each at its own target (B 0: k plays no part)
+      float uc, ut; fizzEndSupport(t.fizzSurf, t.strokeR, H, 1, t.fizz[k].y, r, 0, uc, ut);
+      if (fabs(t.fizz[k].x - ut) > 1e-3) fail("at the surface: not at its target", t.fizz[k].x, ut);
+    }
+    if (fabs(du) > 0.5) fail("at the surface: not side by side (du)", du, 0);
+    if (sqrt(du * du + q * q) < m || q < m - 0.5) fail("at the surface: in-plane separation", q, m + FOAM_GAP);
+  }
+  surf(5000);
+  p.fizzSize = 40; r = fizzR(p, 1); m = 2 * r + 0.5f; a = R - r; t.bodySize = p.fizzSize;   // 2 a < m: no room side by side
+  pair(100, 80, 0, 0, 0, 0, 3);
+  {
+    const double q = hypot(t.body[0].y - t.body[1].y, t.body[0].z - t.body[1].z);
+    if (!(2 * a < m) || q > 2 * a + 1e-4) fail("too big: parted in the plane past the bore", q, 2 * a);
+    if (fabs(t.fizz[1].x - (80 - 3 * g)) > 1e-3) fail("too big: the rear steps back fizzSpeed dt a step", t.fizz[1].x, 80 - 3 * g);
+    if (fabs(t.fizz[0].x - (100 + 3 * g)) > 1e-3) fail("too big: the front glides", t.fizz[0].x, 100 + 3 * g);
+  }
   t.fizzN = 0; t.bodyH = 0;
-  printf("SELFTEST pack repro (m 5.5, du 5, dz 3) unmoved; depth-3 pair parted to 3D m + gap; axial pair across two row biases: y kept, du m + gap; an overlap pushes the rear back <= fizzSpeed dt; failures %ld\n", bad);
+  printf("SELFTEST pack repro (m 5.5, du 5, dz 3) unmoved; depth-3 pair parted in the plane to 3D m + gap; one above the other: along the wall's tangent <= fizzSpeed dt each, the rear back <= fizzSpeed dt; at the surface side by side (each at its target, in-plane ~m + gap); too big for the bore: stacked, back fizzSpeed dt a step; failures %ld\n", bad);
   return bad ? 15 : 0;
 }
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of

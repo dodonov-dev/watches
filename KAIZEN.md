@@ -1004,4 +1004,4 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   ~2k px > 12 over 23 back-15 frames, the same before point 7: unexplained residue (placement? mask x rounding?).
 - Vertical endpoint rule: stepper on the physical circle, render clamp on the drawn lens footprint (r / fizzMag rows): where m < 1 it pulls parked foam back each frame; mag rows published with the surfaces would let the stepper agree.
 - fizzEndClampX computes fizzMag that planBubble computes again right after (one extra per vertical bubble per frame).
-- Vertical foam raft: arrivals that reach their own endpoint zone park at the front and push older foam back (now at most fizzSpeed dt a step): stand-pose foam lives sinking > 10 px: 12 of 199 (board build) -> 138 of 225 (slow, <= fizzSpeed dt a step). A raft that grows at its bottom (newcomers join behind) would read more physical.
+- Vertical foam: a free bubble held behind a lone foam bubble on the ridge waits for it to pop (stand pose 60 s: 44 holds >= 0.5 s, longest 1 s); a held contact that also nudges the foam aside in the surface plane would let it surface.

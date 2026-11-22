@@ -1619,29 +1619,46 @@ function foamContactV32(i: number, p: Params, cand: Uint8Array, k: number, r: nu
   }
   return best;
 }
-const foamUSV = new Float32Array(FIZZ_POOL);   // settleFoamV: each slot's u at the step's start (firmware FoamWork uS)
-const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL), foamYLoV = new Float32Array(FIZZ_POOL), foamYHiV = new Float32Array(FIZZ_POOL);
+// settleFoamV: each slot's u and body (y, z) at the step's start (firmware FoamWork uS / yS / zS)
+const foamUSV = new Float32Array(FIZZ_POOL), foamYSV = new Float32Array(FIZZ_POOL), foamZSV = new Float32Array(FIZZ_POOL);
+const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL);
 /** settleFoam of the vertical watch in float32 (firmware settleFoam with `band`): each parked bubble glides to its own
  *  endpoint target (the whole-disc support of L + P, k from its body at the step's start, on its display row); the
- *  packing works in physical coordinates (point 6): u and the body's transverse y, kept current at every placement inside
- *  the disc its frozen depth allows (the display row derived, fizzRowOf32: the row bias moves nothing). Two bubbles
- *  touch at a 3D distance < m: at fixed depth a pair needs the in-plane separation √(m² − dz²) (none past |dz| ≥ m),
- *  a pushed pair parts to √((m + FOAM_GAP)² − dz²). Visits pairs in the firmware's sweep order (it uses a grid to skip
- *  the far ones: the same answers). */
+ *  packing works in physical coordinates (point 6): u and the body's (y, z), kept current at every placement (display
+ *  row and tint level derived, fizzRowOf32 / fizzLevelOf32: the row bias moves nothing). Two bubbles touch at a 3D
+ *  distance < m. Foam spreads over the surface's cross-section first: a touching pair parts in the surface plane (y, z)
+ *  to the in-plane √((m + FOAM_GAP)² − du²) at their u, inside the eroded disc; what the plane cannot part (the bore
+ *  wall, other foam, the step's bound) stacks in the last sweep: the rear one steps back along the tube. Overdamped: a
+ *  step moves a bubble at most speed dt in the plane and back down the tube (the profile's own recession excepted);
+ *  its endpoint k falls no faster than that.
+ *  Visits pairs in the firmware's sweep order (it uses a grid to skip the far ones: the same answers). */
 function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float32Array, band: Float32Array, side: number, dt: number): void {
   const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), bias0 = fizzBias032(i), back = F(speed * dt);
   const front = (s: number, y: number, r: number): number => fizzEndSupport32(surf, band, H, side, y, r, foamKV[s])[1];
-  const place = (s: number, u: number, y: number): void => {   // y: the body's physical y
-    const f = arr[s], r = fizzR32(p, f.v), yp = clamp32(y, foamYLoV[s], foamYHiV[s]);
-    bd[2 * s] = yp; f.y = fizzRowOf32(H, yp, F(R - r), fizzRowBias32(s, f.v, bias0));
+  const place = (s: number, u: number, y: number, z: number): void => {   // (y, z): the body's
+    const f = arr[s], r = fizzR32(p, f.v), a = F(R - r), ey = F(y - foamYSV[s]), ez = F(z - foamZSV[s]), e2 = F(F(ey * ey) + F(ez * ez));
+    let yp = y, zp = z;
+    if (e2 > F(back * back)) { const q = F(back / F(Math.sqrt(e2))); yp = F(foamYSV[s] + F(ey * q)); zp = F(foamZSV[s] + F(ez * q)); }
+    const d2 = F(F(yp * yp) + F(zp * zp));
+    if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); yp = F(yp * q); zp = F(zp * q); }
+    bd[2 * s] = yp; bd[2 * s + 1] = zp; f.y = fizzRowOf32(H, yp, a, fizzRowBias32(s, f.v, bias0)); f.z = fizzLevelOf32(zp, a);
     f.x = F(side * Math.min(Math.max(u, F(foamUSV[s] - back)), front(s, f.y, r)));   // pushed back at most the rise's worth a step
   };
   let n = 0;
   for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0) {
     foamOrderV[n++] = s;
-    const f = arr[s], r = fizzR32(p, f.v), ar = F(R - r), z = bd[2 * s + 1], ya = F(Math.sqrt(Math.max(0, F(F(ar * ar) - F(z * z)))));
-    foamYLoV[s] = -ya; foamYHiV[s] = ya; foamUSV[s] = F(side * f.x);
-    foamKV[s] = fizzEndK32(bd[2 * s], z, ar, r, rowLerp32(band, H, f.y));
+    const f = arr[s], r = fizzR32(p, f.v);
+    foamYSV[s] = bd[2 * s]; foamZSV[s] = bd[2 * s + 1]; foamUSV[s] = F(side * f.x);
+    const kN = fizzEndK32(bd[2 * s], bd[2 * s + 1], F(R - r), r, rowLerp32(band, H, f.y));
+    let kq = kN;
+    if (kN < 1) {   // k falls only as fast as the bubble may sink (firmware): its target stays >= uS − back
+      const lo = F(foamUSV[s] - back), u0 = fizzEndSupport32(surf, band, H, side, f.y, r, kN)[1];
+      if (u0 < lo) {
+        const u1 = fizzEndSupport32(surf, band, H, side, f.y, r, 1)[1];
+        if (u1 > u0) kq = F(kN + F(F(1 - kN) * Math.min(1, F(F(lo - u0) / F(u1 - u0)))));
+      }
+    }
+    foamKV[s] = kq;
   }
   for (let a = 0; a < n; a++) {   // glide and slide, in slot order
     const s = foamOrderV[a], f = arr[s], r = fizzR32(p, f.v);
@@ -1657,7 +1674,7 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
       const m = F(F(r + fizzR32(p, g.v)) + 0.5), du = F(F(side * g.x) - u), dz = F(bd[2 * j + 1] - bd[2 * s + 1]);
       if (F(F(du * du) + F(dy * dy)) < F(F(m * m) - F(dz * dz))) { slide = 0; break; }
     }
-    place(s, u, F(bd[2 * s] + slide));
+    place(s, u, F(bd[2 * s] + slide), bd[2 * s + 1]);
   }
   for (let it = 0; it < FOAM_RELAX; it++) {   // pack, front to back (the sweep order: a stable sort of slot order by u)
     for (let a = 1; a < n; a++) {
@@ -1670,19 +1687,27 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
       for (let b = a + 1; b < n; b++) {
         const gs = foamOrderV[b], g = arr[gs];
         const m = F(F(rf + fizzR32(p, g.v)) + 0.5);
-        let du = F(side * F(g.x - f.x)), dy = F(bd[2 * gs] - bd[2 * fi]);
-        const dz = F(bd[2 * gs + 1] - bd[2 * fi + 1]);
-        if (!(Math.abs(dz) < m)) continue;
-        const g1 = F(m + FOAM_GAP), m2 = F(F(m * m) - F(dz * dz)), mg = F(Math.sqrt(F(F(g1 * g1) - F(dz * dz))));
-        if (Math.abs(du) >= m || Math.abs(dy) >= m || F(F(du * du) + F(dy * dy)) >= m2) continue;
-        const d = F(Math.sqrt(F(F(du * du) + F(dy * dy)))), kk = F(F(mg - d) / 2);
-        const nu = d > F(1e-4) ? F(du / d) : -1, ny = d > F(1e-4) ? F(dy / d) : 0;
-        place(fi, F(F(side * f.x) - F(kk * nu)), F(bd[2 * fi] - F(kk * ny)));
-        place(gs, F(F(side * g.x) + F(kk * nu)), F(bd[2 * gs] + F(kk * ny)));
-        du = F(side * F(g.x - f.x)); dy = F(bd[2 * gs] - bd[2 * fi]);
-        if (F(F(du * du) + F(dy * dy)) < m2) {
-          const gFront = du > 0, rs = gFront ? fi : gs, fr = gFront ? g : f;
-          place(rs, F(F(side * fr.x) - F(Math.sqrt(Math.max(0, F(F(mg * mg) - F(dy * dy)))))), bd[2 * rs]);
+        let du = F(side * F(g.x - f.x)), dy = F(bd[2 * gs] - bd[2 * fi]), dz = F(bd[2 * gs + 1] - bd[2 * fi + 1]);
+        const mm = F(m * m);
+        if (Math.abs(du) >= m || Math.abs(dy) >= m || !(Math.abs(dz) < m) || F(F(F(du * du) + F(dy * dy)) + F(dz * dz)) >= mm) continue;
+        // the surface plane first: (y, z) parted to the in-plane √((m + gap)² − du²) at their u
+        const g1 = F(m + FOAM_GAP), g2 = F(g1 * g1), rho = F(Math.sqrt(F(F(dy * dy) + F(dz * dz))));
+        const kk = F(F(F(Math.sqrt(F(g2 - F(du * du)))) - rho) / 2);
+        let ny: number, nz: number;
+        if (rho > F(1e-4)) { const inv = F(1 / rho); ny = F(dy * inv); nz = F(dz * inv); }
+        else {   // one above the other: along the wall's tangent at the front one (across at the centre), g by its slot's parity
+          const y0 = bd[2 * fi], z0 = bd[2 * fi + 1], c2 = F(F(y0 * y0) + F(z0 * z0)), sg = (gs & 1) ? 1 : -1;
+          if (c2 > F(1e-8)) { const q = F(sg / F(Math.sqrt(c2))); ny = F(-z0 * q); nz = F(y0 * q); } else { ny = sg; nz = 0; }
+        }
+        place(fi, F(side * f.x), F(bd[2 * fi] - F(kk * ny)), F(bd[2 * fi + 1] - F(kk * nz)));
+        place(gs, F(side * g.x), F(bd[2 * gs] + F(kk * ny)), F(bd[2 * gs + 1] + F(kk * nz)));
+        if (it === FOAM_RELAX - 1) {   // what the plane left: the rear one steps back along the tube (a lower layer)
+          du = F(side * F(g.x - f.x)); dy = F(bd[2 * gs] - bd[2 * fi]); dz = F(bd[2 * gs + 1] - bd[2 * fi + 1]);
+          const q2 = F(F(dy * dy) + F(dz * dz));
+          if (F(F(du * du) + q2) < mm) {
+            const gFront = du > 0, rs = gFront ? fi : gs, fr = gFront ? g : f;
+            place(rs, F(F(side * fr.x) - F(Math.sqrt(Math.max(0, F(g2 - q2))))), bd[2 * rs], bd[2 * rs + 1]);
+          }
         }
       }
     }
@@ -1809,7 +1834,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     }
     while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
   }
-  if (park) settleFoamV(i, p, H, U0, S, B, park, dt);   // packs the foam in physical (u, y), its display rows derived
+  if (park) settleFoamV(i, p, H, U0, S, B, park, dt);   // packs the foam over the surface plane (y, z) first, stacked only where blocked
   noteBlocked();
 }
 /** Furthest centre (in u = side · x) a bubble of radius r at row y can take with its whole disc inside the
