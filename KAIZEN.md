@@ -112,6 +112,8 @@
   Treat a slow bridge exit as non-fatal (or lengthen the wait).
 - `p!` resets to the compiled preset and 2 s later overwrites the NVS-tuned params; a `p!` that does not
   persist (or a "revert to NVS") would be safer for scripts.
+- NVS migration: a CRC write failing after the new blob is written leaves the v33 blob (724 B) under the v32 / v31
+  CRC; the next boot drops it (no layout of that CRC is 724 B). Unambiguous by size: could be accepted as v33 and relabelled.
 - Board keeps flipping between Windows COM6 and WSL `/dev/ttyACM0` (usbipd auto-attach?); re-enumeration
   looks like a reset from the firmware side. Decide one home for it.
 - Clock is lost on every esptool flash (no RTC battery) — `flash.sh` could re-send `T <epoch>` afterwards.

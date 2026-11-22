@@ -50,6 +50,7 @@
 #include "render_ab.h"
 #endif
 #include "gen/params_gen.h"
+#include "params_nvs.h"
 
 #ifndef BOOT_MODE
 #define BOOT_MODE 'l'
@@ -125,9 +126,9 @@ static void paramsChanged() {
 #endif
   paramsGen++;
 }
-// NVS autosave: namespace lw, blob cur. Written 2 s after the last change; ignored if the schema CRC differs.
-// What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only, and the autosave writes this
-// copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
+// NVS autosave: namespace lw, blob cur. Written 2 s after the last change; a v31 / v32 blob is migrated at boot, another
+// schema ignored (params_nvs.h). What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only,
+// and the autosave writes this copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
 static Preferences prefs;
 static uint32_t paramsDirtyAt = 0;
 static Params *paramsSaved = nullptr;
@@ -135,17 +136,14 @@ static void paramsLoad() {
   paramsSaved = (Params *)heap_caps_malloc(sizeof(Params), MALLOC_CAP_SPIRAM);
   if (!paramsSaved) out.println("error params: no PSRAM for the saved copy (p~ refused)");
   prefs.begin("lw", false);
-  const uint32_t crc = prefs.getUInt("crc");
-  if (crc == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
-    prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
-  }   // another schema (v33 viewElevation dropped the v31 -> v32 migration): the defaults; the blob is replaced on the next save
+  if (paramsNvsLoad(prefs, params, out)) paramsChanged();
   if (paramsSaved) *paramsSaved = params;
 }
 static void paramsTouch() { paramsDirtyAt = millis() | 1; }
 static void paramsFlush() {
   if (!paramsDirtyAt || millis() - paramsDirtyAt < 2000) return;
   paramsDirtyAt = 0;
-  prefs.putBytes("cur", paramsSaved ? paramsSaved : &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
+  paramsNvsSave(prefs, paramsSaved ? *paramsSaved : params, out, "autosave");
 }
 static void paramsErase() { paramsDirtyAt = 0; prefs.remove("cur"); prefs.remove("crc"); }
 static TubeState tubeH, tubeM;
