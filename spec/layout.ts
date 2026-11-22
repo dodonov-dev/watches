@@ -214,3 +214,5 @@ export const IMU_AXIS_ALONG_TUBE = 1;   // 0=x 1=y 2=z
 export const IMU_ALONG_TUBE_SIGN = -1;  // tilt_along = sign * ay → positive = right end down
 export const IMU_AXIS_ACROSS_TUBE = 0;
 export const IMU_ACROSS_TUBE_SIGN = -1; // positive = top (far) edge up
+export const IMU_AXIS_NORMAL = 2;       // out of the screen (physics.ts TiltInput.normal)
+export const IMU_NORMAL_SIGN = 1;       // normal = sign * az → positive = face up (flat, screen up: az ≈ +0.94)

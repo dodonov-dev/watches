@@ -1,7 +1,7 @@
 import './style.css';
 import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, orientationTilt, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -29,7 +29,7 @@ let { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = sessi
 let sweepPhase = 0;   // 0..1 through the minutes sweep cycle
 const tubes = Array.from({ length: TUBE_COUNT }, () => newTube());   // hours, minutes(, seconds): spec/layout TUBE_COUNT
 const [hours, minutes] = tubes;
-const input: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0 };
+const input: TiltInput = { along: 0, across: 0, gyroAlong: 0, gyroAcross: 0, normal: 1 };
 const imuFilter = new ImuFilter();
 let inputSource: 'manual' | 'device' | 'serial' = 'manual'; // not persisted: device/serial need a gesture
 let demoClock = Date.now();
@@ -108,6 +108,7 @@ app.innerHTML = `
         <canvas id="scope" width="316" height="70"></canvas>
         <label>along <input type="range" id="along" min="-1" max="1" step="0.01" value="0"> <output id="alongv">0</output> g</label>
         <label>across <input type="range" id="across" min="-1" max="1" step="0.01" value="0"> <output id="acrossv">0</output> g</label>
+        <label title="Sign of the out-of-plane gravity (normal = ±√(1 − along² − across²)): face up toward the sky, or face down"><input type="checkbox" id="facedown"> face down</label>
         <button id="center">centre</button> <button id="flick">flick →</button> <button id="flickl">← flick</button> <button id="shake">shake</button> <button id="wrist" title="wrist turn into the reading pose (free liquid: parks the slug home)">raise wrist</button>
       </fieldset>
       <fieldset><legend>Device</legend>
@@ -217,12 +218,17 @@ $('resetview').onclick = () => {
   clockSet = true; syncView(); save();
 };
 const alongS = $<HTMLInputElement>('along'), acrossS = $<HTMLInputElement>('across');
-const syncSliders = () => { alongS.value = String(manual.along); acrossS.value = String(manual.across); $('alongv').textContent = manual.along.toFixed(2); $('acrossv').textContent = manual.across.toFixed(2); };
+const faceS = $<HTMLInputElement>('facedown');
+const syncSliders = () => { alongS.value = String(manual.along); acrossS.value = String(manual.across); $('alongv').textContent = manual.along.toFixed(2); $('acrossv').textContent = manual.across.toFixed(2); faceS.checked = manual.face < 0; };
 alongS.oninput = () => { manual.along = +alongS.value; syncSliders(); };
 acrossS.oninput = () => { manual.across = +acrossS.value; syncSliders(); };
-// Resting pose of the manual input: flat on the table, or upright (bottom end down) for a vertical watch.
+faceS.oninput = () => { manual.face = faceS.checked ? -1 : 1; syncSliders(); };
+// Resting pose of the manual input: flat on the table (face up), or upright (bottom end down) for a vertical watch.
 const restAlong = (vertical: boolean): number => vertical ? -1 : 0;
-$('center').onclick = () => { manual.along = restAlong(params.vertical); manual.across = 0; syncSliders(); save(); };
+$('center').onclick = () => { manual.along = restAlong(params.vertical); manual.across = 0; manual.face = 1; syncSliders(); save(); };
+/** The manual pose's signed normal: the face-up or face-down hemisphere over the sliders' in-plane gravity (a chosen
+ *  pose, so the magnitude is the unit sphere's; a measured normal comes from the IMU / phone instead). */
+const manualNormal = (): number => (manual.face < 0 ? -1 : 1) * Math.sqrt(Math.max(0, 1 - manual.along ** 2 - manual.across ** 2));
 
 /** Push the whole view state into the DOM + derived layers. Inverse of what `save()` collects. */
 function syncView(): void {
@@ -255,7 +261,7 @@ const SHAKE_T = 2.5;
 $('shake').onclick = () => { shakeT = SHAKE_T; };
 let wristT = 0;   // wrist turn: 0.5 s roll burst about the tube axis, then the reading pose on the sliders
 $('wrist').onclick = () => {   // vertical: upright with the face leaned back toward the eyes
-  wristT = 0.5; manual.along = params.vertical ? -0.87 : 0; manual.across = params.vertical ? 0 : 0.2; syncSliders(); save();
+  wristT = 0.5; manual.along = params.vertical ? -0.87 : 0; manual.across = params.vertical ? 0 : 0.2; manual.face = 1; syncSliders(); save();
 };
 
 // drag on panel = tilt
@@ -272,13 +278,13 @@ wrap.addEventListener('pointermove', (e) => {
 });
 
 // device orientation
-const dev = { along: 0, across: 0, gyroAcross: 0 };
+const dev = { along: 0, across: 0, normal: 1, gyroAcross: 0 };
 function askOrientation() {
   const D = DeviceOrientationEvent as any;
   const go = () => window.addEventListener('deviceorientation', (e) => {
-    // phone held landscape like the watch: gamma tilts along (left/right end down), beta across
-    dev.along = Math.sin(((e.gamma ?? 0) * Math.PI) / 180);
-    dev.across = Math.sin(((e.beta ?? 0) * Math.PI) / 180);
+    // phone held landscape like the watch: gamma tilts along (left/right end down), beta across; all three
+    // components from the one rotation (physics.ts orientationTilt), normal + face up
+    Object.assign(dev, orientationTilt(e.beta ?? 0, e.gamma ?? 0));
   });
   if (typeof D?.requestPermission === 'function') D.requestPermission().then((s: string) => { if (s === 'granted') go(); });
   else go();
@@ -418,7 +424,7 @@ panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
 //   mm per tube: 320w10-8-6, f = wide)
 //   &tubes=3 (+ the seconds tube; remembered)
 //   ?fresh=1 (ignore the saved session) &preset=<id from PRESETS> &gas=<id from GAS_MODELS> &t=10:09[:30] &demo=120 &settle=1
-//   &along=0.3 &across=0 &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1
+//   &along=0.3 &across=0 &face=down (signed normal: up, the default / down) &scale=3 &cuff=0 &lens=0.6 &lenscurve=1 &lenssmooth=1 &leather=black &grid=1
 //   &p.<paramKey>=<value>   e.g. &p.liquid=%2339ff14&p.bubble=0
 // Physical material (applied in this order): preset → &material=<id from MATERIAL_PRESETS> (enters
 // material mode) → &m.<materialKey>=<value> (enters material mode) → &p.<designKey>=<value>. In material
@@ -452,6 +458,7 @@ panelUi.setLocked(matState.mode === 'material' ? LOCKED_KEYS : new Set());
   }
   if (u.has('along')) manual.along = +u.get('along')!;
   if (u.has('across')) manual.across = +u.get('across')!;
+  if (u.has('face')) manual.face = u.get('face') === 'down' || u.get('face') === '-1' ? -1 : 1;
   if (u.has('t')) { const [h, m, sec] = u.get('t')!.split(':').map(Number); setClock.h = h; setClock.m = m; setClock.s = sec || 0; timeMode = 'set'; }
   if (u.has('demo')) { demoSpeed = +u.get('demo')!; timeMode = 'demo'; }
   if (u.has('scale')) scale = +u.get('scale')!;
@@ -530,9 +537,9 @@ function physics(dt: number) {
   // low-pass lag, flick/shake to feel the gyro high-pass, deadzone and clamp (both are injected
   // as RAW input, before the filter).
   const raw: TiltInput = inputSource === 'manual'
-    ? { along: manual.along, across: manual.across, gyroAlong: 0, gyroAcross: 0 }
+    ? { along: manual.along, across: manual.across, gyroAlong: 0, gyroAcross: 0, normal: manualNormal() }
     : inputSource === 'device'
-      ? { along: dev.along, across: dev.across, gyroAlong: 0, gyroAcross: dev.gyroAcross }
+      ? { along: dev.along, across: dev.across, gyroAlong: 0, gyroAcross: dev.gyroAcross, normal: dev.normal }
       : { ...serial.last };
   if (shakeT > 0) { // ~2.5 Hz wrist shake that dies out over SHAKE_T seconds
     shakeT -= dt; const env = Math.pow(shakeT / SHAKE_T, 1.5);
@@ -571,11 +578,11 @@ function frame(now: number) {
   const d = currentDate();
   $('clock').textContent = d.toTimeString().slice(0, 8);
   const f2 = (v: number) => (v < 0 ? '' : '+') + v.toFixed(2); // sign-stable width
-  $('imuraw').textContent = `filtered  along ${f2(input.along)}  across ${f2(input.across)}  gyro ${String(Math.round(input.gyroAcross)).padStart(5)}`
+  $('imuraw').textContent = `filtered  along ${f2(input.along)}  across ${f2(input.across)}  normal ${f2(input.normal)}  gyro ${String(Math.round(input.gyroAcross)).padStart(5)}`
     + (transport.connected ? ` | ${serial.raw}`.slice(0, 46).padEnd(46) : ''); // fixed length: never widens the box
 }
 if (url.has('settle')) for (let i = 0; i < 250; i++) physics(PHYS_DT); // springs at rest for screenshots
 requestAnimationFrame(frame);
 
 // dev hook
-(window as any).sim = { params, hours, minutes, seconds: tubes[2], tubes, fb, fizz, overlay, material: matState, links }; // links: check-material-ui stubs a transport
+(window as any).sim = { params, pose: imuFilter.pose, hours, minutes, seconds: tubes[2], tubes, fb, fizz, overlay, material: matState, links }; // links: check-material-ui stubs a transport

@@ -12,6 +12,7 @@
 import {
   ANGLE_HARD_MAX_DEG, ANGLE_VERTICAL_MAX_DEG, capDynMaxPx, fillSloshMaxPx, filmFullPxS, GravityNorm, ImuFilter, PHYS_DT,
   columnLen, contactLeads, drainTrace, fillLevels, followClock, mirrored, newTube, stepTube, type TiltInput,
+  orientationTilt, POSE_DEFAULT, POSE_MIN_G, updatePose, type Pose,
 } from '../src/physics';
 import { DEFAULT_PARAMS, PRESETS, migrateParams, presetParams } from '../src/params';
 
@@ -19,9 +20,9 @@ import { DEFAULT_PARAMS, PRESETS, migrateParams, presetParams } from '../src/par
 // check:imu sets LW_BOARD=amoled191): px scale K = 1.
 const TUBE_LENGTH_PX = 536, TUBE_HEIGHT_PX = 72, K = 1;
 const FILL_SLOSH_MAX_PX = fillSloshMaxPx(K), CAP_DYN_MAX_PX = capDynMaxPx(K), FILM_FULL_PX_S = filmFullPxS(K);
-// axis map (spec/layout.ts): along = -ay, across = -ax, gyroAcross = gx
+// axis map (spec/layout.ts): along = -ay, across = -ax, normal = +az, gyroAcross = gx
 const mapSample = (s: number[], d: number): TiltInput =>
-  ({ along: -s[1] / d, across: -s[0] / d, gyroAlong: s[4], gyroAcross: s[3] });
+  ({ along: -s[1] / d, across: -s[0] / d, gyroAlong: s[4], gyroAcross: s[3], normal: s[2] / d });
 // Wall-row edge of the contact-angle meniscus (render.ts capShape / edgeCap at rest speed, no lens):
 // the static angle shifted by the tilt pressure within the hysteresis band, the across sag, the wobble.
 const MM_PER_PX = 0.083;
@@ -191,7 +192,7 @@ for (const [name, samples] of scenarios) {
     const filt = new ImuFilter();
     const step = (along: number, across: number, n: number) => {
       for (let i = 0; i < n; i++) {
-        stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp, PHYS_DT, K);
+        stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp), pp, PHYS_DT, K);
         if (!Number.isFinite(tube.slugPos) || tube.slugPos < 0 || tube.slugPos > travel + 1e-6)
           throw new Error(`automatic liquid escaped: ${tube.slugPos}, travel ${travel}`);
       }
@@ -218,7 +219,7 @@ for (const [name, samples] of scenarios) {
     const tube = newTube(); tube.fillTarget = 0.3;
     const travel = TUBE_LENGTH_PX - columnLen(0.3, pp), filt = new ImuFilter();
     const tag = `vertical (free=${freeLiquid}, remaining=${remaining}, viscous=${viscous})`;
-    const step = (along: number, across: number, n: number) => { for (let i = 0; i < n; i++) stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0 }, pp), pp, PHYS_DT, K); };
+    const step = (along: number, across: number, n: number) => { for (let i = 0; i < n; i++) stepTube(tube, filt.step({ along, across, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp), pp, PHYS_DT, K); };
     const still = () => Math.abs(tube.slugPos) < 0.01 && tube.slugVel === 0 && tube.filmHome < 0.01 && Math.abs(tube.fillPos) < 0.01;
     step(-1, 0, 500);
     if (tube.reading < 0.99 || !still() || Math.abs(tube.angle) > 0.5 || Math.abs(tube.edgeLight) > 0.01)
@@ -258,7 +259,7 @@ for (const [name, samples] of scenarios) {
     for (const degrees of [0, 20, 25, 35, 45, 50, 80]) {
       const g = Math.sin(degrees * Math.PI / 180);
       const raw = { along: axis === 'across' ? 0 : g / (axis === 'diagonal' ? Math.SQRT2 : 1),
-        across: axis === 'along' ? 0 : g / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0 };
+        across: axis === 'along' ? 0 : g / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0, normal: 0 };
       for (let i = 0; i < 250; i++) stepTube(tube, filt.step(raw, pp), pp, PHYS_DT, K);
       if (tube.reading > prev + 1e-6) fail('automatic liquid: release is not monotonic');
       if (degrees <= 20 && tube.reading < 0.999) fail('automatic liquid: gentle tilt released');
@@ -278,7 +279,7 @@ for (const [name, samples] of scenarios) {
     const parks = pp.freeHomeK > 0;
     tube.slugPos = home + away * Math.min(200, travel);
     const along = (parks ? 0.2 : -0.9) * away * pp.inputGain, n = parks ? 250 : 500;
-    for (let i = 0; i < n; i++) stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
+    for (let i = 0; i < n; i++) stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp, PHYS_DT, K);
     if (!(Math.abs(tube.slugPos - home) <= 0.1) || !(Math.abs(tube.slugVel) <= 0.1))
       fail(`${e.id}: ${parks ? 'reading did not settle' : 'free slug did not come to rest at home'} (${tube.slugPos} @ ${tube.slugVel}, home ${home})`);
   }
@@ -287,7 +288,7 @@ for (const [name, samples] of scenarios) {
     fail('automatic liquid: legacy gesture settings did not migrate');
   for (const [start, end] of [[50, 20], [90, 90], [0, 0]]) {
     const pp = { ...pf, readTiltStart: start, readTiltEnd: end }, tube = newTube();
-    for (let i = 0; i < 100; i++) stepTube(tube, { along: 0.7, across: 0.7, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
+    for (let i = 0; i < 100; i++) stepTube(tube, { along: 0.7, across: 0.7, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp, PHYS_DT, K);
     if (!Number.isFinite(tube.reading) || tube.reading < 0 || tube.reading > 1) fail('automatic liquid: invalid band produced invalid state');
   }
   console.log('ok  automatic liquid: material presets, legacy settings and overlapping thresholds');
@@ -303,7 +304,7 @@ for (const axis of ['along', 'across', 'diagonal']) for (const inputGain of [0.1
     for (let i = 0; i < n; i++) {
       position = from + (target - from) * (i + 1) / n;
       const raw = { along: axis === 'across' ? 0 : position / (axis === 'diagonal' ? Math.SQRT2 : 1),
-        across: axis === 'along' ? 0 : position / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0 };
+        across: axis === 'along' ? 0 : position / (axis === 'diagonal' ? Math.SQRT2 : 1), gyroAlong: 0, gyroAcross: 0, normal: 0 };
       stepTube(tube, filter.step(raw, pp), pp, PHYS_DT, K);
       if (!Number.isFinite(tube.slugPos) || tube.slugPos < 0 || tube.slugPos > TUBE_LENGTH_PX - columnLen(tube.fillTarget, pp) + 1e-6)
         fail('play: slug escaped');
@@ -360,7 +361,7 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
   const sum = (t: { trace: Uint16Array }): number => t.trace.reduce((a, v) => a + v, 0);
   const centroid = (t: { trace: Uint16Array }): number => { let m = 0, x = 0; t.trace.forEach((v, i) => { m += v; x += v * i; }); return m ? x / m : 0; };
   const run = (tube: ReturnType<typeof newTube>, pp: typeof DEFAULT_PARAMS, along: number, seconds: number, fillRate = 0): void => {
-    for (let i = 0; i < seconds * 50; i++) { tube.fillTarget += fillRate * PHYS_DT; stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K); }
+    for (let i = 0; i < seconds * 50; i++) { tube.fillTarget += fillRate * PHYS_DT; stepTube(tube, { along, across: 0, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp, PHYS_DT, K); }
   };
   // a line receding at U px/s for 0.4 s from 0.8 full: the densest deposit it laid
   const deposit = (contactDyn: number, U: number): number => {
@@ -415,7 +416,7 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
     const pp = res({ freeLiquid: true, contactDyn: 8, traceDrain: 2377, traceDry: 1.7, traceStain: 1, freeGain: 840, freeDamp: 7, freeHomeK: 150 });
     const tube = newTube(); tube.fillTarget = 0.4;
     const pose = (along: number, across: number, seconds: number): void => {
-      for (let i = 0; i < seconds * 50; i++) stepTube(tube, { along, across, gyroAlong: 0, gyroAcross: 0 }, pp, PHYS_DT, K);
+      for (let i = 0; i < seconds * 50; i++) stepTube(tube, { along, across, gyroAlong: 0, gyroAcross: 0, normal: 0 }, pp, PHYS_DT, K);
     };
     pose(-1, 0, 2); pose(0.7, 0.7, 2.5);   // mid-slide (terminal ~84 px/s, ~320 px of travel)
     // the trail from where the slide started (x = 0) to the line, in 10 px bins: densest in the last one
@@ -445,6 +446,110 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
   if (!exact || !wrapped || !settled || maxStep > 0.016 || tube.fillTarget !== 0.5)
     fail(`seconds tube: fill exact ${exact}, wrap retract ${wrapped}, back on the clock ${settled}, max step ${maxStep.toFixed(4)} (<= 0.016), snap ${tube.fillTarget}`);
   else console.log(`ok  seconds tube: fraction of the second, wrap retract (max ${maxStep.toFixed(4)} a step), back on the clock, snap`);
+}
+// Signed normal and the physical pose (docs/tilted-fizz-plan.md point 2): normal = +az, measured, through the same
+// two-pole low-pass as along / across; pose = normalize(-along, -across, +normal) of the filtered gravity without
+// inputGain, kept at its last valid value when the vector is too short. Legacy along / across / gyro: untouched.
+{
+  let bad = 0;
+  const check = (ok: boolean, msg: string): void => { if (!ok) { bad++; fail(`normal: ${msg}`); } };
+  const near = (a: Pose, b: Pose, eps: number): boolean => Math.abs(a.x - b.x) <= eps && Math.abs(a.y - b.y) <= eps && Math.abs(a.z - b.z) <= eps;
+  const unit = (x: number, y: number, z: number): Pose => { const m = Math.hypot(x, y, z); return { x: x / m, y: y / m, z: z / m }; };
+  const fmt = (q: Pose): string => `(${q.x.toFixed(3)}, ${q.y.toFixed(3)}, ${q.z.toFixed(3)})`;
+  const hold = (f: ImuFilter, raw: TiltInput, pp: typeof DEFAULT_PARAMS, n = 250): TiltInput => { let o = raw; for (let i = 0; i < n; i++) o = f.step(raw, pp); return o; };
+  const tilt = (along: number, across: number, normal: number): TiltInput => ({ along, across, gyroAlong: 0, gyroAcross: 0, normal });
+  // both hemispheres through the board's serial pipeline (axis map + GravityNorm), board bias and noise: the pose is
+  // the sample's own direction (ay, ax, az) / |a| (b = (-along, -across, normal) = (ay, ax, az) / d)
+  for (const [name, a] of [['face up', REST], ['face down', [REST[0], REST[1], -REST[2]]], ['face up, tilted 40° back', [-0.19, -0.94 * Math.cos(0.7), 0.94 * Math.sin(0.7)]],
+    ['face down, tilted 40° forward', [-0.19, -0.94 * Math.cos(0.7), -0.94 * Math.sin(0.7)]]] as [string, number[]][]) {
+    const norm = new GravityNorm(), f = new ImuFilter();
+    let out = tilt(0, 0, 0);
+    for (let i = 0; i < 250; i++) { const s = noisy(a, GBIAS); out = f.step(mapSample(s, norm.update(Math.hypot(s[0], s[1], s[2]))), p); }
+    const want = unit(a[1], a[0], a[2]);
+    check(near(f.pose, want, 0.01) && Math.sign(out.normal) === Math.sign(a[2]) && Math.abs(Math.hypot(out.along, out.across, out.normal) - 1) < 0.03,
+      `${name}: pose ${fmt(f.pose)} want ${fmt(want)}, filtered normal ${out.normal.toFixed(3)}`);
+  }
+  // upright vertical watch (along -1): b = +x up the tube; pure backward tilt by th: b = (cos th, 0, sin th); forward: b_z < 0
+  {
+    const f = new ImuFilter(); hold(f, tilt(-1, 0, 0), DEFAULT_PARAMS);
+    check(near(f.pose, { x: 1, y: 0, z: 0 }, 1e-9), `upright: pose ${fmt(f.pose)}`);
+    for (const deg of [5, 15, 45, 80]) {
+      const th = deg * Math.PI / 180;
+      hold(f, tilt(-Math.cos(th), 0, Math.sin(th)), DEFAULT_PARAMS);
+      check(near(f.pose, { x: Math.cos(th), y: 0, z: Math.sin(th) }, 1e-6), `${deg}° back: pose ${fmt(f.pose)}`);
+      hold(f, tilt(-Math.cos(th), 0, -Math.sin(th)), DEFAULT_PARAMS);
+      check(near(f.pose, { x: Math.cos(th), y: 0, z: -Math.sin(th) }, 1e-6) && f.pose.z < 0, `${deg}° forward: pose ${fmt(f.pose)}`);
+    }
+    hold(f, tilt(-0.6, 0.48, 0.64), DEFAULT_PARAMS);
+    check(near(f.pose, { x: 0.6, y: -0.48, z: 0.64 }, 1e-6), `across + back: pose ${fmt(f.pose)} (b_y = -across)`);
+  }
+  // sign reversal: a mirrored normal script gives the exact mirrored normal and pose z, the rest bit-identical; and the
+  // legacy outputs never depend on the normal (two filters, the same along / across / gyro, opposite normals)
+  {
+    const fa = new ImuFilter(), fb = new ImuFilter(), fc = new ImuFilter();
+    let same = true, mirror = true;
+    for (let i = 0; i < 600; i++) {
+      const t = i * PHYS_DT, along = -0.8 * Math.cos(1.3 * t), across = 0.3 * Math.sin(2.1 * t), n = Math.sqrt(Math.max(0, 1 - along * along - across * across));
+      const g = { gyroAlong: 90 * Math.sin(7 * t), gyroAcross: 120 * Math.cos(5 * t) };
+      const a = fa.step({ along, across, ...g, normal: n }, p), b = fb.step({ along, across, ...g, normal: -n }, p), c = fc.step({ along, across, ...g, normal: 0.3 * Math.sin(9 * t) }, p);
+      same &&= a.along === b.along && a.across === b.across && a.gyroAlong === b.gyroAlong && a.gyroAcross === b.gyroAcross
+        && a.along === c.along && a.across === c.across && a.gyroAlong === c.gyroAlong && a.gyroAcross === c.gyroAcross;
+      mirror &&= b.normal === -a.normal && fb.pose.z === -fa.pose.z && fb.pose.x === fa.pose.x && fb.pose.y === fa.pose.y;
+    }
+    check(same, 'the normal changed a legacy along / across / gyro output');
+    check(mirror, 'a mirrored normal is not the exact mirror (normal, pose z) with x, y unchanged');
+  }
+  // inputGain is an interaction gain: it scales the filtered along / across / normal alike but not the pose
+  {
+    const script = (i: number): TiltInput => { const t = i * PHYS_DT; return tilt(-0.9 * Math.cos(t), 0.2 * Math.sin(3 * t), 0.4 * Math.cos(2 * t)); };
+    const ref = new ImuFilter(), refOut: TiltInput[] = [], refPose: Pose[] = [];
+    for (let i = 0; i < 300; i++) { refOut.push(ref.step(script(i), { ...p, inputGain: 1 })); refPose.push({ ...ref.pose }); }
+    for (const inputGain of [0.1, 0.5, 2, 5]) {
+      const f = new ImuFilter(), pp = { ...p, inputGain };
+      let poseSame = true, scaled = true;
+      for (let i = 0; i < 300; i++) {
+        const o = f.step(script(i), pp);
+        poseSame &&= f.pose.x === refPose[i].x && f.pose.y === refPose[i].y && f.pose.z === refPose[i].z;
+        scaled &&= Math.abs(o.normal - refOut[i].normal * inputGain) < 1e-12 && Math.abs(o.along - refOut[i].along * inputGain) < 1e-12;
+      }
+      check(poseSame, `inputGain ${inputGain} moved the pose`);
+      check(scaled, `inputGain ${inputGain}: filtered normal / along not gain x the unit-gain output`);
+    }
+  }
+  // low magnitude: a free-fall dip (|a| -> 0.05 g through the board pipeline) and an all-zero input keep the last
+  // valid pose exactly; a fresh filter fed nothing valid stays at POSE_DEFAULT (face up); invalid vectors are refused
+  {
+    const norm = new GravityNorm(), f = new ImuFilter(), a = [-0.19, -0.94 * Math.cos(0.5), 0.94 * Math.sin(0.5)];
+    const feed = (s: number[]): TiltInput => f.step(mapSample(s, norm.update(Math.hypot(s[0], s[1], s[2]))), p);
+    for (let i = 0; i < 250; i++) feed(a);
+    const before = { ...f.pose };
+    let held = true, minMag = Infinity;
+    for (let i = 0; i < 150; i++) {   // 3 s of free fall: the filtered vector decays well below POSE_MIN_G
+      const o = feed([0.01, 0.01, 0.05]);
+      const m = Math.hypot(o.along, o.across, o.normal) / p.inputGain; minMag = Math.min(minMag, m);
+      if (m < POSE_MIN_G) held &&= f.pose.x === before.x && f.pose.y === before.y && f.pose.z === before.z;
+    }
+    check(minMag < POSE_MIN_G && held, `free fall: |g| down to ${minMag.toFixed(3)}, pose ${fmt(f.pose)} (held ${fmt(before)})`);
+    for (let i = 0; i < 250; i++) feed(a);
+    check(near(f.pose, before, 1e-3), `free fall: pose did not recover (${fmt(f.pose)} vs ${fmt(before)})`);
+    const z = new ImuFilter(); hold(z, tilt(0, 0, 0), p);
+    check(near(z.pose, POSE_DEFAULT, 0), `no valid sample: pose ${fmt(z.pose)}, want POSE_DEFAULT`);
+    const q: Pose = { x: 0.6, y: 0, z: 0.8 };
+    check(!updatePose(q, NaN, 0, 1) && !updatePose(q, 0, 0, 0.29) && !updatePose(q, Infinity, 0, 0) && q.x === 0.6 && q.z === 0.8, 'updatePose took an invalid vector');
+    check(updatePose(q, 0, 0, -0.31) && q.z === -1, 'updatePose refused a short but valid vector');
+  }
+  // the phone's mapping: one rotation, so a unit vector in 3D; flat = face up, turned over = face down; legacy along /
+  // across at beta 0 / gamma 0 (sin gamma, sin beta)
+  {
+    let unitOk = true;
+    for (let b = -180; b <= 180; b += 15) for (let g = -90; g <= 90; g += 15) {
+      const o = orientationTilt(b, g); unitOk &&= Math.abs(Math.hypot(o.along, o.across, o.normal) - 1) < 1e-12;
+    }
+    const up = orientationTilt(0, 0), down = orientationTilt(180, 0), r = orientationTilt(0, 30), f = orientationTilt(30, 0);
+    check(unitOk && up.normal === 1 && down.normal < -0.999 && Math.abs(r.along - 0.5) < 1e-12 && Math.abs(f.across - 0.5) < 1e-12 && r.normal > 0 && f.normal > 0,
+      'phone orientation mapping is not a consistent unit vector');
+  }
+  if (!bad) console.log('ok  signed normal: both hemispheres (board pipeline), upright, back / forward tilt, sign reversal exact, legacy outputs independent of it, pose gain-free, low |g| holds the last pose, phone mapping a unit vector');
 }
 if (failures) throw new Error(`${failures} failure(s)`);
 console.log('all scenarios within bounds');

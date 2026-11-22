@@ -27,6 +27,34 @@ export interface TiltInput {
   across: number; // g, +1 = far (top) edge up
   gyroAlong: number; // deg/s rotation rate about the along-tube axis... (rolling the tube)
   gyroAcross: number; // deg/s rotation about the across axis (tilting left/right end up/down) — drives slosh
+  // g, the measured out-of-plane component: +1 = face up (IMU +Z out of the screen, spec/layout IMU_AXIS_NORMAL),
+  // -1 = face down. Signed, never reconstructed from along / across. Nothing in stepTube reads it (legacy signals).
+  normal: number;
+}
+
+/** Physical pose: the unit buoyancy direction b = normalize(-along, -across, +normal) in tube coordinates
+ *  (x along the tube toward its top, y across, z toward the viewer; docs/tilted-fizz-plan.md), from the filtered
+ *  gravity WITHOUT inputGain (an interaction gain, not a change of gravity's direction). */
+export interface Pose { x: number; y: number; z: number }
+/** Below this |g| (filtered, g) the vector is noise (free fall, a missing axis): the pose keeps its last valid value. */
+export const POSE_MIN_G = 0.3;
+/** A phone's deviceorientation (deg; W3C Z-X'-Y'': beta about x, then gamma about y) as tube-frame gravity, the phone
+ *  lying with its x along the tube: "up" in its frame is (-cos b sin g, sin b, cos b cos g), so along = -x,
+ *  across = y, normal = z (+ face up; |beta| past 90: face down). A unit vector: the three agree in 3D. */
+export function orientationTilt(betaDeg: number, gammaDeg: number): { along: number; across: number; normal: number } {
+  const b = (betaDeg * Math.PI) / 180, g = (gammaDeg * Math.PI) / 180;
+  return { along: Math.cos(b) * Math.sin(g), across: Math.sin(b), normal: Math.cos(b) * Math.cos(g) };
+}
+/** Before any valid sample: face up (what the legacy zero along / across means: flat on the table). */
+export const POSE_DEFAULT: Readonly<Pose> = { x: 0, y: 0, z: 1 };
+/** Sets `pose` to normalize(-along, -across, normal) and returns true; a vector shorter than POSE_MIN_G or not
+ *  finite leaves `pose` as it was (the last valid orientation) and returns false. Same maths in physics.cpp. */
+export function updatePose(pose: Pose, along: number, across: number, normal: number): boolean {
+  const x = -along, y = -across, z = normal, m2 = x * x + y * y + z * z;
+  if (!(m2 >= POSE_MIN_G * POSE_MIN_G) || !Number.isFinite(m2)) return false;
+  const inv = 1 / Math.sqrt(m2);
+  pose.x = x * inv; pose.y = y * inv; pose.z = z * inv;
+  return true;
 }
 
 // The liquid is a viscous column pinned by capillarity in a thin sealed tube: tilting and
@@ -539,8 +567,10 @@ export class GravityNorm {
  *  wrist-jerk spike through to visibly kick the springs. One-pole maths; same goes into firmware. */
 export const GYRO_LP_HZ = 12; // smooths both gyro outputs: sensor noise otherwise twitches fizz/agitation
 export class ImuFilter {
-  private lpAlong = 0; private lpAcross = 0;   // stage 1
-  private lpAlong2 = 0; private lpAcross2 = 0; // stage 2
+  private lpAlong = 0; private lpAcross = 0; private lpNormal = 0;    // stage 1
+  private lpAlong2 = 0; private lpAcross2 = 0; private lpNormal2 = 0; // stage 2
+  /** The physical pose of the last step (updatePose of the filtered gravity, no inputGain); kept over a reset. */
+  readonly pose: Pose = { ...POSE_DEFAULT };
   private hpPrevIn = 0; private hpPrevOut = 0;
   private lpGyroAcross = 0; private lpGyroAlong = 0;
   private init = false;
@@ -550,8 +580,9 @@ export class ImuFilter {
     // Clip before filtering so a hard knock carries bounded energy into the springs.
     const inAlong = Math.max(-1.2, Math.min(1.2, raw.along));
     const inAcross = Math.max(-1.2, Math.min(1.2, raw.across));
+    const inNormal = Math.max(-1.2, Math.min(1.2, raw.normal));
     if (!this.init) {
-      this.lpAlong = this.lpAlong2 = inAlong; this.lpAcross = this.lpAcross2 = inAcross;
+      this.lpAlong = this.lpAlong2 = inAlong; this.lpAcross = this.lpAcross2 = inAcross; this.lpNormal = this.lpNormal2 = inNormal;
       this.hpPrevIn = raw.gyroAcross; this.init = true;
     }
     const a = 1 - Math.exp(-2 * Math.PI * p.accelLpHz * dt);
@@ -559,6 +590,9 @@ export class ImuFilter {
     this.lpAcross += (inAcross - this.lpAcross) * a;
     this.lpAlong2 += (this.lpAlong - this.lpAlong2) * a;
     this.lpAcross2 += (this.lpAcross - this.lpAcross2) * a;
+    this.lpNormal += (inNormal - this.lpNormal) * a;
+    this.lpNormal2 += (this.lpNormal - this.lpNormal2) * a;
+    updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2);
     let g: number;
     if (p.gyroHpHz <= 0) g = raw.gyroAcross;
     else {
@@ -573,6 +607,7 @@ export class ImuFilter {
     const gl = 1 - Math.exp(-2 * Math.PI * GYRO_LP_HZ * dt);
     this.lpGyroAcross += (cond(g) - this.lpGyroAcross) * gl;
     this.lpGyroAlong += (cond(raw.gyroAlong) - this.lpGyroAlong) * gl;
-    return { along: this.lpAlong2 * p.inputGain, across: this.lpAcross2 * p.inputGain, gyroAlong: this.lpGyroAlong * p.inputGain, gyroAcross: this.lpGyroAcross * p.inputGain };
+    return { along: this.lpAlong2 * p.inputGain, across: this.lpAcross2 * p.inputGain, gyroAlong: this.lpGyroAlong * p.inputGain, gyroAcross: this.lpGyroAcross * p.inputGain,
+      normal: this.lpNormal2 * p.inputGain };
   }
 }

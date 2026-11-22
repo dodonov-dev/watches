@@ -668,7 +668,7 @@ for (const f of FIXTURES) {
   tube.fillTarget = 0.5;
   for (let i = 0; i < 250; i++) {
     const t = i / 50;
-    stepTube(tube, { along: 0.8 * Math.sin(2.1 * t), across: 0.5 * Math.cos(1.3 * t), gyroAlong: 60 * Math.sin(5 * t), gyroAcross: 120 * Math.cos(4 * t) }, r.params, PHYS_DT, 1);
+    stepTube(tube, { along: 0.8 * Math.sin(2.1 * t), across: 0.5 * Math.cos(1.3 * t), gyroAlong: 60 * Math.sin(5 * t), gyroAcross: 120 * Math.cos(4 * t), normal: 0 }, r.params, PHYS_DT, 1);
   }
   for (const [k, v] of Object.entries(tube)) {
     if (typeof v === 'number' && !Number.isFinite(v)) bad.push(`${k} = ${v}`);
