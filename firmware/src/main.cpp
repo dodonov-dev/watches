@@ -1015,10 +1015,12 @@ static void handleLine(char *line) {
       out.printf("SEQ END %d frames %lu ms%s\n", SEQ_FRAMES, (unsigned long)(millis() - t0), seeded ? "" : " (fizz unseeded: esp_random)");
       clockJumped = true;   // the fills jump back to the clock
       break; }
-    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f normal %.3f fillH %.3f fillM %.3f heap %u worker-stack-free %u loop-stack-free %u",
+    case 's': out.printf("mode %c fps %.1f clock %02d:%02d:%02d along %.3f across %.3f gyro %.1f normal %.3f fillH %.3f fillM %.3f heap %u heap-min %u heap-big %u worker-stack-free %u loop-stack-free %u",
                  mode, fps, (int)clockSec / 3600, ((int)clockSec / 60) % 60, (int)clockSec % 60,
                  rawTilt.along, rawTilt.across, rawTilt.gyroAcross, rawTilt.normal, tubeH.fillTarget, tubeM.fillTarget,
-                 ESP.getFreeHeap(), (unsigned)workerStackFree, loopTask ? (unsigned)uxTaskGetStackHighWaterMark(loopTask) : 0u);
+                 ESP.getFreeHeap(), (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),   // internal: free now, lowest since boot,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL), (unsigned)workerStackFree,   // largest block now
+                 loopTask ? (unsigned)uxTaskGetStackHighWaterMark(loopTask) : 0u);
 #if TUBE_COUNT == 3
       out.printf(" fillS %.3f", tubeS.fillTarget);
 #endif

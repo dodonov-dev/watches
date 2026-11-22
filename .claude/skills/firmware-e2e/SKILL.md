@@ -55,10 +55,14 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
   period T. One compact `f` line per 2 s. `tools/tilt.py --hold 60 '-1,0>0.6,0@3'` = worst case for spring fizz (pool at its `fizzCount` share).
   Auto-detects `/dev/ttyACM*` (usbipd-attached) or Windows COMx. Prints `BOARD REBOOTED (<reason>)` if a
   boot banner shows up — reasons: poweron/sw/panic/task-wdt/brownout/usb.
-- `tools/bench.py [--stages [LIST]] [--stage name=v] [--quick] [--samples N] [--preset FILE] [--fix-pose] [--runs N] [--live-imu] [--allow-dead-imu] [--json]`
+- `tools/bench.py [--stages [LIST]] [--stage name=v] [--quick] [--samples N] [--preset FILE] [--fix-pose | --pose stand|A,C,N] [--runs N] [--live-imu] [--allow-dead-imu] [--json]`
   - Pins are volatile (`p~`): a dropped session leaves NVS as it was.
-  - `--fix-pose`: tilt override `g -0.5 0` 4 s (free slug home), `g 0 0` 4 s, then the pins; `g` released at the end. The
+  - `--fix-pose` (= `--pose flat`): tilt override `g -0.5 0` 4 s (free slug home), `g 0 0` 4 s, then the pins; `g` released at the end. The
     scene no longer depends on how the board lies or on the IMU (no dead-IMU check). Use it for every LCD perf A/B.
+  - `--pose stand` (or `along,across,normal`): `g -0.976 -0.01 0 0 0.22` (signed normal, + face up) for the whole bench, inputGain
+    not pinned to 0. Vertical fizz reads `g 0 0` as face up (bubbles stall): bench vertical looks at `--pose stand`. Also
+    fizz_bench.py `--pose` (swing = roll ±0.3 about it), e2e.sh `--pose`. The summary adds per-core / p95 / fizz-step medians.
+  - `s` reports internal heap: `heap` free now, `heap-min` lowest since boot, `heap-big` largest free block.
   - Time budget: every sample is one 2 s fps window (firmware `f`), 5 base + 3 per stage by default, so the full
     table is ~130 s. `--stages fizz,digits` measures only those; `--quick` = 3 base / 2 per stage, shorter settles
     (~half, ±0.1 ms noisier). Use `--quick` for direction, full samples + `--runs 3` for a number you will quote.
@@ -73,7 +77,7 @@ Baseline @ f0a3de7: **20.6 fps, render 44.4 ms**, digits 20.7 ms of it; parity ~
   - Dead IMU: `s` reading along/across/gyro exactly 0 after the pins = IMU dead after flash. bench.py reboots
     (`r`), re-applies the pins and re-checks once; still dead → exit 3 (e2e.sh exits 3 too).
     `--allow-dead-imu` skips the reboot and marks the header `IMU dead` (for -DNO_IMU builds).
-- `tools/fizz_bench.py [--counts 120,240,480] [--no-swing] [--no-spring] [--prof] [--flash BIN]` — fizz load on a full
+- `tools/fizz_bench.py [--counts 120,240,480] [--no-swing] [--no-spring] [--prof] [--pose stand] [--flash BIN]` — fizz load on a full
   tube (user-fav pinned volatile, 11:59:30 frozen): per count a pinned and a swinging line, then a spring at rate 20;
   `--prof` adds the -DFIZZ_PROF lines; `--flash` writes a saved firmware.bin first (A/B builds alternately in one
   session). Restores params, releases `g`, sets the real clock.
