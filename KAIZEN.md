@@ -1011,3 +1011,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - BLE window with a central + traffic: 9-24 fps, frame-p95 up to 255 ms (live IMU, serial polls too); unmeasured pinned.
 - Vertical fizz step grows superlinearly with the pool at the stand pose (fizz_bench, both tubes full): 120 -> 2.8-3.1 ms, 240 -> 7.3-8.0, 480 -> 16-19 ms
   (480 swing hits the 5-step cap, ~10-12 fps).
+- Vertical foam: near-centred arrivals behind a lone ridge foam bubble escape only at the frictionless rate (e-fold m / k_w U b_x ~0.2 s); a small bounded perturbation would shorten them (look decision).
+- Vertical foam (surface model): the drift gathers a layered 6-8 cap on the front ridge where the rope arrives; arrivals queue under it (stand 60 s: 118 waits >= 0.5 s vs 44 on c6e77da). Fuller-width foam (a count / life matter) or the fringe map (model point 5) would give them room.
+- Vertical foam: the glide and push-back along the tube use the common fizzSpeed dt, the surface model U_i only in the plane (per-bubble U_i axially moved big ones 1.46x fizzSpeed dt down, past the stand job bound).

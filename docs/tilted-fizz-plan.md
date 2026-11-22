@@ -447,3 +447,19 @@ Internal heap (fast mode, `s` heap / heap-min / heap-big): IRAM 28.6 KB / 27.9 /
 BLE window (B1): IRAM fails at boot (BLE_INIT malloc failed, BLE assert emi.c 164 -> interrupt-WDT panic, back to fast
 mode); flash: 4.9 KB free advertising, connect + subscribe + p? / p~ traffic + 3 reconnects OK, min 3.2 KB, largest
 block 2.0 KB; stand bench in the window 52.2 fps. Decision: stepFizzVertical in flash (-0.5 fps, +0.23 ms fizz step).
+## Review 3 fixes + foam seniority (host)
+- k always from the current body (floor gone): a move in the surface plane that would sink a foam bubble's target below
+  min(uS - fizzSpeed dt, its target at the step's start) is shortened (6 halvings); selftest 'side wall' (10 px band):
+  drawn jump 10 px -> 0 past fizzSpeed dt.
+- A held contact's wall flag follows the corrected position (FIZZ_WALL_TOL 1e-3 px); selftest 'wall flag'.
+- Board (user): arrivals pushed existing foam aside / down. Interim seniority + 0.2 cap (371e8d8) superseded by the
+  surface model (docs/tilted-fizz-surface-model.md points 1-3): drift v = k_w U_i [b_perp + sigma (b_u - sigma . b_perp)
+  / (1 + sigma^2)] (sigma_y row slope, sigma_z = B0 6t(1 - t) / w) replaces FOAM_SLIDE, approach to the deepest contact
+  removed; contacts part in the plane shared equally, a step's whole in-plane move <= FOAM_PUSH (1 / 2 sqrt 2) U_i dt;
+  an arrival held under a resident moves it aside by its share (FIZZ_C_HELD); nobody is pushed along the tube (seated
+  within FOAM_SEAT 0.5 px follows its endpoint, the unseated rear waits). Stand 60 s, c6e77da -> new: in-plane p90 / p99
+  0.50 / 1.25 U -> 0.35 / 0.35 U; foam-steps sinking > 5 px/s 4.2 % -> 1.5 % (all endpoint-following, worst drawn 1.29
+  -> 0.55 px a step; lives > 10 px 0 / 0, worst 8.6 -> 4.3 px); foam count 6.4 / 7.4 -> 6.3 / 7.1; newcomer settle
+  median / p90 0.68 / 1.14 -> 0.78 / 1.46 s; waits >= 0.5 s 44 -> 118 (queues under the front cap).
+- Lone ridge foam (selftest 'lone'): centred waits; offsets slide round at the frictionless rate (tau 0.21 s measured,
+  0.196 s analytic): slow when near-centred, not stuck; no kernel change.
