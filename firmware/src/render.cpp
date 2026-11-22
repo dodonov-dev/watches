@@ -1367,6 +1367,7 @@ struct RowCache {
   // edge profile terms (sim edgeCap): d = boreRow(row), u2 = d^2; boreR = bore radius (sim boreR)
   float rowD[TUBE_HEIGHT_MAX], rowU2[TUBE_HEIGHT_MAX], boreR;
   uint16_t hiC;                                                  // front-bright colour
+  uint16_t blickN;                                               // surface blick: neutral grey at hiC's luma (sim blickN)
   uint16_t lensC;                                                // concave surface stroke colour (sim lensC)
   uint16_t darkC;                                                // deep liquid colour (sim darkC): dark tone target, unlit stroke shade
   uint16_t toneC; int toneT;                                     // surfaceTone target colour and blend 1/256 (sim toneC/toneK)
@@ -4440,6 +4441,7 @@ void Tube::buildRowCache(const Params &p, uint32_t gen) {
   }
   RGB hi888 = ambientize(scale(hexToRgb(p.liquidHi), p.brightness * p.liquidBright), ambientBodyL(p), ambientAmt(p));
   rc.hiC = q(hi888);
+  { const float l = luma(hi888); rc.blickN = q({l, l, l}); }   // the blick: no hue, the old liquidHi blick's brightness (sim)
   // pure liquid colour (no transparency mix) halfway to the highlight: brighter and more saturated than the body
   RGB liquid888 = scale(hexToRgb(p.liquid), p.brightness * p.liquidBright);
   rc.lensC = q(mix(liquid888, hi888, 0.55f));
@@ -5335,8 +5337,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // per row (strokes, layer weights) come from before the band loop (step 9; concave() there and here).
   if (band3e) {
     const float hw = softW * 0.5f, transK = clampf(p.liquidTransparency, 0, 1);
-    // The blick reflects the room light, not the liquid: the fizz pinpoint's neutral white through the panel dimmer (sim)
-    const uint16_t blickN = q({255 * p.brightness, 255 * p.brightness, 255 * p.brightness});
+    const uint16_t blickN = rc.blickN;   // the blick reflects the room light: neutral, at liquidHi's luma (buildRowCache)
     auto tone = [&](uint16_t c) -> uint16_t { return rc.toneT > 0 ? blend565T(c, rc.toneC, rc.toneT) : c; };
     // the same toward the row's shaded tone colour (the convex nose mixes shaded colours)
     auto toneS = [&](uint16_t c, int ry) -> uint16_t { return rc.toneT > 0 ? blend565T(c, sp ? sp->toneC[ry] : rc.toneC, rc.toneT) : c; };

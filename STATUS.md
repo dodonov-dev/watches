@@ -4,8 +4,9 @@ _Last update: 2026-11-22 (tilted fizz point 8: surface pulse)_
 
 ## Tilted fizz point 8: the pulse where fizz meets the surface (2026-11-22), branch `tilted_rise`, host only
 
-- Blick in neutral room light (every preset): the band's surfaceBlick patch takes the fizz pinpoint's white through the
-  panel dimmer (row shaded), not liquidHi. Foam veil by the band's full layer opacity: the blick and the rim veil a
+- Blick in neutral room light (every preset): the band's surfaceBlick patch is grey (no hue) at the luma of the liquidHi
+  colour it used to be (dimmer, liquidBright, row shaded), not liquidHi; white was too glossy (user, same day): the
+  board look's blick #3c8ad3 x 0.9 -> grey 111. Foam veil by the band's full layer opacity: the blick and the rim veil a
   bubble by their drawn opacity over the pixel (footprint hw into the body too); the fill keeps its wedge (fill-only looks
   byte-identical). Vertical pop: base radius, smoothstep fade a, x [1 - C_B (1 - a)] under the band, veil x (1 - k a)
   with k = fizzEndpointK (point 5 hook, 0). Landscape pop byte-identical.

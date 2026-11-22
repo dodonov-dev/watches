@@ -2194,9 +2194,10 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     const fill = Math.max(0, Math.min(1, p.surfaceFill));
     veilA = FOAM_VEIL * strokeA * fill;   // a see-through dish does not veil the foam behind it
     const yc = (H - 1) / 2, blickY = yc - yc * Math.sin((s.light * Math.PI) / 180), blickInvH = 1 / Math.max(2, BLICK_H * H);
-    // A reflection takes the light's colour, not the liquid's: the blick is the room light, the fizz pinpoint's neutral
-    // white through the panel dimmer (firmware blickN).
-    const blickN = q(scale([255, 255, 255], p.brightness));
+    // A reflection takes the light's colour, not the liquid's: the blick is neutral grey (no hue) at the luma of the
+    // highlight colour it used to be (liquidHi through the panel dimmer and liquidBright), so each look keeps its
+    // blick's brightness (firmware rc.blickN).
+    const blickL = luma(hi888), blickN = q([blickL, blickL, blickL]);
     const blickRow = (ry: number): number => p.surfaceBlick > 0 ? p.surfaceBlick * Math.max(0, 1 - Math.abs(ry - blickY) * blickInvH) : 0;
     // one-write layer compositor for the band pixel loop (see there); P premultiplied 888, A alpha
     const P: [number, number, number] = [0, 0, 0]; let A = 0, nL = 0, cLast = 0;
