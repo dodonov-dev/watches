@@ -54,12 +54,13 @@ export function phoneTilt(betaDeg: number, gammaDeg: number, vertical: boolean):
 }
 /** Before any valid sample: face up (what the legacy zero along / across means: flat on the table). */
 export const POSE_DEFAULT: Readonly<Pose> = { x: 0, y: 0, z: 1 };
-/** Desk view: the stand's back tilt τ = atan2(z, x) of the pose (the top end leaning away from the viewer), rad, clamped
- *  to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). In float32 as physics.cpp. */
+/** Desk view: the stand's tilt τ = atan2(z, x) of the pose, rad, signed: > 0 back (the top end leaning away from the
+ *  viewer), < 0 forward (the screen tipped toward the viewer); clamped to ±BACK_TILT_MAX_DEG (face up / down, turned over:
+ *  the caps). In float32 as physics.cpp. */
 export const BACK_TILT_MAX_DEG = 45;
 export function poseBackTilt(pose: Readonly<Pose>): number {
   const F = Math.fround, t = F(Math.atan2(F(pose.z), F(pose.x))), hi = F(F(BACK_TILT_MAX_DEG * F(Math.PI)) / 180);
-  return t > 0 ? (t < hi ? t : hi) : 0;
+  return t > hi ? hi : t < -hi ? -hi : t;
 }
 /** Sets `pose` to normalize(-along, -across, normal) and returns true; a vector shorter than POSE_MIN_G or not
  *  finite leaves `pose` as it was (the last valid orientation) and returns false. Same maths in physics.cpp. */
@@ -588,6 +589,10 @@ export class ImuFilter {
   private lpAlong2 = 0; private lpAcross2 = 0; private lpNormal2 = 0; // stage 2
   /** The physical pose of the last step (updatePose of the filtered gravity, no inputGain); kept over a reset. */
   readonly pose: Pose = { ...POSE_DEFAULT };
+  /** A valid sample has set pose (before it POSE_DEFAULT, face up): the desk view's lid keeps τ 0 until then (firmware). */
+  poseValid = false;
+  /** Desk view: the stand's back tilt τ of the pose, 0 before a valid sample (firmware ImuFilter::backTilt). */
+  backTilt(): number { return this.poseValid ? poseBackTilt(this.pose) : 0; }
   private hpPrevIn = 0; private hpPrevOut = 0;
   private lpGyroAcross = 0; private lpGyroAlong = 0;
   private init = false;
@@ -609,7 +614,7 @@ export class ImuFilter {
     this.lpAcross2 += (this.lpAcross - this.lpAcross2) * a;
     this.lpNormal += (inNormal - this.lpNormal) * a;
     this.lpNormal2 += (this.lpNormal - this.lpNormal2) * a;
-    updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2);
+    if (updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2)) this.poseValid = true;
     let g: number;
     if (p.gyroHpHz <= 0) g = raw.gyroAcross;
     else {

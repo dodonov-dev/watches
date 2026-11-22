@@ -53,7 +53,8 @@ struct Pose { float x, y, z; };
 #define POSE_DEFAULT Pose{0, 0, 1}   // before any valid sample: face up (the legacy zero along / across: flat)
 bool updatePose(Pose &pose, float along, float across, float normal);
 // Desk view: the stand's back tilt tau = atan2(z, x) of the pose (the top end leaning away from the viewer), rad,
-// clamped to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). See sim poseBackTilt.
+// signed: < 0 tipped forward (the screen toward the viewer); clamped to +-BACK_TILT_MAX_DEG (face up / down, turned over:
+// the caps). See sim poseBackTilt.
 #define BACK_TILT_MAX_DEG 45.0f
 float poseBackTilt(const Pose &pose);
 
@@ -161,7 +162,9 @@ struct ImuFilter {
   float lpAlong = 0, lpAcross = 0, lpAlong2 = 0, lpAcross2 = 0, hpPrevIn = 0, hpPrevOut = 0, lpGyroAcross = 0, lpGyroAlong = 0;
   float lpNormal = 0, lpNormal2 = 0;
   Pose pose = POSE_DEFAULT;
+  bool poseValid = false;   // a valid sample has set pose (before it: POSE_DEFAULT, face up; the lid's tau stays 0, backTilt())
   bool init = false;
+  float backTilt() const { return poseValid ? poseBackTilt(pose) : 0.0f; }   // desk view: the stand's back tilt, 0 before a valid sample
   void reset() { init = false; hpPrevIn = hpPrevOut = lpGyroAcross = lpGyroAlong = 0; }
   TiltInput step(const TiltInput &raw, const Params &p, float dt = PHYS_DT);
 };

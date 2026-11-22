@@ -41,10 +41,12 @@ aggressively"; "worth modelling how it behaves at the surface, even if it means 
 1. Drift law in settleFoamV (sim) / the band branch of settleFoam (firmware): replace FOAM_SLIDE by v⊥ above (k_w =
    FIZZ_KW, per-bubble U_i, σ_y the row slope, σ_z = B₀·6t(1−t)/w from fizzEndK's t, w); remove the approach component
    against the deepest contact (foamContactV), pull back into the disc. Float32 + − × ÷ √ only, no trig/RNG/new memory.
-2. Contact law: in-plane parting per bubble ≤ FOAM_PUSH·U_i·dt (1/(2√2) derived, or the interim 0.2); a seated bubble's
-   u follows only its endpoint, the rear unseated one waits. Delete FOAM_SLIDE, the k floor and the common-U₀ speed·dt cap
-   on the vertical path; keep FOAM_FOLLOW, FOAM_CATCH, FOAM_GAP, FOAM_RELAX (3 sweeps), slot-parity tie, FOAM_POP_T, FOAM_VEIL.
-3. Acceptance: stand job foam in-plane p99 ≤ 0.354U, zero sink beyond profile recession, foam count unchanged;
+2. Contact law: a bubble's whole in-plane step (drift and parting, from the first placement on) ≤ FOAM_PUSH·U_i·dt
+   (1/(2√2)); a held arrival's in-plane slide 1/(1+sin²φ) of the fixed-obstacle one (its share, the resident the other); a
+   seated bubble's u follows only its endpoint, the rear unseated one waits. FOAM_SLIDE and the k floor gone on the vertical
+   path; the common-U₀ speed·dt cap kept along the tube (glide, push-back); keep FOAM_FOLLOW, FOAM_CATCH, FOAM_GAP,
+   FOAM_RELAX (up to 3 sweeps: they end at the first without a contact), slot-parity tie, FOAM_POP_T, FOAM_VEIL.
+3. Acceptance: stand job foam in-plane p99 ≤ 0.354U, zero sink beyond endpoint following, foam count unchanged;
    check_fizz_steps --sim --free (vertical), check_render_frames landscape identical, check_board_render board look;
    one board round; fizz step ≤ 0.84 ms.
 4. derive.ts foam life = min(30, foamStability + τ_d), τ_d rounded to 0.1 s (watery presets bit-identical);

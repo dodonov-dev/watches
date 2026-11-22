@@ -18,6 +18,7 @@ void stepFizz(const Params &pH, const Params &pM, const Params &pS, float dt, fl
 void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation, const Pose &pose);
 // Largest fizz count requested past the fixed pool since boot (0 = everything fitted); main reports it.
 int fizzOverflow();
+uint32_t fizzStateHash(int idx);   // tube idx's stepped fizz state (the `X` lines; host check_fizz_steps HARNESS fizzHash)
 // Vertical-watch births tube idx postponed since boot because no bubble of the drawn size fits the bore (0 = none).
 int fizzBlocked(int idx);
 // Bytes the fizz size params asked of the mask pool past its boot-time size (0: they fit); bubbles then draw analytically.

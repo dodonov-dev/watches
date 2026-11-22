@@ -1016,7 +1016,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Vertical foam (surface model): the drift gathers a layered 6-8 cap on the front ridge where the rope arrives; arrivals queue under it (stand 60 s: 118 waits >= 0.5 s vs 44 on c6e77da). Fuller-width foam (a count / life matter) or the fringe map (model point 5) would give them room.
 - Vertical foam: the glide and push-back along the tube use the common fizzSpeed dt, the surface model U_i only in the plane (per-bubble U_i axially moved big ones 1.46x fizzSpeed dt down, past the stand job bound).
 - Desk-view lid: sprite digits take no band (step-8 look decision), so under the lid they draw dry over its wash and its front rim (the line passes behind the digit); bitmap digits and ticks composite through it.
-- Desk-view lid: the fizz band veil (sim step 5 layers / firmware veilRow) still places the rim on the stroke's outer px (the back line) with the front rim's weight; redo with the fizz endpoint flip.
 - Desk-view lid: surfaceBlick is the side view's mid-band patch; the spec's thin crescent at the back rim is not done.
 - Vertical fizz perf (bit-exact pass, 2026-11-22): ~1 ms for the board look is not reachable without a behaviour change: the
   bubble loop alone is ~0.6 ms (~1000 cycles a bubble: 2 roots + 2 divisions on the wall, ~50 / 33 cycles each), the packing
@@ -1031,3 +1030,10 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - check_board_steps across a lib rebuild: same source, other elf; compare A/B only from one build environment.
 - Packing with ~40+ foam a tube (fizz_bench 240 / 480) stays superlinear: contacts per foam bubble grow with the pile
   (240: ~16 placements a foam bubble a step); a gather costs ~1100 cycles (grid range scan, PSRAM lists).
+- Desk-view lid fizz: P = r max(0, 1 - cos tau + sin tau tan delta) is clamped at 0 (tau well past e makes it negative); sigma_y under the lid is the mid line's row slope (the ring), the dish's own rise toward the side walls is not published there.
+- Desk-view lid: the closed-end transition shrinks the lid over 2 R tan tau of fill (a geometric stand-in for the plane meeting the end glass, not a volume model).
+- Board vs host fizz state (`X` state hashes, seqhost-style host build, contract off): equal through frame 119 of 350 on the board look and the lid fixture, then the hours tube differs in X's pitching phase (2nd foam wave). Unproven cause; likely newlib vs glibc libm in physics.cpp (asinf / cosf / sinf of the contact leads and tilt) - a libm-free physics path would settle it.
+- Board `X` strip hashes never matched the host's (the render's pixel kernels keep madd.s); only the new state hashes are host-comparable.
+- check_board_steps.py is a board A/B tool; a --host mode (build the seq harness with the board's X seed, compare state hashes) would make the host == board check one command.
+- Vertical fizz perf after part C (lid look, stand, lcd316@320w8-8): 2.25 ms a step (target 1.2). FIZZ_PROF split: bubble loop ~770 us (165 bubbles, ~4.6 us each), settle ~1260 us for ~20 foam (prep / box bounds ~320, glide + drift ~360, sweeps ~585: ~54 contacts, 63 gathers), ~60 us a foam bubble a step for ~8 placements - far more than its arithmetic. Unexplained: profile place() / fizzEndLowBox per call on the board next; candidates an internal-RAM AoS foam slot (7 PSRAM arrays a placement), settleFoam's lambdas in flash, or one fizz step per frame (dt = the frame's steps).
+- Vertical foam: a monolayer raft stays in contact (m = r1 + r2 + 0.5 margin, arrivals keep compressing it): ~6 parting placements a foam bubble a step on the lid look; physical, but every one costs a full placement.

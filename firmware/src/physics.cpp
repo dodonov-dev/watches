@@ -3,6 +3,9 @@
 #include <esp_heap_caps.h>
 #include <math.h>
 #include <string.h>
+// No fused multiply-add in the physics (as the host checks build it, -ffp-contract=off): the tube states it steps feed the
+// fizz's frame inputs (surfaces, strokes, length), so the board's fizz state can be compared with the host's (`X`).
+#pragma GCC optimize("fp-contract=off")
 
 static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 static inline float dz(float v, float d) { return fabsf(v) < d ? 0 : v - (v > 0 ? d : -d); }
@@ -345,7 +348,7 @@ float GravityNorm::update(float n) {
 
 float poseBackTilt(const Pose &pose) {
   const float t = atan2f(pose.z, pose.x), hi = BACK_TILT_MAX_DEG * (float)M_PI / 180;
-  return t > 0 ? (t < hi ? t : hi) : 0.0f;   // NaN-free: the pose is a unit vector (POSE_DEFAULT before a sample)
+  return t > hi ? hi : t < -hi ? -hi : t;   // signed (< 0 forward); NaN-free: the pose is a unit vector (POSE_DEFAULT before a sample)
 }
 bool updatePose(Pose &pose, float along, float across, float normal) {
   const float x = -along, y = -across, z = normal, m2 = x * x + y * y + z * z;
@@ -366,7 +369,7 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   lpAcross2 += (lpAcross - lpAcross2) * a;
   lpNormal += (inNormal - lpNormal) * a;
   lpNormal2 += (lpNormal - lpNormal2) * a;
-  updatePose(pose, lpAlong2, lpAcross2, lpNormal2);
+  if (updatePose(pose, lpAlong2, lpAcross2, lpNormal2)) poseValid = true;
   float g;
   if (p.gyroHpHz <= 0) g = raw.gyroAcross;
   else {
