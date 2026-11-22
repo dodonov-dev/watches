@@ -1005,3 +1005,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Vertical endpoint rule: stepper on the physical circle, render clamp on the drawn lens footprint (r / fizzMag rows): where m < 1 it pulls parked foam back each frame; mag rows published with the surfaces would let the stepper agree.
 - fizzEndClampX computes fizzMag that planBubble computes again right after (one extra per vertical bubble per frame).
 - Vertical foam: a free bubble held behind a lone foam bubble on the ridge waits for it to pop (stand pose 60 s: 44 holds >= 0.5 s, longest 1 s); a held contact that also nudges the foam aside in the surface plane would let it surface.
+- IRAM_ATTR does not reach lambdas: settleFoam's (and stepFizzVertical's) lambdas link to flash while the body is IRAM.
+- BLE window (lcd316@320w8-8, 2 tubes, stepFizzVertical in flash): 4.9 KB internal free advertising, min 3.2 KB / largest
+  block 2.0 KB under BLE traffic; any new internal buffer or IRAM kernel breaks B1 (BLE_INIT malloc fails -> panic).
+- BLE window with a central + traffic: 9-24 fps, frame-p95 up to 255 ms (live IMU, serial polls too); unmeasured pinned.
+- Vertical fizz step grows superlinearly with the pool at the stand pose (fizz_bench, both tubes full): 120 -> 2.8-3.1 ms, 240 -> 7.3-8.0, 480 -> 16-19 ms
+  (480 swing hits the 5-step cap, ~10-12 fps).

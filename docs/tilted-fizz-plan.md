@@ -17,7 +17,7 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 | 6 | chain parking | opus | done a215582 (park median 20-23 → 8 px); review 2: packing in physical coords (fixing) |
 | 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | done c904c53 (host): back half then front half, veil x (1 - k) every vertical bubble, pinpoint x (1 - zc)^2; 4 levels kept (step = 1/2/1 565 LSB on the board look, no interpolation) |
 | 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board e9c924a9: pulse gone, 56.5 vs 57.6 fps (render +0.3 ms), parity 0 > 12/255, NVS kept; user: too glossy → blick grey at liquidHi luma (in progress); k hook awaits point 5 |
-| 9 | look review, parity, board perf acceptance | opus + user | open |
+| 9 | look review, parity, board perf acceptance | opus + user | perf: stand-pose bench (bench.py / fizz_bench.py --pose stand), stepFizzVertical to flash (IRAM broke the BLE window); look review open |
 
 ## Physical model (Astra v1, kept parts)
 **Coordinates and input signs.** Define physical coordinates before lens remapping:
@@ -438,3 +438,12 @@ Foam spreading flashed, look kept. Review 3 (docs/tilted-fizz-review3.md): point
 k floor causes a 10 px rendered jump when foam crosses the side wall (remove floor, bound the coupled move), stale wall
 contact after inward deflection, offset approaches behind a lone foam bubble should slide around (centred wait OK).
 Fixing on the host. Point 9 (stand-pose bench, IRAM vs flash with BLE, look review) still open.
+
+## Board, point 9 perf (2026-11-22, lcd316@320w8-8, board look pinned volatile, `--pose stand` = g -0.976 -0.01 0 0 0.22)
+bench.py --runs 3 (median): IRAM (today) 53.5 fps, render 18.12 ms, cores h 16.28 / m 13.34, p95 20 ms, fizz step 1.27 ms;
+flash 53.0 fps, 18.30, 16.18 / 13.39, 20 ms, 1.50 ms; flash + foamContactV noinline IRAM (+940 B) 52.9 fps, 1.51 ms (no gain).
+fizz_bench 480 pin: IRAM 15.0 fps / fizz 16.4 ms, flash 13.4 / 18.9; 480 swing 10.3 / 11.9 (5-step cap).
+Internal heap (fast mode, `s` heap / heap-min / heap-big): IRAM 28.6 KB / 27.9 / 13.8 KB; flash 36.2 / 35.5 / 20.5 KB.
+BLE window (B1): IRAM fails at boot (BLE_INIT malloc failed, BLE assert emi.c 164 -> interrupt-WDT panic, back to fast
+mode); flash: 4.9 KB free advertising, connect + subscribe + p? / p~ traffic + 3 reconnects OK, min 3.2 KB, largest
+block 2.0 KB; stand bench in the window 52.2 fps. Decision: stepFizzVertical in flash (-0.5 fps, +0.23 ms fizz step).

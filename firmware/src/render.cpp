@@ -4248,7 +4248,10 @@ static inline float fizzMoveV(float &y, float &z, uint8_t &c, float a, float U, 
 // endpoint target, the whole-disc support of L + P against the profile it steps on; a closed end, discFit). Face up
 // exactly (bx 0): no axial motion, nothing parks; the pool fills to its cap and births wait (no drift, no teleport).
 // See sim stepFizzVertical.
-FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p, float dt, const Pose &pose, float agitation) {
+// In flash, not IRAM (lcd316@320w8-8, stand pose, 2026-11-22): IRAM cost 7.4 KB of internal heap and the B1 BLE window
+// then failed to start (BLE_INIT malloc failed -> panic); flash: fizz step 1.27 -> 1.50 ms, 53.5 -> 53.0 fps. Keeping
+// only foamContactV in IRAM gained nothing (1.51 ms).
+static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p, float dt, const Pose &pose, float agitation) {
   const float bx = mirrored(p) ? -pose.x : pose.x, by = pose.y, bz = pose.z;
   const bool spring = p.fizzSource == 1, foamOn = p.fizzFoamLife > 0;
   const float len = t.fizzLen; const int H = t.H; const int exposed = t.fizzExposed;
