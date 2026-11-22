@@ -1002,3 +1002,5 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Point 8 (neutral blick, every preset) changed landscape pixels: byte-identity checks now take 4842d1d as reference.
 - Vertical fizz frames, sim vs firmware (scratch harness, firmware state loaded into the sim, point 7): worst 148/255,
   ~2k px > 12 over 23 back-15 frames, the same before point 7: unexplained residue (placement? mask x rounding?).
+- Vertical endpoint rule: stepper on the physical circle, render clamp on the drawn lens footprint (r / fizzMag rows): where m < 1 it pulls parked foam back each frame; mag rows published with the surfaces would let the stepper agree.
+- fizzEndClampX computes fizzMag that planBubble computes again right after (one extra per vertical bubble per frame).

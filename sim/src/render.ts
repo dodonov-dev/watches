@@ -1149,11 +1149,12 @@ export interface FizzTestState {
   fizz: readonly Fizz[]; springClock: number; springScatter: number;
   body: Float32Array; contact: Uint8Array; bodyH: number; blocked: number;   // body: 2 per slot (y, z), contact 1 per slot, fizz.length slots
   len: number; exposed: number; shift: number; surf: Float32Array; surfL: Float32Array;   // the last frame's, stepFizz's input
+  strokeR?: Float32Array; strokeL?: Float32Array;   // its stroke widths (length 0 before the first frame); lockstep loads them
 }
 export function fizzTestState(i: number): FizzTestState {
   return { fizz: fizz[i], springClock: springClock[i], springScatter: springScatter[i],
     body: fizzBody[i].subarray(0, 2 * fizz[i].length), contact: fizzContact[i].subarray(0, fizz[i].length), bodyH: bodyH[i], blocked: fizzBlockedN[i],
-    len: fizzLen[i], exposed: fizzExposed[i], shift: fizzShift[i], surf: fizzSurf[i], surfL: fizzSurfL[i] };
+    len: fizzLen[i], exposed: fizzExposed[i], shift: fizzShift[i], surf: fizzSurf[i], surfL: fizzSurfL[i], strokeR: fizzStrokeR[i], strokeL: fizzStrokeL[i] };
 }
 /** Replaces tube i's stepped fizz state and the frame's surfaces it steps on (the lockstep jobs: each step starts from
  *  the firmware's). */
@@ -1163,10 +1164,11 @@ export function fizzTestLoad(i: number, s: FizzTestState): void {
   if (s.bodyH) { const p = lastParams[i]; if (p) { bodyKey[i][0] = boreR32(p); bodyKey[i][1] = F(p.fizzSize); bodyKey[i][2] = F(p.fizzSizeVar); } }   // the firmware's bodies fit its params
   fizzLen[i] = s.len; fizzExposed[i] = s.exposed; fizzShift[i] = s.shift;
   fizzSurf[i] = Float32Array.from(s.surf); fizzSurfL[i] = Float32Array.from(s.surfL);
+  if (s.strokeR && s.strokeL) { fizzStrokeR[i] = Float32Array.from(s.strokeR); fizzStrokeL[i] = Float32Array.from(s.strokeL); }
 }
 /** Replaces the frame's fizz inputs of tube i (what drawTube publishes for stepping: liquid length, exposed ends, shift,
- *  surface profiles, stroke widths) — the --free jobs hand both kernels the firmware frame's, so they step on identical
- *  inputs (surface generation is compared separately, lockstep). */
+ *  surface profiles, stroke widths) — the --free jobs (common-input kernel parity) hand both kernels the firmware frame's,
+ *  so they step on identical inputs; the sim's own generation of them is compared before (render-ref G lines). */
 export function fizzTestInputs(i: number, len: number, exposed: number, shift: number, surf: Float32Array, surfL: Float32Array, strokeR: Float32Array, strokeL: Float32Array): void {
   fizzLen[i] = len; fizzExposed[i] = exposed; fizzShift[i] = shift;
   fizzSurf[i] = surf; fizzSurfL[i] = surfL; fizzStrokeR[i] = strokeR; fizzStrokeL[i] = strokeL;

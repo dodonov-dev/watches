@@ -8,8 +8,10 @@
 // file's fields over DEFAULT_PARAMS); the fizz draws come from the shared seeded generator (xorshift32, (word >>> 8) / 2^24,
 // the native stub's); a frame before the first step, after every `every`-th and before a run that changes params; after
 // each step (and its frame) one state line per tube to argv[3] ('-' = stdout): `S step tube fizzN draws springClock
-// springScatter bodyH blocked`, x y v life z and the vertical body's y z contact per slot, then the frame's surfaces it steps on: `len exposed shift H` + surf, surfL per
-// row. lockstep (a file of the firmware's lines): each step starts from the firmware's state and surfaces.
+// springScatter bodyH blocked`, x y v life z and the vertical body's y z contact per slot, then the frame's surfaces it steps on: `len exposed shift H` + surf, surfL,
+// strokeR, strokeL per row. After each frame, before any input replaces them, one `G step tube len exposed shift H` + surf,
+// surfL, strokeR, strokeL line per tube: the frame's fizz inputs as the sim generated them (compared with the firmware's
+// F lines). lockstep (a file of the firmware's lines): each step starts from the firmware's state, surfaces and strokes.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
 import { renderFrame, fb, setSprite, stepFizz, fizzTestState, fizzTestLoad, fizzTestInputs } from '../src/render';
@@ -57,30 +59,42 @@ interface FizzRun { n: number; dt: number; along: number; across: number; normal
 // lockstep: the firmware's state lines of the same job (a file): each step starts from the firmware's state after the
 // step before (and its frame), so a comparison sees one step's arithmetic, not doubles and floats drifting apart.
 // inputs (a file of the firmware's F lines, one per tube after each of its frames: len exposed shift H, surf, surfL,
-// strokeR, strokeL per row): after each frame the kernel's inputs are the firmware frame's (--free: the state runs free).
+// strokeR, strokeL per row): after each frame the kernel's inputs are the firmware frame's (--free, common-input kernel
+// parity: the state runs free). Each record is checked first: its frame (step, tube), its rows (the sim's H), its
+// length, every field a finite number; a bad one ends the job (exit 1).
 function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: string; inputs?: string }): void {
   let x = fj.seed >>> 0 || 1, draws = 0;
   Math.random = (): number => {   // the fizz's only random source: the native stub's xorshift32, counted
     x = (x ^ (x << 13)) >>> 0; x = (x ^ (x >>> 17)) >>> 0; x = (x ^ (x << 5)) >>> 0; draws++;
     return (x >>> 8) / 16777216;
   };
+  const out: string[] = [];
+  let step = 0;
   const inp: string[][] = fj.inputs ? fs.readFileSync(fj.inputs, 'utf8').split('\n').filter((l: string) => l).map((l: string) => l.split(' ')) : [];
   let inpAt = 0;
+  const g9 = (v: number): string => (Object.is(v, -0) ? 0 : v).toPrecision(9);
   const frame = (ps: readonly Params[]): void => {
     renderFrame(tubes, ps);
+    tubes.forEach((_, i) => {   // the sim's own fizz inputs of this frame (G), before any replacement
+      const st = fizzTestState(i), H = st.surf.length, rows = [st.surf, st.surfL, st.strokeR, st.strokeL];
+      let line = `G ${step} ${i} ${g9(st.len)} ${st.exposed} ${g9(st.shift)} ${H}`;
+      for (const v of rows) for (let r = 0; r < H; r++) line += ` ${g9(v && v.length === H ? v[r] : 0)}`;
+      out.push(line);
+    });
     if (!inp.length) return;
     tubes.forEach((_, i) => {
-      const w = inp[inpAt++];
-      if (!w || +w[2] !== i) throw new Error(`render-ref: inputs line ${inpAt}: ${w ? w.slice(0, 3).join(' ') : 'missing'}, want tube ${i}`);
-      const H = +w[6], rows = (k: number): Float32Array => Float32Array.from(w.slice(7 + k * H, 7 + (k + 1) * H), Number);
-      fizzTestInputs(i, +w[3], +w[4], +w[5], rows(0), rows(1), rows(2), rows(3));
+      const w = inp[inpAt++], H = fizzTestState(i).surf.length, where = `render-ref: inputs line ${inpAt}`;
+      if (!w || w[0] !== 'F' || +w[1] !== step || +w[2] !== i) throw new Error(`${where}: ${w ? w.slice(0, 3).join(' ') : 'missing'}, want F ${step} ${i}`);
+      if (+w[6] !== H || w.length !== 7 + 4 * H) throw new Error(`${where}: ${w.length} fields, rows ${w[6]}, want rows ${H} (${7 + 4 * H} fields)`);
+      const bad = w.slice(3).findIndex((v) => v === '' || !Number.isFinite(Number(v)));
+      if (bad >= 0) throw new Error(`${where}: field ${bad + 3} is ${w[bad + 3]}`);
+      const rows = (k: number): Float32Array => Float32Array.from(w.slice(7 + k * H, 7 + (k + 1) * H), Number);
+      fizzTestInputs(i, Math.fround(+w[3]), +w[4], Math.fround(+w[5]), rows(0), rows(1), rows(2), rows(3));
     });
   };
   const ref: string[][] = fj.lockstep ? fs.readFileSync(fj.lockstep, 'utf8').split('\n').filter((l: string) => l).map((l: string) => l.split(' ')) : [];
   let design: Params = { ...DEFAULT_PARAMS, ...migrateParams(job.params) }, ps = tubeParams(design);
-  const g = (v: number): string => (Object.is(v, -0) ? 0 : v).toPrecision(9);
-  const out: string[] = [];
-  let step = 0;
+  const g = g9;
   for (const run of fj.runs) {
     if (run.set) { design = { ...design, ...run.set }; ps = tubeParams(design); }
     // the run's gain-free pose: physics.cpp updatePose in float32 (the native harness's), face up when it is not valid
@@ -92,12 +106,13 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
       if (ref.length && step > 0 && !(k === 0 && run.set)) tubes.forEach((_, i) => {
         const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], body = new Float32Array(2 * n), contact = new Uint8Array(n), e = 9 + 8 * n, H = +w[e + 3];
         if (+w[1] !== step || +w[2] !== i) throw new Error(`render-ref: lockstep line ${w.slice(0, 3).join(' ')}, want step ${step} tube ${i}`);
+        const f32 = (v: string): number => Math.fround(+v);   // the firmware's floats exactly (a decimal is a double)
         for (let s = 0, o = 9; s < n; s++, o += 8) {
-          slots.push({ x: +w[o], y: +w[o + 1], v: +w[o + 2], life: +w[o + 3], z: +w[o + 4] }); body[2 * s] = +w[o + 5]; body[2 * s + 1] = +w[o + 6]; contact[s] = +w[o + 7];
+          slots.push({ x: f32(w[o]), y: f32(w[o + 1]), v: f32(w[o + 2]), life: f32(w[o + 3]), z: f32(w[o + 4]) }); body[2 * s] = +w[o + 5]; body[2 * s + 1] = +w[o + 6]; contact[s] = +w[o + 7];
         }
         const rows = (o: number): Float32Array => Float32Array.from(w.slice(o, o + H), Number);
-        fizzTestLoad(i, { fizz: slots, springClock: +w[5], springScatter: +w[6], body, contact, bodyH: +w[7], blocked: +w[8],
-          len: +w[e], exposed: +w[e + 1], shift: +w[e + 2], surf: rows(e + 4), surfL: rows(e + 4 + H) });
+        fizzTestLoad(i, { fizz: slots, springClock: f32(w[5]), springScatter: f32(w[6]), body, contact, bodyH: +w[7], blocked: +w[8],
+          len: f32(w[e]), exposed: +w[e + 1], shift: f32(w[e + 2]), surf: rows(e + 4), surfL: rows(e + 4 + H), strokeR: rows(e + 4 + 2 * H), strokeL: rows(e + 4 + 3 * H) });
       });
       for (const t of tubes) t.agitation = run.agitation;
       stepFizz(ps, run.dt, run.along, run.across, run.agitation, pose);
@@ -110,6 +125,7 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
         line += ` ${g(st.len)} ${st.exposed} ${g(st.shift)} ${st.surf.length}`;
         for (const v of st.surf) line += ` ${g(v)}`;
         for (const v of st.surfL) line += ` ${g(v)}`;
+        for (const v of [st.strokeR, st.strokeL]) for (let r = 0; r < st.surf.length; r++) line += ` ${g(v && v.length === st.surf.length ? v[r] : 0)}`;
         out.push(line);
       });
     }

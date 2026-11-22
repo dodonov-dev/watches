@@ -24,16 +24,25 @@ testdata/tilted-fizz-board-look.json; default lcd316 --res 320w8-8, the board it
 render.cpp + physics.cpp build and in sim/tools/render-ref.ts (its fizzSteps mode), both drawing from one seeded
 generator (xorshift32, (word >>> 8) / 2^24: a test-only esp_random stub, Math.random in the sim job): a frame before
 the first step and after every 2nd, the fizz stepped at fixed inputs (along, across, normal, agitation; the vertical
-kernel reads only the gain-free pose updatePose makes of them, the landscape one along / across). After every step each tube's slot count and the generator's
-draw count, the vertical bodies' height key and postponed births (exact), the spring clocks and every slot's fields
-(x y v life z, and the body's y z: within SIM_TOL) and the frame's surfaces the kernel steps on (len, shift, surf / surfL
-rows: SURF_TOL; exposed, rows exact) are compared, every record's length checked and every field finite on both sides;
-the first mismatch is reported. Lockstep (each step from the firmware's state) is a diagnostic: it erases accumulated
-divergence. --free (the sim runs on its own state) is the acceptance mode for vertical jobs: after each frame both
-kernels step on the firmware frame's fizz inputs (len, exposed, shift, surf / surfL, strokeR / strokeL: its F lines),
-since the sim's drawTube computes them in doubles; their generation is compared in lockstep (SURF_TOL). The comparator's mutation
-self-checks (NaN / inf, a record too short / long, a surface, len, shift moved) must all be rejected. Each native job runs twice (identical output: the jobs repeat exactly). The legacy kernel computes in doubles
-in the sim and in floats in the firmware (-ffp-contract=off): a decision a rounding flips shows as a count mismatch.
+kernel reads only the gain-free pose updatePose makes of them, the landscape one along / across). After every step each
+tube's slot count and the generator's draw count, the vertical bodies' height key and postponed births (exact), the
+spring clocks and every slot's fields (x y v life z, and the body's y z: within SIM_TOL; parked foam of the legacy
+landscape kernel within FOAM_TOL) and the frame's inputs the kernel steps on (len, shift, surf / surfL, strokeR /
+strokeL rows: SURF_TOL / STROKE_TOL; exposed, rows exact) are compared, every record's length checked and every field
+finite on both sides; the first mismatch is reported.
+Generation: after every frame each side's own fizz inputs of it (native F lines, sim G lines, written before any
+input replaces the sim's) are compared, in both modes: len, shift, surf / surfL (SURF_TOL), strokeR / strokeL
+(STROKE_TOL), exposed and rows exact; every F record is validated (frame, tube, rows, length, finite).
+Modes: lockstep (default; each step from the firmware's state, surfaces and strokes) is a diagnostic: it erases
+accumulated divergence. --free is common-input kernel parity, the acceptance mode for vertical jobs: the sim's state
+runs free, and after each frame both kernels step on the firmware frame's fizz inputs (its F lines; render-ref checks
+each record before using it), since the sim's drawTube computes them in doubles. LEGACY_JOBS (they run the landscape
+kernel, doubles in the sim, floats in the firmware: a decision a rounding flips shows as a count mismatch) are reported
+there as diagnostics. --free also runs each job once more as an independent full pipeline (the sim's own frame inputs,
+no injection): information only, expected to drift; its first divergence step per job is reported.
+The comparator's mutation self-checks (NaN / inf, a record too short / long, a surface, len, shift, a stroke, a foam
+position moved; a bad or missing F record; a G surface or stroke moved) must all be rejected; render-ref must refuse a
+corrupt inputs file. Each native job runs twice (identical output: the jobs repeat exactly).
 """
 import argparse, glob, json, math, os, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -162,6 +171,8 @@ static void emit(int step, int i) {   // one tube's state line (render-ref.ts fi
   printf(" %.9g %d %.9g %d", t.fizzLen, t.fizzExposed, t.fizzShift, t.H);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurf[r]);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurfL[r]);
+  for (int r = 0; r < t.H; r++) printf(" %.9g", t.strokeR[r]);
+  for (int r = 0; r < t.H; r++) printf(" %.9g", t.strokeL[r]);
   printf("\n");
   if (t.bodyH) {   // vertical: live bodies (free and foam) outside the eroded disc (stderr; the containment expectation reads it)
     const float R = boreR(*tubeP[i]); int out = 0;
@@ -689,8 +700,13 @@ SIM_SEED = 0x2545F491
 # draw counts, which slots are foam and on which side, are exact. Free bubbles: one step's float rounding. Parked foam
 # (x, y): FOAM_TOL px, because the legacy packing tests contacts its last sweep left at exactly touching distance
 # (settleFoam), so doubles and floats take or skip a push or a slide (<= FOAM_SLIDE * speed * dt) at random there.
+# Vertical records (the body key bodyH != 0: the vertical kernel stepped) hold their foam to SIM_TOL too: that kernel is
+# float32 in the firmware's order on both sides, its packing sweeps pairs in the firmware's order with the same tie
+# rules, so there is no double / float decision to flip (measured worst over the jobs, common inputs: 1e-6 px, the
+# printing). FOAM_TOL (2 px) stays for the legacy landscape kernel only (doubles in the sim).
 SIM_TOL = {'x': 1e-3, 'y': 1e-3, 'v': 1e-6, 'life': 1e-4, 'z': 1e-6, 'by': 1e-3, 'bz': 1e-3, 'c': 0, 'springClock': 1e-4, 'springScatter': 1e-4}
 FOAM_TOL = 2.0
+LEGACY_JOBS = ('height + mode changes', 'landscape')   # they run the landscape kernel (--free: diagnostic)
 FOAM_FIELDS = ('x', 'y', 'by')
 SLOT_FIELDS = ('x', 'y', 'v', 'life', 'z', 'by', 'bz', 'c')   # by, bz, c: the vertical watch's physical y, z and contact (FizzBody: exact)
 HEAD = 9   # S step tube fizzN draws springClock springScatter bodyH blocked
@@ -744,37 +760,77 @@ def sim_main(a):
             if nat[0].returncode: return name, f'native exited {nat[0].returncode}: {nat[0].stderr.decode()[-300:]}', None
             if nat[0].stdout != nat[1].stdout: return name, 'native: two runs of the job differ (not deterministic)', None
             jobf, natf = tmp / f'job{k}.json', tmp / f'native{k}.txt'
-            natf.write_bytes(nat[0].stdout); natives.setdefault('job', (name, nat[0].stdout.decode()))
+            natf.write_bytes(nat[0].stdout)
             inf = tmp / f'inputs{k}.txt'   # --free: the frames' fizz inputs (the native F lines): common to both kernels
             inf.write_text(''.join(l + '\n' for l in nat[0].stderr.decode().splitlines() if l.startswith('F ')))
-            json.dump({'params': design, **tubes,
-                       'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({'inputs': str(inf)} if a.free else {'lockstep': str(natf)})}}, open(jobf, 'w'))
-            r = subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jobf), '-'], env=env, capture_output=True)
+            def sim(mode, path):   # the sim job: lockstep / inputs from a file, or (mode None) the full pipeline alone
+                jf = path.with_suffix(f'.{mode or "full"}.json')
+                json.dump({'params': design, **tubes, 'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({mode: str(path)} if mode else {})}}, open(jf, 'w'))
+                return subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jf), '-'], env=env, capture_output=True)
+            natives[name] = (nat[0].stdout.decode(), nat[0].stderr.decode(), lambda path: sim('inputs', path), inf)
+            r = sim('inputs', inf) if a.free else sim('lockstep', natf)
             if r.returncode: return name, f'sim exited {r.returncode}: {r.stderr.decode()[-500:]}', None
             if a.keep: (a.keep / f'{name}.native.txt').write_bytes(nat[0].stdout); (a.keep / f'{name}.sim.txt').write_bytes(r.stdout)
+            gen = gen_compare(nat[0].stderr.decode(), r.stdout.decode())
+            if gen[0]: return name, f'frame inputs generated differently: {gen[0]}', None
             res_ = sim_compare(nat[0].stdout.decode(), r.stdout.decode())
             if not res_[0] and name in SIM_EXPECT:
                 why = SIM_EXPECT[name][1]([l.split() for l in nat[0].stdout.decode().splitlines()], nat[0].stderr.decode())
                 if why: return name, f'{SIM_EXPECT[name][0]}: {why}', None
-            return name, None, res_
+            full = None
+            if a.free:   # the independent full pipeline (no injection): information, its first divergence
+                rf = sim(None, natf)
+                full = f'sim exited {rf.returncode}' if rf.returncode else (sim_compare(nat[0].stdout.decode(), rf.stdout.decode())[0] or 'matches')
+            return name, None, (*res_, gen, full)
 
-        mode = 'free (acceptance)' if a.free else 'lockstep (diagnostic)'
+        mode = 'free: common-input kernel parity (acceptance for vertical jobs)' if a.free else 'lockstep (diagnostic)'
         print(f'{"mode":24s} {mode}' + ('' if a.free else ': every step from the firmware state; --free is the acceptance mode for vertical jobs'))
-        natives = {}   # one job's native state lines: the comparator's mutation self-checks
-        jbad = 0
+        natives = {}   # per job: native state lines, F lines, a sim run on an inputs file (the self-checks)
+        jbad = vbad = 0; nlegacy = sum(n in LEGACY_JOBS for n in jobs); fulls = []
         with ThreadPoolExecutor(a.j) as ex:
             for name, err, res_ in ex.map(run, enumerate(jobs.items())):
-                if err: jbad += 1; print(f'{name:24s} ERROR {err}'); continue
-                diff, steps, worst, most = res_
-                if diff: jbad += 1; print(f'{name:24s} DIFFERS {diff}'); continue
-                print(f'{name:24s} {steps} steps match' + (f'; slots max {"/".join(map(str, most))}; worst '
-                      + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) if a.v else ''))
-        if natives:
-            jn, lines = natives['job']; base, accepted, nm = sim_compare_selftest(lines)
-            ok = base is None and not accepted; bad += not ok
+                diag = a.free and name in LEGACY_JOBS   # the landscape kernel (doubles vs floats): a diagnostic in --free
+                tag_ = ' (legacy kernel, diagnostic)' if diag else ''
+                if err: jbad += 1; vbad += not diag; print(f'{name:24s} ERROR{tag_} {err}'); continue
+                diff, steps, worst, most, gen, full = res_
+                if full: fulls.append((name, full))
+                if diff: jbad += 1; vbad += not diag; print(f'{name:24s} DIFFERS{tag_} {diff}'); continue
+                print(f'{name:24s} {steps} steps match{tag_}; frame inputs generated alike over {gen[1]} frames' + (f'; slots max {"/".join(map(str, most))}; worst '
+                      + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) + f'; generation worst surf {gen[2]["surf"]:.2g} stroke {gen[2]["stroke"]:.2g}' if a.v else ''))
+        if a.free:
+            print('full pipeline, no input injection (information: expected to drift; the first divergence per job):')
+            for name, full in fulls: print(f'  {name:24s} ' + ('all steps match' if full == 'matches' else f'first divergence: {full}'))
+        def pick(test):   # the first job (in job order) the self-check can use
+            for n in jobs:
+                if n in natives:
+                    try: return n, test(n)
+                    except StopIteration: pass
+            return None, None
+        jn, sr = pick(lambda n: sim_compare_selftest(natives[n][0]))
+        if jn:
+            base, accepted, nm = sr; ok = base is None and not accepted; bad += not ok
             print(f'{"comparator mutations":24s} ' + (f'{nm} of {nm} rejected, unmutated {jn!r} accepted' if ok else
                   f'FAILED: unmutated {"rejected: " + base if base else "accepted"}; accepted {", ".join(accepted) or "none"}'))
+        else: bad += 1; print(f'{"comparator mutations":24s} FAILED: no job with vertical foam to mutate')
+        jn, sr = pick(lambda n: gen_compare_selftest(natives[n][1], ''))
+        if jn:
+            base, accepted, nm = sr; ok = base is None and not accepted; bad += not ok
+            print(f'{"generation mutations":24s} ' + (f'{nm} of {nm} rejected, unmutated {jn!r} accepted' if ok else
+                  f'FAILED: unmutated {"rejected: " + base if base else "accepted"}; accepted {", ".join(accepted) or "none"}'))
+            _, _, run_inputs, inf = natives[jn]; fl = inf.read_text().splitlines(); w0 = fl[0].split(); refused = 0
+            corrupt = {'frame index': ' '.join([w0[0], str(int(w0[1]) + 1), *w0[2:]]), 'record short': ' '.join(w0[:-1]),
+                       'rows': ' '.join([*w0[:6], str(int(w0[6]) + 1), *w0[7:]]), 'NaN field': ' '.join([*w0[:8], 'NaN', *w0[9:]])}
+            for cn, c in corrupt.items():
+                cf = inf.with_suffix(f'.bad{refused}.txt'); cf.write_text('\n'.join([c, *fl[1:]]) + '\n')
+                rr = run_inputs(cf); refused += rr.returncode != 0 and b'render-ref: inputs line' in rr.stderr
+            ok = refused == len(corrupt); bad += not ok
+            print(f'{"injected F records":24s} ' + (f'{refused} of {len(corrupt)} corrupt inputs files refused by render-ref ({", ".join(corrupt)})' if ok else f'FAILED: {refused} of {len(corrupt)} refused'))
+        else: bad += 1; print(f'{"generation mutations":24s} FAILED: no job with strokes to mutate')
         tag = f'{board}{"@" + res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
+        if a.free:
+            nv = len(jobs) - nlegacy
+            print(f'{tag}: {nv - vbad} of {nv} vertical jobs match, {nlegacy - (jbad - vbad)} of {nlegacy} legacy-kernel jobs (diagnostic), sim vs firmware, step by step, {mode}' + ('' if bad == 0 else '; a self-test FAILED'))
+            sys.exit(1 if bad or vbad else 0)
         print(f'{tag}: {len(jobs) - jbad} of {len(jobs)} jobs match, sim vs firmware, step by step, {mode}' + ('' if bad == 0 else '; a self-test FAILED'))
         sys.exit(1 if bad or jbad else 0)
 
@@ -784,9 +840,12 @@ def sim_main(a):
 # error). 1e-3 px = 8 ulps at 1024 and a thousandth of a pixel; measured worst 3e-5. Between frames (lockstep) the sim
 # steps on the firmware's own surfaces, so they match exactly there.
 SURF_TOL = 1e-3
+# Stroke widths (strokeR / strokeL: min(surfaceWidth, the ring-profile separation), canvas px <= ~20): derived per row
+# from the same surfaces and walls, the sim in doubles; the same few-ulp argument as SURF_TOL.
+STROKE_TOL = 1e-3
 
 def _record(line, side):
-    """(fields, why not) of one state line: 'S', HEAD + 7 * fizzN + 4 + 2 * H fields, all finite numbers."""
+    """(fields, why not) of one state line: 'S', HEAD + 8 * fizzN + 4 + 4 * H fields, all finite numbers."""
     p = line.split()
     if len(p) < HEAD + 4 or p[0] != 'S': return None, f'{side}: not a state line: {line[:60]!r}'
     try: v = [float(s) for s in p[1:]]
@@ -796,13 +855,14 @@ def _record(line, side):
     n = int(v[2]) if v[2] == int(v[2]) and v[2] >= 0 else -1
     e = HEAD + len(SLOT_FIELDS) * n
     H = int(v[e + 2]) if n >= 0 and e + 3 < len(p) and v[e + 2] == int(v[e + 2]) and v[e + 2] >= 0 else -1
-    if n < 0 or H < 0 or len(p) != e + 4 + 2 * H: return None, f'{side} step {p[1]} tube {p[2]}: {len(p)} fields for fizzN {p[3]}'
+    if n < 0 or H < 0 or len(p) != e + 4 + 4 * H: return None, f'{side} step {p[1]} tube {p[2]}: {len(p)} fields for fizzN {p[3]}'
     return p, None
 
 def sim_compare(nat, sim):
     """(first mismatch or None, steps, worst difference per field, most slots per tube) of the two sides' state lines."""
     la, lb = nat.splitlines(), sim.splitlines()
-    worst = {**{f: 0.0 for f in SIM_TOL}, **{f'foam {f}': 0.0 for f in FOAM_FIELDS}, 'surf': 0.0}; most = {}
+    worst = {**{f: 0.0 for f in SIM_TOL}, **{f'foam {f}': 0.0 for f in FOAM_FIELDS}, 'surf': 0.0, 'stroke': 0.0}; most = {}
+    la = [l for l in la if not l.startswith('G ')]; lb = [l for l in lb if not l.startswith('G ')]   # state lines only
     if len(la) != len(lb): return f'{len(la)} native state lines, {len(lb)} sim', 0, worst, []
     if not la: return 'no state lines', 0, worst, []
     w = len(SLOT_FIELDS); L = SLOT_FIELDS.index('life')
@@ -819,29 +879,89 @@ def sim_compare(nat, sim):
         for f, i in (('springClock', 5), ('springScatter', 6)):
             d = abs(float(p[i]) - float(q[i])); worst[f] = max(worst[f], d)
             if d > SIM_TOL[f]: return f'{where}: {f} native {p[i]} sim {q[i]}', 0, worst, []
+        vert = p[7] != '0'   # the vertical kernel stepped (its bodies' key): foam held to SIM_TOL
         for s in range(int(p[3])):
             o = HEAD + w * s; lp, lq = float(p[o + L]), float(q[o + L])
             if (lp > 0) != (lq > 0) or (lp < 0) != (lq < 0): return f'{where} slot {s}: life native {lp} sim {lq}', 0, worst, []
             for j, f in enumerate(SLOT_FIELDS):
                 d = abs(float(p[o + j]) - float(q[o + j]))
-                k, tol = (f'foam {f}', FOAM_TOL) if lp != 0 and f in FOAM_FIELDS else (f, SIM_TOL[f])
+                k, tol = (f'foam {f}', SIM_TOL[f] if vert else FOAM_TOL) if lp != 0 and f in FOAM_FIELDS else (f, SIM_TOL[f])
                 worst[k] = max(worst[k], d)
                 if d > tol: return f'{where} slot {s}: {k} native {p[o + j]} sim {q[o + j]}', 0, worst, []
         e = HEAD + w * int(p[3])   # the frame's surfaces the kernel steps on: exposed / rows exact, len shift surf surfL SURF_TOL
         if p[e + 1] != q[e + 1] or p[e + 3] != q[e + 3]: return f'{where}: exposed / rows native {p[e + 1]} {p[e + 3]} sim {q[e + 1]} {q[e + 3]}', 0, worst, []
         H = int(p[e + 3])
         for i in [e, e + 2, *range(e + 4, len(p))]:
-            d = abs(float(p[i]) - float(q[i])); worst['surf'] = max(worst['surf'], d)
-            k = 'len' if i == e else 'shift' if i == e + 2 else f'surf row {i - e - 4}' if i < e + 4 + H else f'surfL row {i - e - 4 - H}'
-            if d > SURF_TOL: return f'{where}: {k} native {p[i]} sim {q[i]}', 0, worst, []
+            d = abs(float(p[i]) - float(q[i])); j = i - e - 4; st = j >= 2 * H
+            worst['stroke' if st else 'surf'] = max(worst['stroke' if st else 'surf'], d)
+            k = 'len' if i == e else 'shift' if i == e + 2 else f'{("surf", "surfL", "strokeR", "strokeL")[j // H]} row {j % H}'
+            if d > (STROKE_TOL if st else SURF_TOL): return f'{where}: {k} native {p[i]} sim {q[i]}', 0, worst, []
     return None, len(la) // max(1, len(most)), worst, [most[t] for t in sorted(most)]
+
+def _frame_record(line, side, tag):
+    """(fields, why not) of one frame-input line: tag ('F' native, 'G' sim), step, tube, len, exposed, shift, H, then
+    surf, surfL, strokeR, strokeL per row: 7 + 4 * H fields, all finite numbers."""
+    p = line.split()
+    if len(p) < 7 or p[0] != tag: return None, f'{side}: not a {tag} line: {line[:60]!r}'
+    try: v = [float(x) for x in p[1:]]
+    except ValueError: return None, f'{side}: not a number in {line[:60]!r}'
+    bad = next((i for i, x in enumerate(v, 1) if not math.isfinite(x)), None)
+    if bad is not None: return None, f'{side} {tag} step {p[1]} tube {p[2]}: field {bad} is {p[bad]}'
+    H = int(v[5]) if v[5] == int(v[5]) and v[5] >= 0 else -1
+    if H < 0 or len(p) != 7 + 4 * H: return None, f'{side} {tag} step {p[1]} tube {p[2]}: {len(p)} fields for rows {p[6]}'
+    return p, None
+
+def gen_compare(nat_err, sim_out):
+    """(first mismatch or None, frames, worst surface / stroke difference) of the two sides' own frame inputs: the
+    native F lines (stderr), the sim's G lines (generated before any replacement)."""
+    fa = [l for l in nat_err.splitlines() if l.startswith('F')]; ga = [l for l in sim_out.splitlines() if l.startswith('G')]
+    worst = {'surf': 0.0, 'stroke': 0.0}
+    if len(fa) != len(ga): return f'{len(fa)} native frame records, {len(ga)} sim', 0, worst
+    if not fa: return 'no frame records', 0, worst
+    for x, y in zip(fa, ga):
+        p, why = _frame_record(x, 'native', 'F')
+        if why: return why, 0, worst
+        q, why = _frame_record(y, 'sim', 'G')
+        if why: return why, 0, worst
+        where = f'frame at step {p[1]} tube {p[2]}'
+        if p[1:3] != q[1:3]: return f'{where}: sim frame at step {q[1]} tube {q[2]}', 0, worst
+        if p[4] != q[4] or p[6] != q[6]: return f'{where}: exposed / rows native {p[4]} {p[6]} sim {q[4]} {q[6]}', 0, worst
+        H = int(p[6])
+        for i in [3, 5, *range(7, len(p))]:
+            d = abs(float(p[i]) - float(q[i])); j = i - 7; st = j >= 2 * H
+            worst['stroke' if st else 'surf'] = max(worst['stroke' if st else 'surf'], d)
+            if d > (STROKE_TOL if st else SURF_TOL):
+                k = 'len' if i == 3 else 'shift' if i == 5 else f'{("surf", "surfL", "strokeR", "strokeL")[j // H]} row {j % H}'
+                return f'{where}: {k} native {p[i]} sim {q[i]}', 0, worst
+    return None, len(fa), worst
+
+def gen_compare_selftest(err, out):
+    """gen_compare on one job's F lines against themselves as G lines (must match), then mutated (each rejected)."""
+    fl = [l for l in err.splitlines() if l.startswith('F')]
+    k = next(i for i, l in enumerate(fl) if any(float(v) != 0 for v in l.split()[7 + 2 * int(l.split()[6]):]))   # a frame with a stroke
+    p = fl[k].split(); H = int(p[6]); so = 7 + 2 * H + next(j for j, v in enumerate(p[7 + 2 * H:]) if float(v) != 0)
+    G = lambda ls: '\n'.join('G' + l[1:] for l in ls)
+    def at(i, v, native=False):   # field i of record k set to v, on the sim (G) side or the native (F) side
+        q = list(p); q[i] = v(q[i]) if callable(v) else v; m = [*fl[:k], ' '.join(q), *fl[k + 1:]]
+        return ('\n'.join(m), G(fl)) if native else ('\n'.join(fl), G(m))
+    muts = {
+        'G stroke +0.01': at(so, lambda s: repr(float(s) + 0.01)), 'G surf row +0.01': at(7, lambda s: repr(float(s) + 0.01)),
+        'G strokeL row NaN': at(7 + 3 * H, 'nan'), 'G exposed flipped': at(4, lambda s: str(3 - int(s))),
+        'F frame index wrong': at(1, lambda s: str(int(s) + 1), True), 'F rows wrong': at(6, lambda s: str(int(s) + 1), True),
+        'F record short': ('\n'.join([*fl[:k], ' '.join(p[:-1]), *fl[k + 1:]]), G(fl)), 'F inf': at(9, 'inf', True),
+        'F record missing': ('\n'.join(fl[:-1]), G(fl)),
+    }
+    accepted = [n for n, (a_, b_) in muts.items() if gen_compare(a_, b_)[0] is None]
+    return gen_compare('\n'.join(fl), G(fl))[0], accepted, len(muts)
 
 def sim_compare_selftest(nat):
     """The comparator on one job's native lines against themselves (must match), then mutated (each must be rejected):
     (why the unmutated lines were rejected or None, the mutations accepted, how many)."""
-    lines = nat.splitlines()
-    k = next(i for i, l in enumerate(lines) if int(l.split()[3]) > 0 and int(l.split()[HEAD + len(SLOT_FIELDS) * int(l.split()[3]) + 3]) > 0)
-    p = lines[k].split(); e = HEAD + len(SLOT_FIELDS) * int(p[3]); H = int(p[e + 3])
+    lines = nat.splitlines(); w = len(SLOT_FIELDS); LF = SLOT_FIELDS.index('life')
+    def foam_at(l):   # a vertical record's first parked slot, or None
+        v = l.split(); return next((s for s in range(int(v[3])) if v[7] != '0' and float(v[HEAD + w * s + LF]) != 0), None)
+    k = next(i for i, l in enumerate(lines) if int(l.split()[3]) > 0 and int(l.split()[HEAD + w * int(l.split()[3]) + 3]) > 0 and foam_at(l) is not None)
+    p = lines[k].split(); e = HEAD + w * int(p[3]); H = int(p[e + 3]); fo = HEAD + w * foam_at(lines[k])
     def at(i, v, both=False):   # the lines with field i of line k set to v (both: on the native side too)
         q = list(p); q[i] = v(q[i]) if callable(v) else v; m = [*lines[:k], ' '.join(q), *lines[k + 1:]]
         return ('\n'.join(m) if both else nat), '\n'.join(m)
@@ -855,6 +975,10 @@ def sim_compare_selftest(nat):
         'record long': (nat, '\n'.join([*lines[:k], ' '.join([*p, '0']), *lines[k + 1:]])),
         'record long both sides': ('\n'.join(m := [*lines[:k], ' '.join([*p, '0']), *lines[k + 1:]]), '\n'.join(m)),
         'line missing': (nat, '\n'.join(lines[:-1])), 'no lines': ('', ''),
+        'strokeR row +0.01': at(e + 4 + 2 * H, lambda s: repr(float(s) + 0.01)), 'strokeL row +0.01': at(e + 4 + 3 * H, lambda s: repr(float(s) + 0.01)),
+        'strokeR row NaN': at(e + 4 + 2 * H + 1, 'nan'),
+        'vertical foam x +0.01': at(fo, lambda s: repr(float(s) + 0.01)), 'vertical foam y +0.01': at(fo + 1, lambda s: repr(float(s) + 0.01)),
+        'vertical foam body y +0.01': at(fo + SLOT_FIELDS.index('by'), lambda s: repr(float(s) + 0.01)),
     }
     accepted = [n for n, (a_, b_) in muts.items() if sim_compare(a_, b_)[0] is None]
     return sim_compare(nat, nat)[0], accepted, len(muts)
@@ -876,7 +1000,7 @@ def main():
     ap.add_argument('--sim', action='store_true', help='stepped fizz state, sim vs firmware, on the shared seeded jobs (SIM_JOBS)')
     ap.add_argument('--job', action='append', help='--sim: only this job (repeatable; names: SIM_JOBS)')
     ap.add_argument('--keep', type=Path, help='--sim: write each job\'s state lines here (NAME.native.txt, NAME.sim.txt)')
-    ap.add_argument('--free', action='store_true', help='--sim: the sim runs on from its own state: the acceptance mode for vertical jobs (default lockstep, a diagnostic: every step starts from the firmware state)')
+    ap.add_argument('--free', action='store_true', help='--sim: common-input kernel parity, the acceptance mode for vertical jobs: the sim runs on from its own state, both kernels on the firmware frames\' inputs (+ an independent full-pipeline run, information); default lockstep, a diagnostic: every step starts from the firmware state')
     ap.add_argument('--fma', action='store_true', help='-mfma -ffp-contract=fast on both sides (fused multiply-add like the board)')
     ap.add_argument('--board', default=None, choices=('amoled191', 'lcd316'), help='default amoled191 (--sim: lcd316 --res 320w8-8)')
     ap.add_argument('--res', default=None, help='lcd316 res tag: rows + tube widths (320 / 320f / 320fh / 320fm, tools/boardtag.py)')
