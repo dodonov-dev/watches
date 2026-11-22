@@ -9,14 +9,14 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 ## Status
 | # | point | owner | status |
 |---|-------|-------|--------|
-| 1 | baseline + shared seeded jobs (state parity) | opus | done d9832c5, in review |
-| 2 | signed normal input | opus | done e44d4c3 (board normal sign: stand reads az +0.21 ≈ 12° back, consistent; face-up check pending) |
-| 3 | vertical kernel, continuous depth, valid births | opus | done ff7a67b, in review |
+| 1 | baseline + shared seeded jobs (state parity) | opus | review 1: comparator hardening (fix agent); --free must hold for vertical (block 2) |
+| 2 | signed normal input | opus | done e44d4c3; review 1: landscape phone mapping regression (fix agent) (board normal sign: stand reads az +0.21 ≈ 12° back, consistent; face-up check pending) |
+| 3 | vertical kernel, continuous depth, valid births | opus | review 1: birth span, resize containment, fizzBlocked visible (folded into block 2) |
 | 4 | free flight, wall convergence, stirring | opus | in progress |
 | 5 | endpoint rule (k, L, P) | opus | in progress |
 | 6 | chain parking | opus | in progress |
 | 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
-| 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | in progress |
+| 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board flash + bench running; k hook awaits point 5 |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
 
 ## Physical model (Astra v1, kept parts)
