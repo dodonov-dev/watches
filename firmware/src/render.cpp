@@ -1319,6 +1319,9 @@ struct Fizz { float x, y, v, life, z; };   // z: depth in the bore (0 front wall
 // bubble glides onto the surface), how far short of the profile a free bubble's rim is caught (or recycled, at
 // a surface foam can't form on), how much a concave surface band veils the foam behind it at the profile.
 #define FOAM_POP_T 0.3f
+// Tilted-fizz point 5 hook: the endpoint coefficient k of a bubble at the surface (1 on the front glass, 0 from mid-bore
+// back), its exemption from the band's veil. Not modelled yet: 0 (the veil in full). A vertical pop takes k a (bandVeil).
+static inline float fizzEndpointK(const Fizz &) { return 0; }
 #define FOAM_SLIDE 0.5f
 #define FOAM_FOLLOW 6.0f
 #define FOAM_CATCH (2.0f * PX_SCALE_FIZZ)   // the liquid's px
@@ -3265,7 +3268,8 @@ struct TickSeg { float dx, dy; int16_t x0, w, outer, inner; uint8_t ink; };
 // derives the rest of its DiscRow per band (the same expressions as before, so the same values), on its stack, and
 // fills the per-row fields there (the plan stays in PSRAM, written once a frame).
 struct alignas(64) BubblePlan {
-  float fx, r, offX, offY, bX, bY, tintA, y, m, pop;
+  float fx, r, offX, offY, bX, bY, tintA, y, m, pop;   // pop: the fade (wall transmission factor) of a popping bubble, else 1
+  float popA, kPop;                                     // vertical pop: the fade a (< 1 while popping) and k a (BandVeil)
   int16_t ixa, ixb, iyA, iyB;
   uint16_t cBlick; bool blick; int8_t cls; uint8_t lvl; int16_t qt;   // size class (-1: none, a popping bubble swells), depth level; masked: x = qt / FIZZ_MQ
 };
@@ -5385,10 +5389,14 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const P
   // them back here): whatever touches a surface floats at most half out of it, like the foam.
   const float fx = fmx(-foamFront(fizzSurfL, H, f.y, -1), fmn(foamFront(fizzSurf, H, f.y, 1), f.x));
   // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface (no size class then).
+  // Vertical (tilted-fizz point 8): no swell, a smoothstep fade a, and toward the composed band where the band covers
+  // it (bandVeil: x [1 - C_B (1 - a)]), the veil's front exemption k a (fizzEndpointK). See sim.
   const float pop = f.life != 0 && fabsf(f.life) < FOAM_POP_T ? fabsf(f.life) / FOAM_POP_T : 1;
+  const bool vPop = p.vertical && pop < 1;
+  const float popA = vPop ? pop * pop * (3 - 2 * pop) : 1;
   const int cls = fizzClass(f.v), lvl = fizzLevel(f.z);
   const FizzClass &c = fl.k[cls];
-  const float r = pop < 1 ? fizzR(p, f.v) * (1 + 0.6f * (1 - pop)) : c.r;
+  const float r = pop < 1 ? (vPop ? fizzR(p, f.v) : fizzR(p, f.v) * (1 + 0.6f * (1 - pop))) : c.r;
   const float m = fizzMag(mag, H, f.y, r), ry = r / m, off = pop < 1 ? fmn(r * p.fizzShadeOff, r - 1) : c.off;   // core shift, centre kept in the disc (sim)
   // Light direction in unsquashed disc space (liquid frame): x fixed toward screen-left, y toward the highlight row.
   const float ly = clampf((yHi - f.y) * invHalfH, -1, 1), nrm = rsqrtApprox(lxS * lxS + ly * ly);   // sim: exact 1/sqrt; <= 2.1e-7 rel.
@@ -5406,7 +5414,8 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const P
   } else b.qt = 0;
   b.ixa = (int16_t)(int)ffloor(b.fx - r - 1); b.ixb = (int16_t)(int)fceil(b.fx + r);
   b.iyA = (int16_t)(int)ffloor(f.y - ry - 1); b.iyB = (int16_t)(int)fceil(f.y + ry);
-  b.y = f.y; b.m = m; b.pop = pop;
+  b.y = f.y; b.m = m; b.pop = vPop ? popA : pop;
+  b.popA = popA; b.kPop = vPop ? fizzEndpointK(f) * popA : 0;
 #ifdef FIZZ_PROF
   fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
 #endif
@@ -5432,7 +5441,7 @@ void Tube::discOf(const BubblePlan &b, DiscRow &d) const {
   }
   if (b.blick) { d.blickK = fzBlickK; d.bX = b.bX; d.bY = b.bY; } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; }
   d.cBlick = b.cBlick;
-  d.v.popA = 1; d.v.kPop = 0;
+  d.v.popA = b.popA; d.v.kPop = b.kPop;
   d.mirror = fzMir; d.xsI = fzXsI; d.L = fzL; d.tintA = b.tintA;
 #ifdef FIZZ_PROF
   d.prof = const_cast<uint32_t *>(fizzProf);
@@ -5445,6 +5454,10 @@ inline void Tube::discRowOf(const BubblePlan &b, DiscRow &d, int iy, float wallT
   // profile and gone at the band's outer rim.
   veilRow(d.v, iy);
   d.veilLo = look->veilLo[iy]; d.veilHi = look->veilHi[iy];
+  if (b.popA < 1) {   // a vertical pop fades over the band's whole footprint, hw into the body too (bandVeil)
+    if (d.v.bR > 0) { const int lo = (int)ffloor(d.v.pR - d.v.hw); if (lo < d.veilLo) d.veilLo = lo; }
+    if (d.v.bL > 0) { const int hi = (int)fceil(d.v.pL + d.v.hw); if (hi > d.veilHi) d.veilHi = hi; }
+  }
   d.cRim = look->cRim[b.lvl][iy];
   d.cBlick = shF ? shade565(b.cBlick, shF[iy]) : b.cBlick;   // the centre row's pinpoint in this row's edge shade
   TCLIP(FB + iy * PANEL_W, PANEL_W);

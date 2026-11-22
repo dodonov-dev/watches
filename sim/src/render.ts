@@ -1098,6 +1098,10 @@ const fizzExposed: number[] = Array(TUBE_COUNT).fill(0);
 // caught (or recycled, at a surface foam can't form on), and how much of a concave surface band veils the
 // foam behind it at the profile (the liquid wedge climbing the front glass, thinning to nothing at the ring).
 // FOAM_RELAX: packing sweeps per step.
+/** Tilted-fizz point 5 hook: the endpoint coefficient k of a bubble at the surface (1 on the front glass, 0 from mid-bore
+ *  back), its exemption from the band's veil. Not modelled yet: 0 (the veil in full). A vertical pop takes k a (bandVeil).
+ *  Firmware fizzEndpointK. */
+const fizzEndpointK = (_f: Fizz): number => 0;
 const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_SCALE_FIZZ, FOAM_VEIL = 0.7, FOAM_RELAX = 3;   // FOAM_CATCH: the liquid's px
 // A spring is fixed in the tube (mirrored in firmware): `fizzSourceX` of the column as it sits at home. While the
 // liquid covers it, it takes every birth, whatever the tilt; a free slug sliding off it leaves it dry, and every
@@ -2150,9 +2154,12 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface
       // pushes them back here): whatever touches a surface floats at most half out of it, like the foam.
       const fx = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
-      // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface.
+      // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface. Vertical (tilted-fizz
+      // point 8): no swell, a smoothstep fade a, and toward the composed band where the band covers it (bandVeil:
+      // x [1 - C_B (1 - a)]), the veil's front exemption k a (fizzEndpointK). Landscape as before.
       const pop = f.life !== 0 && Math.abs(f.life) < FOAM_POP_T ? Math.abs(f.life) / FOAM_POP_T : 1;
-      const r = fizzR(p, f.v) * (1 + 0.6 * (1 - pop));
+      const vPop = p.vertical && pop < 1, popA = vPop ? pop * pop * (3 - 2 * pop) : 1, kPop = vPop ? fizzEndpointK(f) * popA : 0;
+      const r = vPop ? fizzR(p, f.v) : fizzR(p, f.v) * (1 + 0.6 * (1 - pop));
       // Seen through liquid ∝ its depth: a deeper bubble fades toward the liquid, less so the clearer it is.
       // Seen through liquid in proportion to its depth: the liquid in front tints a deeper bubble toward the
       // body colour (a colour mix, so the disc stays an opaque store as before: rear marks are behind the bubble).
@@ -2170,7 +2177,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const blick = r >= 2.5 && p.fizzBlick > 0, bk = 0.4 * (r - 1), bX = dirX * bk, bY = dirY * bk, rb = Math.max(0.6, r / 4);
       for (let iy = Math.floor(f.y - ry - 1); iy <= Math.ceil(f.y + ry); iy++) {
         if (iy < 0 || iy >= H) continue;
-        const wallT = pal.dryT[iy] * pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
+        const wallT = pal.dryT[iy] * (vPop ? popA : pop);   // bubbles live in the bore: invisible where the ray only sees the wall band
         if (wallT <= 0) continue;
         const cRimD = shadeRow(depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy], iy);
         const cBlickR = shadeRow(cBlickD, iy);   // the centre row's pinpoint in this row's shade
@@ -2180,7 +2187,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           let cov = Math.min(1, r + 0.5 - d) * wallT;
           if (cov <= 0) continue;
           // Veil by the pixel's footprint over each band: continuous as the edge moves.
-          cov = bandVeil(ix, iy, cov, 1, 0);
+          cov = bandVeil(ix, iy, cov, popA, kPop);
           const cx = dx - offX, cy = dy - offY, dc = Math.sqrt(cx * cx + cy * cy);
           const inCore = r >= 1.5 && dc < r - 1;
           let g = 0;
