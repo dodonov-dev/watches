@@ -989,3 +989,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Fizz: legacy foam / spawn bounds are [wall + r, H - wall - r] (centre H/2), half a pixel off boreR's (H - 1)/2 rows and
   1 px past the bore on the far wall; vertical foam bodies inherit it until point 5.
 - Fizz: fizzBlocked (vertical births postponed, nothing fits the bore) is not reported by main (`f` / status line).
+- Fizz drawing has no sim-vs-firmware pixel check (check_board_render fizz off, check_render_frames never steps it, no
+  vertical scenes): the vertical pop / foam veil are mirrored by reading only. Point 1's shared fizz-state jobs could feed it.
+- sim blend565 (float t, unquantised) still feeds other band / edge colours; the firmware rounds t to 1/256. Each such mix
+  is a 1-step parity seed that a stacked write can cross a 565 boundary with (nocturne@240f, 2026-11-22).
+- The fill's foam veil is a front-glass wedge (FOAM_VEIL, linear across the band), not the fill as drawn (smoothstep,
+  coverage); blick and rim veil by their drawn opacity since 2026-11-22. One model for all three would be simpler.

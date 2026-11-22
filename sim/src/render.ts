@@ -1098,6 +1098,10 @@ const fizzExposed: number[] = Array(TUBE_COUNT).fill(0);
 // caught (or recycled, at a surface foam can't form on), and how much of a concave surface band veils the
 // foam behind it at the profile (the liquid wedge climbing the front glass, thinning to nothing at the ring).
 // FOAM_RELAX: packing sweeps per step.
+/** Tilted-fizz point 5 hook: the endpoint coefficient k of a bubble at the surface (1 on the front glass, 0 from mid-bore
+ *  back), its exemption from the band's veil. Not modelled yet: 0 (the veil in full). A vertical pop takes k a (bandVeil).
+ *  Firmware fizzEndpointK. */
+const fizzEndpointK = (_f: Fizz): number => 0;
 const FOAM_POP_T = 0.3, FOAM_SLIDE = 0.5, FOAM_FOLLOW = 6, FOAM_CATCH = 2 * PX_SCALE_FIZZ, FOAM_VEIL = 0.7, FOAM_RELAX = 3;   // FOAM_CATCH: the liquid's px
 // A spring is fixed in the tube (mirrored in firmware): `fizzSourceX` of the column as it sits at home. While the
 // liquid covers it, it takes every birth, whatever the tilt; a free slug sliding off it leaves it dry, and every
@@ -2190,6 +2194,9 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     const fill = Math.max(0, Math.min(1, p.surfaceFill));
     veilA = FOAM_VEIL * strokeA * fill;   // a see-through dish does not veil the foam behind it
     const yc = (H - 1) / 2, blickY = yc - yc * Math.sin((s.light * Math.PI) / 180), blickInvH = 1 / Math.max(2, BLICK_H * H);
+    // A reflection takes the light's colour, not the liquid's: the blick is the room light, the fizz pinpoint's neutral
+    // white through the panel dimmer (firmware blickN).
+    const blickN = q(scale([255, 255, 255], p.brightness));
     const blickRow = (ry: number): number => p.surfaceBlick > 0 ? p.surfaceBlick * Math.max(0, 1 - Math.abs(ry - blickY) * blickInvH) : 0;
     // one-write layer compositor for the band pixel loop (see there); P premultiplied 888, A alpha
     const P: [number, number, number] = [0, 0, 0]; let A = 0, nL = 0, cLast = 0;
@@ -2232,7 +2239,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           if (coverage <= 0) continue;
           const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) * invWidth));
           const us = u * u * (3 - 2 * u);
-          const c = blend565(inner, outer, us);
+          const c = blend565T(inner, outer, opacityT(us));   // the firmware's blend565: the mix rounded to 1/256
           const af = a * fill * coverage * (1 - pull * us);
           const ab = a * blickK * coverage * 4 * u * (1 - u);
           const rimCoverage = Math.max(0, hi - Math.max(lo, Math.max(0, wEff - 1)));
@@ -2242,7 +2249,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           // same-direction layers (a tinted rim over the fill on a light back) stacked to 2 LSB before.
           // A single layer takes the plain path, byte-identical to the separate writes.
           nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
-          layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(hiC, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
+          layer(pull > 0 ? blend565T(c, bRows[ry], opacityT(pull)) : c, af); layer(shadeRow(blickN, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
           if (nL === 1) pxaT(x, y, cLast, A);   // the firmware's rowPxa: the opacity rounded to 1/256
           else if (nL > 1) pxaT(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
         }
@@ -2324,15 +2331,50 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // Highlight row (continuous, from the light angle): the core shifts away from it, the pinpoint toward it.
     const yHi = (H - 1) / 2 * (1 - Math.sin((s.light * Math.PI) / 180));
     const lxS = -0.7, lxSign = mir ? -1 : 1;   // light from screen-left; the liquid frame is mirrored under remaining
+    // The surface band over a bubble pixel (firmware BandVeil / bandVeil): a bubble past the profile is seen through the
+    // band's layers. The fill veils it by its front-glass wedge (veilA, thickest at the profile, gone at the outer rim;
+    // a receding edge's band thins out the same way it is drawn); the blick and the rim by their drawn opacity over the
+    // pixel's footprint (the band loop's expressions), so a parked bubble no longer cuts a hole into the highlight.
+    // popA < 1 (a vertical bubble popping, its fade a): the band's footprint coverage C_B fades it further toward the
+    // composed band, x [1 - C_B (1 - a)]. kPop: the endpoint coefficient's front exemption from the veil (k a).
+    const bandDx = xs - xsI, bandHw = softW / 2;   // the band's profile in the bubbles' columns: surf + bandDx
+    const bandVeil = (ix: number, iy: number, cov: number, popA: number, kPop: number): number => {
+      const sR = surf[iy], sL = surfL[iy], bR = strokeR[iy], bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
+      let fR = 1, fL = 1;   // the fill's wedge, per edge
+      if (ix + 1 > sR && bR > 0) { const a1 = Math.min(ix + 1, sR + bR), a0 = Math.max(ix, sR);
+        if (a1 > a0) { const q = ((a0 + a1) / 2 - sR) / bR; fR = 1 - veilA * (a1 - a0) * (1 - q) * (1 - pullR * q); } }
+      if (ix < sL && bL > 0) { const a1 = Math.min(ix + 1, sL), a0 = Math.max(ix, sL - bL);
+        if (a1 > a0) { const q = (sL - (a0 + a1) / 2) / bL; fL = 1 - veilA * (a1 - a0) * (1 - q) * (1 - pullL * q); } }
+      let keep = 1, cB = 0;   // the blick's and rim's transmission; the band footprint's coverage
+      const layers = (t: number, w: number, bk: number, rm: number): void => {
+        const lo = Math.max(t - 0.5, -bandHw), hi = Math.min(t + 0.5, w), c = hi - lo;
+        if (!(c > 0)) return;
+        cB += c;
+        if (bk > 0 || rm > 0) {
+          const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + bandHw) * (1 / (w + bandHw))));
+          const ab = Math.min(1, bk * c * 4 * u * (1 - u)), ar = Math.min(1, rm * Math.max(0, hi - Math.max(lo, Math.max(0, w - 1))));
+          keep *= (1 - ab) * (1 - ar);
+        }
+      };
+      if (bR > 0) layers(ix + 0.5 - (sR + bandDx), bR, bandBlick[0][iy], bandRim[0][iy]);
+      if (bL > 0) layers(sL + bandDx - (ix + 0.5), bL, bandBlick[1][iy], bandRim[1][iy]);
+      if (kPop > 0) cov *= 1 - (1 - kPop) * (1 - fR * fL * keep);   // the front exemption (tilted-fizz point 5 hook)
+      else cov *= fR * fL * keep;
+      if (popA < 1) cov *= 1 - Math.min(1, cB) * (1 - popA);   // a vertical pop fades toward the composed band
+      return cov;
+    };
     for (const f of fizz[idx]) {
       if (f.v === 0) continue;   // idle slot
       const fy = Math.max(0, Math.min(H - 1, Math.round(f.y)));
       // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface
       // pushes them back here): whatever touches a surface floats at most half out of it, like the foam.
       const fx = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
-      // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface.
+      // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface. Vertical (tilted-fizz
+      // point 8): no swell, a smoothstep fade a, and toward the composed band where the band covers it (bandVeil:
+      // x [1 - C_B (1 - a)]), the veil's front exemption k a (fizzEndpointK). Landscape as before.
       const pop = f.life !== 0 && Math.abs(f.life) < FOAM_POP_T ? Math.abs(f.life) / FOAM_POP_T : 1;
-      const r = fizzR(p, f.v) * (1 + 0.6 * (1 - pop));
+      const vPop = p.vertical && pop < 1, popA = vPop ? pop * pop * (3 - 2 * pop) : 1, kPop = vPop ? fizzEndpointK(f) * popA : 0;
+      const r = vPop ? fizzR(p, f.v) : fizzR(p, f.v) * (1 + 0.6 * (1 - pop));
       // Seen through liquid ∝ its depth: a deeper bubble fades toward the liquid, less so the clearer it is.
       // Seen through liquid in proportion to its depth: the liquid in front tints a deeper bubble toward the
       // body colour (a colour mix, so the disc stays an opaque store as before: rear marks are behind the bubble).
@@ -2350,23 +2392,17 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const blick = r >= 2.5 && p.fizzBlick > 0, bk = 0.4 * (r - 1), bX = dirX * bk, bY = dirY * bk, rb = Math.max(0.6, r / 4);
       for (let iy = Math.floor(f.y - ry - 1); iy <= Math.ceil(f.y + ry); iy++) {
         if (iy < 0 || iy >= H) continue;
-        const wallT = pal.dryT[iy] * pop;   // bubbles live in the bore: invisible where the ray only sees the wall band
+        const wallT = pal.dryT[iy] * (vPop ? popA : pop);   // bubbles live in the bore: invisible where the ray only sees the wall band
         if (wallT <= 0) continue;
         const cRimD = shadeRow(depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy], iy);
         const cBlickR = shadeRow(cBlickD, iy);   // the centre row's pinpoint in this row's shade
-        // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
-        // profile and gone at the band's outer rim; a receding edge's band thins out the same way it is drawn.
-        const sR = surf[iy], sL = surfL[iy], bR = strokeR[iy], bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
         for (let ix = Math.floor(fx - r - 1); ix <= Math.ceil(fx + r); ix++) {
           const dx = ix + 0.5 - fx, dy = (iy + 0.5 - f.y) * m;
           const d = Math.sqrt(dx * dx + dy * dy);
           let cov = Math.min(1, r + 0.5 - d) * wallT;
           if (cov <= 0) continue;
-          // Veil by the pixel's footprint over each band [profile, profile ± width]: continuous as the edge moves.
-          if (ix + 1 > sR && bR > 0) { const a1 = Math.min(ix + 1, sR + bR), a0 = Math.max(ix, sR);
-            if (a1 > a0) { const q = ((a0 + a1) / 2 - sR) / bR; cov *= 1 - veilA * (a1 - a0) * (1 - q) * (1 - pullR * q); } }
-          if (ix < sL && bL > 0) { const a1 = Math.min(ix + 1, sL), a0 = Math.max(ix, sL - bL);
-            if (a1 > a0) { const q = (sL - (a0 + a1) / 2) / bL; cov *= 1 - veilA * (a1 - a0) * (1 - q) * (1 - pullL * q); } }
+          // Veil by the pixel's footprint over each band: continuous as the edge moves.
+          cov = bandVeil(ix, iy, cov, popA, kPop);
           const cx = dx - offX, cy = dy - offY, dc = Math.sqrt(cx * cx + cy * cy);
           const inCore = r >= 1.5 && dc < r - 1;
           let g = 0;

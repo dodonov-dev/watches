@@ -1,6 +1,24 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-21 (edge shade: review 8)_
+_Last update: 2026-11-22 (tilted fizz point 8: surface pulse)_
+
+## Tilted fizz point 8: the pulse where fizz meets the surface (2026-11-22), branch `tilted_rise`, host only
+
+- Blick in neutral room light (every preset): the band's surfaceBlick patch takes the fizz pinpoint's white through the
+  panel dimmer (row shaded), not liquidHi. Foam veil by the band's full layer opacity: the blick and the rim veil a
+  bubble by their drawn opacity over the pixel (footprint hw into the body too); the fill keeps its wedge (fill-only looks
+  byte-identical). Vertical pop: base radius, smoothstep fade a, x [1 - C_B (1 - a)] under the band, veil x (1 - k a)
+  with k = fizzEndpointK (point 5 hook, 0). Landscape pop byte-identical.
+- Sim, board look, fixed clock, 40 s at 30 fps, before -> after (across 0 / 0.05): bare band static (0/255); blick patch
+  B-R std 2.95 -> 0.37 / 3.00 -> 0.40, p2p 13.0 -> 2.2 / 13.1 -> 2.1; patch |B-R - bare| mean 5.2 -> 0.7 / 5.8 -> 0.9;
+  band change near pops 7.07 -> 6.08 / 4.55 -> 3.16 per px; last pop frame opacity mean 0.063 -> 0.016 (max 0.18 -> 0.09).
+- Parity: check_board_render 320w8-8 (+ --tiles) 75 / 77 (cola, malt), 240f 75 / 77 (1, glycerol-dark), amoled191 75 / 77
+  (frizzante-big, glycerol-dark), board look 0 > 12/255; px off 10591 -> 9780, 5935 -> 5494, 5891 -> 5464 (the sim's band
+  shoulder mix now rounds to 1/256 like the firmware; nocturne@240f had crossed to 16/255 without it). check:meniscus 439
+  scenes, max 9/255. check_fizz_steps: fizz state 80 / 80 identical; pixels differ in blick / rim + fizz presets.
+  check_render_frames (also --tiles): only fizz-on scenes and the tube sequences' blick scenes differ.
+- Builds: lcd316@320w8-8 RAM +0, flash +1696 B; amoled191 RAM +16 B, flash +2236 B. Not flashed: board look and the
+  bandVeil cost (a noinline call per veiled bubble pixel, one reciprocal per veiled row) unmeasured.
 
 ## Edge shade: review 8 (2026-11-21), branch `edge-shade`
 
