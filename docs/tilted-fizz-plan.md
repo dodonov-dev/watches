@@ -9,13 +9,13 @@ where fizz hits the surface (user: "B, but it reads more like blue, ignoring ove
 ## Status
 | # | point | owner | status |
 |---|-------|-------|--------|
-| 1 | baseline + shared seeded jobs (state parity) | opus | review 1: comparator hardening (fix agent); --free must hold for vertical (block 2) |
+| 1 | baseline + shared seeded jobs (state parity) | opus | comparator hardened 4842d1d; review 2: strokes compared, vertical foam tol, full-pipeline run (fixing) |
 | 2 | signed normal input | opus | done e44d4c3; review 1: landscape phone mapping regression (fix agent) (board normal sign: stand reads az +0.21 ≈ 12° back, consistent; face-up check pending) |
-| 3 | vertical kernel, continuous depth, valid births | opus | review 1 items fixed in 6fe1a63 (span check, keyed rebuild, fizzBlocked reported, pose everywhere) |
-| 4 | free flight, wall convergence, stirring | opus | done 6fe1a63, in review (--free: vertical jobs exact on common frame inputs) |
-| 5 | endpoint rule (k, L, P) | opus | done b9acc26, in review (render clamp + k to the point-8 hook; veil x (1 - k) for all bubbles: point 7) |
-| 6 | chain parking | opus | done (block 2 last commit), in review; board look: park distance median 21 -> 8 px, max 70 -> 18, Fano 3.8 -> 1.3 |
-| 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | open |
+| 3 | vertical kernel, continuous depth, valid births | opus | review-1 items fixed in block 2 |
+| 4 | free flight, wall convergence, stirring | opus | done 6fe1a63; review 2: inward release crosses wall (fixing) |
+| 5 | endpoint rule (k, L, P) | opus | done b9acc26; review 2: render clamp whole-disc vs current profile (fixing) |
+| 6 | chain parking | opus | done a215582 (park median 20-23 → 8 px); review 2: packing in physical coords (fixing) |
+| 7 | depth presentation (two-pass, 4 tint levels, row bias) | opus | in progress |
 | 8 | pop pulse: blick neutral (all presets) + foam veil by full band opacity + vertical pop fade | opus | done ea8105b..6ec5caf (merged d1035a3); board e9c924a9: pulse gone, 56.5 vs 57.6 fps (render +0.3 ms), parity 0 > 12/255, NVS kept; user: too glossy → blick grey at liquidHi luma (in progress); k hook awaits point 5 |
 | 9 | look review, parity, board perf acceptance | opus + user | open |
 
@@ -408,3 +408,8 @@ The blue is the surface band's blick (surfaceBlick, painted in liquidHi at full 
 transparency); foam veiled by the fill only cuts dark rings into it and each pop reveals it. Board A/B: blick 0 → no
 blue. Sim and firmware agree. User (2026-11-22): blick becomes neutral room light (every preset) and foam is veiled by
 the band's full layer opacity (fill + blick + rim).
+
+## Board, block 2 (elf 33826f6e, 2026-11-22)
+Flashed b-2 merge; look kept; board-look parity 32 px off, 0 > 12/255. Pinned bench (g 0 0 = face-up for the new kernel:
+bubbles stall) 60.4 fps — not comparable; live on the stand 52.1 fps, fizz step 0.84 ms. Point 9 must pin the stand
+pose (along ≈ −0.976, normal ≈ +0.22). IRAM +5.9 KB for stepFizzVertical: measure flash vs IRAM on the board (review 2.5).
