@@ -1298,8 +1298,8 @@ function fizzWant32(p: Params, len: number, agitation: number): number {
   }
   return want;
 }
-/** The endpoint rule (docs/tilted-fizz-plan.md "Exact endpoint rule"; firmware rowLerp / fizzEndK / fizzEndSupport /
- *  fizzEndCentre). Side s (+1 time edge, −1 home edge) in outward u = s x: the profile S (surf / surfL) and the local
+/** The endpoint rule (docs/tilted-fizz-plan.md "Exact endpoint rule"; firmware rowLerp / fizzEndK / fizzEndSupportE /
+ *  fizzEndClampX). Side s (+1 time edge, −1 home edge) in outward u = s x: the profile S (surf / surfL) and the local
  *  positive stroke width B (strokeR / strokeL, published by drawTube with the profiles). k: the bubble's endpoint
  *  coefficient, 1 on the front glass, fading over at most B0 + r of depth, 0 from mid-bore back; L = S + k B its contact
  *  boundary; P = r max(0.3, 1 − B/2r) its rim's allowed protrusion. */
@@ -1314,25 +1314,24 @@ function fizzEndK32(y: number, z: number, a: number, r: number, B0: number): num
   return F(F(tt * tt) * F(3 - F(2 * tt)));
 }
 /** Whole-disc support of a bubble of radius r at display row yr: [uc, ut] = the minima over its rows of L − h (its rim
- *  on L: the endpoint zone starts FOAM_CATCH short of it) and L + P − h (where its centre parks), h the disc's half chord. */
-function fizzEndSupport32(S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, k: number): [number, number] {
-  const a0 = Math.max(0, Math.ceil(F(yr - r))), b0 = Math.min(H - 1, Math.floor(F(yr + r))), inv2r = F(0.5 / r);
+ *  on L: the endpoint zone starts FOAM_CATCH short of it) and L + P − h (where its centre parks), h the footprint's
+ *  half chord: r along the tube, ry across, h = √(r² − (m dy)²) — the stepper's the physical circle (fizzEndSupport32:
+ *  ry = r, m = 1), the render's the disc as drawn, squashed across by the lens (fizzEndClampX). Firmware fizzEndSupportE. */
+function fizzEndSupportE32(S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, ry: number, m: number, k: number): [number, number] {
+  const a0 = Math.max(0, Math.ceil(F(yr - ry))), b0 = Math.min(H - 1, Math.floor(F(yr + ry))), inv2r = F(0.5 / r);
   if (a0 > b0) {
     const Bc = rowLerp32(B, H, yr), uc = F(F(foamFront32(S, H, yr, s) + F(k * Bc)) - r);
     return [uc, F(uc + F(r * Math.max(F(0.3), F(1 - F(Bc * inv2r)))))];
   }
   let c = Infinity, t = Infinity;
   for (let iy = a0; iy <= b0; iy++) {
-    const dy = F(iy - yr), h = F(Math.sqrt(Math.max(0, F(F(r * r) - F(dy * dy))))), L = F(F(s * S[iy]) + F(k * B[iy]));
+    const dy = F(F(iy - yr) * m), h = F(Math.sqrt(Math.max(0, F(F(r * r) - F(dy * dy))))), L = F(F(s * S[iy]) + F(k * B[iy]));
     c = Math.min(c, F(L - h)); t = Math.min(t, F(F(L + F(r * Math.max(F(0.3), F(1 - F(B[iy] * inv2r))))) - h));
   }
   return [c, t];
 }
-/** The centre row's endpoint target L + P − r: the render-time clamp and the clamp at an end the rise does not head for. */
-function fizzEndCentre32(S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, k: number): number {
-  const Bc = rowLerp32(B, H, yr);
-  return F(F(F(foamFront32(S, H, yr, s) + F(k * Bc)) + F(r * Math.max(F(0.3), F(1 - F(Bc * F(0.5 / r)))))) - r);
-}
+const fizzEndSupport32 = (S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, k: number): [number, number] =>
+  fizzEndSupportE32(S, B, H, s, yr, r, r, 1, k);
 /** The bodies, once they do not describe this geometry (rows, glassWall, fizzSize, fizzSizeVar; the first vertical step
  *  or render; back from the landscape kernel): bodies of a vertical geometry keep their continuous (y, z), others start
  *  from the row and the tint level's depth; a centre outside the eroded disc is pulled radially onto it, a size that no
@@ -1774,8 +1773,8 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
       const Ss = s > 0 ? surf : surfL, u = F(s * f.x);
       if (!(exposed & (s > 0 ? 1 : 2))) {
         if (u > discFitLow32(Ss, H, f.y, r, s)) { const lim = discFit32(Ss, H, f.y, r, s); if (u > lim) { f.x = F(s * lim); c |= FIZZ_C_END; } }
-      } else if (u > F(foamFront32(Ss, H, f.y, s) - r)) {
-        const Bs = s > 0 ? strokeR : strokeL, lim = fizzEndCentre32(Ss, Bs, H, s, f.y, r, fizzEndK32(y, z, a, r, rowLerp32(Bs, H, f.y)));
+      } else if (u > discFitLow32(Ss, H, f.y, r, s)) {   // else short of its target (every row's L + P − h > s S − r)
+        const Bs = s > 0 ? strokeR : strokeL, lim = fizzEndSupport32(Ss, Bs, H, s, f.y, r, fizzEndK32(y, z, a, r, rowLerp32(Bs, H, f.y)))[1];
         if (u > lim) f.x = F(s * lim);
       }
     }
@@ -2653,14 +2652,11 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const fy = Math.max(0, Math.min(H - 1, Math.round(f.y)));
       // Centres stay inside this frame's surfaces (the stepper ran on an older one, so a receding surface
       // pushes them back here): whatever touches a surface floats at most half out of it, like the foam.
-      // Vertical (tilted-fizz point 5): its own endpoint targets L + P − r at the centre row instead (k per edge from its
-      // body and this frame's bands, float32 as the firmware's planBubble; no band: the profile, as before).
+      // Vertical (tilted-fizz point 5): its own endpoint targets instead, the whole drawn disc against this frame's
+      // profiles (fizzEndClampX; k per edge from its body and this frame's bands).
       let fx: number, kR = 0, kL = 0;
-      if (vb) {
-        const r0 = fizzR32(p, f.v), a0 = F(R32 - r0), by0 = bodyV[2 * slot], bz0 = bodyV[2 * slot + 1];
-        kR = fizzEndK32(by0, bz0, a0, r0, rowLerp32(strokeR, H, f.y)); kL = fizzEndK32(by0, bz0, a0, r0, rowLerp32(strokeL, H, f.y));
-        fx = Math.max(-fizzEndCentre32(surfL, strokeL, H, -1, f.y, r0, kL), Math.min(fizzEndCentre32(surf, strokeR, H, 1, f.y, r0, kR), f.x));
-      } else fx = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
+      if (vb) [fx, kR, kL] = fizzEndClampX(p, H, f, bodyV[2 * slot], bodyV[2 * slot + 1], R32, mag, surf, surfL, strokeR, strokeL);
+      else fx = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
       // A parked bubble in its last FOAM_POP_T s pops: swells and fades out, breaking the surface. Vertical (tilted-fizz
       // point 8): no swell, a smoothstep fade a, and toward the composed band where the band covers it (bandVeil:
       // x [1 - C_B (1 - a)]), the veil's front exemption k a (fizzEndpointK). Landscape as before.
@@ -2955,6 +2951,25 @@ export function lensSourceRows(H: number, p: Params): Int16Array | null {
   return src;
 }
 
+/** The render-time endpoint clamp of a vertical bubble (firmware fizzEndClampX; tilted-fizz point 5): [x, kR, kL] — its
+ *  centre u = s x at most its own endpoint target on each edge, the whole-disc support of L + P against this frame's
+ *  profiles and bands (the stepper ran on an older frame's), over the footprint it is drawn with: r along the tube, r / m
+ *  across (m = fizzMag: the lens magnifies the rows, so the sprite is pre-squashed). Once per bubble; an edge farther
+ *  than r from every row of the footprint skips its roots (u ≤ min s S − r < every row's L + P − h, P ≥ 0.3 r). */
+function fizzEndClampX(p: Params, H: number, f: { x: number; y: number; v: number }, by: number, bz: number, R: number, mag: Float32Array,
+                       surf: Float32Array, surfL: Float32Array, strokeR: Float32Array, strokeL: Float32Array): [number, number, number] {
+  const r = fizzR32(p, f.v), a = F(R - r), m = F(fizzMag(mag, H, f.y, r)), ry = F(r / m);
+  const kR = fizzEndK32(by, bz, a, r, rowLerp32(strokeR, H, f.y)), kL = fizzEndK32(by, bz, a, r, rowLerp32(strokeL, H, f.y));
+  const a0 = Math.max(0, Math.ceil(F(f.y - ry))), b0 = Math.min(H - 1, Math.floor(F(f.y + ry)));
+  let x = f.x;
+  for (let s = 1; s >= -1; s -= 2) {   // the time edge, then the home edge (the last word, as before)
+    const S = s > 0 ? surf : surfL, B = s > 0 ? strokeR : strokeL, u = F(s * x);
+    if (a0 <= b0) { let lo = Infinity; for (let iy = a0; iy <= b0; iy++) lo = Math.min(lo, F(s * S[iy])); if (!(u > F(lo - r))) continue; }
+    const ut = fizzEndSupportE32(S, B, H, s, f.y, r, ry, m, s > 0 ? kR : kL)[1];
+    if (u > ut) x = F(s * ut);
+  }
+  return [x, kR, kL];
+}
 /** Magnification for a bubble of radius r centred at float row y: mean of the row table over the rows
  *  the (pre-squashed) sprite covers, iterated once since that height depends on it. Reading a single row
  *  makes the sprite snap whenever the centre crosses a row where the table is steep. */

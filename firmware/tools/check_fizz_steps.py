@@ -417,6 +417,72 @@ static int containSelftest() {
          n, rel, far, worst, bad);
   return bad ? 13 : 0;
 }
+// `selftest`, the endpoint support (point 5, review 2): the review's repro (r 5, no band, a profile rising 1 px a row: the
+// whole disc's target 98, not the centre row's 100) for the support helper, the render clamp (fizzEndClampX) and the
+// stepper's other open end; then the render clamp over random profiles (sloped, curved, receding), bands, depths and
+// lens magnifications 0.7 .. 1.6 on both edges: every row of the drawn footprint (r along, r / m across) inside that
+// row's L + P, and the clamp tight (a row on it) wherever it moved the bubble.
+static int supportSelftest() {
+  Tube &t = tubeAt(0); long bad = 0, n = 0, moved = 0; double slack = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest support: %s: got %g want %g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 10; p.fizzSizeVar = 0;
+  t.H = tubeLayout(p).H; const int H = t.H; const float yc = fizzYc(H), r = fizzR(p, 1), R = boreR(p);
+  static float mag[TUBE_HEIGHT_MAX];
+  const float y0 = floorf(yc);   // the repro's centre, on a row
+  for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = 100 + (iy - y0); t.fizzSurfL[iy] = -(100 + (iy - y0)); t.strokeR[iy] = t.strokeL[iy] = 0; mag[iy] = 1; }
+  t.surfH = H;
+  {
+    float uc, ut; fizzEndSupport(t.fizzSurf, t.strokeR, H, 1, y0, r, 0, uc, ut);
+    if (fabsf(ut - 98) > 1e-4f) fail("repro: support target", ut, 98);
+    const Fizz f{100, y0, 1, 0, 0.5f}; const FizzBody b{0, 0, 0, {0, 0, 0}}; float kR, kL;
+    const float x = fizzEndClampX(t, p, f, b, mag, kR, kL);
+    if (fabsf(x - 98) > 1e-4f) fail("repro: render clamp", x, 98);
+    // the stepper's other open end (the home edge, rising toward the time edge at no speed): past its target, the bubble
+    // goes back to the whole disc's (on its row, the row bias in), short of the centre row's (S there, its old limit)
+    p.fizzSpeed = 0; p.fizzSource = 1; p.fizzSourceRate = 0; p.fizzFoamLife = 1.5f; p.freeLiquid = true;
+    for (int iy = 0; iy < H; iy++) t.fizzSurf[iy] = 5000;
+    t.fizzShift = 0; t.fizzLen = 9000; t.fizzExposed = 3; t.springClock = 0; t.springScatter = 0;
+    t.fizzN = 1; t.fizz[0] = {-99.5f, y0, 1, 0, 0.5f}; t.body[0] = {y0 - yc, 0, 0, {0, 0, 0}};
+    t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
+    stepFizzTube(0, p, 0.02f, -1, 0, 0, Pose{1, 0, 0});
+    const float yr = t.fizz[0].y, centre = 100 + (yr - y0);
+    fizzEndSupport(t.fizzSurfL, t.strokeL, H, -1, yr, r, 0, uc, ut);
+    if (fabsf(-t.fizz[0].x - ut) > 1e-4f || !(ut < centre - 1.5f)) fail("repro: the other open end", -t.fizz[0].x, ut);
+    t.fizzN = 0; t.bodyH = 0;
+  }
+  uint32_t q = 0x2545F491u;
+  auto rnd = [&]() { q ^= q << 13; q ^= q >> 17; q ^= q << 5; return (q >> 8) * (1.0f / 16777216); };
+  for (int trial = 0; trial < 4000; trial++) {
+    const int kind = trial % 4;   // 0 sloped, 1 curved dish, 2 steep and receding (the bubble well past it), 3 ragged
+    const float sl = 4 * rnd() - 2, cu = 60 * rnd() - 30, base = 100 + 40 * rnd(), band = rnd() < 0.3f ? 0 : 16 * rnd(), mg = 0.7f + 0.9f * rnd();
+    for (int iy = 0; iy < H; iy++) {
+      const float d = (iy - yc) / yc;
+      const float v = kind == 0 ? base + sl * (iy - yc) : kind == 1 ? base + cu * d * d : kind == 2 ? base - 20 + 3 * sl * (iy - yc) : base + 6 * rnd();
+      t.fizzSurf[iy] = v; t.fizzSurfL[iy] = v - 150 - 20 * rnd();   // the home edge (liquid frame x): 150 .. 170 px left of it
+      t.strokeR[iy] = band * (0.5f + 0.5f * rnd()); t.strokeL[iy] = band * rnd();
+      mag[iy] = mg * (1 + 0.1f * d * d);
+    }
+    const float rr = r, a = R - rr, phi = 6.2831853f * rnd(), rho = a * sqrtf(rnd());
+    const FizzBody b{rho * cosf(phi), rho * sinf(phi), 0, {0, 0, 0}};
+    const Fizz f{(rnd() < 0.5f ? base : base - 160) + 30 * rnd() - 15, yc + (2 * rnd() - 1) * a, 1, 0, 0.5f};
+    float kR, kL; const float x = fizzEndClampX(t, p, f, b, mag, kR, kL); n++;
+    const float m = fizzMag(mag, H, f.y, rr), ry = rr / m;
+    double tight = 1e30;   // the smallest distance of a drawn row to its limit, both edges
+    for (int s = 1; s >= -1; s -= 2) {
+      const float *S = s > 0 ? t.fizzSurf : t.fizzSurfL, *B = s > 0 ? t.strokeR : t.strokeL; const float k = s > 0 ? kR : kL;
+      for (int iy = (int)fmaxf(0, ceilf(f.y - ry)); iy <= (int)fminf(H - 1, floorf(f.y + ry)); iy++) {
+        const double dy = (iy - f.y) * m, h = sqrt(fmax(0, (double)rr * rr - dy * dy)), L = s * S[iy] + k * B[iy];
+        const double over = s * x + h - (L + rr * fmax(0.3, 1 - B[iy] / (2 * rr)));
+        tight = fmin(tight, -over);
+        if (over > 1e-3) { fail(s > 0 ? "render clamp: the drawn disc past L + P (time edge)" : "render clamp: the drawn disc past L + P (home edge)", over, 0); break; }
+      }
+    }
+    if (x != f.x) { moved++; slack = fmax(slack, tight); if (tight > 1e-3) fail("render clamp: moved but no drawn row on its limit", tight, 0); }
+  }
+  printf("SELFTEST support repro 98 (helper, render clamp, other open end); render clamp %ld bubbles, %ld clamped, every drawn row inside L + P (slack of the tightest row <= %.2g px); failures %ld\n",
+         n, moved, slack, bad);
+  return bad ? 14 : 0;
+}
 // `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
 // bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
 // life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
@@ -447,8 +513,8 @@ static int chainSelftest() {
   return bad ? 12 : 0;
 }
 static int selftests() {
-  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5;
+  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
