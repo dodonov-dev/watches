@@ -1014,3 +1014,16 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Vertical foam: near-centred arrivals behind a lone ridge foam bubble escape only at the frictionless rate (e-fold m / k_w U b_x ~0.2 s); a small bounded perturbation would shorten them (look decision).
 - Vertical foam (surface model): the drift gathers a layered 6-8 cap on the front ridge where the rope arrives; arrivals queue under it (stand 60 s: 118 waits >= 0.5 s vs 44 on c6e77da). Fuller-width foam (a count / life matter) or the fringe map (model point 5) would give them room.
 - Vertical foam: the glide and push-back along the tube use the common fizzSpeed dt, the surface model U_i only in the plane (per-bubble U_i axially moved big ones 1.46x fizzSpeed dt down, past the stand job bound).
+- Vertical fizz perf (bit-exact pass, 2026-11-22): ~1 ms for the board look is not reachable without a behaviour change: the
+  bubble loop alone is ~0.6 ms (~1000 cycles a bubble: 2 roots + 2 divisions on the wall, ~50 / 33 cycles each), the packing
+  ~10 placements per foam bubble a step (3 fixed sweeps of a jammed cap). Levers left that change bits: fewer FOAM_RELAX
+  sweeps once nothing moved, k shared between the drift and its target (one root + division a foam bubble; the board may fuse
+  the two copies differently), reciprocals for the clamps' a / sqrt.
+- Board-only last-bit differences: restructuring settleFoam's placement (target bound before the support) moved the board's
+  madd.s contraction (X sequence: first 238 frames identical, minutes tube from frame 239; host x86 --fma: the board look
+  from frame 25); host contract-off stays bit-identical. Pinning contraction per expression would make such rewrites provable.
+- Shared ~/.platformio/packages-lcd316: concurrent agents' hybrid lib rebuilds break each other's links ("file format not
+  recognized", missing partitions csv); a lock in flash.sh / pkgdir.sh would serialize them.
+- check_board_steps across a lib rebuild: same source, other elf; compare A/B only from one build environment.
+- Packing with ~40+ foam a tube (fizz_bench 240 / 480) stays superlinear: contacts per foam bubble grow with the pile
+  (240: ~16 placements a foam bubble a step); a gather costs ~1100 cycles (grid range scan, PSRAM lists).
