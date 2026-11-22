@@ -2,7 +2,7 @@
 """fps benchmark on the board, in a pinned scene so runs are comparable.
 
   tools/bench.py [--scene 10:09:30] [--samples 5] [--settle 4] [--stages [LIST]] [--stage name=value ...] [--quick]
-                 [--preset FILE.json] [--fix-pose] [--live-imu] [--allow-dead-imu] [--runs N] [--label TEXT] [--json]
+                 [--preset FILE.json] [--fix-pose | --pose flat|stand|A,C,N] [--live-imu] [--allow-dead-imu] [--runs N] [--label TEXT] [--json]
                  [--ble-window]
 
 Pins: optional preset (--preset: every key of the JSON the board knows; `v` and unknown keys are skipped and listed
@@ -19,7 +19,12 @@ Param pins are volatile writes (`p~`, never autosaved: a dropped session leaves 
 `p~` gets `p` writes (autosaved, restored at the end).
 --fix-pose: the scene no longer depends on how the board lies: tilt override `g -0.5 0` for 4 s (a free slug slides
 home), then `g 0 0` for 4 s (tilt state 0), then the pins; the override is released (`g`) at the end. No dead-IMU
-check then (the override reads as all 0).
+check then (the override reads as all 0). Same as `--pose flat`.
+--pose stand | A,C,N: tilt override with the signed normal (`g A C 0 0 N`, + face up) held for the whole bench, the
+pins on top, released at the end; stand = the board on its stand (along -0.976, across -0.01, normal +0.22). The
+vertical fizz kernel reads `g 0 0` (--fix-pose) as face up (bubbles stall): bench vertical fizz at `--pose stand`.
+The liquid sees the pose (inputGain is not pinned to 0; 0 on the board or preset becomes 1), settle +8 s first
+(fizz pool at its steady state). The summary adds the medians of the per-core, frame-p95 and fizz-step figures.
 --live-imu: inputGain is not pinned (the board's / preset's value stays), for moving-light cases
 (e.g. `--live-imu --stage fizz=0`).
 --stages additionally turns rendering stages off one at a time (digits, ticks, fizz, glow, ...) and prints what
@@ -63,12 +68,18 @@ def sample(d, n, settle):
         r = d.talk('f', ok=parsable)  # "fps 19.8  render 46.48 ms  push-wait 0.02 ms  (...)"; device.py asks again
         if not parsable(r): raise SystemExit(f'bench.py: no parsable `f` reply: {r!r}')
         t = r.split()
-        rows.append((float(t[1]), float(t[3]), float(t[6])))
+        m = FX.search(r)
+        rows.append((float(t[1]), float(t[3]), float(t[6]), *((float(x) for x in m.groups()) if m else ())))
         LAST_F = r.strip()
         m = re.search(r'refill late (\d+) restarts (\d+) worst (\d+)%', r)
         if m: REFILLS.append(tuple(int(x) for x in m.groups()))
     med = lambda i: statistics.median(r[i] for r in rows)
     return med(0), med(1), med(2), rows
+
+def extras(rows):
+    """median per FX_KEYS figure over `f` rows that carried them (older firmware: {})."""
+    rows = [r for r in rows if len(r) == 3 + len(FX_KEYS)]
+    return {k: statistics.median(r[3 + i] for r in rows) for i, k in enumerate(FX_KEYS)} if rows else {}
 
 def parse_tilt(reply):
     """`s` -> (along, across, gyro) or None."""
@@ -76,6 +87,21 @@ def parse_tilt(reply):
     if not m: return None
     try: return tuple(float(x) for x in m.groups())
     except ValueError: return None
+
+STAND_POSE = (-0.976, -0.01, 0.22)   # along, across, normal: the LCD board on its stand (IMU, 2026-11-22)
+
+def parse_pose(ap, a):
+    """--pose / --fix-pose -> None (IMU), 'flat' (legacy g 0 0 + inputGain 0) or (along, across, normal)."""
+    if a.pose is None: return 'flat' if a.fix_pose else None
+    if a.fix_pose and a.pose != 'flat': ap.error('--fix-pose is --pose flat: give one of them')
+    if a.pose in ('flat', 'stand'): return 'flat' if a.pose == 'flat' else STAND_POSE
+    try: v = tuple(float(x) for x in a.pose.split(','))
+    except ValueError: v = ()
+    if len(v) != 3: ap.error(f'--pose {a.pose}: flat, stand or along,across,normal')
+    return v
+
+FX = re.compile(r'cores h (\S+) / m (\S+) ms.*frame-p95 (\d+) ms\s+phys (\S+) steps x \(tube (\S+) \+ fizz (\S+) ms, max (\S+)\)')
+FX_KEYS = ('core_h', 'core_m', 'p95', 'steps', 'tube_ms', 'fizz_ms', 'fizz_max')
 
 def spread(xs): return f'{min(xs):.2f}–{max(xs):.2f}'
 
@@ -88,7 +114,8 @@ def main():
     ap.add_argument('--stage', action='append', default=[])
     ap.add_argument('--quick', action='store_true', help='3 base samples, 2 per stage, settle 2 s / 1 s (about half the time; +-0.1 ms noisier)')
     ap.add_argument('--preset', help='preset JSON (e.g. ../presets/cola.json) loaded before the pins')
-    ap.add_argument('--fix-pose', action='store_true', help='tilt override: slug home (g -0.5 0, 4 s), then g 0 0 (4 s) before the pins')
+    ap.add_argument('--fix-pose', action='store_true', help='tilt override: slug home (g -0.5 0, 4 s), then g 0 0 (4 s) before the pins (= --pose flat)')
+    ap.add_argument('--pose', help='flat (= --fix-pose) | stand | along,across,normal: tilt override with the signed normal for the whole bench')
     ap.add_argument('--live-imu', action='store_true', help='do not pin inputGain=0')
     ap.add_argument('--allow-dead-imu', action='store_true', help='accept along/across/gyro all 0 (no reboot, no exit 3)')
     ap.add_argument('--runs', type=int, default=1, help='repeat base + stages N times; median and spread across runs')
@@ -101,6 +128,7 @@ def main():
         if a.settle == 4: a.settle = 2
         stage_samples, stage_settle = 2, 1
     if a.runs < 1: ap.error('--runs must be >= 1')
+    pose = parse_pose(ap, a)
     preset = None
     if a.preset:
         with open(a.preset) as fh: preset = json.load(fh)
@@ -156,10 +184,13 @@ def main():
         for k in preset_keys:
             if not same(cur[k], preset[k]): setp(k, preset[k]); n += 1
         talk('l', timeout=1); talk(f't {a.scene}'); talk('d0')   # `l` prints nothing: do not wait 10 s for it
-        if a.fix_pose:
-            if same(cur['inputGain'], 0): setp('inputGain', 1)   # the prep tilt has to reach the liquid
+        if pose is not None and same(cur['inputGain'], 0): setp('inputGain', 1)   # the prep tilt has to reach the liquid
+        if pose == 'flat':
             talk('g -0.5 0'); time.sleep(4); talk('g 0 0'); time.sleep(4)
-        if not a.live_imu and not same(cur['inputGain'], 0): setp('inputGain', 0)
+        elif pose is not None:
+            talk(f'g {pose[0]} {pose[1]} 0 0 {pose[2]}'); time.sleep(8)
+        if pose is None or pose == 'flat':
+            if not a.live_imu and not same(cur['inputGain'], 0): setp('inputGain', 0)
         return n
     def read_tilt(tries=3):
         tilt = None
@@ -175,8 +206,8 @@ def main():
         if preset is not None: print(f'bench.py: preset {a.preset}: {n} of {len(preset_keys)} params written', file=sys.stderr)
         tilt = read_tilt()
         dead = lambda t: t is not None and not any(t)
-        if a.fix_pose:
-            pass                           # the override reads as all 0: nothing to check
+        if pose is not None:
+            pass                           # the override: nothing to check
         elif dead(tilt) and a.allow_dead_imu:
             print('bench.py: IMU reads exactly 0 (dead) - allowed by --allow-dead-imu', file=sys.stderr)
         elif dead(tilt):
@@ -194,10 +225,11 @@ def main():
         if tilt is None: print('bench.py: WARNING: could not parse the tilt from `s`', file=sys.stderr)
         tilt_txt = 'tilt ?' if tilt is None else f'tilt along {tilt[0]:.3f} across {tilt[1]:.3f} gyro {tilt[2]:.1f}'
         imu_txt = 'IMU live' if a.live_imu else 'IMU pinned'
-        if a.live_imu:
+        if isinstance(pose, tuple): imu_txt = f'pose {a.pose} (g {pose[0]} {pose[1]} 0 0 {pose[2]}, inputGain {fmt(cur["inputGain"])})'
+        elif a.live_imu:
             imu_txt += f' (inputGain {fmt(cur["inputGain"])})'
             if same(cur['inputGain'], 0): print('bench.py: WARNING: --live-imu but inputGain is 0', file=sys.stderr)
-        if a.fix_pose: imu_txt += ', pose fixed (g 0 0)'
+        if pose == 'flat': imu_txt += ', pose fixed (g 0 0)'
         elif dead(tilt): imu_txt += ', IMU dead'
         result.update(tilt=None if tilt is None else dict(zip(('along', 'across', 'gyro'), tilt)), imu=imu_txt)
         print(f'{a.label + ": " if a.label else ""}scene {a.scene}  preset {a.preset or "(board NVS)"}  {tilt_txt}  '
@@ -208,7 +240,7 @@ def main():
             if a.runs > 1: print(f'bench.py: run {run + 1}/{a.runs}', file=sys.stderr)
             fps, ren, wait, rows = sample(dev[0], a.samples, a.settle)
             base_f = LAST_F
-            rr = {'fps': fps, 'render_ms': ren, 'wait_ms': wait, 'samples': rows, 'stages': {}}
+            rr = {'fps': fps, 'render_ms': ren, 'wait_ms': wait, 'samples': rows, 'stages': {}, **extras(rows)}
             if len(REFILLS) > 1:   # totals since boot: count what happened between the first and the last `f`
                 rr['refill'] = {'late': REFILLS[-1][0] - REFILLS[0][0], 'restarts': REFILLS[-1][1] - REFILLS[0][1],
                                 'worst_pct': max(x[2] for x in REFILLS[1:]), 'seconds': 2.1 * (len(REFILLS) - 1)}
@@ -231,6 +263,13 @@ def main():
         else:
             print(f'{a.label + ": " if a.label else ""}fps {fps:.1f}  render {ren:.2f} ms  push-wait {wait:.2f} ms  '
                   f'(scene {a.scene}, median of {a.runs} runs x {a.samples}; render across runs {spread(rens)} ms)')
+        ex = [r for r in per_run if 'fizz_ms' in r]
+        if ex:
+            m = {k: med([r[k] for r in ex]) for k in FX_KEYS}; result.update(m)
+            print(f'{a.label + ": " if a.label else ""}cores h {m["core_h"]:.2f} / m {m["core_m"]:.2f} ms  frame-p95 {m["p95"]:.0f} ms  '
+                  f'phys {m["steps"]:.2f} steps x (tube {m["tube_ms"]:.2f} + fizz {m["fizz_ms"]:.2f} ms, max {m["fizz_max"]:.2f})  '
+                  f'(median{f" of {a.runs} runs" if a.runs > 1 else ""}; fizz per run {spread([r["fizz_ms"] for r in ex])}, '
+                  f'p95 per run {spread([r["p95"] for r in ex])})')
         print(f'{a.label + ": " if a.label else ""}last f: {base_f}')
         refills = [r['refill'] for r in per_run if 'refill' in r]
         if refills:
@@ -254,7 +293,7 @@ def main():
     finally:
         for k in touched: dev[0].set(k, fmt(snap[k]))
         talk('d1')
-        if a.fix_pose: talk('g')
+        if pose is not None: talk('g')
         # Without `p~` the pins were autosaved mid-bench: device.py holds the session past the autosave on close,
         # so the restored values replace them.
         talk('s'); dev[0].close()
