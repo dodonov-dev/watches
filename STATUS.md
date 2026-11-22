@@ -1,6 +1,37 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-22 (tilted fizz point 7: depth presentation)_
+_Last update: 2026-11-22 (desk-view lid)_
+
+## Desk-view lid (2026-11-22), branch `tilted_rise`, host only (docs/tilted-fizz-deskview.md)
+
+- Params v33 `viewElevation` (deg, 0 = off, UI 0-60, Shape group, design key; every preset 0, NVS schema CRC changed: the
+  board drops its blob once). Vertical only; landscape and 0 are the side view exactly.
+- τ = TubeState.backTilt: poseBackTilt(pose) = atan2(z, x) clamped to [0, 45°] (physics, sim + firmware), set by main's
+  physics step per tube (and seq.h). T = tan τ + tan(e − τ) (lidSlope, τ clamped again). Firmware TubeState: the four bools
+  grouped at the end, so backTilt costs no bytes.
+- Geometry per row (plain y across the bore, R = boreR): front = wallX − k·h − T·R − T·√(R² − y²) (the body ends there:
+  `edges`), lid height 2T√(R² − y²) (0 past the bore, round ends), back apex at the centre row = xe (the time edge).
+  One sqrt per row; tilt skew and across sag come with wallX. Home edge of a free slug keeps its band.
+- Lid drawing (sim lid(), firmware lidRow: noinline, flash): the band's colours (surfaceTone), fill a·surfaceFill·(1 − u)
+  (1 at the front line, 0 at the back), blick as today, today's rim on the front line (1 px centred), a liquid-tinted
+  contour on the back line (LID_BACK_W 0.5 px, surfaceRim, light-independent). One write per pixel; several layers
+  bg (1 − A) + P (no division). surfaceWidth unused by the lid.
+- Marks (markFn / Mark::bandMark, BandInfo lid + rimB): past the body the rear wall is seen through the liquid path
+  a·(1 − u) (not × surfaceFill), the front rim and back contour stay on top. Sprite digits take no band (as before: KAIZEN).
+- Fizz (not changed): publishes surf = the FRONT arc − xs (foam parks there), strokeR = the lid height per row.
+- Proof: check_render_frames (also --tiles) vs tilted_rise: 13136 strips byte-identical. check_board_render 320w8-8
+  (+ --tiles), 240f, amoled191: output identical to tilted_rise; board look 0 > 12/255; new fixture
+  testdata/tilted-fizz-board-look-lid.json (the look at viewElevation 20) 0 > 12/255 (worst 8 / 8 / 8 / 9). check:meniscus 521
+  scenes (was 439), max 9/255: lid geometry over e 10/20/30/60 × τ 0..1.2 × across ±0.6 × fill 0.03/0.5/0.97 (back apex =
+  xe, height 2T√(R² − y²), closed past the bore, nothing past the back line), fill and τ motion without a jump, marks under
+  the lid at their dry share u, front rim over a black mark. check_fizz_steps --sim --free 15 of 15 vertical jobs.
+  check_mirrors: the two new constants mirrored. sim tsc / build, check:presets, check:materials.
+- Builds: lcd316@320w8-8 RAM −16 B (TubeState −8 B each: the bools grouped), IRAM +52 B (the band loop's call; same
+  256 B block, dram0 reserve unchanged), flash +3.9 KB; amoled191 RAM −16 B, IRAM 0, flash +3.9 KB. The lid kernels in flash
+  (lidRow, lidDraw noinline out of the IRAM band loop); traceFillRow's ResidueTint::at calls pinned out of line
+  (residueAt: the added code had tipped GCC into inlining them, +382 B IRAM). Firmware's v31 -> v32 NVS migration dropped.
+- [Sim, board look at the stand pose (along −0.966, 06:27), viewElevation 0 / 20 / 30](docs/deskview-lid.png).
+  Not flashed.
 
 ## Tilted fizz point 7: depth presentation (2026-11-22), branch `tilted_rise`, host only
 

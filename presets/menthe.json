@@ -1,5 +1,5 @@
 {
-  "v": 32,
+  "v": 33,
   "tubeHeight": 54,
   "hoursY": 0,
   "minutesY": 185,
@@ -7,6 +7,7 @@
   "tubeGap": 0,
   "remaining": true,
   "vertical": false,
+  "viewElevation": 0,
   "liquid": "#187767",
   "liquidHi": "#b7c2bd",
   "liquidLo": "#1c7364",

@@ -1,7 +1,7 @@
 import './style.css';
 import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, phoneTilt, poseBackTilt, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -558,7 +558,7 @@ function physics(dt: number) {
   followClock(minutes, sweep ? 1 - Math.abs(2 * sweepPhase - 1) : f.minutes, dt, clockSet);
   if (TUBE_COUNT === 3) followClock(tubes[2], f.seconds, dt, clockSet);
   clockSet = false;
-  tubes.forEach((t, i) => stepTube(t, input, ps[i], dt, TUBE_PX_SCALE[i]));
+  tubes.forEach((t, i) => { stepTube(t, input, ps[i], dt, TUBE_PX_SCALE[i]); t.backTilt = poseBackTilt(imuFilter.pose); });   // desk view: the lid's τ
   stepFizz(ps, dt, input.along, input.across, hours.agitation, imuFilter.pose);   // pose: gain-free, the vertical kernel's
 }
 function frame(now: number) {

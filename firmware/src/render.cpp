@@ -280,6 +280,9 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillLutI(uint16_t *row, con
     }
   }
 }
+// traceFillRow's colour lookups, out of line in flash (where the compiler had placed them; the desk-view lid's code
+// tipped its inliner into copying them into the IRAM kernel: +382 B internal, the BLE window's).
+static uint16_t __attribute__((noinline)) residueAt(const ResidueTint &t, int T) { return t.at(T); }
 // iZ0: the first phi index of a visible depth (T > 0) at this traceAmount (drawTube, per frame); blkMax: TraceMemo's.
 TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, const uint16_t *traceA, int x0, int x1, int x2, int x3,
                                                     const ResidueTint &tint, int aLo, int aHi, int iZ0, const uint16_t *blkMax,
@@ -299,7 +302,7 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, cons
       uint16_t *const lutI = lut + TRACE_LUT;
       // T(i) runs through [T(iZ), Thi] non-decreasing: one colour per depth reached, as lut[T - Tlo] held it
       uint16_t c = 0;
-      for (int i = iZ, Tp = -1; i <= i1; i++) { const int T = Ti(i); if (T != Tp) { Tp = T; c = __builtin_bswap16(t.at(T)); } lutI[i - iZ] = c; }
+      for (int i = iZ, Tp = -1; i <= i1; i++) { const int T = Ti(i); if (T != Tp) { Tp = T; c = __builtin_bswap16(residueAt(t, T)); } lutI[i - iZ] = c; }
       const uint32_t aMin = ((uint32_t)iZ * 65536u - 32768u + t.K - 1) / t.K;
       traceFillLutI(row, traceA, x0, x1, t.K, iZ, aMin, blkMax, lutI);
       traceFillLutI(row, traceA, x2, x3, t.K, iZ, aMin, blkMax, lutI);
@@ -307,7 +310,7 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, cons
     }
   }
   if (n > Thi - Tlo + 1) {
-    for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(t.at(T)) : 0;
+    for (int T = Tlo; T <= Thi; T++) lut[T - Tlo] = T ? __builtin_bswap16(residueAt(t, T)) : 0;
     traceFillLut(row, traceA, x0, x1, t, Tlo, lut);
     traceFillLut(row, traceA, x2, x3, t, Tlo, lut);
     return;
@@ -315,7 +318,7 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, cons
   for (int k = 0; k < 2; k++) for (int x = k ? x2 : x0, xe = k ? x3 : x1; x < xe; x++) {
     if (!traceA[x]) continue;
     const int T = t.depthT(traceA[x]);
-    if (T) row[x] = __builtin_bswap16(t.at(T));
+    if (T) row[x] = __builtin_bswap16(residueAt(t, T));
   }
 }
 static inline int alphaT(float t) { return (int)(t * 256 + 0.5f); }
@@ -729,6 +732,45 @@ TUBE_IRAM static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, i
     else if (nL > 1) { const float inv = 1 / A; rowPxa(row, x, q({P.r * inv, P.g * inv, P.b * inv}), A); }
   }
 }
+#define LID_BACK_W 0.5f   // px: the lid's back contour, thinner than the front rim's 1 px (sim LID_BACK_W)
+// Desk view: the lid over [xa, xb) from its front contact line xm, w px tall (sim drawTube lid()): the band's colours,
+// the fill fading from the front line to 0 at the back line (1 - u: the liquid path under the lid), the blick, today's
+// rim on the front line (rimK, 1 px centred on it) and a thinner liquid-tinted contour on the back line (rimBK,
+// LID_BACK_W px). One write per pixel: a single layer as bandRow, several bg (1 - A) + P (premultiplied, no division).
+// In flash: drawn only with params viewElevation on.
+static void __attribute__((noinline)) lidRow(uint16_t *row, int xa, int xb, float xm, float hw, float w, float invWidth, float a,
+                                             float fill, float blickK, float pull, float rimK, float rimBK, uint16_t inner,
+                                             uint16_t outer, uint16_t liquid, uint16_t blickC, uint16_t rimC, uint16_t rimBC) {
+  if (xa < 0) xa = 0; if (xb > PANEL_W) xb = PANEL_W;
+  const float bLo = w - LID_BACK_W;
+  for (int x = xa; x < xb; x++) {
+    const float t = x + 0.5f - xm;
+    const float lo = fmx(t - 0.5f, -hw), hi = fmn(t + 0.5f, w);
+    const float coverage = fmx(0, hi - lo);
+    if (coverage <= 0) continue;
+    const float u = clampf(((lo + hi) * 0.5f + hw) * invWidth, 0, 1);
+    const float us = u * u * (3 - 2 * u);
+    const uint16_t c = blend565(inner, outer, us);
+    const float af = a * fill * coverage * (1 - u) * (1 - pull * us);
+    const float ab = a * blickK * coverage * 4 * u * (1 - u);
+    const float arF = a * rimK * fmx(0, fmn(hi, 0.5f) - fmx(lo, -0.5f));
+    const float arB = a * rimBK * fmx(0, hi - fmx(lo, bLo));
+    RGB P{0, 0, 0}; float A = 0; int nL = 0; uint16_t cLast = 0;
+    auto layer = [&](uint16_t col, float al) __attribute__((always_inline)) {
+      if (al < 1 / 255.0f) return;
+      const RGB C = to888(col); const float k = 1 - al;
+      P.r = P.r * k + C.r * al; P.g = P.g * k + C.g * al; P.b = P.b * k + C.b * al;
+      A = A * k + al; nL++; cLast = col;
+    };
+    layer(pull > 0 ? blend565(c, liquid, pull) : c, af); layer(blickC, fmn(1, ab));
+    layer(rimC, fmn(1, arF)); layer(rimBC, fmn(1, arB));
+    if (nL == 1) rowPxa(row, x, cLast, A);
+    else if (nL > 1) {
+      const RGB B = to888(__builtin_bswap16(row[x])); const float k = 1 - A;
+      row[x] = __builtin_bswap16(q({B.r * k + P.r, B.g * k + P.g, B.b * k + P.b}));
+    }
+  }
+}
 static inline float luma(RGB c) { return 0.299f * c.r + 0.587f * c.g + 0.114f * c.b; }
 
 // Ambient-light desaturation (params.ambientLight, sim ambientize): a colour brighter than the
@@ -1122,7 +1164,9 @@ static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, i
 // Concave surface band of one tube for the rear-mark compositor (render frame, before the `remaining`
 // mirror; 0 = time edge, dir +1, 1 = home edge, dir -1): per row the profile x, the outward stroke width
 // (0 = no band) and the fill / blick / rim weights, stroke opacity included. See sim BandInfo / markFn.
-struct BandInfo { const float *xm[2], *w[2], *fill[2], *blick[2], *rim[2]; float pull[2], hw; bool mirror; int L; };
+// lid (desk view, drawTube lidRow): the time edge's band is the lid, xm[0] its front contact line, w[0] its height,
+// fill[0] its opacity a (not x surfaceFill: the marks' liquid path), rimB its back contour's weight per a x min(1, w / 2).
+struct BandInfo { const float *xm[2], *w[2], *fill[2], *blick[2], *rim[2]; float pull[2], hw; bool mirror; int L; bool lid; float rimB; };
 // Liquid body bounds per tube row (panel frame) plus, when drawn, the surface band past them.
 struct Edges { const float *lo, *hi; const BandInfo *band = nullptr; };
 struct Mark {
@@ -1712,8 +1756,16 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
   if (coverage <= 0) return false;
   const float u = clampf(((lo + hi) * 0.5f + hw) / (wEff + hw), 0, 1), us = u * u * (3 - 2 * u);
   const float ab = fmn(1, b.blick[side][ry] * coverage * 4 * u * (1 - u));
-  const float ar = fmn(1, b.rim[side][ry] * fmx(0, hi - fmx(lo, fmx(0, wEff - 1))));
-  const float through = (1 - ab) * (1 - ar);
+  const bool lid = b.lid && side == 0;   // the lid: front rim, back contour, the liquid path thinning to the back line (sim)
+  float through;
+  if (lid) {
+    const float arF = fmn(1, b.rim[0][ry] * fmx(0, fmn(hi, 0.5f) - fmx(lo, -0.5f)));
+    const float arB = fmn(1, b.fill[0][ry] * fmn(1, wEff / 2) * b.rimB * fmx(0, hi - fmx(lo, wEff - LID_BACK_W)));
+    through = (1 - ab) * (1 - arF) * (1 - arB);
+  } else {
+    const float ar = fmn(1, b.rim[side][ry] * fmx(0, hi - fmx(lo, fmx(0, wEff - 1))));
+    through = (1 - ab) * (1 - ar);
+  }
   const float wallK = wetT ? wetT[ry] * (1 / 256.0f) : 1;   // sim wallQ / 256
   if (inside) {
     if (through >= 1) return false;   // nothing on top here: the plain body path, byte-identical
@@ -1724,7 +1776,7 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
     t.wr(x, y, covT >= 256 ? c : blend565T(t.rd(x, y), c, covT));
     return true;
   }
-  const float wet = fmn(1, b.fill[side][ry] * coverage * (1 - b.pull[side] * us));
+  const float wet = lid ? fmn(1, b.fill[0][ry] * coverage * (1 - u) * (1 - b.pull[0] * us)) : fmn(1, b.fill[side][ry] * coverage * (1 - b.pull[side] * us));
   const float cov = covT * (1 / 256.0f);
   const float aw = cov * wet * (rel ? T * (1 / 256.0f) : 1) * wallK, ad = cov * (1 - wet) * (t.pal.dryT[ry] * (1 / 256.0f));
   const float al = (aw + ad) * through;
@@ -4749,6 +4801,13 @@ inline float Tube::wallXL(int ry, float xs, float tanA, const CapShape &c) const
   const float yc = (H - 1) / 2.0f;
   return xs + fmn(1, xs / 8) * (tanA * (ry - yc) - c.k * wallCap(ry, c));
 }
+// Desk view (sim lidSlope, docs/tilted-fizz-deskview.md): the lid's slope T = tan tau + tan(e - tau), tau = the stand's
+// back tilt (TubeState.backTilt), e = viewElevation; 0 = off (landscape, or viewElevation 0).
+static inline float lidSlope(const Params &p, float tau) {
+  if (!p.vertical || !(p.viewElevation > 0)) return 0;
+  const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad, t = fmn(BACK_TILT_MAX_DEG * rad, fmx(0, tau));   // poseBackTilt's range
+  return tanf(t) + tanf(e - t);
+}
 
 
 // applyLens's nearest-row map (shown row yd shows drawn row src[yd]), float32 step by step, no fused multiply-add (the LCD
@@ -5080,8 +5139,16 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
 
   // Cached edge geometry, before the residue backing and liquid body.
   const int16_t *capX0 = rc.capX0;
+  // Desk view (sim drawTube): the time edge is the lid's front contact line; its height per row goes to strokeR until the
+  // band facts below (which keep it where the lid is drawn). One sqrtf a row.
+  const float lidT = mir ? 0.0f : lidSlope(p, st.backTilt), lidR = rc.boreR, lidYc = (H - 1) / 2.0f;
   for (int ry = 0; ry < H; ry++) {
-    float ex = edgeX(ry, xe, tanR, capR);
+    float ex;
+    if (lidT > 0) {
+      const float dy = ry - lidYc, z2 = lidR * lidR - dy * dy, z = z2 > 0 ? sqrtf(z2) : 0.0f;
+      ex = wallX(ry, xe, tanR, capR) - capR.k * capR.h - lidT * lidR - lidT * z;
+      strokeR[ry] = 2 * lidT * z;
+    } else ex = edgeX(ry, xe, tanR, capR);
     float exL = p.freeLiquid ? edgeXL(ry, xs, tanL, capL) : 0;
     edges[ry] = ex; edgesL[ry] = exL;
     fizzSurf[ry] = ex - xs; fizzSurfL[ry] = exL - xs;   // surface fronts for stepFizz (foam parks on the profile)
@@ -5193,10 +5260,29 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     rimK = p.surfaceRim * fmn(1, wEff / 2) * (1 - pull) * ((1 - backK) * (0.5f + 0.5f * pal.rowK[ry]) * fmn(1, lk) + backK);
     return true;
   };
+  // the lid (desk view): its opacity a and per row its blick and front rim weights (lidTerms: the facts and lidRow)
+  const float lidRimB = p.surfaceRim * (1 - pullR);   // the back contour's weight per a x min(1, w / 2)
+  auto lidTerms = [&](int ry, float w, float lk, float &a, float &blickK, float &rimK) __attribute__((always_inline)) -> bool {
+    a = strokeA * fmn(1, w);
+    if (a < 1 / 255.0f) return false;
+    blickK = blickRow(ry) * fmn(1, lk) * (1 - pullR);
+    const float backK = palCache->bandBackK[ry];
+    rimK = p.surfaceRim * fmn(1, w / 2) * (1 - pullR) * ((1 - backK) * (0.5f + 0.5f * pal.rowK[ry]) * fmn(1, lk) + backK);
+    return true;
+  };
   for (int ry = 0; ry < H; ry++) {
+    const float lidW = lidT > 0 ? strokeR[ry] : 0.0f;   // the lid's height (edges loop)
     strokeR[ry] = strokeL[ry] = 0;
     bandFill[0][ry] = bandFill[1][ry] = bandBlick[0][ry] = bandBlick[1][ry] = bandRim[0][ry] = bandRim[1][ry] = 0;
-    if (band3e) {   // the rear-mark compositor's layer weights (Mark::bandMark) and the strokes (fizz veil)
+    if (band3e && lidT > 0) {   // the lid: the marks' weights (Mark::bandMark, bandFill = a) and its height
+      float a, blickK, rimK;
+      if (lidW > 0 && lidTerms(ry, lidW, lightK, a, blickK, rimK)) { bandFill[0][ry] = a; bandBlick[0][ry] = a * blickK; bandRim[0][ry] = a * rimK; strokeR[ry] = lidW; }
+      if (p.freeLiquid) {   // the home edge keeps its band
+        const float tw = -(wallXL(ry, xs, tanL, capL) - edgesL[ry]);
+        float aL, wEff, bk, rk;
+        if (tw > 0 && concave(ry, tw, -1, lightKL, aL, wEff, bk, rk)) { bandFill[1][ry] = aL * fill; bandBlick[1][ry] = aL * bk; bandRim[1][ry] = aL * rk; strokeL[ry] = wEff; }
+      }
+    } else if (band3e) {   // the rear-mark compositor's layer weights (Mark::bandMark) and the strokes (fizz veil)
       auto facts = [&](float xm, float xw, int dir, float lk, int side, float *stroke) __attribute__((always_inline)) {
         const float tw = dir * (xw - xm);
         if (!(tw > 0)) return;   // flat or convex: no stroke
@@ -5215,7 +5301,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
     if (mir) { boundLo[ry] = L - hi; boundHi[ry] = L - lo; } else { boundLo[ry] = lo; boundHi[ry] = hi; }
   }
   const BandInfo band{{edges, edgesL}, {strokeR, strokeL}, {bandFill[0], bandFill[1]}, {bandBlick[0], bandBlick[1]},
-                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L};
+                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L, lidT > 0, lidT > 0 ? lidRimB : 0.0f};
   Edges bounds{boundLo, boundHi, hasLiquid && p.surfaceBand > 0 ? &band : nullptr};
   if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H, wetShare, wetRun);
   TU_MARK(TU_BOUNDS);
@@ -5758,9 +5844,27 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         }
       }
     };
+    // the lid (desk view): per row its terms and colours, then lidRow (sim lid()). noinline: out of the IRAM band loop
+    // (flash; internal RAM is the BLE window's)
+    auto lidDraw = [&](int ry, int xlo, int xhi) __attribute__((noinline)) {
+      const float w = strokeR[ry], xm = edges[ry];
+      float a, blickK, rimK;
+      if (!(w > 0) || !lidTerms(ry, w, lightK, a, blickK, rimK)) return;
+      const float shade = 0.6f * (1 - fmn(1, lightK));
+      const PalCache &pc = *palCache;
+      const uint16_t blickC = sp ? shade565(blickN, rc.shadeF[ry]) : blickN;
+      const uint16_t inner = sp ? sp->bandInner[ry] : pc.bandInner[ry];
+      const uint16_t outer = sp ? shade565(tone(blend565(pc.bandLensMix[ry], rc.darkC, shade)), rc.shadeF[ry]) : tone(blend565(pc.bandLensMix[ry], rc.darkC, shade));
+      const uint16_t rimC = sp ? sp->bandRimC[ry] : pc.bandRimC[ry];
+      const uint16_t rimB0 = blend565(pal.rows[ry], rc.darkC, 0.75f), rimBC = sp ? shade565(rimB0, rc.shadeF[ry]) : rimB0;
+      int xa = (int)ffloor(xm - hw), xb = (int)fceil(xm + w); if (xa < xlo) xa = xlo; if (xb > xhi) xb = xhi;
+      TCLIP(FB + ry * PANEL_W, PANEL_W);
+      lidRow(FB + ry * PANEL_W, xa, xb, xm, hw, w, 1 / (w + hw), a, fill, blickK, pullR, rimK, lidRimB * fmn(1, w / 2), inner, outer, bRows[ry], blickC, rimC, rimBC);
+    };
     for (int ry = rb0; ry < rb1; ry++) {
       int xi = (int)ffloor(edges[ry]), xa = (int)ffloor(edgesL[ry]) + 1; if (xa < capX0[ry]) xa = capX0[ry];
-      surface(ry, edges[ry], wallX(ry, xe, tanR, capR), 1, lightK, xa, L);
+      if (lidT > 0) lidDraw(ry, xa, L);
+      else surface(ry, edges[ry], wallX(ry, xe, tanR, capR), 1, lightK, xa, L);
       if (p.freeLiquid) surface(ry, edgesL[ry], wallXL(ry, xs, tanL, capL), -1, lightKL, capX0[ry], xi);
     }
   }

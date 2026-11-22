@@ -7,7 +7,7 @@ import {
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H, TUBE_ROD_MM, ROD_GAP_MM, ROD_N,
 } from '@spec/layout';
 import type { Params } from './params';
-import { boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
+import { BACK_TILT_MAX_DEG, boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
 /** Contents index the palette's thin-edge chord refracts by (water; legacy params carry no index). Firmware THIN_IOR. */
@@ -585,9 +585,18 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           if (coverage > 0) {
             const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) / (wEff + hw))), us = u * u * (3 - 2 * u);
             const ab = Math.min(1, band.blick[side][ry] * coverage * 4 * u * (1 - u));
-            const ar = Math.min(1, band.rim[side][ry] * Math.max(0, hi - Math.max(lo, Math.max(0, wEff - 1))));
-            through = (1 - ab) * (1 - ar);
-            if (!inside) { wet = Math.min(1, band.fill[side][ry] * coverage * (1 - band.pull[side] * us)); under = true; }
+            if (band.lid && side === 0) {
+              // the lid (drawTube lid()): the front rim on the front line, the back contour, and past the body the rear
+              // wall seen through the liquid under the lid, its path thinning from the front line to 0 at the back line
+              const arF = Math.min(1, band.rim[0][ry] * Math.max(0, Math.min(hi, 0.5) - Math.max(lo, -0.5)));
+              const arB = Math.min(1, band.fill[0][ry] * Math.min(1, wEff / 2) * band.rimB * Math.max(0, hi - Math.max(lo, wEff - LID_BACK_W)));
+              through = (1 - ab) * (1 - arF) * (1 - arB);
+              if (!inside) { wet = Math.min(1, band.fill[0][ry] * coverage * (1 - u) * (1 - band.pull[0] * us)); under = true; }
+            } else {
+              const ar = Math.min(1, band.rim[side][ry] * Math.max(0, hi - Math.max(lo, Math.max(0, wEff - 1))));
+              through = (1 - ab) * (1 - ar);
+              if (!inside) { wet = Math.min(1, band.fill[side][ry] * coverage * (1 - band.pull[side] * us)); under = true; }
+            }
           }
         }
       }
@@ -810,6 +819,9 @@ export interface BandInfo {
   xm: [Float32Array, Float32Array]; w: [Float32Array, Float32Array];
   fill: [Float32Array, Float32Array]; blick: [Float32Array, Float32Array]; rim: [Float32Array, Float32Array];
   pull: [number, number]; hw: number; mirror: boolean; L: number;
+  /** Desk view: the time edge's band is the lid (drawTube lid(): xm the front contact line, w the lid's height, fill
+   *  its opacity a, not x surfaceFill: the marks' liquid path), rimB its back contour's weight per a x min(1, w / 2). */
+  lid: boolean; rimB: number;
 }
 /** Liquid body bounds per tube row (panel frame) plus, when drawn, the surface band past them. */
 export interface Edges { lo: Float32Array; hi: Float32Array; band?: BandInfo; }
@@ -2098,6 +2110,21 @@ function wallXL(ry: number, xs: number, tanA: number, p: Params, c: CapShape, k:
   const yc = (tubeLayout(p).H - 1) / 2;
   return xs + Math.min(1, xs / 8) * (tanA * (ry - yc) - k * wallCap(ry, p, c));
 }
+// Desk view (docs/tilted-fizz-deskview.md): a vertical watch on a stand tilted back by τ (TubeState.backTilt, from the
+// pose), seen from eye elevation e = viewElevation. The level surface's contact ring projects to an ellipse: per row y
+// (from the bore's centre row, plain y across the bore) x' = x0 + h_m ∓ T·√(R² − y²), T = tan τ + tan(e − τ). Lower arc
+// = the FRONT contact line (the liquid body ends there), upper = the BACK one; between them the lid, the surface seen
+// from above: see-through liquid. The back line's centre-row apex sits at the time edge's centre xe (the time is read
+// there): x0 + h_m = the wall ring (wallX, its tilt skew and across sag) less its lead k·h, less T·R. Time edge only
+// (the home edge of a free slug keeps its band); off (0) without vertical or at viewElevation 0.
+const LID_BACK_W = 0.5;   // px: the back contour, thinner than the front rim's 1 px
+/** The lid's slope T (0 = off), in float32 as the firmware's lidSlope. */
+export function lidSlope(p: Params, tau: number): number {
+  if (!p.vertical || !(p.viewElevation > 0)) return 0;
+  const F = Math.fround, rad = F(F(Math.PI) / 180);
+  const e = F(Math.min(80, p.viewElevation) * rad), t = F(Math.min(F(BACK_TILT_MAX_DEG * rad), Math.max(0, tau)));   // poseBackTilt's range
+  return F(F(Math.tan(t)) + F(Math.tan(F(e - t))));
+}
 
 /** Stable per-column streak factor 0.82..1 for the dried traces — a subtle texture, not stripes.
  *  The integer hash must match firmware/src/render.cpp exactly, so the two smears show the same
@@ -2196,8 +2223,15 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const surf = fizzSurf[idx].length === H ? fizzSurf[idx] : (fizzSurf[idx] = new Float32Array(H));
   const surfL = fizzSurfL[idx].length === H ? fizzSurfL[idx] : (fizzSurfL[idx] = new Float32Array(H));
   fizzExposed[idx] = (xe < L - 0.5 ? 1 : 0) | (p.freeLiquid && xs > 0.5 ? 2 : 0);
+  // Desk view: the time edge is the lid's front contact line, lidH its height per row (lidSlope)
+  const lidT = mir ? 0 : lidSlope(p, state.backTilt), lidH = new Float32Array(H), lidR = boreR(p), lidYc = (H - 1) / 2;
   for (let ry = 0; ry < H; ry++) {
-    const ex = edgeX(ry, xe, tanR, p, capR, capK);
+    let ex: number;
+    if (lidT > 0) {
+      const dy = ry - lidYc, z2 = lidR * lidR - dy * dy, z = z2 > 0 ? Math.sqrt(z2) : 0;
+      ex = wallX(ry, xe, tanR, p, capR, capK) - capK * capR.h - lidT * lidR - lidT * z;
+      lidH[ry] = 2 * lidT * z;
+    } else ex = edgeX(ry, xe, tanR, p, capR, capK);
     const exL = p.freeLiquid ? edgeXL(ry, xs, tanL, p, capL, capKL) : 0;
     edges[ry] = ex; edgesL[ry] = exL;
     surf[ry] = ex - xs; surfL[ry] = exL - xs;
@@ -2537,7 +2571,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const bandFill: [Float32Array, Float32Array] = [new Float32Array(H), new Float32Array(H)];
   const bandBlick: [Float32Array, Float32Array] = [new Float32Array(H), new Float32Array(H)];
   const bandRim: [Float32Array, Float32Array] = [new Float32Array(H), new Float32Array(H)];
-  let strokeA = 0, pullR = 0, pullL = 0, veilA = 0;   // the stroke's opacity; receding pull per edge; foam veil opacity
+  let strokeA = 0, pullR = 0, pullL = 0, veilA = 0, lidRimB = 0;   // the stroke's opacity; receding pull per edge; foam veil opacity; the lid's back contour weight
   if (hasLiquid && p.surfaceBand > 0) {
     const hw = softW / 2, transK = Math.max(0, Math.min(1, p.liquidTransparency));
     // Opaque from surfaceBand ~0.6 whatever the light (the edge lit by the opposite tilt gets a
@@ -2637,9 +2671,54 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         return 0;
       }
     };
+    // Desk view: the time edge's surface is the lid from its front contact line xm, w px tall (lidH): the concave band's
+    // colours, the fill's opacity fading from the front line to 0 at the back line (the liquid path under it thins to
+    // nothing), the blick as the band's, today's rim on the front line and a thinner liquid-tinted contour on the back
+    // one (absorption along the grazing path, light-independent). Layers composited as one write; on a multi-layer
+    // pixel bg (1 - A) + P (premultiplied, no division). The marks read a (the liquid path at the front line) and the
+    // back contour's weight from BandInfo (markFn).
+    lidRimB = p.surfaceRim * (1 - pullR);
+    const lid = (ry: number, xm: number, w: number, lk: number, xlo: number, xhi: number): number => {
+      if (!(w > 0)) return 0;
+      const y = y0 + ry, a = strokeA * Math.min(1, w);
+      if (a < 1 / 255) return 0;
+      const shade = 0.6 * (1 - Math.min(1, lk));
+      const inner = shadeRow(tone(blend565(pal.rows[ry], darkC, 0.3)), ry);
+      const outer = shadeRow(tone(blend565(blend565(lensC, pal.rows[ry], 0.2), darkC, shade)), ry);
+      const invWidth = 1 / (w + hw), pull = pullR;
+      const blickK = blickRow(ry) * Math.min(1, lk) * (1 - pull);
+      const backK = backKs[ry];
+      const rimK = p.surfaceRim * Math.min(1, w / 2) * (1 - pull) * ((1 - backK) * (0.5 + 0.5 * rowKs[ry]) * Math.min(1, lk) + backK);
+      const rimC = shadeRow(blend565(hiC, blend565(pal.rows[ry], darkC, 0.75), backK), ry);
+      const rimBK = lidRimB * Math.min(1, w / 2), rimBC = shadeRow(blend565(pal.rows[ry], darkC, 0.75), ry);
+      bandFill[0][ry] = a; bandBlick[0][ry] = a * blickK; bandRim[0][ry] = a * rimK;
+      const bLo = w - LID_BACK_W, liq = bRows[ry], blickC = shadeRow(blickN, ry);
+      for (let x = Math.max(xlo, Math.floor(xm - hw)), xb = Math.min(xhi, Math.ceil(xm + w)); x < xb; x++) {
+        const t = x + 0.5 - xm;
+        const lo = Math.max(t - 0.5, -hw), hi = Math.min(t + 0.5, w);
+        const coverage = Math.max(0, hi - lo);
+        if (coverage <= 0) continue;
+        const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) * invWidth));
+        const us = u * u * (3 - 2 * u);
+        const c = blend565T(inner, outer, opacityT(us));
+        const af = a * fill * coverage * (1 - u) * (1 - pull * us);
+        const ab = a * blickK * coverage * 4 * u * (1 - u);
+        const arF = a * rimK * Math.max(0, Math.min(hi, 0.5) - Math.max(lo, -0.5));
+        const arB = a * rimBK * Math.max(0, hi - Math.max(lo, bLo));
+        nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
+        layer(pull > 0 ? blend565T(c, liq, opacityT(pull)) : c, af); layer(blickC, Math.min(1, ab));
+        layer(rimC, Math.min(1, arF)); layer(rimBC, Math.min(1, arB));
+        if (nL === 1) pxaT(x, y, cLast, A);
+        else if (nL > 1) {
+          const i = y * PANEL_W + x, B = rgb565to888(fb[i]), k = 1 - A;
+          fb[i] = q([B[0] * k + P[0], B[1] * k + P[1], B[2] * k + P[2]]);
+        }
+      }
+      return w;
+    };
     for (let ry = 0; ry < H; ry++) {
       const xi = Math.floor(edges[ry]), xa = Math.max(capX0[ry], Math.floor(edgesL[ry]) + 1);
-      strokeR[ry] = surface(ry, edges[ry], wallX(ry, xe, tanR, p, capR, capK), 1, lightK, xa, L);
+      strokeR[ry] = lidT > 0 ? lid(ry, edges[ry], lidH[ry], lightK, xa, L) : surface(ry, edges[ry], wallX(ry, xe, tanR, p, capR, capK), 1, lightK, xa, L);
       if (p.freeLiquid) strokeL[ry] = surface(ry, edgesL[ry], wallXL(ry, xs, tanL, p, capL, capKL), -1, lightKL, capX0[ry], xi);
     }
   }
@@ -2649,7 +2728,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   // frame), so a faint or receding band never hides a mark as liquid and there is no threshold to jump.
   const bounds: Edges = markBounds[idx] = { lo: new Float32Array(H), hi: new Float32Array(H) };
   if (hasLiquid && p.surfaceBand > 0)
-    bounds.band = { xm: [edges, edgesL], w: [strokeR, strokeL], fill: bandFill, blick: bandBlick, rim: bandRim, pull: [pullR, pullL], hw: softW / 2, mirror: mir, L };
+    bounds.band = { xm: [edges, edgesL], w: [strokeR, strokeL], fill: bandFill, blick: bandBlick, rim: bandRim, pull: [pullR, pullL], hw: softW / 2, mirror: mir, L,
+      lid: lidT > 0, rimB: lidT > 0 ? lidRimB : 0 };
   fizzStrokeR[idx] = strokeR; fizzStrokeL[idx] = strokeL;   // with fizzSurf / fizzSurfL: the vertical step's endpoint rule
   for (let ry = 0; ry < H; ry++) {
     const lo = edgesL[ry], hi = edges[ry];

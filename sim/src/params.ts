@@ -39,6 +39,7 @@ export interface Params {
   tubeGap: number;       // mm of glass between two stacked tubes (0 = touching); a real distance on every board, not design px
   // --- shape ---
   remaining: boolean;    // true = liquid at the right end, draining as time passes; false = fills from the left
+  viewElevation: number; // deg, vertical watch on a desk: the viewer's eye above the horizontal (0 = off: the surface seen side-on as before); draws the surface as a lid between its front and back contact lines
   vertical: boolean;     // watch worn upright, USB end down: liquid always at the bottom (left end), digits rotated to read upright; `remaining` then only flips the scale (1 at the top, the liquid shows what is left)
   highlightH: number;    // px, height of highlight strip at top of column
   highlightInset: number;
@@ -204,7 +205,7 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 32;
+export const PARAMS_VERSION = 33;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
@@ -215,6 +216,7 @@ export const DEFAULT_PARAMS: Params = {
   tubeGap: 0,
   remaining: false,
   vertical: false,
+  viewElevation: 0,
   liquid: '#346a2a',
   liquidHi: '#b6ffa0',
   liquidLo: '#1e7515',
@@ -1648,6 +1650,7 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   if (from < 29) r.edgeShade = DEFAULT_PARAMS.edgeShade;
   if (from < 31) r.edgeShadeFold = DEFAULT_PARAMS.edgeShadeFold;   // the plateau past the fold, at its default cover
   if (from < 32) r.edgeShadeShape = DEFAULT_PARAMS.edgeShadeShape;   // the perceptual profile's shape; edgeShadeFrom / To (v30) and edgeShadePow (v32) go
+  if (from < 33) r.viewElevation = DEFAULT_PARAMS.viewElevation;   // the desk-view lid, off
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1690,6 +1693,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   tubeStack: { help: 'Tubes next to each other: stacked tube gap apart, the stack centred on the face. Hours / minutes tube y are not read.', group: 'Layout', label: 'stack tubes' },
   tubeGap: { help: 'Stacked tubes: mm of glass between two tubes, 0 = touching (rods glued side by side). A real distance on every board; cut to the rows the face has left.', group: 'Layout', label: '· tube gap, mm', min: 0, max: 10, step: 0.1 },
   remaining: { help: 'On: liquid sits at the right end and drains as time passes. Off: fills from the left.', group: 'Shape', label: 'liquid = remaining' },
+  viewElevation: { help: 'Desk view (vertical watch only): the viewer\'s eye elevation above the horizontal, degrees; 0 = off (the surface seen side-on, as before). On, the surface is drawn as seen from slightly above: a thin lid between the front contact line (where the liquid body ends) and the back one (where the time is read, at the usual edge position), see-through liquid fading from the front line to the back line, a rim on the front line and a thinner liquid-tinted contour on the back one. Its height follows the stand\'s back tilt from the live pose and this angle (seated at a desk: 20-30). surfaceWidth does not apply to the lid; surfaceFill sets its wash.', group: 'Shape', label: 'desk view elevation', min: 0, max: 60, step: 1 },
   vertical: { help: 'Watch worn upright, USB end down (hours tube on the left). The liquid always rests at the bottom and the digits are rotated to read upright. "liquid = remaining" then only flips the scale: off = digits run bottom to top and the liquid shows the time passed, on = digits run top to bottom and the liquid shows what is left. Digits are centred across the tube (digit bottom offsets do not apply). Digit scale X / Y swap roles (X stays along the tube).', group: 'Shape', label: 'vertical watch' },
   highlightH: { help: 'Height of the specular strip at the top of the column, px.', group: 'Shape', min: 0, max: 30, step: 1 },
   highlightInset: { help: 'Inset of the highlight from the fill edge, px.', group: 'Shape', min: 0, max: 40, step: 1 },

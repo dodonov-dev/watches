@@ -52,6 +52,10 @@ struct Pose { float x, y, z; };
 #define POSE_MIN_G 0.3f
 #define POSE_DEFAULT Pose{0, 0, 1}   // before any valid sample: face up (the legacy zero along / across: flat)
 bool updatePose(Pose &pose, float along, float across, float normal);
+// Desk view: the stand's back tilt tau = atan2(z, x) of the pose (the top end leaning away from the viewer), rad,
+// clamped to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). See sim poseBackTilt.
+#define BACK_TILT_MAX_DEG 45.0f
+float poseBackTilt(const Pose &pose);
 
 struct TubeState {
   // fillTarget: 0..1 from time, as shown (followClock): clockPrev = the clock's fill at the previous call (wrap
@@ -63,9 +67,8 @@ struct TubeState {
   // `x` dump take these integers.
   float rearLpAlong = 0, rearLpAcross = 0;
   float rearSmAlong = 0, rearSmAcross = 0, rearAct = 0, rearSx = 0, rearSy = 0;   // the gate (sim TubeState, physics.cpp REAR_*)
-  float rearQuiet = 0; bool rearLatch = false;   // latched shut by a swing, until REAR_QUIET_S of quiet
+  float rearQuiet = 0;   // with rearLatch (below): latched shut by a swing, until REAR_QUIET_S of quiet
   int rearX16 = 0, rearY16 = 0, rearX16w = 0, rearY16w = 0;
-  bool rearInit = false;
   // meniscus dynamics: surface centre leading the pinned contact lines (px, panel +x); trailing wet films 0..1
   float cap = 0, capVel = 0, filmFree = 0, filmHome = 0;
   // pinned contact lines per meniscus end (free = time edge, home = free slug's home edge), each in its
@@ -80,13 +83,17 @@ struct TubeState {
   // occupied residue columns [traceLo, traceHi): deposits widen, decay shrinks; lo >= hi = empty
   // (physics and render skip the buffer entirely then)
   int16_t traceLo = TUBE_LENGTH_PX, traceHi = 0;
-  float xtPrev = 0, xhPrev = 0;   // panel-frame edge positions at the previous tick
-  bool traceInit = false;
+  float xtPrev = 0, xhPrev = 0;   // panel-frame edge positions at the previous tick (traceInit: primed, below)
   // free liquid: slug home-edge position (px from the left end), reading 1 = parked home showing the time
   float slugPos = 0, slugVel = 0, reading = 1;
   float playTimer = 0, playWindow = 0;
   float playAnchorAlong = 0, playAnchorAcross = 0, playDirAlong = 0, playDirAcross = 0;
-  bool playInit = false;
+  // desk view (render only): the stand's back tilt tau, rad, from the pose (poseBackTilt; set per physics step by main,
+  // 0 = upright). The render's lid height follows it with params viewElevation. See sim TubeState.backTilt.
+  float backTilt = 0;
+  // the flags together (no padding after each): rear gate latched, rear parallax primed, trace prev positions primed,
+  // play anchor primed
+  bool rearLatch = false, rearInit = false, traceInit = false, playInit = false;
 };
 
 // Params as a tube's physics and render take them: p (design px, as presets, `p` writes and NVS hold them) with the

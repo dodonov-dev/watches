@@ -9,7 +9,8 @@
 - Tilt pose currently uses the two in-plane gravity axes; face-down horizontal is indistinguishable
   from face-up. Carry signed normal gravity through the input pipeline if upside-down release is wanted.
 - Vertical watch tilted back θ: the free surface stays level, so in the tube it slopes front-to-back (front lower by
-  D·tanθ, ~1.6 mm at 15° in a 6 mm bore). Seen from the front it should read as an elliptical band, not a line. Not modelled.
+  D·tanθ, ~1.6 mm at 15° in a 6 mm bore). Seen from the front it should read as an elliptical band, not a line. Done as
+  the desk-view lid (params viewElevation, 2026-11-22); off by default.
 - Rear ticks still round their parallax to whole pixels (each tick at its own depth, so the ladder steps one tick at a time). The same bilinear placement would smooth the ticks.
 - `tickParallax` has no physical basis (2026-11-06 verdict that removed `digitParallax`: with the eye fixed to the watch the liquid
   fills the bore and gravity does not change the path behind a full column). The digits' gated view-angle model
@@ -1014,3 +1015,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Vertical foam: near-centred arrivals behind a lone ridge foam bubble escape only at the frictionless rate (e-fold m / k_w U b_x ~0.2 s); a small bounded perturbation would shorten them (look decision).
 - Vertical foam (surface model): the drift gathers a layered 6-8 cap on the front ridge where the rope arrives; arrivals queue under it (stand 60 s: 118 waits >= 0.5 s vs 44 on c6e77da). Fuller-width foam (a count / life matter) or the fringe map (model point 5) would give them room.
 - Vertical foam: the glide and push-back along the tube use the common fizzSpeed dt, the surface model U_i only in the plane (per-bubble U_i axially moved big ones 1.46x fizzSpeed dt down, past the stand job bound).
+- Desk-view lid: sprite digits take no band (step-8 look decision), so under the lid they draw dry over its wash and its front rim (the line passes behind the digit); bitmap digits and ticks composite through it.
+- Desk-view lid: the fizz band veil (sim step 5 layers / firmware veilRow) still places the rim on the stroke's outer px (the back line) with the front rim's weight; redo with the fizz endpoint flip.
+- Desk-view lid: surfaceBlick is the side view's mid-band patch; the spec's thin crescent at the back rim is not done.

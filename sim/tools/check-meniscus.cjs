@@ -397,5 +397,88 @@ for (const contactAngle of [140, 100, 30]) for (const len of [20, 40, 60]) for (
     sloshCases++;
   }
 assert.ok(sloshCases === 864, `slosh cases: ${sloshCases}`);
+// Desk view (docs/tilted-fizz-deskview.md): a vertical watch with viewElevation draws the time edge's surface as the lid
+// between its front contact line (the body ends there) and its back one, whose centre-row apex is the time edge's
+// centre. Geometry per row: front + lid height = back, both arcs meet at the bore's edge rows, height 2 T sqrt(R^2 - y^2),
+// T = tan tau + tan(e - tau); off (viewElevation 0) byte-identical to the side view; the marks behind it see liquid only
+// where the path has liquid (most at the front line, none at the back line).
+const lidBase = { vertical: true, freeLiquid: false };
+const lidT = (e, tau) => Math.tan(tau) + Math.tan(e * Math.PI / 180 - tau);
+const lidOff = render('lid-off-ref', lidBase), lidZero = render('lid-off-0', { ...lidBase, viewElevation: 0 }, { backTilt: 0.3 });
+assert.equal(delta(lidOff, lidZero), 0, 'viewElevation 0 must be the side view exactly');
+let lidScenes = 0;
+for (const e of [10, 20, 30, 60]) for (const backTilt of [0, 0.26, 0.6, 0.785, 1.2]) for (const acrossTilt of [0, 0.6, -0.6]) for (const fillTarget of [0.03, 0.5, 0.97]) {
+  const changes = { ...lidBase, viewElevation: e }, state = { backTilt, acrossTilt, fillTarget };
+  const tag = JSON.stringify({ e, ...state }), p = { ...base, ...changes }, H = R.tubeLayout(p).H, Rb = (H - 1) / 2 - p.glassWall;
+  // the side view of the same state: its time-edge profile at the centre row is the edge centre xe
+  render('lid-geom-side', { ...changes, viewElevation: 0 }, state); jobs.pop();
+  const side = R.markBounds[0].band.xm[0][30];
+  const f = render(`lid-${e}-${backTilt}-${acrossTilt}-${fillTarget}`, changes, state);
+  if (!(e === 20 || e === 60) || acrossTilt < 0) jobs.pop();   // parity on a subset (the native side builds every job)
+  const b = R.markBounds[0].band, T = lidT(e, Math.min(backTilt, Math.PI / 4));
+  assert.ok(b.lid, `lid flag (${tag})`);
+  if (acrossTilt === 0) {
+    assert.ok(Math.abs(b.xm[0][30] + b.w[0][30] - side) < 1e-3, `back apex at the time edge (${tag}: ${b.xm[0][30] + b.w[0][30]} vs ${side})`);
+    assert.ok(Math.abs(b.w[0][30] - 2 * T * Rb) < 1e-3, `lid height 2 T R (${tag}: ${b.w[0][30]} vs ${2 * T * Rb})`);
+  }
+  for (let ry = 0; ry < H; ry++) {
+    const dy = ry - 30, w = b.w[0][ry];
+    assert.ok(Number.isFinite(b.xm[0][ry]) && w >= 0, `finite lid (${tag}, row ${ry})`);
+    if (Math.abs(dy) >= Rb) assert.equal(w, 0, `lid closed past the bore (${tag}, row ${ry})`);
+    else if (w > 0) assert.ok(Math.abs(w - 2 * T * Math.sqrt(Rb * Rb - dy * dy)) < 1e-3, `lid height per row (${tag}, row ${ry})`);
+  }
+  // nothing drawn past the back line (or the body's soft edge, edgeSoft / 2, where the lid is closed) + 1 px but the bare tube
+  const bare = render('lid-bare', { ...changes, surfaceBand: 0 }, { ...state, fillTarget: 0 }); jobs.pop();
+  for (let ry = 0; ry < H; ry++) {
+    const end = Math.ceil(b.xm[0][ry] + Math.max(b.w[0][ry], p.edgeSoft / 2)) + 1;
+    for (let x = Math.max(0, end); x < 536; x++) assert.equal(f[ry * 536 + x], bare[ry * 536 + x], `lid past its back line (${tag}, row ${ry}, x ${x})`);
+  }
+  lidScenes++;
+}
+// fill motion: the lid moves without a one-pixel jump; the stand tilting moves its height continuously
+for (const e of [20, 30]) {
+  const a = render(`lid-sub-a-${e}`, { ...lidBase, viewElevation: e }, { fillPos: 0.49, backTilt: 0.26 });
+  const b = render(`lid-sub-b-${e}`, { ...lidBase, viewElevation: e }, { fillPos: 0.51, backTilt: 0.26 });
+  assert.ok(delta(a, b) <= 17, `lid must move without a one-pixel brightness jump (e ${e})`);
+  const t0 = render(`lid-tau-a-${e}`, { ...lidBase, viewElevation: e }, { backTilt: 0.25 }); jobs.pop();
+  const t1 = render(`lid-tau-b-${e}`, { ...lidBase, viewElevation: e }, { backTilt: 0.252 }); jobs.pop();
+  assert.ok(delta(t0, t1) <= 17, `lid height must follow the stand without a jump (e ${e})`);
+}
+// rear marks under the lid (opaque liquid, contrast 0, black full-height ticks; no fill wash, rim or blick): hidden
+// like the body just past the front line, shown at the back line; rim and contour drawn over a black mark
+for (const e of [20, 30]) {
+  // ticks 30 px wide from one wall (the hours ladder's pitch is ~45 px: no overlaps, each pixel a mark at most once)
+  const scene = { ...markScene, ...lidBase, viewElevation: e, surfaceFill: 0, surfaceRim: 0, surfaceBlick: 0, tickMinorWidthH: 30, tickMajorWidthH: 30, tickPosH: 0 };
+  const f = render(`lid-marks-${e}`, scene, { backTilt: 0.26 }), b = R.markBounds[0].band, xm = b.xm[0][30], w = b.w[0][30], hw = b.hw;
+  const g = render(`lid-marks-noticks-${e}`, { ...scene, ticksH: false }, { backTilt: 0.26 });
+  const d = render('lid-marks-dry', { ...scene, surfaceBand: 0 }, { backTilt: 0.26 }); jobs.pop();   // no band: dry past the body
+  const at = (fr, x) => fr[30 * 536 + x];
+  // under the lid (full pixel past the body ramp) the mark shows its dry share u of what it shows dry, u = 0 at the
+  // body's ramp, 1 at the back line (the liquid path thinning to nothing)
+  let n = 0;
+  for (let x = Math.ceil(xm + hw); x + 1 <= xm + w; x++) {
+    const dry = delta([at(d, x)], [at(g, x)]);
+    if (dry < 150) continue;   // no mark there
+    const u = (x + 0.5 - xm + hw) / (w + hw), seen = delta([at(f, x)], [at(g, x)]);
+    assert.ok(Math.abs(seen - dry * u) <= 20, `mark under the lid seen through the liquid path (e ${e}, x ${x}: ${seen} vs ${dry} x ${u.toFixed(3)})`);
+    n++;
+  }
+  assert.ok(n >= 4, `test scene must put a mark under the lid (e ${e}: ${n} px)`);
+  const r = render(`lid-marks-rim-${e}`, { ...scene, surfaceRim: 1 }, { backTilt: 0.26 }), rn = render(`lid-marks-rim-noticks-${e}`, { ...scene, surfaceRim: 1, ticksH: false }, { backTilt: 0.26 });
+  const fl = Math.floor(xm);   // the pixel the front line crosses
+  assert.ok(delta([at(r, fl)], [at(rn, fl)]) < delta([at(rn, fl)], [black]), `front rim kept over a black mark (e ${e})`);
+}
+// parity scenes: the user's look ingredients (light back, see-through wash, blick, bitmap rear digits, residue, a receding
+// edge, the home edge of a free slug, hard edge, mirrored scale)
+const lidLook = { ...lidBase, viewElevation: 20, surfaceFill: 0.25, surfaceBlick: 0.9, surfaceTone: 1, surfaceRim: 0.6, liquidTransparency: 0.72 };
+render('lid-look', lidLook, { backTilt: 0.26 });
+render('lid-look-digits', { ...lidLook, digits: true, digitFont: 0, digitScaleX: 2.5, digitScaleY: 2, ticksH: true, markContrast: 26 }, { backTilt: 0.26, fillTarget: 0.47 });
+render('lid-look-residue', { ...lidLook, traces: true, traceAmount: 2, wetFilm: 8 }, { backTilt: 0.26, filmFree: 0.6 }, base, true);
+render('lid-look-receding', lidLook, { backTilt: 0.26, fillVel: -10 });
+render('lid-look-free', { ...lidLook, freeLiquid: true }, { backTilt: 0.26, slugPos: 60 });
+render('lid-look-hard', { ...lidLook, edgeSoft: 0 }, { backTilt: 0.13, fillPos: 0.3 });
+render('lid-look-remaining', { ...lidLook, remaining: true }, { backTilt: 0.4 });
+render('lid-look-dark', { ...lidLook, tubeBack: '#000000', tubeBack2: '#000000' }, { backTilt: 0.26, edgeLight: 0.3 });
+console.log(`Desk-view lid: ${lidScenes} geometry scenes (elevation x back tilt x across x fill) passed.`);
 fs.writeFileSync(path.join(out, 'jobs.json'), JSON.stringify(jobs));
 console.log(`Meniscus: symmetry, subpixel motion, flattening, residue, receding edge, gradient passed; ${jobs.length} parity scenes.`);

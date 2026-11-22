@@ -16,7 +16,7 @@ FIELDS = [
  ('v','int'),
  ('tubeHeight','float'),('hoursY','float'),('minutesY','float'),('tubeStack','bool'),('tubeGap','float'),
  ('liquid','rgb'),('liquidHi','rgb'),('liquidLo','rgb'),('tubeBack','rgb'),('tubeBack2','rgb'),('tubeBackGradient','float'),('glassHi','rgb'),('glassBody','float'),('glassHiBright','float'),('glassReflect','float'),('glassRim','float'),('glassWall','float'),('glassWallGlow','float'),('liquidIor','float'),('wallWet','float'),('rimLight','float'),('rimTint','rgb'),('glassOverLiquid','float'),('lens','float'),('lensCurve','float'),('edgeShade','float'),('edgeShadeShape','float'),('edgeShadeFold','float'),('bubbleRim','rgb'),
- ('remaining','bool'),('vertical','bool'),('highlightH','float'),('highlightInset','float'),('highlightBright','float'),('highlightSharp','float'),('shadeDepth','float'),('liquidThin','float'),('contactAngle','float'),
+ ('remaining','bool'),('vertical','bool'),('viewElevation','float'),('highlightH','float'),('highlightInset','float'),('highlightBright','float'),('highlightSharp','float'),('shadeDepth','float'),('liquidThin','float'),('contactAngle','float'),
  ('contactHyst','float'),('contactDyn','float'),('capLength','float'),('meniscusLens','float'),
   ('meniscusK','float'),('meniscusDamp','float'),('meniscusInertia','float'),('wetFilm','float'),('traces','bool'),('traceAmount','float'),('traceDry','float'),('traceDrain','float'),('traceStain','float'),('traceFilm','float'),('edgeSoft','float'),
  ('frontBright','float'),('surfaceBand','float'),('surfaceRim','float'),('surfaceWidth','float'),('surfaceTone','float'),('surfaceFill','float'),('surfaceBlick','float'),('edgeGlow','float'),('glowStrength','float'),('cornerR','float'),('edgeLightGain','float'),

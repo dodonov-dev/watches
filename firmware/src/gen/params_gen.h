@@ -36,6 +36,7 @@ struct Params {
   uint32_t bubbleRim;
   bool remaining;
   bool vertical;
+  float viewElevation;
   float highlightH;
   float highlightInset;
   float highlightBright;
@@ -189,8 +190,8 @@ struct Params {
   float ambientLight;
 };
 
-#define PARAMS_NUM_FIELDS 183
-#define PARAMS_SCHEMA_CRC 0xcd2763c1u  // field names+types; guards the NVS blob
+#define PARAMS_NUM_FIELDS 184
+#define PARAMS_SCHEMA_CRC 0x970ee607u  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
 // dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
@@ -229,6 +230,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"bubbleRim", 'c', (uint16_t)offsetof(Params, bubbleRim), 0},
   {"remaining", 'b', (uint16_t)offsetof(Params, remaining), 0},
   {"vertical", 'b', (uint16_t)offsetof(Params, vertical), 0},
+  {"viewElevation", 'f', (uint16_t)offsetof(Params, viewElevation), 0},
   {"highlightH", 'f', (uint16_t)offsetof(Params, highlightH), 2},
   {"highlightInset", 'f', (uint16_t)offsetof(Params, highlightInset), 2},
   {"highlightBright", 'f', (uint16_t)offsetof(Params, highlightBright), 0},
@@ -384,7 +386,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
 
 // from presets/1.json
 static const Params PRESET_1 = {
-  32, // v
+  33, // v
   72.0f, // tubeHeight
   0.0f, // hoursY
   168.0f, // minutesY
@@ -416,6 +418,7 @@ static const Params PRESET_1 = {
   0xB0C7A9, // bubbleRim
   false, // remaining
   false, // vertical
+  0.0f, // viewElevation
   11.0f, // highlightH
   0.0f, // highlightInset
   1.0f, // highlightBright

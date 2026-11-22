@@ -128,8 +128,6 @@ static void paramsChanged() {
 // What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only, and the autosave writes this
 // copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
 static Preferences prefs;
-#define PARAMS_SCHEMA_CRC_V31 0x6bb6cdafu   // params v31 (edgeShadePow): the layout of v32 (paramsLoad migrates it)
-static_assert(PARAMS_SCHEMA_CRC == 0xcd2763c1u, "params schema changed: drop or extend the v31 migration (paramsLoad)");
 static uint32_t paramsDirtyAt = 0;
 static Params *paramsSaved = nullptr;
 static void paramsLoad() {
@@ -139,21 +137,7 @@ static void paramsLoad() {
   const uint32_t crc = prefs.getUInt("crc");
   if (crc == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
     prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
-  } else if (crc == PARAMS_SCHEMA_CRC_V31 && prefs.getBytesLength("cur") == sizeof(Params)) {
-    // v31 -> v32: the same layout, edgeShadePow's slot is edgeShadeShape's (the perceptual profile): its default, saved
-    // at once under the new CRC (the next edit would otherwise overwrite the old look with the presets' defaults).
-    // Read into a copy: a short read keeps the defaults and the old blob as they are; the CRC is relabelled only after the
-    // whole blob is written, and success is reported only once the CRC is.
-    Params old;   // (720 B of the boot stack)
-    if (prefs.getBytes("cur", &old, sizeof(Params)) != sizeof(Params)) out.println("error params: v31 blob unreadable, defaults (nvs kept)");
-    else {
-      old.edgeShadeShape = 1.5f; old.v = 32;
-      params = old; paramsChanged();
-      if (prefs.putBytes("cur", &params, sizeof(Params)) != sizeof(Params)) out.println("error params: v31 -> v32 not saved (blob write)");
-      else if (prefs.putUInt("crc", PARAMS_SCHEMA_CRC) != 4) out.println("error params: v31 -> v32 not saved (crc write)");
-      else out.println("params: restored from nvs (v31, migrated to v32: edgeShadeShape 1.5)");
-    }
-  }
+  }   // another schema (v33 viewElevation dropped the v31 -> v32 migration): the defaults; the blob is replaced on the next save
   if (paramsSaved) *paramsSaved = params;
 }
 static void paramsTouch() { paramsDirtyAt = millis() | 1; }
@@ -381,7 +365,9 @@ static void physStep(int k) {
   stepTube(tubeM, in, effM, PHYS_DT, TUBE_PX_SCALE(1));
 #if TUBE_COUNT == 3
   stepTube(tubeS, in, effS, PHYS_DT, TUBE_PX_SCALE(2));
+  tubeS.backTilt = poseBackTilt(pose);
 #endif
+  tubeH.backTilt = tubeM.backTilt = poseBackTilt(pose);   // desk view: the stand's back tilt, for the lid (render only)
   const uint32_t p1 = micros();
   if (FIZZ_SPLIT) fizzIn[k] = {in.along, in.across, tubeH.agitation, in.normal, pose};
   else stepFizz(effH, effM, PHYS_DT, in.along, in.across, tubeH.agitation, pose);   // AB_COMPARE only: two tubes

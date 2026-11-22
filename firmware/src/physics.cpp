@@ -343,6 +343,10 @@ float GravityNorm::update(float n) {
   return fmaxf(0.5f, mag);
 }
 
+float poseBackTilt(const Pose &pose) {
+  const float t = atan2f(pose.z, pose.x), hi = BACK_TILT_MAX_DEG * (float)M_PI / 180;
+  return t > 0 ? (t < hi ? t : hi) : 0.0f;   // NaN-free: the pose is a unit vector (POSE_DEFAULT before a sample)
+}
 bool updatePose(Pose &pose, float along, float across, float normal) {
   const float x = -along, y = -across, z = normal, m2 = x * x + y * y + z * z;
   if (!(m2 >= POSE_MIN_G * POSE_MIN_G) || !isfinite(m2)) return false;

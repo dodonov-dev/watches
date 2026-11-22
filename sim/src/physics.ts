@@ -54,6 +54,13 @@ export function phoneTilt(betaDeg: number, gammaDeg: number, vertical: boolean):
 }
 /** Before any valid sample: face up (what the legacy zero along / across means: flat on the table). */
 export const POSE_DEFAULT: Readonly<Pose> = { x: 0, y: 0, z: 1 };
+/** Desk view: the stand's back tilt τ = atan2(z, x) of the pose (the top end leaning away from the viewer), rad, clamped
+ *  to [0, BACK_TILT_MAX_DEG] (face up / turned over: the cap; hanging forward: 0). In float32 as physics.cpp. */
+export const BACK_TILT_MAX_DEG = 45;
+export function poseBackTilt(pose: Readonly<Pose>): number {
+  const F = Math.fround, t = F(Math.atan2(F(pose.z), F(pose.x))), hi = F(F(BACK_TILT_MAX_DEG * F(Math.PI)) / 180);
+  return t > 0 ? (t < hi ? t : hi) : 0;
+}
 /** Sets `pose` to normalize(-along, -across, normal) and returns true; a vector shorter than POSE_MIN_G or not
  *  finite leaves `pose` as it was (the last valid orientation) and returns false. Same maths in physics.cpp. */
 export function updatePose(pose: Pose, along: number, across: number, normal: number): boolean {
@@ -189,6 +196,9 @@ export interface TubeState {
   playAnchorAlong: number; playAnchorAcross: number;
   playDirAlong: number; playDirAcross: number; // unit direction of the last substantial stroke
   playInit: boolean;
+  // Desk view (render only): the stand's back tilt τ, rad (poseBackTilt of the pose, set per physics step by main; 0 =
+  // upright). The lid's height follows it with params viewElevation (render.ts lidT).
+  backTilt: number;
 }
 
 export function newTube(): TubeState {
@@ -197,7 +207,7 @@ export function newTube(): TubeState {
     cap: 0, capVel: 0, pinFree: 0, pinHome: 0, lineVFree: 0, lineVHome: 0, filmFree: 0, filmHome: 0,
     trace: new Uint16Array(TUBE_LENGTH_PX), traceWet: new Uint16Array(TUBE_LENGTH_PX), traceLo: TUBE_LENGTH_PX, traceHi: 0, xtPrev: 0, xhPrev: 0, traceInit: false,
     slugPos: 0, slugVel: 0, reading: 1, playTimer: 0, playWindow: 0,
-    playAnchorAlong: 0, playAnchorAcross: 0, playDirAlong: 0, playDirAcross: 0, playInit: false };
+    playAnchorAlong: 0, playAnchorAcross: 0, playDirAlong: 0, playDirAcross: 0, playInit: false, backTilt: 0 };
 }
 
 /** Per-column unevenness of the dried traces: the high 16 bits scatter the drying rates, the low 16
