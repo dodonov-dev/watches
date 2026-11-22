@@ -131,8 +131,7 @@ for (const remaining of [false, true]) for (const home of [false, true]) {
   for (let r = 15; r <= 45; r++) { const d = delta([innerAt(glNoTicks.f, r)], [innerAt(glNoBlick.f, r)]); if (d > blick) { blick = d; row = r; } }
   const inner = (sh) => innerAt(sh.f, row);
   const keptB = delta([inner(gl)], [inner(glNoTicks)]), tickB = delta([inner(glNoTicks)], [black]);
-  // (a neutral white blick over this pale back: ~25 steps; was > 30 with the liquidHi-coloured blick)
-  assert(blick > 20, `test scene must put a blick on the first body pixel (${tag}: ${blick})`);
+  assert(blick > 30, `test scene must put a blick on the first body pixel (${tag}: ${blick})`);
   assert(keptB < 0.75 * tickB, `blick must stay on top of rear marks inside the softened edge (${tag}: moved ${keptB} of ${tickB})`);
 }
 // Parity scenes with the blick and a see-through fill over ordinary marks (both edges' bands over ticks and
