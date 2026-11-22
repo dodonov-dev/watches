@@ -465,9 +465,20 @@ static inline float sqrtExact(float x) {
 // Step 5 fizz: one row of an AA bubble disc (see drawTube). Coverage and core are decided from squared distances
 // with a 1e-4 relative margin that float rounding cannot cross; a root is taken only in the anti-aliased ring
 // (approximate, see sqrtApprox) and in the core's margin (exact).
+// The surface band over one bubble row (the foam veil): a bubble past the profile is seen through the band's layers.
+// The fill veils it by its front-glass wedge (veilA, thickest at the profile, gone at the outer rim); the blick and the
+// rim by their drawn opacity over the pixel's footprint (bandRow's expressions), so a parked bubble no longer cuts a
+// hole into the highlight. popA < 1 (a vertical bubble popping, its fade a): the band's footprint coverage C_B fades it
+// further toward the composed band, x [1 - C_B (1 - a)]. kPop: the endpoint coefficient's front exemption from the
+// veil during the pop (k a; tilted-fizz point 5 fills k in, 0 until then). See sim step 5.
+struct BandVeil {
+  float sR, sL, bR, bL, veilA, pullR, pullL;   // surface fronts, band widths, FOAM_VEIL x stroke opacity, pulls
+  float pR, pL, hw, bkR, bkL, rmR, rmL, ivR, ivL;   // the band's profiles in the bubble's columns, its overlap into the body, blick / rim weights, 1 / (width + hw)
+  float popA, kPop;
+};
 struct DiscRow {
   float fx, dy, r, in2, out2, offX, offY, kc, core2Lo, core2Hi, wallT;
-  float sR, sL, bR, bL, veilA, pullR, pullL;   // surface fronts, band widths, FOAM_VEIL x stroke opacity, pulls
+  BandVeil v;
   int veilLo, veilHi;                           // first ix the time-edge band can veil / last ix + 1 the home-edge band can (INT_MAX / INT_MIN when no band)
   float blickK, bX, bY, rbOut, bIn2, bOut2;    // pinpoint: fizzBlick, centre offset, rb + 0.5, (rb - 0.5)^2 and (rb + 0.5)^2 with margins
   float tintA;                                  // bubbleDark x depthK: opacity of the dark tint over the see-through interior
@@ -480,14 +491,32 @@ struct DiscRow {
 #define FIZZ_DEPTHS 4
 #define FIZZ_MQ 4       // the masks' |dx| steps a px (4: maskRows shifts by 2), |dy| steps a px: see FizzClass
 #define FIZZ_MDY 8
-// Veil of one disc pixel by the pixel's footprint over each surface band [profile, profile +- width]: continuous
-// as the edge moves. Out of the pixel loop (noinline) so its nine floats are not live there; a division per
-// veiled pixel only (bubbles touching a band). Multiplies cov in the sim's order, so the result is bit-identical.
-static float __attribute__((noinline)) discVeil(int ix, const DiscRow &d, float cov) {   // returns the veiled cov, sim order
-  if (ix + 1 > d.sR && d.bR > 0) { const float a1 = fmn(ix + 1, d.sR + d.bR), a0 = fmx(ix, d.sR);
-    if (a1 > a0) { const float q = ((a0 + a1) / 2 - d.sR) / d.bR; cov *= 1 - d.veilA * (a1 - a0) * (1 - q) * (1 - d.pullR * q); } }
-  if (ix < d.sL && d.bL > 0) { const float a1 = fmn(ix + 1, d.sL), a0 = fmx(ix, d.sL - d.bL);
-    if (a1 > a0) { const float q = (d.sL - (a0 + a1) / 2) / d.bL; cov *= 1 - d.veilA * (a1 - a0) * (1 - q) * (1 - d.pullL * q); } }
+// Veil of one disc pixel by the pixel's footprint over each surface band (BandVeil): continuous as the edge moves.
+// Out of the pixel loops (noinline) so its floats are not live there; a division per veiled pixel only (bubbles
+// touching a band). Multiplies cov in the sim's order, so the fill's veil alone is bit-identical to before.
+static float __attribute__((noinline)) bandVeil(int ix, const BandVeil &v, float cov) {   // returns the veiled cov, sim order
+  float fR = 1, fL = 1;   // the fill's wedge, per edge
+  if (ix + 1 > v.sR && v.bR > 0) { const float a1 = fmn(ix + 1, v.sR + v.bR), a0 = fmx(ix, v.sR);
+    if (a1 > a0) { const float q = ((a0 + a1) / 2 - v.sR) / v.bR; fR = 1 - v.veilA * (a1 - a0) * (1 - q) * (1 - v.pullR * q); } }
+  if (ix < v.sL && v.bL > 0) { const float a1 = fmn(ix + 1, v.sL), a0 = fmx(ix, v.sL - v.bL);
+    if (a1 > a0) { const float q = (v.sL - (a0 + a1) / 2) / v.bL; fL = 1 - v.veilA * (a1 - a0) * (1 - q) * (1 - v.pullL * q); } }
+  // blick and rim over the band's footprint [-hw, width] (t outward from the profile), and that footprint's coverage
+  float keep = 1, cB = 0;
+  auto layers = [&](float t, float w, float bk, float rm, float iv) __attribute__((always_inline)) {
+    const float lo = fmx(t - 0.5f, -v.hw), hi = fmn(t + 0.5f, w), c = hi - lo;
+    if (!(c > 0)) return;
+    cB += c;
+    if (bk > 0 || rm > 0) {
+      const float u = clampf(((lo + hi) * 0.5f + v.hw) * iv, 0, 1);
+      const float ab = fmn(1, bk * c * 4 * u * (1 - u)), ar = fmn(1, rm * fmx(0, hi - fmx(lo, fmx(0, w - 1))));
+      keep *= (1 - ab) * (1 - ar);
+    }
+  };
+  if (v.bR > 0) layers(ix + 0.5f - v.pR, v.bR, v.bkR, v.rmR, v.ivR);
+  if (v.bL > 0) layers(v.pL - (ix + 0.5f), v.bL, v.bkL, v.rmL, v.ivL);
+  if (v.kPop > 0) cov *= 1 - (1 - v.kPop) * (1 - fR * fL * keep);   // the front exemption (point 5 hook)
+  else { cov *= fR; cov *= fL; cov *= keep; }
+  if (v.popA < 1) cov *= 1 - fmn(1, cB) * (1 - v.popA);   // a vertical pop fades toward the composed band
   return cov;
 }
 // blend565T(a, b, T) with b's lanes expanded once (a disc row blends every ring pixel toward the same rim colour).
@@ -566,7 +595,7 @@ static void __attribute__((noinline)) discRowT(uint16_t *row, int ixa, int ixb, 
 #if defined(FIZZ_PROF) && FIZZ_PROF >= 2
     if (d2 > in2) FZC(FZ_PX_AA);
 #endif
-    if (ix >= veilLo || ix < veilHi) { FZC(FZ_PX_VEIL); cov = discVeil(ix, d, cov); }   // only bubbles at a surface band pay for the veil
+    if (ix >= veilLo || ix < veilHi) { FZC(FZ_PX_VEIL); cov = bandVeil(ix, d.v, cov); }   // only bubbles at a surface band pay for the veil
     const float cx = dx - offX, cy = dy - offY, dc2 = cx * cx + cy * cy;
 #if defined(FIZZ_PROF) && FIZZ_PROF >= 2
     if (d.core && dc2 >= d.core2Lo && dc2 <= d.core2Hi) FZC(FZ_PX_SQRT);
@@ -637,7 +666,7 @@ FIZZ_IRAM static void __attribute__((noinline)) maskRow(uint16_t *row, int a, in
 // pinpoint and one write.
 struct MaskPxK {
   float fx, bX, bdy2, bRem, bIn2, rbOut, blickK, tintA;   // pinpoint (bRem <= 0: out of reach)
-  float sR, sL, bR, bL, veilA, pullR, pullL; int veilLo, veilHi;   // the veil (discVeil)
+  const BandVeil *v; int veilLo, veilHi;   // the veil (bandVeil)
   uint16_t cRim, cBlick;
 };
 FIZZ_IRAM static void __attribute__((noinline)) maskPx(uint16_t *row, int a, int b, const MaskRowK &k, const MaskPxK &q) {
@@ -647,11 +676,8 @@ FIZZ_IRAM static void __attribute__((noinline)) maskPx(uint16_t *row, int a, int
     const int T0 = maskT(t8, k.W256);
     if (T0 <= 0) continue;
     float cov = T0 * (1.0f / 256);
-    if (ix >= q.veilLo || ix < q.veilHi) {   // discVeil: the pixel's footprint over each surface band
-      if (ix + 1 > q.sR && q.bR > 0) { const float a1 = fmn(ix + 1, q.sR + q.bR), a0 = fmx(ix, q.sR);
-        if (a1 > a0) { const float u = ((a0 + a1) / 2 - q.sR) / q.bR; cov *= 1 - q.veilA * (a1 - a0) * (1 - u) * (1 - q.pullR * u); } }
-      if (ix < q.sL && q.bL > 0) { const float a1 = fmn(ix + 1, q.sL), a0 = fmx(ix, q.sL - q.bL);
-        if (a1 > a0) { const float u = (q.sL - (a0 + a1) / 2) / q.bL; cov *= 1 - q.veilA * (a1 - a0) * (1 - u) * (1 - q.pullL * u); } }
+    if (ix >= q.veilLo || ix < q.veilHi) {   // bandVeil: the pixel's footprint over each surface band
+      cov = bandVeil(ix, *q.v, cov);
       if (cov <= 0) continue;
     }
     float g = 0;
@@ -1505,6 +1531,7 @@ struct Tube {
   // The fizz's per-frame constants (planFizz, read per bubble row): surface band veil opacity, receding pulls,
   // fizzBlick, the mirrored liquid frame's x map; per row the veil bounds (DiscRow veilLo / veilHi).
   float fzVeilA = 0, fzPullR = 0, fzPullL = 0, fzBlickK = 0; int fzXsI = 0, fzL = 0; bool fzMir = false;   // per row: FizzLook veilLo / veilHi
+  float fzBandDx = 0, fzBandHw = 0;   // the band's profile in the bubbles' columns: fizzSurf + fzBandDx (xs - xsI); its overlap into the body (edgeSoft / 2)
   // Panel rows [rowLo, rowHi) the pixel helpers may touch (inStrip, hspan): the strip, or the band being drawn (step 9:
   // the marks run band by band, each stage clipped to the band's rows; on the tiled LCD the band is a tile slot).
   int rowLo = 0, rowHi = 0;
@@ -1575,6 +1602,7 @@ struct Tube {
   void bubbleRows(const struct BubblePlan &b, int r0, int r1);
   void discOf(const struct BubblePlan &b, DiscRow &d) const;
   inline void discRowOf(const struct BubblePlan &b, DiscRow &d, int iy, float wallT, float dy);
+  inline void veilRow(BandVeil &v, int iy) const;
   void maskRows(const struct BubblePlan &b, int iy0, int iy1);
   void ensureFizz(const Params &p, float len, float agitation);
   inline float fizzSquashRow(const Params &p, int y) const;
@@ -4651,6 +4679,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
                        veilA, pullR, pullL, xsI, L,
                        q({255 * p.brightness, 255 * p.brightness, 255 * p.brightness}),   // sim blickC
                        mir};
+    fzBandDx = xs - xsI; fzBandHw = softW * 0.5f;   // the band's footprint for the foam veil (bandVeil)
     planFizz(p, ff);
     FZ_ADD(fizzProf, FZ_CYC, fz0);
   }
@@ -5403,7 +5432,7 @@ void Tube::discOf(const BubblePlan &b, DiscRow &d) const {
   }
   if (b.blick) { d.blickK = fzBlickK; d.bX = b.bX; d.bY = b.bY; } else { d.blickK = d.bX = d.bY = d.rbOut = d.bIn2 = d.bOut2 = 0; }
   d.cBlick = b.cBlick;
-  d.veilA = fzVeilA; d.pullR = fzPullR; d.pullL = fzPullL;
+  d.v.popA = 1; d.v.kPop = 0;
   d.mirror = fzMir; d.xsI = fzXsI; d.L = fzL; d.tintA = b.tintA;
 #ifdef FIZZ_PROF
   d.prof = const_cast<uint32_t *>(fizzProf);
@@ -5414,12 +5443,21 @@ inline void Tube::discRowOf(const BubblePlan &b, DiscRow &d, int iy, float wallT
   d.wallT = wallT; d.dy = dy;
   // Past the profile a bubble is seen through the concave band's front-glass wedge, thickest at the
   // profile and gone at the band's outer rim.
-  d.sR = fizzSurf[iy]; d.sL = fizzSurfL[iy]; d.bR = strokeR[iy]; d.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
+  veilRow(d.v, iy);
   d.veilLo = look->veilLo[iy]; d.veilHi = look->veilHi[iy];
   d.cRim = look->cRim[b.lvl][iy];
   d.cBlick = shF ? shade565(b.cBlick, shF[iy]) : b.cBlick;   // the centre row's pinpoint in this row's edge shade
   TCLIP(FB + iy * PANEL_W, PANEL_W);
   discRow(FB + iy * PANEL_W, b.ixa, b.ixb, d);
+}
+// The surface band over bubble row iy (BandVeil), all but the bubble's own popA / kPop.
+inline void Tube::veilRow(BandVeil &v, int iy) const {
+  v.sR = fizzSurf[iy]; v.sL = fizzSurfL[iy]; v.bR = strokeR[iy]; v.bL = strokeL[iy];   // stroke widths: 0 where no band is drawn
+  v.veilA = fzVeilA; v.pullR = fzPullR; v.pullL = fzPullL;
+  v.pR = v.sR + fzBandDx; v.pL = v.sL + fzBandDx; v.hw = fzBandHw;
+  v.bkR = bandBlick[0][iy]; v.bkL = bandBlick[1][iy]; v.rmR = bandRim[0][iy]; v.rmL = bandRim[1][iy];
+  v.ivR = v.bR > 0 && (v.bkR > 0 || v.rmR > 0) ? 1 / (v.bR + v.hw) : 0;   // a division per veiled bubble row, not per pixel
+  v.ivL = v.bL > 0 && (v.bkL > 0 || v.rmL > 0) ? 1 / (v.bL + v.hw) : 0;
 }
 // A planned bubble's rows in [r0, r1). A size class's (masks built) by its mask: the coverage by index, the core and the
 // pinpoint by their chords on each row, analytic (discRowT) on a row a surface band veils; a popping one analytic.
@@ -5503,8 +5541,9 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::maskRows(const BubblePlan &b, int
     FZ_T0(fr1);
     if (!pin && lo == a && hi == e) maskRow(row, a, e, k);   // the common row: nothing veiled, out of the pinpoint's reach
     else {
+      BandVeil v; veilRow(v, iy); v.popA = 1; v.kPop = 0;
       MaskPxK q{b.fx, b.bX, bdy2, bRem, c.bIn2, c.rbOut, fzBlickK, b.tintA,
-                fizzSurf[iy], fizzSurfL[iy], strokeR[iy], strokeL[iy], fzVeilA, fzPullR, fzPullL, veilLo, veilHi, cRim[iy], shF ? shade565(b.cBlick, shF[iy]) : b.cBlick};
+                &v, veilLo, veilHi, cRim[iy], shF ? shade565(b.cBlick, shF[iy]) : b.cBlick};
       if (lo > hi) maskPx(row, a, e, k, q);
       else {
         if (a < lo) maskPx(row, a, lo - 1, k, q);
@@ -5534,7 +5573,10 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
     }
   }
   for (int iy = 0; iy < H; iy++) {   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL); no band: never (|ix| < PANEL_W)
-    const float lo = ffloor(fizzSurf[iy]), hi = fceil(fizzSurfL[iy]);   // clamped to int16: the same answers for |ix| < PANEL_W
+    float lo = ffloor(fizzSurf[iy]), hi = fceil(fizzSurfL[iy]);   // clamped to int16: the same answers for |ix| < PANEL_W
+    // a blick or a rim veils over the band's whole footprint, hw into the body too (bandVeil)
+    if (bandBlick[0][iy] > 0 || bandRim[0][iy] > 0) lo = fmn(lo, ffloor(fizzSurf[iy] + fzBandDx - fzBandHw));
+    if (bandBlick[1][iy] > 0 || bandRim[1][iy] > 0) hi = fmx(hi, fceil(fizzSurfL[iy] + fzBandDx + fzBandHw));
     look->veilLo[iy] = strokeR[iy] > 0 ? (int16_t)(int)clampf(lo, -32767, 32767) : INT16_MAX;
     look->veilHi[iy] = strokeL[iy] > 0 ? (int16_t)(int)clampf(hi, -32767, 32767) : INT16_MIN;
   }
