@@ -44,17 +44,16 @@ def to_img(px):  # list of (W*H) 565 ints -> RGB image, exact 565 expansion
         d.append(((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2)))
     im.putdata(d); return im
 
-def main():
-    global W, H
-    ap = argparse.ArgumentParser(); ap.add_argument('--port', default=None); ap.add_argument('--out', default=os.path.join(ROOT, 'firmware', '.compare'))
-    a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
-    s = Device(a.port)
-    params = json.loads(talk(s, 'p?').strip().splitlines()[-1])
-    env = s.board_env()
-    fizz_was = params['fizz']
-    if fizz_was: s.set('fizz', 0); params['fizz'] = False   # volatile (`p~`): never reaches NVS
-    dump = talk(s, 'x', b'END', timeout=60, ok=whole)
-    if fizz_was: s.set('fizz', 1)
+# STATE fields per tube, in firmware/src/state_dump.h's order; a record without the trailing ones (older firmware) leaves
+# them at newTube()'s values in render-ref (backTilt 0)
+STATE_KEYS = ['fillTarget', 'fillPos', 'angle', 'light', 'edgeLight', 'agitation', 'acrossTilt', 'cap', 'filmFree', 'filmHome',
+              'slugPos', 'reading', 'pinFree', 'pinHome', 'lineVFree', 'lineVHome', 'rearX16', 'rearY16', 'rearX16w', 'rearY16w',
+              'backTilt']
+
+def parse_dump(dump, params):
+    """The `x` dump and `p?`'s params (design px) -> (W, H, tube rows, tube tops, the device canvas as 565 ints, the
+    render-ref job): the replay's input."""
+    W, H = 536, 240
     lines = [l.strip() for l in dump.splitlines() if l.strip()]
     lay = [l for l in lines if l.startswith('LAYOUT')]
     if lay: W, H, TH, Y0 = layout(lay[0])
@@ -71,33 +70,52 @@ def main():
             r = rows[sum(TH[:t]) + y]
             dev[(Y0[t] + y) * W:(Y0[t] + y + 1) * W] = [int(r[i:i + 4], 16) for i in range(0, W * 4, 4)]
     f = list(map(float, st))
-    key = ['fillTarget', 'fillPos', 'angle', 'light', 'edgeLight', 'agitation', 'acrossTilt', 'cap', 'filmFree', 'filmHome', 'slugPos', 'reading',
-           'pinFree', 'pinHome', 'lineVFree', 'lineVHome', 'rearX16', 'rearY16', 'rearX16w', 'rearY16w']
-    n = len(f) // NT; key = key[:n]; tubes = [dict(zip(key, f[t * n:(t + 1) * n])) for t in range(NT)]  # render-ref fills the rest from newTube()
+    n = len(f) // NT
+    assert n * NT == len(f) and n <= len(STATE_KEYS), f'STATE: {len(f)} fields for {NT} tubes (at most {len(STATE_KEYS)} each)'
+    tubes = [dict(zip(STATE_KEYS[:n], f[t * n:(t + 1) * n])) for t in range(NT)]  # render-ref fills the rest from newTube()
     for tag, key in (('TRACE ', 'trace'), ('WET ', 'traceWet')):  # dried-trace residue and its wet part, hex per tube (see render-ref.ts)
         tr = [l for l in lines if l.startswith(tag)]
         parts = tr[0].split()[1:] if tr else []
         if len(parts) == NT:
             for t in range(NT): tubes[t][key] = parts[t]
-    job = {'params': params, **dict(zip(names, tubes))}
-    sprites = job_sprites(params['digitFont'], a.out)   # the sheet at every cell height: render-ref takes its canvas's
-    if sprites: job['sprites'] = sprites
-    jobf = os.path.join(a.out, 'job.json'); json.dump(job, open(jobf, 'w'))
-    outdir = os.path.join(SIM, 'node_modules', '.cache', 'render-ref')
-    # tsc only when a source is newer than the compiled render-ref.js (saves ~10 s per run)
+    return W, H, TH, Y0, dev, {'params': params, **dict(zip(names, tubes))}
+
+def render_ref(job, out, env, cache=None):
+    """The job rendered by sim/tools/render-ref.ts in node for the board in env (LW_BOARD / LW_RES / LW_TUBES): the canvas
+    as 565 ints. Compiled into cache (default sim/node_modules/.cache/render-ref), tsc only when a source is newer than
+    the compiled render-ref.js (saves ~10 s per run)."""
+    jobf = os.path.join(out, 'job.json'); json.dump(job, open(jobf, 'w'))
+    outdir = cache or os.path.join(SIM, 'node_modules', '.cache', 'render-ref')
     ref_js = os.path.join(outdir, 'sim', 'tools', 'render-ref.js')
     srcs = [os.path.join(SIM, 'tools', 'render-ref.ts'), os.path.join(SIM, 'tools', 'render-ref.tsconfig.json')] + \
            [os.path.join(SIM, 'src', f) for f in os.listdir(os.path.join(SIM, 'src')) if f.endswith('.ts')] + \
            [os.path.join(SIM, '..', 'spec', f) for f in os.listdir(os.path.join(SIM, '..', 'spec')) if f.endswith('.ts')]
     if not os.path.exists(ref_js) or max(os.path.getmtime(f) for f in srcs) > os.path.getmtime(ref_js):
-        subprocess.check_call(['npx', 'tsc', '-p', 'tools/render-ref.tsconfig.json'], cwd=SIM)
+        subprocess.check_call(['npx', 'tsc', '-p', 'tools/render-ref.tsconfig.json', *(['--outDir', outdir] if cache else [])], cwd=SIM)
     open(os.path.join(outdir, 'package.json'), 'w').write('{}')
     # tsc keeps the '@spec/layout' specifier; alias it for node
     spec_dir = os.path.join(outdir, 'node_modules', '@spec'); os.makedirs(spec_dir, exist_ok=True)
     import shutil; shutil.copy(os.path.join(outdir, 'spec', 'layout.js'), os.path.join(spec_dir, 'layout.js'))
-    ref_bin = os.path.join(a.out, 'ref.bin')
-    subprocess.check_call(['node', os.path.join(outdir, 'sim', 'tools', 'render-ref.js'), jobf, ref_bin], env=env)
-    raw = open(ref_bin, 'rb').read(); ref = [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
+    ref_bin = os.path.join(out, 'ref.bin')
+    subprocess.check_call(['node', ref_js, jobf, ref_bin], env=env, stdout=subprocess.DEVNULL)
+    raw = open(ref_bin, 'rb').read(); return [raw[i] | (raw[i + 1] << 8) for i in range(0, len(raw), 2)]
+
+def main():
+    global W, H
+    ap = argparse.ArgumentParser(); ap.add_argument('--port', default=None); ap.add_argument('--out', default=os.path.join(ROOT, 'firmware', '.compare'))
+    a = ap.parse_args(); os.makedirs(a.out, exist_ok=True)
+    s = Device(a.port)
+    params = json.loads(talk(s, 'p?').strip().splitlines()[-1])
+    env = s.board_env()
+    fizz_was = params['fizz']
+    if fizz_was: s.set('fizz', 0); params['fizz'] = False   # volatile (`p~`): never reaches NVS
+    dump = talk(s, 'x', b'END', timeout=60, ok=whole)
+    if fizz_was: s.set('fizz', 1)
+    W, H, TH, Y0, dev, job = parse_dump(dump, params)
+    names = ('hours', 'minutes', 'seconds')[:len(TH)]; tubes = [job[k] for k in names]
+    sprites = job_sprites(params['digitFont'], a.out)   # the sheet at every cell height: render-ref takes its canvas's
+    if sprites: job['sprites'] = sprites
+    ref = render_ref(job, a.out, env)
     assert len(ref) == W * H, f'sim rendered {len(ref)} px, the board {W}x{H} ({env["LW_BOARD"]} {env["LW_RES"]})'
     to_img(dev).save(os.path.join(a.out, 'device.png')); to_img(ref).save(os.path.join(a.out, 'ref.png'))
     diff = Image.new('RGB', (W, H)); dd = []; n = 0; big = 0

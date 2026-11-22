@@ -44,6 +44,7 @@
 #include "physics.h"
 #include "render.h"
 #include "seq.h"
+#include "state_dump.h"
 #include "tiles.h"
 #ifdef AB_COMPARE
 #include "render_ab.h"
@@ -941,11 +942,9 @@ static void handleLine(char *line) {
       renderTube(0, tubeH, effH, paramsGen, strip[0], nullptr, l.yH); renderTube(1, tubeM, effM, paramsGen, strip[1], nullptr, l.yM);
       out.printf("LAYOUT %d %d %d %d %d %d\n", PANEL_W, PANEL_H, l.Hh, l.yH, l.yM, l.Hm);
 #endif
-      auto dumpState = [&](const TubeState &t) {
-        out.printf(" %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %d %d %d",
-                   t.fillTarget, t.fillPos, t.angle, t.light, t.edgeLight, t.agitation,
-                   t.acrossTilt, t.cap, t.filmFree, t.filmHome, t.slugPos, t.reading, t.pinFree, t.pinHome,
-                   t.lineVFree, t.lineVHome, t.rearX16, t.rearY16, t.rearX16w, t.rearY16w);   // the rear parallax as rendered (1/16 px)
+      auto dumpState = [&](const TubeState &t) {   // state_dump.h: the fields render-ref replays (compare-device.py)
+        const int n = formatTubeState(dumpHex, DUMP_HEX_BYTES, t);
+        if (n > 0 && n < DUMP_HEX_BYTES) out.print(dumpHex); else out.print(" [STATE TRUNC]");
       };
       out.print("STATE"); for (int t = 0; t < TUBE_COUNT; t++) dumpState(tubeOf(t)); out.println();
       char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
