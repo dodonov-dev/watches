@@ -104,7 +104,7 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
     if (step === 0 || run.set) frame(ps);   // the first frame, and one after a params change (the native job's)
     for (let k = 0; k < run.n; k++) {
       if (ref.length && step > 0 && !(k === 0 && run.set)) tubes.forEach((_, i) => {
-        const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], body = new Float32Array(2 * n), contact = new Uint16Array(n), e = 9 + 8 * n, H = +w[e + 3];
+        const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], body = new Float32Array(2 * n), contact = new Uint8Array(n), e = 9 + 8 * n, H = +w[e + 3];
         if (+w[1] !== step || +w[2] !== i) throw new Error(`render-ref: lockstep line ${w.slice(0, 3).join(' ')}, want step ${step} tube ${i}`);
         const f32 = (v: string): number => Math.fround(+v);   // the firmware's floats exactly (a decimal is a double)
         for (let s = 0, o = 9; s < n; s++, o += 8) {

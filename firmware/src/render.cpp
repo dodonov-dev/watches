@@ -1318,14 +1318,12 @@ struct Fizz { float x, y, v, life, z; };   // z: depth in the bore (0 front wall
 // slot beside its Fizz (Tube::body). y across the tube, z toward the viewer, tube px from the bore centre: a whole
 // sphere of radius r keeps its centre in y^2 + z^2 <= (R - r)^2, R = boreR (its (H - 1) / 2 row-centre geometry). The
 // Fizz row and tint level are derived from it (stepFizzVertical). contact: FIZZ_C_WALL on the bore wall (centre on the
-// circle of radius R - r), FIZZ_C_END against a closed glass end (the disc whole inside it), 0 free. Parked foam: its
-// age instead, the settleFoam steps since it parked (0 .. FIZZ_AGE_MAX) in the bits from FIZZ_C_AGE (the packing's
-// seniority: the younger of a pair yields).
+// circle of radius R - r), FIZZ_C_END against a closed glass end (the disc whole inside it), 0 free; FIZZ_C_HELD: a free
+// bubble pressed into the foam this step (stepFizzVertical's held contact; settleFoam moves the resident aside).
 #define FIZZ_C_WALL 1
 #define FIZZ_C_END 2
-#define FIZZ_C_AGE 2
-#define FIZZ_AGE_MAX (0xFFFF >> FIZZ_C_AGE)   // 327 s of steps: no foam lives that long
-struct FizzBody { float y, z; uint16_t contact; uint8_t rsv[2]; };
+#define FIZZ_C_HELD 4
+struct FizzBody { float y, z; uint8_t contact, rsv[3]; };
 static_assert(sizeof(FizzBody) == 12, "FizzBody: 12 B a slot");
 // Foam constants (mirror sim/src/render.ts): pop swell + fade time, slide speed along the surface as a
 // fraction of fizzSpeed per px/row of meniscus slope, lag rate behind an advancing surface (also how a caught
@@ -3816,15 +3814,15 @@ static inline bool springBirth(const Tube &t) { return t.springScatter <= 0 || f
 #define FIZZ_HELD_HOOK(t, k, dx) ((void)0)      // host tests: free bubble k held by the foam, moved dx along the tube by it
 #endif
 #ifndef FIZZ_PACK_HOOK
-#define FIZZ_PACK_HOOK(t, k, j, kind) ((void)0) // host tests: settleFoam (vertical) moves foam k for its partner j (kind 0 in the plane, 1 back down the tube)
+#define FIZZ_PACK_HOOK(t, k, j, kind) ((void)0) // host tests: settleFoam (vertical) moves foam k for j (kind 0 parting in the plane, 1 waits behind it, 2 aside for held arrival j)
 #endif
 #ifndef FIZZ_PHASE_HOOK
 #define FIZZ_PHASE_HOOK(t, ph) ((void)0)        // host tests: stepFizzVertical's phase ph done (0 the bubbles, 1 births, 2 foam)
 #endif
-#define FOAM_SPREAD 0.2f     // vertical packing: foam moves in the surface plane at most FOAM_SPREAD x fizzSpeed dt a step: the
-                             // drive is one bubble's buoyancy pressing it against the surface, along the plane only through
-                             // the meniscus' slight slope, against the film's drag: weak next to the free rise
-#define FOAM_SPREAD_T 0.05f  // s: in-plane overlap relaxation time (overdamped: a pair parts at overlap / FOAM_SPREAD_T)
+#define FOAM_PUSH 0.35355339f  // vertical packing: a contact parts a bubble in the surface plane at most FOAM_PUSH x its own rise
+                               // U_i dt a step: an arrival under a resident, each moves U sin(phi) cos(phi) / (1 + sin^2(phi)),
+                               // at most U / (2 sqrt 2) (docs/tilted-fizz-surface-model.md)
+#define FOAM_SEAT 0.5f         // px: a foam bubble this close to its endpoint target is seated (at the surface: a resident)
 #define FOAM_GAP 0.01f       // vertical packing: pairs pushed to m + FOAM_GAP and tested at < m, so a contact a sweep left is never decided by rounding
 static inline float fizzYc(int H) { return (H - 1) * 0.5f; }
 static inline float fizzLevelOf(float z, float a) { return (fizzLevel((a - z) / (2 * a)) + 0.5f) * (1.0f / FIZZ_DEPTHS); }
@@ -3979,7 +3977,7 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
     fizzBodiesFor(*this, p);
     while (fizzN < want) {
       const int k = fizzN++; Fizz &f = fizz[k]; FizzBody &b = body[k];
-      f = {0, 0, 0, 0, 0}; b = {0, 0, 0, {0, 0}};
+      f = {0, 0, 0, 0, 0}; b = {0, 0, 0, {0, 0, 0}};
       fizzScatterV(*this, p, f, b, k, -1);
     }
   }
@@ -3992,29 +3990,32 @@ void Tube::ensureFizz(const Params &p, float len, float agitation) {
 // meniscus from its front backward. Against a closed end (glass: glassVy = the across rise px/s) the whole disc
 // stays inside and the bubbles slide along the glass with the rise instead. Works in u = side * x, so the home
 // edge (side -1) is the time edge mirrored. See sim settleFoam.
-// Vertical watch (band: the side's stroke widths, strokeR / strokeL): a bubble's front is its own endpoint target (the
-// whole-disc support of L + P, fizzEndSupport, k from its current body, on its display row: what the render draws); the packing
-// works in physical coordinates (docs/tilted-fizz-plan.md point 6): u and the body's (y, z), kept current at every
-// placement (the display row and tint level follow, fizzRowOf / fizzLevelOf), so the cosmetic row bias moves nothing.
-// Two bubbles touch at a 3D distance < m. Foam spreads over the surface's cross-section first: buoyancy holds each
-// bubble at its surface, so a touching pair parts in the surface plane (y, z) toward the in-plane sqrt((m + FOAM_GAP)^2
-// - du^2) at their u, inside the eroded disc (y^2 + z^2 <= (R - r)^2), eased: each sweep by dt / (FOAM_RELAX
-// FOAM_SPREAD_T) of what is left; what the plane has not parted by the last sweep the rear one takes stepping back
-// along the tube by the axial share of the overlap along their 3D normal (one beneath the other: a lower layer). Seniority (the age in FizzBody contact): of a
-// pair the younger yields, all of the parting is its own and an older rear never steps back for it (an arrival never
-// pushes older foam aside or down: a younger in front keeps the overlap and spreads); the same age: both alike. Overdamped: in a step a bubble moves in the plane at
-// most FOAM_SPREAD speed dt from where it began (FoamWork yS / zS) and back down the tube at
-// most speed dt (FoamWork uS; the profile's own recession excepted), so an overlap clears over steps instead of shooting
-// foam about. Its k (veil, endpoint) is always its current body's: a move in the plane that would lower its target below
-// eLo (round the side wall k turns over within a pixel of depth, on the wall circle at once) is shortened to the farthest
-// of FIZZ_END_BISECT halvings that keeps it (none: it stays; the overlap clears in later steps or stacks), so neither the
-// state nor the drawn bubble sinks faster than fizzSpeed dt from the plane's moves. See sim settleFoamV.
+// Vertical watch (band: the side's stroke widths, strokeR / strokeL; docs/tilted-fizz-surface-model.md): a bubble's
+// front is its own endpoint target (the whole-disc support of L + P, fizzEndSupport, k from its current body, on its
+// display row: what the render draws); it works in physical coordinates: u and the body's (y, z), kept current at every
+// placement (display row and tint level derived, fizzRowOf / fizzLevelOf: the row bias moves nothing), each bubble at
+// its own rise speed U_i = fizzSpeed (r / r_ref)^2. Drift: buoyancy (bu, by, bz: b along u and across) tangential to
+// the surface it rides, h(y, z) = S + k B: v = k_w U_i [b_perp + sigma (bu - sigma . b_perp) / (1 + sigma^2)], sigma_y
+// the profile's row slope, sigma_z = B0 6 t (1 - t) / w (fizzEndK's t, w), its approach to the deepest foam contact
+// removed, back into the eroded disc. Contact (two touch at a 3D distance < m): a pair parts in the surface plane (y, z)
+// toward the in-plane sqrt((m + FOAM_GAP)^2 - du^2) at their u, shared equally, a bubble's whole in-plane step (drift
+// and contacts) at most FOAM_PUSH U_i dt from where it began (FoamWork yS / zS); an arrival pressed into a resident from
+// below (FIZZ_C_HELD) moves it aside by the resident's share; along the tube nobody is pushed: a seated bubble (within FOAM_SEAT
+// of its target) follows only its endpoint, and in the last sweep the rear of a pair still touching, if not seated,
+// waits behind the front (at touching distance, never below where its step began). The endpoint: always the current
+// body's k; a move in the plane that would sink its target below eLo = min(uS - fizzSpeed dt, its target at the step's
+// start) is shortened to the farthest of FIZZ_END_BISECT halvings that keeps it (none: it stays). Along the tube (the glide,
+// that bound) the common rise step fizzSpeed dt, as before. See sim settleFoamV.
 FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params &p, float speed, const float *surf, int side, float dt, bool glass, float glassVy,
-                                                           const float *band = nullptr) {
+                                                           const float *band = nullptr, float bu = 0, float by = 0, float bz = 0) {
   const int H = t.H; const float wall = fizzWall(p), follow = fmn(1, FOAM_FOLLOW * dt);
   FoamWork &w = *t.foam; Fizz *const fz = t.fizz; FizzBody *const bd = band ? t.body : nullptr;
-  const float yc = fizzYc(H), R = band ? boreR(p) : 0, bias0 = band ? fizzBias0(t) : 0, back = speed * dt;
-  const float spread = FOAM_SPREAD * back, ease = fmn(1, dt * (1.0f / (FOAM_RELAX * FOAM_SPREAD_T)));   // vertical: the plane's bound, a sweep's share
+  const float yc = fizzYc(H), R = band ? boreR(p) : 0, bias0 = band ? fizzBias0(t) : 0;
+  // vertical: a bubble's own rise step U_i dt (stepFizzVertical's U: the drift and the contacts' in-plane bound); the
+  // in-plane bound's factor (0: none, the drift); along the tube the common rise step `back` (glide, push-back bound)
+  const float rref = fizzR(p, 1), invRef2 = rref > 0 ? 1 / (rref * rref) : 0, back = speed * dt;
+  auto stepOf = [&](float r) { return speed * (r * r) * invRef2 * dt; };
+  float push = 0;
   // a slot's transverse coordinate in the packing (vertical: the body's physical y) and in the grid (its physical row)
   auto py = [&](int s) { return bd ? bd[s].y : fz[s].y; };
   auto pz = [&](int s) { return bd ? bd[s].z : 0.0f; };   // vertical: the body's depth (landscape: unused)
@@ -4030,10 +4031,13 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   auto place = [&](int s, float u, float y, float z) {   // in the bore and not past the front of its row (y: py's coordinate)
     Fizz &f = fz[s]; const float r = fizzR(p, f.v);
     float yq, un;   // its grid row, its new u (side * x: side is +-1)
-    if (band) {   // the body's (y, z): at most `spread` from the step's start, inside the eroded disc; row and level derived
-      const float a = R - r, ey = y - w.yS[s], ez = z - w.zS[s], e2 = ey * ey + ez * ez, bias = fizzRowBias(s, f.v, bias0);
+    if (band) {   // the body's (y, z): at most push U_i dt from (yS, zS), inside the eroded disc; row and level derived
+      const float a = R - r, bias = fizzRowBias(s, f.v, bias0), su = stepOf(r);
       float yp = y, zp = z;
-      if (e2 > spread * spread) { const float q = spread / sqrtExact(e2); yp = w.yS[s] + ey * q; zp = w.zS[s] + ez * q; }
+      if (push > 0) {
+        const float ey = y - w.yS[s], ez = z - w.zS[s], e2 = ey * ey + ez * ez, lim = push * su;
+        if (e2 > lim * lim) { const float q = lim / sqrtExact(e2); yp = w.yS[s] + ey * q; zp = w.zS[s] + ez * q; }
+      }
       const float d2 = yp * yp + zp * zp;
       if (d2 > a * a) { const float q = a / sqrtExact(d2); yp = yp * q; zp = zp * q; }
       float yr = fizzRowOf(H, yp, a, bias), ut = endAt(yp, zp, yr, r);
@@ -4046,8 +4050,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         yp = y0 + dy * lo; zp = z0 + dz * lo; yr = fizzRowOf(H, yp, a, bias); ut = endAt(yp, zp, yr, r);
       }
       bd[s].y = yp; bd[s].z = zp; f.y = yr; f.z = fizzLevelOf(zp, a); yq = yc + yp;
-      // overdamped: pushed back at most the rise speed's worth a step (an overlap left over clears in later steps), the
-      // surface's own recession excepted (its target always holds)
+      // overdamped: back at most the rise step from where the step began, the surface's own recession excepted (its target holds)
       un = fmn(fmx(u, w.uS[s] - back), ut);
     } else { const float lo = wall + r, hi = H - lo; f.y = hi <= lo ? H / 2.0f : clampf(y, lo, hi); yq = f.y; un = fmn(u, front(s, f.y, r)); }
     f.x = side * un;
@@ -4065,6 +4068,28 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     }
   }
   foamGridBuild(w, fz, H, side, true, bd, yc);
+  // vertical: the deepest foam contact of a body at (u, y, z), radius r (not slot `self`): the smallest distance /
+  // contact distance, ties the lowest slot (foamContactV's rule: the same answer whatever order the grid visits)
+  auto deepAt = [&](int self, float u, float y, float z, float r) {
+    int jb = -1; float jd2 = 0, jm2 = 1;
+    auto deep = [&](int j) {
+      if (j == self) return;
+      const float m = r + fizzR(p, fz[j].v) + 0.5f, du = u - side * fz[j].x, ey = y - bd[j].y, ez = z - bd[j].z;
+      if (!(fabsf(du) < m && fabsf(ey) < m && fabsf(ez) < m)) return;
+      const float d2 = du * du + ey * ey + ez * ez, m2 = m * m;
+      if (!(d2 < m2)) return;
+      const float l = d2 * jm2, rr = jd2 * m2;
+      if (jb < 0 || l < rr || (l == rr && j < jb)) { jb = j; jd2 = d2; jm2 = m2; }
+    };
+    if (w.nu == 0) { for (int b = 0; b < n; b++) deep(w.list[b]); }
+    else {
+      const FoamRange q = foamRange(w, u, yc + y, r);
+      for (int cy = q.y0; cy <= q.y1; cy++)
+        for (int cu = q.u0; cu <= q.u1; cu++)
+          for (int j = w.head[cy * w.nu + cu]; j >= 0; j = w.next[j]) deep(j);
+    }
+    return jb;
+  };
   for (int a = 0; a < n; a++) {
     const int i = w.list[a];
     Fizz &f = fz[i];
@@ -4074,16 +4099,26 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     float u = side * f.x;
     u = u < tu ? u + fmn((tu - u) * follow, speed * dt) : tu;   // buoyancy: no faster than the rise
     const float slope = side * (surf[fy + 1 < H ? fy + 1 : H - 1] - surf[fy > 0 ? fy - 1 : 0]) / 2;   // px per row
+    if (band) {   // vertical: the drift along the surface it rides (see above)
+      const float y = bd[i].y, z = bd[i].z, ar = R - r, B0 = rowLerp(band, H, f.y);
+      const float zc = sqrtExact(fmx(0, ar * ar - y * y)), ww = fmn(zc, B0 + r);
+      float sz = 0;
+      if (ww > 1e-4f) { const float tt = clampf(1 - (zc - z) / ww, 0, 1); sz = B0 * (6 * tt * (1 - tt)) / ww; }
+      const float sb = slope * by + sz * bz, cc = (bu - sb) / (1 + slope * slope + sz * sz), st = FIZZ_KW * stepOf(r);
+      float dy = st * (by + slope * cc), dz = st * (bz + sz * cc);
+      // its approach to the deepest foam contact removed (3D normal, the in-plane part applied)
+      const int jb = deepAt(i, u, y, z, r);
+      if (jb >= 0) {
+        const float nu = u - side * fz[jb].x, ny = y - bd[jb].y, nz = z - bd[jb].z, n2 = nu * nu + ny * ny + nz * nz, sn = dy * ny + dz * nz;
+        if (sn < 0 && n2 > 1e-8f) { const float qn = sn / n2; dy = dy - qn * ny; dz = dz - qn * nz; }
+      }
+      place(i, u, y + dy, z + dz);
+      continue;
+    }
     float slide = glass ? glassVy * dt : FOAM_SLIDE * speed * clampf(2 * slope, -1, 1) * dt;
     // Touching a neighbour on the slide side: line up along the surface. Slide 0 skips every neighbour anyway.
     auto touch = [&](int j) {
       const Fizz &g = fz[j];
-      if (bd) {   // vertical: in 3D, physical y (the in-plane separation sqrt(m^2 - dz^2) at fixed depth)
-        const float dy = bd[j].y - bd[i].y;
-        if (j == i || slide * dy <= 0) return false;
-        const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dz = bd[j].z - bd[i].z;
-        return du * du + dy * dy < m * m - dz * dz;
-      }
       if (j == i || slide * (g.y - f.y) <= 0) return false;
       const float m = r + fizzR(p, g.v) + 0.5f, du = side * g.x - u, dy = g.y - f.y;
       return du * du + dy * dy < m * m;
@@ -4098,6 +4133,24 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
       }
     }
     place(i, u, py(i) + slide, pz(i));
+  }
+  if (band) {   // the contacts: a bubble's whole in-plane step (its drift in) at most FOAM_PUSH U_i dt from where it began
+    push = FOAM_PUSH;
+    // An arrival pressed into a resident from below (a free bubble held this step, FIZZ_C_HELD): the resident's share
+    // of the parting, U_h dt sin(phi) cos(phi) / (1 + sin^2(phi)) away from it in the plane (phi: the contact normal's
+    // angle to the tube; exactly beneath: none, a symmetric rest), never along the tube (its u follows its endpoint).
+    for (int h = 0; h < t.fizzN; h++) {
+      const Fizz &fh = fz[h];
+      if (fh.v == 0 || fh.life != 0 || !(bd[h].contact & FIZZ_C_HELD)) continue;
+      const float rh = fizzR(p, fh.v), uh = side * fh.x, yh = bd[h].y, zh = bd[h].z;
+      const int j = deepAt(-1, uh, yh, zh, rh);
+      if (j < 0) continue;
+      const float du = uh - side * fz[j].x, ey = bd[j].y - yh, ez = bd[j].z - zh, q2 = ey * ey + ez * ez, d2 = du * du + q2;
+      if (!(q2 > 1e-8f)) continue;
+      const float q = sqrtExact(q2), v = stepOf(rh) * (q * fabsf(du) / d2) / (1 + q2 / d2), k = v / q;
+      FIZZ_PACK_HOOK(t, j, h, 2);
+      place(j, side * fz[j].x, bd[j].y + k * ey, bd[j].z + k * ez);
+    }
   }
   // The sweep order: last step's, those still parked, then the newly parked in slot order. The first sort orders it
   // by u, front first, ties by slot: what a stable sort of slot order gives (the sim's), from a nearly sorted start.
@@ -4152,9 +4205,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
         if (bd) {   // vertical: in 3D; parted in the surface plane (y, z) at their u, stacked only where that is blocked
           float dz = bd[gs].z - bd[fi].z;
           if (fabsf(du) >= m || fabsf(dy) >= m || !(fabsf(dz) < m) || du * du + dy * dy + dz * dz >= m * m) continue;
-          const float g1 = m + FOAM_GAP, g2 = g1 * g1, rho = sqrtExact(dy * dy + dz * dz), kk = ease * (sqrtExact(g2 - du * du) - rho);
-          const int aF = bd[fi].contact >> FIZZ_C_AGE, aG = bd[gs].contact >> FIZZ_C_AGE;   // the younger yields
-          const float wF = aF == aG ? 0.5f : aF < aG ? 1.0f : 0.0f, wG = 1 - wF;
+          const float g1 = m + FOAM_GAP, g2 = g1 * g1, rho = sqrtExact(dy * dy + dz * dz), kk = (sqrtExact(g2 - du * du) - rho) / 2;
           float ny, nz;
           if (rho > 1e-4f) { const float inv = 1 / rho; ny = dy * inv; nz = dz * inv; }
           else {   // one above the other: along the bore wall's tangent where the front one sits (across at the centre), g
@@ -4162,19 +4213,16 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
             const float y0 = py(fi), z0 = bd[fi].z, c2 = y0 * y0 + z0 * z0, sg = (gs & 1) ? 1.0f : -1.0f;
             if (c2 > 1e-8f) { const float q = sg / sqrtExact(c2); ny = -z0 * q; nz = y0 * q; } else { ny = sg; nz = 0; }
           }
-          if (wF > 0) { FIZZ_PACK_HOOK(t, fi, gs, 0); place(fi, side * f.x, py(fi) - kk * wF * ny, bd[fi].z - kk * wF * nz); }
-          if (wG > 0) { FIZZ_PACK_HOOK(t, gs, fi, 0); place(gs, side * g.x, py(gs) + kk * wG * ny, bd[gs].z + kk * wG * nz); }
-          if (it == FOAM_RELAX - 1) {   // what the plane left (the wall, other foam, the step's bounds): the rear one steps
-                                        // back by the axial share of the overlap along their 3D normal (one beneath the
-                                        // other: all of it, a lower layer; side by side: little, the plane parts them),
-                                        // unless it is the older: a younger in front keeps spreading
+          FIZZ_PACK_HOOK(t, fi, gs, 0); place(fi, side * f.x, py(fi) - kk * ny, bd[fi].z - kk * nz);
+          FIZZ_PACK_HOOK(t, gs, fi, 0); place(gs, side * g.x, py(gs) + kk * ny, bd[gs].z + kk * nz);
+          if (it == FOAM_RELAX - 1) {   // what the plane left (the wall, other foam, the step's bounds): the rear one, if
+                                        // not seated, waits behind the front (touching, never below its step's start)
             du = side * (g.x - f.x); dy = py(gs) - py(fi); dz = bd[gs].z - bd[fi].z;
-            const float q2 = dy * dy + dz * dz, d2 = du * du + q2;
-            const bool fBack = du > 0; const int rs = fBack ? fi : gs; const Fizz &fr = fBack ? g : f;
-            if (d2 < m * m && (fBack ? aF <= aG : aG <= aF)) {
-              const float d3 = sqrtExact(d2), ur = side * fz[rs].x;
-              FIZZ_PACK_HOOK(t, rs, fBack ? gs : fi, 1);
-              place(rs, d3 > 1e-4f ? ur - (g1 - d3) * fabsf(du) / d3 : side * fr.x - g1, py(rs), bd[rs].z);
+            const float q2 = dy * dy + dz * dz;
+            if (du * du + q2 < m * m) {
+              const bool fBack = du > 0; const int rs = fBack ? fi : gs; const Fizz &fr = fBack ? g : f;
+              const float ur = side * fz[rs].x, uw = fmx(w.uS[rs], fmn(ur, side * fr.x - sqrtExact(fmx(0, g2 - q2))));
+              if (uw != ur && ur < front(rs, fz[rs].y, fizzR(p, fz[rs].v)) - FOAM_SEAT) { FIZZ_PACK_HOOK(t, rs, fBack ? gs : fi, 1); place(rs, uw, py(rs), bd[rs].z); }
             }
           }
         } else {   // landscape: in (u, y), parted to m
@@ -4196,7 +4244,6 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
       }
     }
   }
-  if (bd) for (int a = 0; a < n; a++) { FizzBody &b = bd[w.list[a]]; if ((b.contact >> FIZZ_C_AGE) < FIZZ_AGE_MAX) b.contact += 1 << FIZZ_C_AGE; }   // a step older
 }
 // Rises against in-plane gravity at fizzSpeed px/s on both axes; face up = slow screen-up rise plus a drift
 // toward the exposed surface (the time edge, or the home edge of a free slug whose time edge sits against
@@ -4329,7 +4376,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
     const float x0 = f.x, y0 = y, z0 = z;   // where the step starts (the foam contact removes its approach)
     if (stir > 0) { y = y + stir * (2 * frand() - 1); z = z + stir * (2 * frand() - 1); c &= ~FIZZ_C_WALL; }
     const float tx = fizzMoveV(y, z, c, a, U, by, bz, inv, dt);
-    c &= ~FIZZ_C_END;
+    c &= ~(FIZZ_C_END | FIZZ_C_HELD);
     f.x = f.x + U * bx * tx;
     const float bias = fizzRowBias(k, f.v, bias0);
     f.y = fizzRowOf(H, y, a, bias);
@@ -4349,7 +4396,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
           const float qn = sn / n2;   // a division per held bubble
           float px = -qn * nx;
           if (park * (f.x + px - x0) < 0) px = x0 - f.x;   // never back down the tube past the step's start
-          FIZZ_HELD_HOOK(t, k, px);
+          FIZZ_HELD_HOOK(t, k, px); c |= FIZZ_C_HELD;
           f.x = f.x + px; y = y - qn * ny; z = z - qn * nz;
           // its wall contact follows where the correction put it: on the circle (projected back from past it, or within
           // FIZZ_WALL_TOL of it) on the wall, inside it free (fizzMoveV would put a deflected bubble back on the wall)
@@ -4375,7 +4422,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
           if (!foamOn) { if (spring) fizzFree(f); else fizzScatterV(t, p, f, b, k, side < 0 ? 0 : 1); b.contact = 0; continue; }
           FIZZ_PARK_HOOK(t, k, u, uc);
           f.x = side * fmn(u, ut);
-          f.life = side * p.fizzFoamLife * (0.5f + frand()); c = 0;   // foam: age 0, no wall / end contact
+          f.life = side * p.fizzFoamLife * (0.5f + frand());
         }
       }
     }
@@ -4404,7 +4451,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
     while (t.springClock >= 1) {
       if (live >= cap) { t.springClock = 1; break; }
       while (slot < t.fizzN && t.fizz[slot].v != 0) slot++;
-      if (slot == t.fizzN) { t.fizz[t.fizzN] = {0, 0, 0, 0, 0}; body[t.fizzN] = {0, 0, 0, {0, 0}}; t.fizzN++; }
+      if (slot == t.fizzN) { t.fizz[t.fizzN] = {0, 0, 0, 0, 0}; body[t.fizzN] = {0, 0, 0, {0, 0, 0}}; t.fizzN++; }
       const bool born = springBirth(t) ? springSpawnV(t, p, t.fizz[slot], body[slot], slot) : fizzScatterV(t, p, t.fizz[slot], body[slot], slot, -1);
       if (!born) { t.springClock = 1; break; }
       t.springClock -= 1; live++;
@@ -4413,7 +4460,7 @@ FIZZ_IRAM static void __attribute__((noinline)) stepFizzVertical(Tube &t, const 
   }
   FS_ADD(FS_CYC_CADENCE, cd0); FIZZ_PHASE_HOOK(t, 1);
   FZ_T0(se0);
-  if (park) settleFoam(t, p, U0, S, park, dt, false, 0, B);   // packs the foam over the surface plane (y, z) first, stacked only where blocked
+  if (park) settleFoam(t, p, U0, S, park, dt, false, 0, B, park * bx, by, bz);   // packs the foam over the surface plane (y, z) first, stacked only where blocked
   FS_ADD(FS_CYC_SETTLE, se0); FIZZ_PHASE_HOOK(t, 2);
 }
 // One tube's step (idx): each tube steps only its own state, so two may step at once on two cores (main: each on the
