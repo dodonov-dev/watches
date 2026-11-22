@@ -24,7 +24,7 @@
     "gasMode": 3,
     "gasLevel": 0.75,
     "bubbleRadius": 0.15,
-    "foamStability": 1,
+    "foamStability": 0.1,
     "innerRadius": 2.25,
     "wallThickness": 0.5,
     "wallIor": 1.49,

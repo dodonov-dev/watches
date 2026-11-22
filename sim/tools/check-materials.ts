@@ -451,7 +451,7 @@ const FIXTURES: Fixture[] = [
       ['capLength', '1.51', 'd'], ['angleTiltGain', '3.64', 'd'], ['angleGyroGain', '0.20', 'd'],
       ['wetFilm', '18.8', 'd'], ['traces', true, 'x'], ['traceAmount', '0.57', 'd'], ['traceStain', '0.24', 'd'], ['traceDrain', '17.4', 'd'], ['glowStrength', '0.04', 'd'],
     ] },
-  { name: 'honey', m: mat({ viscosity: 10000, density: 1420, surfaceTension: 70, ior: 1.49, absorptionR: 0.06, absorptionG: 0.18, absorptionB: 0.7, contactAngle: 25, contactHysteresis: 20, solidsFraction: 0.8, dryingTime: 2, gasMode: 3, gasLevel: 0.04, bubbleRadius: 0.12, foamStability: 20 }),
+  { name: 'honey', m: mat({ viscosity: 10000, density: 1420, surfaceTension: 70, ior: 1.49, absorptionR: 0.06, absorptionG: 0.18, absorptionB: 0.7, contactAngle: 25, contactHysteresis: 20, solidsFraction: 0.8, dryingTime: 2, gasMode: 3, gasLevel: 0.04, bubbleRadius: 0.12, foamStability: 2.3 }),
     d: fdesign('#0c0703', REAR24), want: [
       ['viscosity', 'viscous', 'x'], ['opacity', 'translucent', 'x'], ['T', '0.27', 'T'],
       ['liquid', [44, 21, 0], 'c'], ['liquidLo', [9, 2, 0], 'c'], ['liquidHi', [199, 184, 161], 'c'], ['residual', '0.6', 'c'],
@@ -459,7 +459,7 @@ const FIXTURES: Fixture[] = [
       ['freeDamp', '8.65', 'd'], ['freeBounce', 0, 'x'], ['meniscusK', '79', 'd'], ['meniscusDamp', '33', 'd'], ['contactDyn', 90, 'x'],
       ['capLength', '1.79', 'd'], ['angleTiltGain', '1.62', 'd'], ['angleGyroGain', '0.07', 'd'],
       ['wetFilm', '28.3', 'd'], ['traces', true, 'x'], ['traceAmount', '1.32', 'd'], ['traceStain', '0.57', 'd'], ['traceDrain', '0.23', 'd'],
-      ['fizz', true, 'x'], ['fizzSize', '2.31', 'd'], ['fizzSpeed', 0, 'x'], ['fizzCount', 5, 'x'],
+      ['fizz', true, 'x'], ['fizzSize', '2.31', 'd'], ['fizzSpeed', 0, 'x'], ['fizzCount', 5, 'x'], ['fizzFoamLife', 20, 'x'],
     ] },
   { name: 'mercury', m: mat({ metallic: 1, metalReflectance: 0.75, viscosity: 1.55, density: 13546, surfaceTension: 485, contactAngle: 140, contactHysteresis: 15 }),
     d: fdesign('#000000'), want: [

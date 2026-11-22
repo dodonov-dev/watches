@@ -360,6 +360,10 @@ export function deriveReport(material: Material, design: Design): DeriveReport {
   const vbPx = 2 * rho * g * rb * rb / (9 * mu) * 1000 * pxPerMm;
   const fizzSpeed = classClamp(anchored(Math.log10(Math.max(vbPx, 1e-12)), FIZZ_SPEED), gr?.speed);
   const s = Math.min(1, fizzSpeed / 30);
+  // surface life: immobile-film (Reynolds) drainage of the cap film under 2γ/r down to rupture at h_c = 0.1 µm,
+  // τ_d = μρg·r⁵ / (4γ²h_c²) (docs/tilted-fizz-surface-model.md), rounded to 0.1 s so a watery liquid gets exactly 0;
+  // foamStability is the surfactant hold on top of it
+  const foamDrain = Math.round(mu * rho * g * rb ** 5 / (4 * gamma * gamma * 1e-14) * 10) / 10;
   const fizzCount = gas === 'carbonated' ? Math.round(30 + 30 * m.gasLevel)
     : gas === 'boiling' ? Math.round(45 + 15 * m.gasLevel) : gas === 'trapped' ? Math.round(120 * m.gasLevel) : 0;
 
@@ -406,7 +410,7 @@ export function deriveReport(material: Material, design: Design): DeriveReport {
     fizzCount,
     fizzSize: clamp(2 * m.bubbleRadius * pxPerMm, ...FIZZ_SIZE),
     fizzSpeed,
-    fizzFoamLife: m.foamStability,
+    fizzFoamLife: Math.min(30, m.foamStability + foamDrain),
     fizzFlatRise: 0.15 + 0.3 * s,
     fizzEdgeRise: 0.2 + 0.3 * s,
     fizzDriftGain: 0.4 + 0.6 * s,

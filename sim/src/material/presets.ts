@@ -129,7 +129,7 @@ export const MATERIAL_PRESETS: readonly MaterialPreset[] = [
     { handbook: true, extra: { digitBright: 1.8 } }),
   own('aerated-oil', 'Aerated oil', 'shaken sunflower oil: gold, medium viscosity, a dense haze of fine bubbles drifting up slowly; espresso backing, cream print, copper numerals behind',
     'handbook (sunflower oil, 20 °C); absorption estimated; gas level artistic',
-    { viscosity: 55, density: 920, surfaceTension: 33, ior: 1.474, absorptionR: 0.01, absorptionG: 0.04, absorptionB: 0.35, scattering: 0, contactAngle: 15, contactHysteresis: 8, solidsFraction: 0.2, dryingTime: 2, gasMode: 3, gasLevel: 0.75, bubbleRadius: 0.15, foamStability: 1, exposure: 2 },
+    { viscosity: 55, density: 920, surfaceTension: 33, ior: 1.474, absorptionR: 0.01, absorptionG: 0.04, absorptionB: 0.35, scattering: 0, contactAngle: 15, contactHysteresis: 8, solidsFraction: 0.2, dryingTime: 2, gasMode: 3, gasLevel: 0.75, bubbleRadius: 0.15, foamStability: 0.1, exposure: 2 },
     designFrom({
       ...REAR_ROD,
       tubeBack: '#0b0805', tubeBack2: '#1c150c', tubeBackGradient: 2,
@@ -140,11 +140,11 @@ export const MATERIAL_PRESETS: readonly MaterialPreset[] = [
     }),
     { handbook: true, over: { gasLevel: 'artistic' } }),
   entry('honey', 'honey: amber syrup, viscous, clings to the glass, trapped air', 'handbook (viscosity 20 °C ~10 Pa·s); absorption estimated',
-    { viscosity: 10000, density: 1420, surfaceTension: 70, ior: 1.49, absorptionR: 0.06, absorptionG: 0.18, absorptionB: 0.7, scattering: 0, contactAngle: 25, contactHysteresis: 20, solidsFraction: 0.8, dryingTime: 2, gasMode: 3, gasLevel: 0.04, bubbleRadius: 0.12, foamStability: 20, exposure: 1.6 },
+    { viscosity: 10000, density: 1420, surfaceTension: 70, ior: 1.49, absorptionR: 0.06, absorptionG: 0.18, absorptionB: 0.7, scattering: 0, contactAngle: 25, contactHysteresis: 20, solidsFraction: 0.8, dryingTime: 2, gasMode: 3, gasLevel: 0.04, bubbleRadius: 0.12, foamStability: 2.3, exposure: 1.6 },
     { handbook: true }),
   own('glycerine', 'Aerated glycerine', 'glycerine full of air: colourless, viscous, fine bubbles held still in the gel; blue-black backing, steel numerals behind',
     'handbook (glycerol, 20 °C); absorption estimated; gas level artistic',
-    { viscosity: 1412, density: 1261, surfaceTension: 63.4, ior: 1.474, absorptionR: 0.002, absorptionG: 0.002, absorptionB: 0.004, scattering: 0, contactAngle: 20, contactHysteresis: 12, solidsFraction: 0.2, dryingTime: 10, gasMode: 3, gasLevel: 1, bubbleRadius: 0.15, foamStability: 30 },
+    { viscosity: 1412, density: 1261, surfaceTension: 63.4, ior: 1.474, absorptionR: 0.002, absorptionG: 0.002, absorptionB: 0.004, scattering: 0, contactAngle: 20, contactHysteresis: 12, solidsFraction: 0.2, dryingTime: 10, gasMode: 3, gasLevel: 1, bubbleRadius: 0.15, foamStability: 21.8 },
     designFrom({
       ...REAR_ROD,
       tubeBack: '#03060a', tubeBack2: '#0f1822', tubeBackGradient: 2,

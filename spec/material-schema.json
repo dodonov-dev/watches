@@ -263,9 +263,9 @@
       "default": 4,
       "min": 0,
       "max": 30,
-      "step": 0.5,
+      "step": 0.1,
       "group": "Gas",
-      "help": "Mean time a bubble survives at the surface before it pops (pure water < 1 s, beer/champagne 3–5 s, viscous or surfactant-rich liquids 10–30 s). 0 = bubbles vanish at the surface."
+      "help": "Surfactant hold: the time a surface bubble survives beyond its cap film's viscous drainage (pure water < 1 s, beer/champagne 3–5 s, protein- or surfactant-rich liquids up to 30 s). The drainage time μρg·r⁵/(4γ²h_c²) is added on top, so a viscous liquid holds its foam without it. 0 = watery bubbles vanish at the surface."
     },
     {
       "key": "innerRadius",
