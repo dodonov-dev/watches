@@ -671,9 +671,9 @@ FIZZ_IRAM static void __attribute__((noinline)) maskPx(uint16_t *row, int a, int
 }
 // Step 3e concave surface band over [xa, xb): pixel-footprint stroke from the inner shoulder to the outer
 // colour at interior opacity `fill` (surfaceFill), thinned by the receding pull, the blick (`blickK`: this
-// row's specular weight, peaking mid-dish) and the lit rim. See sim.
+// row's specular weight, peaking mid-dish; `blickC`: the neutral room light) and the lit rim. See sim.
 TUBE_IRAM static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, int xb, float xm, int dir, float hw, float wEff, float invWidth,
-                                              float a, float fill, float blickK, float pull, float rimK, uint16_t inner, uint16_t outer, uint16_t liquid, uint16_t hiC, uint16_t rimC) {
+                                              float a, float fill, float blickK, float pull, float rimK, uint16_t inner, uint16_t outer, uint16_t liquid, uint16_t blickC, uint16_t rimC) {
   if (xa < 0) xa = 0; if (xb > PANEL_W) xb = PANEL_W;
   const float rimLo = fmx(0, wEff - 1);
   for (int x = xa; x < xb; x++) {
@@ -698,7 +698,7 @@ TUBE_IRAM static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, i
       P.r = P.r * k + C.r * al; P.g = P.g * k + C.g * al; P.b = P.b * k + C.b * al;
       A = A * k + al; nL++; cLast = col;
     };
-    layer(pull > 0 ? blend565(c, liquid, pull) : c, af); layer(hiC, fmn(1, ab)); layer(rimC, fmn(1, ar));
+    layer(pull > 0 ? blend565(c, liquid, pull) : c, af); layer(blickC, fmn(1, ab)); layer(rimC, fmn(1, ar));
     if (nL == 1) rowPxa(row, x, cLast, A);
     else if (nL > 1) { const float inv = 1 / A; rowPxa(row, x, q({P.r * inv, P.g * inv, P.b * inv}), A); }
   }
@@ -5092,6 +5092,8 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
   // per row (strokes, layer weights) come from before the band loop (step 9; concave() there and here).
   if (band3e) {
     const float hw = softW * 0.5f, transK = clampf(p.liquidTransparency, 0, 1);
+    // The blick reflects the room light, not the liquid: the fizz pinpoint's neutral white through the panel dimmer (sim)
+    const uint16_t blickN = q({255 * p.brightness, 255 * p.brightness, 255 * p.brightness});
     auto tone = [&](uint16_t c) -> uint16_t { return rc.toneT > 0 ? blend565T(c, rc.toneC, rc.toneT) : c; };
     // the same toward the row's shaded tone colour (the convex nose mixes shaded colours)
     auto toneS = [&](uint16_t c, int ry) -> uint16_t { return rc.toneT > 0 ? blend565T(c, sp ? sp->toneC[ry] : rc.toneC, rc.toneT) : c; };
@@ -5106,7 +5108,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         if (!concave(ry, tw, dir, lk, a, wEff, blickK, rimK)) return;   // below visible opacity
         const float shade = 0.6f * (1 - fmn(1, lk));   // unlit edge: toward the deep liquid colour
         const PalCache &pc = *palCache;   // per-row colours (buildBandRows)
-        const uint16_t hiC = sp ? sp->hiC[ry] : rc.hiC;
+        const uint16_t blickC = sp ? shade565(blickN, rc.shadeF[ry]) : blickN;   // the blick: neutral room light, row shaded (sim)
         const uint16_t inner = sp ? sp->bandInner[ry] : pc.bandInner[ry];
         const uint16_t outer = sp ? shade565(tone(blend565(pc.bandLensMix[ry], rc.darkC, shade)), rc.shadeF[ry]) : tone(blend565(pc.bandLensMix[ry], rc.darkC, shade));
         const float invWidth = 1 / (wEff + hw);
@@ -5128,7 +5130,7 @@ void Tube::drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, 
         int xa = (int)ffloor(cLo), xb = (int)fceil(cHi); if (xa < xlo) xa = xlo; if (xb > xhi) xb = xhi;
         TU_SUB0(tuB);
         TCLIP(FB + ry * PANEL_W, PANEL_W);
-        bandRow(FB + ry * PANEL_W, xa, xb, xm, dir, hw, wEff, invWidth, a, fill, blickK, pull, rimK, inner, outer, bRows[ry], hiC, rimC);
+        bandRow(FB + ry * PANEL_W, xa, xb, xm, dir, hw, wEff, invWidth, a, fill, blickK, pull, rimK, inner, outer, bRows[ry], blickC, rimC);
         TU_SUB(TU_BANDK, tuB);
       } else {   // convex: thin nose inside the profile back to the ring
         // The thin nose shows the local backing sampled before body and glow (bare back, or a receding

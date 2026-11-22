@@ -1975,6 +1975,9 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     const fill = Math.max(0, Math.min(1, p.surfaceFill));
     veilA = FOAM_VEIL * strokeA * fill;   // a see-through dish does not veil the foam behind it
     const yc = (H - 1) / 2, blickY = yc - yc * Math.sin((s.light * Math.PI) / 180), blickInvH = 1 / Math.max(2, BLICK_H * H);
+    // A reflection takes the light's colour, not the liquid's: the blick is the room light, the fizz pinpoint's neutral
+    // white through the panel dimmer (firmware blickN).
+    const blickN = q(scale([255, 255, 255], p.brightness));
     const blickRow = (ry: number): number => p.surfaceBlick > 0 ? p.surfaceBlick * Math.max(0, 1 - Math.abs(ry - blickY) * blickInvH) : 0;
     // one-write layer compositor for the band pixel loop (see there); P premultiplied 888, A alpha
     const P: [number, number, number] = [0, 0, 0]; let A = 0, nL = 0, cLast = 0;
@@ -2027,7 +2030,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
           // same-direction layers (a tinted rim over the fill on a light back) stacked to 2 LSB before.
           // A single layer takes the plain path, byte-identical to the separate writes.
           nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
-          layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(hiC, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
+          layer(pull > 0 ? blend565(c, bRows[ry], pull) : c, af); layer(shadeRow(blickN, ry), Math.min(1, ab)); layer(rimC, Math.min(1, ar));
           if (nL === 1) pxaT(x, y, cLast, A);   // the firmware's rowPxa: the opacity rounded to 1/256
           else if (nL > 1) pxaT(x, y, q([P[0] / A, P[1] / A, P[2] / A]), A);
         }
