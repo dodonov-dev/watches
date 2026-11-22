@@ -4224,7 +4224,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
   // in-plane bound's factor (0: none, the drift); along the tube the common rise step `back` (glide, push-back bound)
   const float rref = fizzR(p, 1), invRef2 = rref > 0 ? 1 / (rref * rref) : 0, back = speed * dt;
   auto stepOf = [&](float r) { return speed * (r * r) * invRef2 * dt; };
-  float push = 0;
+  float push = band ? FOAM_PUSH : 0;   // vertical: a bubble's whole in-plane step (drift and contacts) at most FOAM_PUSH U_i dt from where it began (review 4)
   // a slot's transverse coordinate in the packing (vertical: the body's physical y) and in the grid (its physical row)
   auto py = [&](int s) { return bd ? bd[s].y : fz[s].y; };
   auto pz = [&](int s) { return bd ? bd[s].z : 0.0f; };   // vertical: the body's depth (landscape: unused)
@@ -4364,8 +4364,7 @@ FIZZ_IRAM static void __attribute__((noinline)) settleFoam(Tube &t, const Params
     }
     place(i, u, py(i) + slide, pz(i));
   }
-  if (band) {   // the contacts: a bubble's whole in-plane step (its drift in) at most FOAM_PUSH U_i dt from where it began
-    push = FOAM_PUSH;
+  if (band) {   // the contacts (the in-plane bound holds from the drift on)
     // An arrival pressed into a resident from below (a free bubble held this step, FIZZ_C_HELD): the resident's share
     // of the parting, U_h dt sin(phi) cos(phi) / (1 + sin^2(phi)) away from it in the plane (phi: the contact normal's
     // angle to the tube; exactly beneath: none, a symmetric rest), never along the tube (its u follows its endpoint).
@@ -4662,10 +4661,11 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
         const float sn = (f.x - x0) * nx + (y - y0) * ny + (z - z0) * nz;
         if (sn < 0 && n2 > 1e-8f) {
           const float qn = sn / n2;   // a division per held bubble
+          const float qp = qn * (n2 / (n2 + (ny * ny + nz * nz)));   // in the plane: its share, 1 / (1 + sin^2 phi) of the fixed-obstacle slide (the resident takes the other)
           float px = -qn * nx;
           if (park * (f.x + px - x0) < 0) px = x0 - f.x;   // never back down the tube past the step's start
           FIZZ_HELD_HOOK(t, k, px); c |= FIZZ_C_HELD;
-          f.x = f.x + px; y = y - qn * ny; z = z - qn * nz;
+          f.x = f.x + px; y = y - qp * ny; z = z - qp * nz;
           // its wall contact follows where the correction put it: on the circle (projected back from past it, or within
           // FIZZ_WALL_TOL of it) on the wall, inside it free (fizzMoveV would put a deflected bubble back on the wall)
           const float d2 = y * y + z * z, ai = fmx(0, a - FIZZ_WALL_TOL);

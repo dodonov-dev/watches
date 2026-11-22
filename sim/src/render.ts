@@ -1689,7 +1689,7 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
   const rref = fizzR32(p, 1), invRef2 = rref > 0 ? F(1 / F(rref * rref)) : 0;
   const stepOf = (r: number): number => F(F(F(speed * F(r * r)) * invRef2) * dt);   // a bubble's own rise step U_i dt (in the plane)
   const back = F(speed * dt);   // along the tube: the common rise step (glide, push-back bound)
-  let push = 0;   // the in-plane bound's factor (0: none, the drift)
+  const push = FOAM_PUSH;   // a bubble's whole in-plane step (drift and contacts) at most FOAM_PUSH U_i dt from where it began (review 4)
   // the endpoint target of a body (y, z) on display row yr (k from the body)
   const lid = side > 0 ? fizzLidFor(i, p) : null, lp = fizzEndLp32(lid, side);   // the time edge under the desk view's lid
   const endAt = (y: number, z: number, yr: number, r: number): number =>
@@ -1765,7 +1765,6 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
     }
     place(s, u, F(y + dy), F(z + dz));
   }
-  push = FOAM_PUSH;   // the contacts: a bubble's whole in-plane step (its drift in) at most FOAM_PUSH U_i dt from where it began
   const ct = fizzContact[i];
   for (let h = 0; h < arr.length; h++) {   // an arrival pressed into a resident: the resident's share, aside in the plane (firmware)
     const fh = arr[h];
@@ -1883,11 +1882,11 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
         const n2 = F(F(F(nx * nx) + F(ny * ny)) + F(nz * nz));
         const sn = F(F(F(F(f.x - x0) * nx) + F(F(y - y0) * ny)) + F(F(z - z0) * nz));
         if (sn < 0 && n2 > F(1e-8)) {
-          const qn = F(sn / n2);
+          const qn = F(sn / n2), qp = F(qn * F(n2 / F(n2 + F(F(ny * ny) + F(nz * nz)))));   // in the plane: its share, 1 / (1 + sin² φ) of the fixed-obstacle slide
           let px = F(-qn * nx);
           if (F(park * F(F(f.x + px) - x0)) < 0) px = F(x0 - f.x);
           c |= FIZZ_C_HELD;
-          f.x = F(f.x + px); y = F(y - F(qn * ny)); z = F(z - F(qn * nz));
+          f.x = F(f.x + px); y = F(y - F(qp * ny)); z = F(z - F(qp * nz));
           // the wall contact follows where the correction put it: on (or within FIZZ_WALL_TOL of) the circle, else free
           const d2 = F(F(y * y) + F(z * z)), ai = Math.max(0, F(a - FIZZ_WALL_TOL));
           if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }

@@ -863,10 +863,35 @@ static int lidSelftest() {
   t.fizzN = 0; t.bodyH = 0; t.lid = {false, 0, 0, 0}; t.fizzLidT = t.fizzLidTau = t.fizzLidDelta = 0;
   return bad ? 21 : 0;
 }
+// `selftest`, the whole-step in-plane bound from the first placement (Astra review 4 item 4): one foam bubble (r = r_ref
+// 2.5, U 48, dt 0.02, a flat zero-width band) under strong transverse buoyancy (0.6, 0.8, 0) drifts at most FOAM_PUSH U dt
+// a step (0.3394 px; the uncapped drift moved 0.4608); two in contact under it, each the same bound.
+static int pushSelftest() {
+  Tube &t = tubeAt(0); long bad = 0; double worst = 0;
+  auto fail = [&](const char *what, double got, double want) { if (bad++ < 8) fprintf(stderr, "selftest push: %s: got %.9g want %.9g\n", what, got, want); };
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 55; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  t.H = tubeLayout(p).H; const int H = t.H; const float R = boreR(p), bias0 = fizzBias0(t), r = fizzR(p, 1), a = R - r, dt = 0.02f, lim = FOAM_PUSH * p.fizzSpeed * dt;
+  for (int iy = 0; iy < H; iy++) { t.fizzSurf[iy] = 300; t.fizzSurfL[iy] = -5000; t.strokeR[iy] = 0; t.strokeL[iy] = 0; }
+  t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar; t.lid = {false, 0, 0, 0};
+  for (int pair = 0; pair < 2; pair++) {
+    t.fizzN = pair ? 2 : 1; t.foam->nOrder = 0;
+    const float Y[2] = {-4, -4 + 5.2f}, Z[2] = {0, 0.3f};
+    for (int k = 0; k < t.fizzN; k++) { t.body[k] = {Y[k], Z[k], 0, {0, 0, 0}}; t.fizz[k] = {300 - r, fizzRowOf(H, Y[k], a, fizzRowBias(k, 1, bias0)), 1, 1000, fizzLevelOf(Z[k], a)}; }
+    for (int st = 0; st < 40; st++) {
+      float y0[2], z0[2];
+      for (int k = 0; k < t.fizzN; k++) { y0[k] = t.body[k].y; z0[k] = t.body[k].z; t.fizz[k].life = 1000; }
+      settleFoam(t, p, p.fizzSpeed, t.fizzSurf, 1, dt, false, 0, t.strokeR, 0.6f, 0.8f, 0);
+      for (int k = 0; k < t.fizzN; k++) { const double d = hypot(t.body[k].y - y0[k], t.body[k].z - z0[k]); worst = fmax(worst, d); if (d > lim * (1 + 1e-5) + 1e-6) fail(pair ? "pair: in-plane past FOAM_PUSH U dt" : "isolated: in-plane past FOAM_PUSH U dt", d, lim); }
+    }
+  }
+  printf("SELFTEST push bound: isolated and contacting foam under buoyancy (0.6, 0.8, 0): in-plane worst %.4f px a step (bound %.4f); failures %ld\n", worst, lim, bad);
+  t.fizzN = 0; t.bodyH = 0;
+  return bad ? 22 : 0;
+}
 static int selftests() {
   int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest(), e5 = containSelftest(), e6 = supportSelftest(), e7 = packSelftest();
-  const int e8 = sideSelftest(), e9 = wallFlagSelftest(), e10 = loneSelftest(), e11 = lidSelftest();
-  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9 ? e9 : e10 ? e10 : e11;
+  const int e8 = sideSelftest(), e9 = wallFlagSelftest(), e10 = loneSelftest(), e11 = lidSelftest(), e12 = pushSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4 ? e4 : e5 ? e5 : e6 ? e6 : e7 ? e7 : e8 ? e8 : e9 ? e9 : e10 ? e10 : e11 ? e11 : e12;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
