@@ -1000,3 +1000,5 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Vertical fizz: bubbles resting on a closed glass end never leave (no gas loss): a full tube or upside down fills the pool.
 - check_fizz_steps job 'height + mode changes' runs the legacy landscape kernel mid-job: diagnostic only under --free.
 - Point 8 (neutral blick, every preset) changed landscape pixels: byte-identity checks now take 4842d1d as reference.
+- Vertical fizz frames, sim vs firmware (scratch harness, firmware state loaded into the sim, point 7): worst 148/255,
+  ~2k px > 12 over 23 back-15 frames, the same before point 7: unexplained residue (placement? mask x rounding?).
