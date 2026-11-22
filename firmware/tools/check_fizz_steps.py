@@ -377,9 +377,38 @@ static int motionSelftest() {
          flightErr, tauErr, rollMax, FIZZ_KW * U * dt, rollEnd, bad);
   return bad ? 11 : 0;
 }
+// `selftest`, chain parking (point 6): a straight column with a free time edge, one foam bubble parked at it, a chain of
+// bubbles behind it at the same depth and row, each touching the next. Over 300 steps a bubble only ever starts a foam
+// life inside its own endpoint zone (u > uc - FOAM_CATCH), never by the contact; the chain is held back behind the foam.
+static int chainSelftest() {
+  Tube &t = tubeAt(0); long bad = 0, parks = 0; double worst = 0;
+  Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = 54; p.fizzSize = 5; p.fizzSizeVar = 0; p.fizzSpeed = 48;
+  p.fizzSource = 1; p.fizzSourceRate = 0; p.fizzFoamLife = 4; p.freeLiquid = false;
+  t.H = tubeLayout(p).H; t.fizzShift = 0; t.fizzLen = 400; t.fizzExposed = 1; t.springClock = 0; t.springScatter = 0;
+  for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 300; t.fizzSurfL[r] = 0; t.strokeR[r] = 6; t.strokeL[r] = 0; } t.surfH = t.H;
+  const float R = boreR(p), r0 = fizzR(p, 1), a = R - r0, m = 2 * r0 + 0.5f;
+  t.bodyH = t.H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar; t.foam->nOrder = 0;
+  const int N = 12; t.fizzN = N;
+  for (int k = 0; k < N; k++) {
+    t.body[k] = {0, 0, 0, {0, 0, 0}};
+    t.fizz[k] = {300 - r0 - k * (m - 0.2f), fizzRowOf(t.H, 0, a, fizzRowBias(k, 1, fizzBias0(t))), 1, k == 0 ? 3.5f : 0, 0.5f};
+  }
+  parkWorst = -1e30; parkN = 0; long held = 0;
+  for (int n = 0; n < 300; n++) {
+    float x0[FIZZ_POOL]; for (int k = 0; k < t.fizzN; k++) x0[k] = t.fizz[k].x;
+    stepFizzTube(0, p, 0.02f, -1, 0, 0, Pose{1, 0, 0});
+    for (int k = 0; k < t.fizzN; k++) if (t.fizz[k].v != 0 && t.fizz[k].life == 0 && t.fizz[k].x - x0[k] < 0.5f * p.fizzSpeed * 0.02f) held++;   // pushed back by the foam
+  }
+  parks = parkN; worst = parkWorst;
+  if (parks == 0 || !(worst < 0)) { bad++; fprintf(stderr, "selftest chain: %ld parks, worst %g px short of the zone\n", parks, worst); }
+  if (held == 0) { bad++; fprintf(stderr, "selftest chain: the foam never held a bubble back\n"); }
+  t.fizzN = 0; t.bodyH = 0;
+  printf("SELFTEST chain %d bubbles: %ld parks, each inside its own zone (worst %.3g px past its start), %ld bubble-steps held back by the foam; failures %ld\n", N, parks, -worst, held, bad);
+  return bad ? 12 : 0;
+}
 static int selftests() {
-  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest();
-  return e ? e : e2 ? e2 : e3;
+  int e = birthSelftest(); const int e2 = rebuildSelftest(), e3 = motionSelftest(), e4 = chainSelftest();
+  return e ? e : e2 ? e2 : e3 ? e3 : e4;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;

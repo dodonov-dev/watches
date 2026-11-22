@@ -1586,23 +1586,31 @@ function fizzMoveV32(b: number[], a: number, U: number, by: number, bz: number, 
   if (d1 > 0) { const q1 = F(a / F(Math.sqrt(d1))); y = F(y1 * q1); z = F(z1 * q1); }
   return done(F(tFree + F(FIZZ_KW * tw)));
 }
-/** A free bubble f (radius r) touching foam parked on `side`: one of the candidates (the step's starting foam and those
- *  parked since), still foam there (firmware touchesFoam). */
-function touchesFoamV(i: number, p: Params, cand: Uint8Array, f: Fizz, r: number, side: number): boolean {
-  const arr = fizz[i];
+/** The vertical watch's contact of a free bubble (slot k, radius r) with the foam parked on `side` (point 6): in 3D, along
+ *  the tube and the bodies' (y, z), so bubbles at different depths do not touch; candidates: the step's starting foam
+ *  (cand), still foam there. The deepest contact (the smallest distance / contact distance, ties: the lowest slot), or
+ *  -1 (firmware foamContactV). */
+function foamContactV32(i: number, p: Params, cand: Uint8Array, k: number, r: number, side: number): number {
+  const arr = fizz[i], body = fizzBody[i], f = arr[k], y = body[2 * k], z = body[2 * k + 1];
+  let best = -1, bd2 = 0, bm2 = 1;
   for (let j = 0; j < arr.length; j++) {
     if (!cand[j]) continue;
     const g = arr[j];
     if (F(g.life * side) <= 0) continue;
-    const m = F(F(r + fizzR32(p, g.v)) + 0.5), dx = F(g.x - f.x), dy = F(g.y - f.y);
-    if (Math.abs(dx) < m && Math.abs(dy) < m && F(F(dx * dx) + F(dy * dy)) < F(m * m)) return true;
+    const m = F(F(r + fizzR32(p, g.v)) + 0.5), dx = F(f.x - g.x), dy = F(y - body[2 * j]), dz = F(z - body[2 * j + 1]);
+    if (!(Math.abs(dx) < m && Math.abs(dy) < m && Math.abs(dz) < m)) continue;
+    const d2 = F(F(F(dx * dx) + F(dy * dy)) + F(dz * dz)), m2 = F(m * m);
+    if (!(d2 < m2)) continue;
+    const l = F(d2 * bm2), rr = F(bd2 * m2);
+    if (best < 0 || l < rr || (l === rr && j < best)) { best = j; bd2 = d2; bm2 = m2; }
   }
-  return false;
+  return best;
 }
 const foamOrderV = new Int16Array(FIZZ_POOL), foamKV = new Float32Array(FIZZ_POOL), foamYLoV = new Float32Array(FIZZ_POOL), foamYHiV = new Float32Array(FIZZ_POOL);
 /** settleFoam of the vertical watch in float32 (firmware settleFoam with `band`): each parked bubble glides to its own
  *  endpoint target (the whole-disc support of L + P, k from its body at the step's start), its rows those its disc takes
- *  at its frozen depth, a pushed pair parts to m + FOAM_GAP. Visits pairs in the firmware's sweep order (it uses a grid to skip the far ones: the same answers). */
+ *  at its frozen depth, pairs at depths further apart than their contact distance do not touch, a pushed pair parts to
+ *  m + FOAM_GAP. Visits pairs in the firmware's sweep order (it uses a grid to skip the far ones: the same answers). */
 function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float32Array, band: Float32Array, side: number, dt: number): void {
   const arr = fizz[i], bd = fizzBody[i], follow = Math.min(1, F(FOAM_FOLLOW * dt)), R = boreR32(p), yc = F((H - 1) * 0.5), bias0 = fizzBias032(i);
   const front = (s: number, y: number, r: number): number => fizzEndSupport32(surf, band, H, side, y, r, foamKV[s])[1];
@@ -1631,6 +1639,7 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
       const j = foamOrderV[b], g = arr[j];
       if (j === s || F(slide * F(g.y - f.y)) <= 0) continue;
       const m = F(F(r + fizzR32(p, g.v)) + 0.5), du = F(F(side * g.x) - u), dy = F(g.y - f.y);
+      if (Math.abs(F(bd[2 * j + 1] - bd[2 * s + 1])) >= m) continue;
       if (F(F(du * du) + F(dy * dy)) < F(m * m)) { slide = 0; break; }
     }
     place(s, u, F(f.y + slide));
@@ -1648,6 +1657,7 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
         const m = F(F(rf + fizzR32(p, g.v)) + 0.5);
         let du = F(side * F(g.x - f.x)), dy = F(g.y - f.y);
         if (Math.abs(du) >= m || Math.abs(dy) >= m || F(F(du * du) + F(dy * dy)) >= F(m * m)) continue;
+        if (Math.abs(F(bd[2 * gs + 1] - bd[2 * fi + 1])) >= m) continue;
         const mg = F(m + FOAM_GAP), d = F(Math.sqrt(F(F(du * du) + F(dy * dy)))), kk = F(F(mg - d) / 2);
         const nu = d > F(1e-4) ? F(du / d) : -1, ny = d > F(1e-4) ? F(dy / d) : 0;
         place(fi, F(F(side * f.x) - F(kk * nu)), F(f.y - F(kk * ny)));
@@ -1666,8 +1676,8 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
  *  release (fizzMoveV32); agitation stirs it across the bore (zero mean, bounded by the bore). fizzFlatRise /
  *  fizzEdgeRise / fizzDriftGain / fizzAcrossGain are not read. Along the tube: a closed end is glass (the whole disc
  *  inside, resting on it, no foam); at a free surface a bubble reaching its own endpoint zone parks as foam (or pops
- *  without foam) and settleFoamV glides it to L + P; a bubble touching the foam joins it (the landscape kernel's chain,
- *  point 6 replaces it). The other end keeps the centre inside. Face up exactly: no axial motion,
+ *  without foam) and settleFoamV glides it to L + P; a bubble that only touches the step's starting foam (in depth too)
+ *  is held back, never parked by the contact. The other end keeps the centre inside. Face up exactly: no axial motion,
  *  the pool fills to its cap and births wait. */
 function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitation: number): void {
   dt = F(dt); agitation = F(agitation);
@@ -1691,7 +1701,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
   const side = bx > 0 ? 1 : bx < 0 ? -1 : 0;
   const open = side !== 0 && (exposed & (side > 0 ? 1 : 2)) !== 0, park = open && foamOn ? side : 0;
   const S = side >= 0 ? surf : surfL, B = side >= 0 ? strokeR : strokeL;
-  const cand = foamCand[i];   // touchesFoam's candidates: the foam on that surface, and those parked during the loop
+  const cand = foamCand[i];   // touchesFoam's candidates: the step's starting foam on that surface
   for (let j = 0; j < arr.length; j++) cand[j] = park !== 0 && F(arr[j].life * park) > 0 ? 1 : 0;
   const life = F(p.fizzFoamLife), bb = [0, 0, 0];
   for (let k = 0; k < arr.length; k++) {
@@ -1712,10 +1722,26 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     bb[0] = body[2 * k]; bb[1] = body[2 * k + 1]; bb[2] = contact[k];
     if (stir > 0) { bb[0] = F(bb[0] + F(stir * F(F(2 * Math.random()) - 1))); bb[1] = F(bb[1] + F(stir * F(F(2 * Math.random()) - 1))); bb[2] &= ~FIZZ_C_WALL; }
     const tx = fizzMoveV32(bb, a, U, by, bz, inv, dt);
-    const y = bb[0], z = bb[1]; let c = bb[2] & ~FIZZ_C_END;
+    let y = bb[0], z = bb[1], c = bb[2] & ~FIZZ_C_END;
     f.x = F(f.x + F(F(U * bx) * tx));
-    f.y = fizzRowOf32(H, y, a, fizzRowBias32(k, f.v, bias0));
+    const bias = fizzRowBias32(k, f.v, bias0);
+    f.y = fizzRowOf32(H, y, a, bias);
     body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
+    if (park) {   // pressed into the foam ahead: pushed back out of the deepest contact, never toward the surface (point 6)
+      const j = foamContactV32(i, p, cand, k, r, park);
+      if (j >= 0) {
+        const g = arr[j], m = F(F(F(r + fizzR32(p, g.v)) + 0.5) + FOAM_GAP), dx = F(f.x - g.x), dy = F(y - body[2 * j]), dz = F(z - body[2 * j + 1]);
+        const d = F(Math.sqrt(F(F(F(dx * dx) + F(dy * dy)) + F(dz * dz))));
+        let px: number, py: number, pz: number;
+        if (d > F(1e-4)) { const q = F(F(m - d) / d); px = F(dx * q); py = F(dy * q); pz = F(dz * q); }
+        else { px = F(-park * m); py = pz = 0; }
+        if (F(park * px) > 0) px = 0;
+        f.x = F(f.x + px); y = F(y + py); z = F(z + pz);
+        const d2 = F(F(y * y) + F(z * z));
+        if (d2 > F(a * a)) { const q = F(a / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); c |= FIZZ_C_WALL; }
+        f.y = fizzRowOf32(H, y, a, bias); body[2 * k] = y; body[2 * k + 1] = z; f.z = fizzLevelOf32(z, a);
+      }
+    }
     if (side !== 0) {
       const u = F(side * f.x);
       if (!open) {
@@ -1729,8 +1755,8 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
         if (zone) {
           if (!foamOn) { if (spring) { f.v = 0; f.life = 0; } else scatterV(i, p, H, f, k, side < 0 ? 0 : 1); contact[k] = 0; continue; }
           f.x = F(side * Math.min(u, ut));
-          f.life = F(F(side * life) * F(0.5 + Math.random())); cand[k] = 1;
-        } else if (park && touchesFoamV(i, p, cand, f, r, park)) { f.life = F(F(side * life) * F(0.5 + Math.random())); cand[k] = 1; }   // into the foam: joins it
+          f.life = F(F(side * life) * F(0.5 + Math.random()));
+        }
       }
     }
     for (let s = -1; s <= 1; s += 2) {   // the other end (both, face up): the centre stays inside
