@@ -1,7 +1,7 @@
 import './style.css';
 import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, orientationTilt, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -282,9 +282,9 @@ const dev = { along: 0, across: 0, normal: 1, gyroAcross: 0 };
 function askOrientation() {
   const D = DeviceOrientationEvent as any;
   const go = () => window.addEventListener('deviceorientation', (e) => {
-    // phone held landscape like the watch: gamma tilts along (left/right end down), beta across; all three
-    // components from the one rotation (physics.ts orientationTilt), normal + face up
-    Object.assign(dev, orientationTilt(e.beta ?? 0, e.gamma ?? 0));
+    // phone held landscape like the watch: gamma tilts along (left/right end down), beta across; vertical: all three
+    // components from the one rotation (physics.ts orientationTilt), landscape: legacy along / across (phoneTilt)
+    Object.assign(dev, phoneTilt(e.beta ?? 0, e.gamma ?? 0, params.vertical));
   });
   if (typeof D?.requestPermission === 'function') D.requestPermission().then((s: string) => { if (s === 'granted') go(); });
   else go();

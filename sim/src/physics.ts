@@ -45,6 +45,13 @@ export function orientationTilt(betaDeg: number, gammaDeg: number): { along: num
   const b = (betaDeg * Math.PI) / 180, g = (gammaDeg * Math.PI) / 180;
   return { along: Math.cos(b) * Math.sin(g), across: Math.sin(b), normal: Math.cos(b) * Math.cos(g) };
 }
+/** The phone input the sim feeds: a vertical watch takes the 3D mapping (orientationTilt); landscape keeps its legacy
+ *  along = sin gamma, across = sin beta (its tuned liquid / light response), only normal from the one rotation. */
+export function phoneTilt(betaDeg: number, gammaDeg: number, vertical: boolean): { along: number; across: number; normal: number } {
+  const o = orientationTilt(betaDeg, gammaDeg);
+  if (vertical) return o;
+  return { along: Math.sin((gammaDeg * Math.PI) / 180), across: Math.sin((betaDeg * Math.PI) / 180), normal: o.normal };
+}
 /** Before any valid sample: face up (what the legacy zero along / across means: flat on the table). */
 export const POSE_DEFAULT: Readonly<Pose> = { x: 0, y: 0, z: 1 };
 /** Sets `pose` to normalize(-along, -across, normal) and returns true; a vector shorter than POSE_MIN_G or not

@@ -12,7 +12,7 @@
 import {
   ANGLE_HARD_MAX_DEG, ANGLE_VERTICAL_MAX_DEG, capDynMaxPx, fillSloshMaxPx, filmFullPxS, GravityNorm, ImuFilter, PHYS_DT,
   columnLen, contactLeads, drainTrace, fillLevels, followClock, mirrored, newTube, stepTube, type TiltInput,
-  orientationTilt, POSE_DEFAULT, POSE_MIN_G, updatePose, type Pose,
+  orientationTilt, phoneTilt, POSE_DEFAULT, POSE_MIN_G, updatePose, type Pose,
 } from '../src/physics';
 import { DEFAULT_PARAMS, PRESETS, migrateParams, presetParams } from '../src/params';
 
@@ -548,8 +548,20 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
     const up = orientationTilt(0, 0), down = orientationTilt(180, 0), r = orientationTilt(0, 30), f = orientationTilt(30, 0);
     check(unitOk && up.normal === 1 && down.normal < -0.999 && Math.abs(r.along - 0.5) < 1e-12 && Math.abs(f.across - 0.5) < 1e-12 && r.normal > 0 && f.normal > 0,
       'phone orientation mapping is not a consistent unit vector');
+    // landscape keeps the legacy along = sin gamma / across = sin beta at combined angles (beta 60, gamma 45: along
+    // 0.707, the 3D mapping would give cos b sin g = 0.354); vertical takes the 3D mapping
+    const s = (d: number) => Math.sin((d * Math.PI) / 180);
+    let landOk = true, vertOk = true;
+    for (const [b, g] of [[60, 45], [-30, 70], [45, -20], [10, 80]]) {
+      const l = phoneTilt(b, g, false), v = phoneTilt(b, g, true), o = orientationTilt(b, g);
+      landOk &&= l.along === s(g) && l.across === s(b) && l.normal === o.normal;
+      vertOk &&= v.along === o.along && v.across === o.across && v.normal === o.normal;
+    }
+    const l = phoneTilt(60, 45, false);
+    check(landOk, `landscape phone mapping changed: beta 60 gamma 45 along ${l.along.toFixed(3)} across ${l.across.toFixed(3)}, want ${s(45).toFixed(3)} ${s(60).toFixed(3)}`);
+    check(vertOk, 'vertical phone mapping is not orientationTilt');
   }
-  if (!bad) console.log('ok  signed normal: both hemispheres (board pipeline), upright, back / forward tilt, sign reversal exact, legacy outputs independent of it, pose gain-free, low |g| holds the last pose, phone mapping a unit vector');
+  if (!bad) console.log('ok  signed normal: both hemispheres (board pipeline), upright, back / forward tilt, sign reversal exact, legacy outputs independent of it, pose gain-free, low |g| holds the last pose, phone mapping a unit vector, landscape phone legacy at combined angles');
 }
 if (failures) throw new Error(`${failures} failure(s)`);
 console.log('all scenarios within bounds');
