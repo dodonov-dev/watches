@@ -335,6 +335,8 @@ export const SPRITE_SHEETS = [
   'digits-ivory-enamel',
   'digits-carved-slate',
   'digits-amber-resin',
+  'digits-ochre-pebble',
+  'digits-ochre-stroke',
 ];
 /** The file of a sheet at this canvas's cell height: `<name>.png` (64 rows) or `<name>-<rows>.png`, + `.json`. */
 export const spriteFile = (name: string): string => `${name}${SPRITE_CELL_H === 64 ? '' : `-${SPRITE_CELL_H}`}.png`;

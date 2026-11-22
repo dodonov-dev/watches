@@ -995,3 +995,6 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   is a 1-step parity seed that a stacked write can cross a 565 boundary with (nocturne@240f, 2026-11-22).
 - The fill's foam veil is a front-glass wedge (FOAM_VEIL, linear across the band), not the fill as drawn (smoothstep,
   coverage); blick and rim veil by their drawn opacity since 2026-11-22. One model for all three would be simpler.
+- make-digit-sprites.py splits on empty columns only: overlapping-but-separate glyphs (cave-ochre 7|8) needed a manual connected-component repack; cut by components instead.
+- digit-sprites skill: paths say /home/andrey; codex image_gen returns ~3:1 even when asked 5:1 (harmless).
+- Sprite digits under liquid lose narrow counters/notches (3's notch, 6's opening fill in) — not the shadow (digitShadow=0 same); any sprite font, default preset @ lcd316 320w10-8-6 (2026-11-22). Check the wet-digit path.

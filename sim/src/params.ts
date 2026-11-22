@@ -140,7 +140,7 @@ export interface Params {
   digitTint: string;     // sprite fonts only: multiply colour (e.g. #cd7f32 bronze)
   digitTintAmount: number; // 0 = untinted sheet, 1 = fully tinted
   digitTone: number;     // sprite fonts only: -1 = black, 0 = source, 1 = white
-  digitFont: number;     // 0..4 bitmap, 5..11 image sprites
+  digitFont: number;     // 0..4 bitmap, 5..13 image sprites
   digitScaleX: number;   // hours tube: horizontal scale (0.5..6, fractional OK — nearest-neighbour)
   digitScaleY: number;   // hours tube: vertical scale — keep lower than X to counter the vial's vertical stretch
   digitScaleXMin: number; // minutes tube
@@ -1784,9 +1784,10 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
     help: 'Bitmap fonts are code-rendered. Image fonts preserve rendered material, bevel, and texture.',
     group: 'Digits',
     label: 'font',
-    min: 0, max: 11, step: 1,
+    min: 0, max: 13, step: 1,
     options: ['3×5 bitmap', '4×6 narrow bitmap', '5×7 round bitmap', '5×7 seven-segment', '6×8 bold bitmap',
-      'Steel', 'Brass steampunk', 'Copper gauge', 'Forged iron', 'Ivory enamel', 'Carved slate', 'Amber resin'],
+      'Steel', 'Brass steampunk', 'Copper gauge', 'Forged iron', 'Ivory enamel', 'Carved slate', 'Amber resin',
+      'Ochre pebble', 'Ochre stroke'],
   },
   digitTint: { help: 'Sprite fonts only: multiply colour.', group: 'Digits', label: 'image tint colour' },
   digitTintAmount: { help: 'Sprite fonts only: 0 = untinted sheet, 1 = fully tinted.', group: 'Digits', label: 'image tint amount', min: 0, max: 1, step: 0.05 },
