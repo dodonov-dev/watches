@@ -21,7 +21,7 @@ Derivation: Fable (scratchpad deskview/, compare.png = current | params only | l
 
 ## Params
 - New design param `viewElevation` (deg, 0 = off = today's look exactly; vertical only; slider 0-60, default 0;
-  the user's look → 30). T computed per frame from the pose (τ) and e; T = 0 when off.
+  the user's look → 20). T computed per frame from the pose (τ) and e; T = 0 when off.
 - surfaceWidth keeps its meaning only when off; with the lid the band is the lid (its height is geometric, no cap).
 - surfaceBlick: physically a ~6 % mirror at that angle; the blick becomes a thin crescent at the back rim (the
   meniscus there reflects the ceiling) — optional, after the lid.
