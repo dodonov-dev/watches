@@ -981,3 +981,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - NVS migration covers v31 -> v32 only (main.cpp paramsLoad, static_assert on the CRC); a general per-version field map
   would carry looks across every schema change.
 - Edge shade: the generated ray tables put 128 KB a rod in the image (flash time); rodFold still runs at boot (~ms).
+- Fizz, sim vs firmware: after a tubeHeight change the sim skips stepFizz until drawTube republishes the surfaces
+  (surf.length !== H); the firmware steps on the old rows. One step of spring cadence apart (the shared jobs render first).
+- Fizz parity: the legacy settleFoam packing tests contacts its last sweep left at exactly touching distance, so doubles
+  (sim) and floats (firmware) take or skip a push / slide there; free-running shared jobs drift apart after ~200 steps
+  (check_fizz_steps.py --sim --free). A float32-ordered landscape kernel in the sim would make them exact.
+- Fizz: legacy foam / spawn bounds are [wall + r, H - wall - r] (centre H/2), half a pixel off boreR's (H - 1)/2 rows and
+  1 px past the bore on the far wall; vertical foam bodies inherit it until point 5.
+- Fizz: fizzBlocked (vertical births postponed, nothing fits the bore) is not reported by main (`f` / status line).

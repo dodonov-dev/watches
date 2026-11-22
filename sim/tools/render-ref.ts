@@ -8,7 +8,7 @@
 // file's fields over DEFAULT_PARAMS); the fizz draws come from the shared seeded generator (xorshift32, (word >>> 8) / 2^24,
 // the native stub's); a frame before the first step, after every `every`-th and before a run that changes params; after
 // each step (and its frame) one state line per tube to argv[3] ('-' = stdout): `S step tube fizzN draws springClock
-// springScatter`, x y v life z per slot, then the frame's surfaces it steps on: `len exposed shift H` + surf, surfL per
+// springScatter bodyH blocked`, x y v life z and the vertical body's y z per slot, then the frame's surfaces it steps on: `len exposed shift H` + surf, surfL per
 // row. lockstep (a file of the firmware's lines): each step starts from the firmware's state and surfaces.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
@@ -72,12 +72,14 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
     if (step === 0 || run.set) renderFrame(tubes, ps);   // the first frame, and one after a params change (the native job's)
     for (let k = 0; k < run.n; k++) {
       if (ref.length && step > 0 && !(k === 0 && run.set)) tubes.forEach((_, i) => {
-        const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], e = 7 + 5 * n, H = +w[e + 3];
+        const w = ref[(step - 1) * tubes.length + i], n = +w[3], slots = [], body = new Float32Array(2 * n), e = 9 + 7 * n, H = +w[e + 3];
         if (+w[1] !== step || +w[2] !== i) throw new Error(`render-ref: lockstep line ${w.slice(0, 3).join(' ')}, want step ${step} tube ${i}`);
-        for (let s = 0; s < n; s++) slots.push({ x: +w[7 + 5 * s], y: +w[8 + 5 * s], v: +w[9 + 5 * s], life: +w[10 + 5 * s], z: +w[11 + 5 * s] });
+        for (let s = 0, o = 9; s < n; s++, o += 7) {
+          slots.push({ x: +w[o], y: +w[o + 1], v: +w[o + 2], life: +w[o + 3], z: +w[o + 4] }); body[2 * s] = +w[o + 5]; body[2 * s + 1] = +w[o + 6];
+        }
         const rows = (o: number): Float32Array => Float32Array.from(w.slice(o, o + H), Number);
-        fizzTestLoad(i, { fizz: slots, springClock: +w[5], springScatter: +w[6], len: +w[e], exposed: +w[e + 1], shift: +w[e + 2],
-          surf: rows(e + 4), surfL: rows(e + 4 + H) });
+        fizzTestLoad(i, { fizz: slots, springClock: +w[5], springScatter: +w[6], body, bodyH: +w[7], blocked: +w[8],
+          len: +w[e], exposed: +w[e + 1], shift: +w[e + 2], surf: rows(e + 4), surfL: rows(e + 4 + H) });
       });
       for (const t of tubes) t.agitation = run.agitation;
       stepFizz(ps, run.dt, run.along, run.across, run.agitation);
@@ -85,8 +87,8 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
       if (step % fj.every === 0) renderFrame(tubes, ps);
       tubes.forEach((_, i) => {   // after the step and its frame
         const st = fizzTestState(i);
-        let line = `S ${step} ${i} ${st.fizz.length} ${draws} ${g(st.springClock)} ${g(st.springScatter)}`;
-        for (const f of st.fizz) line += ` ${g(f.x)} ${g(f.y)} ${g(f.v)} ${g(f.life)} ${g(f.z)}`;
+        let line = `S ${step} ${i} ${st.fizz.length} ${draws} ${g(st.springClock)} ${g(st.springScatter)} ${st.bodyH} ${st.blocked}`;
+        st.fizz.forEach((f, k) => { line += ` ${g(f.x)} ${g(f.y)} ${g(f.v)} ${g(f.life)} ${g(f.z)} ${g(st.body[2 * k])} ${g(st.body[2 * k + 1])}`; });
         line += ` ${g(st.len)} ${st.exposed} ${g(st.shift)} ${st.surf.length}`;
         for (const v of st.surf) line += ` ${g(v)}`;
         for (const v of st.surfL) line += ` ${g(v)}`;

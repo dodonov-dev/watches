@@ -1121,19 +1121,32 @@ const springScatter: number[] = Array(TUBE_COUNT).fill(0);
 const springClock: number[] = Array(TUBE_COUNT).fill(0);
 /** This spring birth in tube i comes from the spring itself (covered by the liquid), not scattered. */
 const springBirth = (i: number): boolean => springScatter[i] <= 0 || Math.random() >= springScatter[i];
+/** Vertical watch (tilted fizz, docs/tilted-fizz-plan.md; firmware FizzBody): per tube, slot for slot beside fizz[i], a
+ *  bubble's physical place in the bore's cross-section — [2k] y across the tube, [2k + 1] z toward the viewer, tube px
+ *  from the bore centre: a whole sphere of radius r keeps its centre in y² + z² ≤ (R − r)², R = boreR (its (H − 1)/2
+ *  row-centre geometry) — and its contact (0 free; the wall / end contact of point 4). The fizz row and tint level are
+ *  derived from it (stepFizzVertical). bodyH: the tube rows the bodies describe (0 none: the landscape step drops them);
+ *  fizzBlockedN: births postponed since load (no bubble of the drawn size fits the bore). */
+const fizzBody: Float32Array[] = Array.from({ length: TUBE_COUNT }, () => new Float32Array(2 * FIZZ_POOL));
+const fizzContact: Uint8Array[] = Array.from({ length: TUBE_COUNT }, () => new Uint8Array(FIZZ_POOL));
+const bodyH: number[] = Array(TUBE_COUNT).fill(0);
+const fizzBlockedN: number[] = Array(TUBE_COUNT).fill(0);
 /** Tube i's stepped fizz state, read by the shared stepped-state jobs (tools/render-ref.ts, check_fizz_steps.py --sim). */
 export interface FizzTestState {
   fizz: readonly Fizz[]; springClock: number; springScatter: number;
+  body: Float32Array; bodyH: number; blocked: number;   // body: 2 per slot (y, z), fizz.length slots
   len: number; exposed: number; shift: number; surf: Float32Array; surfL: Float32Array;   // the last frame's, stepFizz's input
 }
 export function fizzTestState(i: number): FizzTestState {
   return { fizz: fizz[i], springClock: springClock[i], springScatter: springScatter[i],
+    body: fizzBody[i].subarray(0, 2 * fizz[i].length), bodyH: bodyH[i], blocked: fizzBlockedN[i],
     len: fizzLen[i], exposed: fizzExposed[i], shift: fizzShift[i], surf: fizzSurf[i], surfL: fizzSurfL[i] };
 }
 /** Replaces tube i's stepped fizz state and the frame's surfaces it steps on (the lockstep jobs: each step starts from
  *  the firmware's). */
 export function fizzTestLoad(i: number, s: FizzTestState): void {
   fizz[i] = s.fizz.map((f) => ({ ...f })); springClock[i] = s.springClock; springScatter[i] = s.springScatter;
+  fizzBody[i].set(s.body); bodyH[i] = s.bodyH; fizzBlockedN[i] = s.blocked;
   fizzLen[i] = s.len; fizzExposed[i] = s.exposed; fizzShift[i] = s.shift;
   fizzSurf[i] = Float32Array.from(s.surf); fizzSurfL[i] = Float32Array.from(s.surfL);
 }
@@ -1158,6 +1171,19 @@ function ensureFizz(i: number, p: Params, len: number, agitation = 0): void {
   if (p.fizzSource === 1) return;
   const want = fizzWant(p, len, agitation);
   const H = tubeLayout(p).H;
+  if (p.vertical) {   // the vertical watch: x anywhere along the column, (y, z) uniform over the bore's disc (scatterV)
+    fizzBodiesFor(i, p, H);
+    const b = fizzBody[i], yc = F((H - 1) * 0.5);
+    while (arr.length < want) {
+      const k = arr.length, f: Fizz = { x: 0, y: 0, v: fizzV32(), life: 0, z: 0 };
+      f.x = F(Math.random() * F(len));
+      arr.push(f); fizzContact[i][k] = 0;
+      const a = F(boreR32(p) - fizzR32(p, f.v));
+      if (!(a > 0)) { f.v = 0; f.y = yc; f.z = 0.5; b[2 * k] = b[2 * k + 1] = 0; fizzBlockedN[i]++; continue; }   // idle: the step tries again
+      const [y, z] = fizzDisc32(a);
+      b[2 * k] = y; b[2 * k + 1] = z; f.y = F(yc + y); f.z = fizzLevelOf32(z, a);
+    }
+  }
   while (arr.length < want) {
     const v = fizzV(); arr.push({ x: Math.random() * len, y: fizzSpawnY(p, H, v), v, life: 0, z: fizzZ() });
   }
@@ -1184,6 +1210,39 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
   const lo = fizzWall(p) + fizzR(p, v), hi = H - lo;
   return hi <= lo ? H / 2 : lo + Math.random() * (hi - lo);
 }
+// The vertical watch's kernel in float32, in the firmware's order of operations (Math.fround after every operation, as
+// render.cpp evaluates it; check_fizz_steps.py --sim compares the two step by step). Its births (point 3): the fizz row is
+// derived from the physical y, f.y = yc + y, yc = (H − 1)/2 (boreR's row centres; the lens stays in the render, which reads
+// f.y as before), and the tint level from z: f.z = the FIZZ_DEPTHS level centre of (a − z)/2a, a = R − r (0 at the front
+// glass, 1 at the back). A size that does not fit (a ≤ 0) is not born: the slot stays idle, fizzBlockedN counts it.
+const F = Math.fround;
+const fizzR32 = (p: Params, v: number): number => F(F(F(p.fizzSize) / 2) * F(1 + F(F(v - 1) * F(p.fizzSizeVar))));
+const fizzV32 = (): number => F(0.5 + F((Math.trunc(F(Math.random() * FIZZ_SIZES)) + 0.5) * F(1 / FIZZ_SIZES)));
+const fizzWall32 = (p: Params): number => p.glassWall > 0 ? Math.max(1, F(p.glassWall)) : 0;
+const fizzHideY32 = (p: Params, v: number): number => { const w = fizzWall32(p); return w > 0 ? Math.max(0, F(w - fizzR32(p, v))) : 3; };
+const boreR32 = (p: Params): number => F(Math.max(1, F((Math.max(4, Math.min(TUBE_HEIGHT_MAX, Math.round(p.tubeHeight))) - 1) / 2 - Math.max(0, F(p.glassWall)))));
+const fizzLevelOf32 = (z: number, a: number): number => (Math.max(0, Math.min(FIZZ_DEPTHS - 1, Math.trunc(F(F(F(a - z) / F(2 * a)) * FIZZ_DEPTHS)))) + 0.5) / FIZZ_DEPTHS;
+/** A point uniform over the disc of radius a > 0 without rejection: ρ = a√u, φ = 2πv (two draws). */
+function fizzDisc32(a: number): [number, number] {
+  const rho = F(a * F(Math.sqrt(Math.random()))), phi = F(F(6.28318531) * Math.random());
+  return [F(rho * F(Math.cos(phi))), F(rho * F(Math.sin(phi)))];
+}
+/** The live slots' bodies, once they do not describe this height (the first vertical step or render, after a height or
+ *  mode change): y = f.y − yc, z at the depth of the slot's tint level, held inside the disc; no draws, f.z kept. */
+function fizzBodiesFor(i: number, p: Params, H: number): void {
+  if (bodyH[i] === H) return;
+  const yc = F((H - 1) * 0.5), R = boreR32(p), b = fizzBody[i], arr = fizz[i];
+  for (let k = 0; k < arr.length; k++) {
+    const f = arr[k];
+    b[2 * k] = F(F(f.y) - yc); b[2 * k + 1] = 0; fizzContact[i][k] = 0;
+    if (f.v === 0) continue;
+    const a = F(R - fizzR32(p, F(f.v))), y = b[2 * k], zm = F(Math.sqrt(Math.max(0, F(F(a * a) - F(y * y)))));
+    b[2 * k + 1] = Math.max(-zm, Math.min(zm, F(a * F(1 - F(2 * F(f.z))))));
+  }
+  bodyH[i] = H;
+}
+/** Vertical-watch births tube i postponed since load (firmware fizzBlocked). */
+export const fizzBlocked = (i: number): number => fizzBlockedN[i];
 /** Spring (`fizzSource` 1): a new size and depth, born at the spring — `fizzSourceY` across the bore (whole
  *  disc inside), `fizzSourceX` along that row's liquid (between the surfaces, as a respawn) as it sits at home,
  *  so `shift` px back in a slug that slid away — each axis jittered by up to ±`fizzSourceSpread` px, kept in
@@ -1211,6 +1270,7 @@ export function stepFizz(ps: readonly Params[], dt: number, along = 0, across = 
 /** stepFizz of tube i (0 = hours) on its own params (boardParams at its px scale). */
 export function stepFizzTube(i: number, p: Params, dt: number, along: number, across: number, agitation: number): void {
   if (mirrored(p)) along = -along; // fizz lives in the mirrored liquid frame (see drawTube)
+  if (p.vertical) { stepFizzVertical(i, p, dt, along, across, agitation); return; }
   const speed = p.fizzSpeed * (1 + 3 * agitation);
   const up = Math.sqrt(Math.max(0, 1 - along * along - across * across));
   const a = Math.max(-1, Math.min(1, across * p.fizzAcrossGain)), al = Math.max(-1, Math.min(1, along * p.fizzDriftGain));
@@ -1222,6 +1282,7 @@ export function stepFizzTube(i: number, p: Params, dt: number, along: number, ac
   const hold = spring && p.fizzFoamLife > 0 && vy !== 0;   // the bore wall the rise points at holds the stream
   const letGo = hold ? dt * (1 + 3 * agitation) / p.fizzFoamLife : 0;   // per-step chance a held bubble lets go
   const len = fizzLen[i], surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i];
+  bodyH[i] = 0;   // the landscape kernel moves rows only: a later vertical step rebuilds the bodies (fizzBodiesFor)
   if (surf.length !== H || len <= 0) return;   // no surfaces for this height yet (drawTube publishes them)
   // The spring point: a mean bubble's centre as springSpawn places it (row sy, in the span sxl..sxh), dry once
   // the slug slides it past its home surface.
@@ -1322,6 +1383,144 @@ export function stepFizzTube(i: number, p: Params, dt: number, along: number, ac
     while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
   }
   if (side !== 0) settleFoam(fizz[i], p, H, speed, side > 0 ? surf : surfL, side, dt, glass ? vy : NaN);
+}
+/** The vertical watch's step (p.vertical; docs/tilted-fizz-plan.md point 3): the physical state (fizzBody) carries the
+ *  bubble, its fizz row derived (f.y = yc + y) after every move; births through springV / scatterV. The motion is still
+ *  stepFizzTube's (with V): y moves as the row did, z rides along, the parked foam packs on rows (settleFoam, its y taken
+ *  back from them). Float32 in the firmware's order (see fizzR32); the helpers it shares with the landscape kernel
+ *  (discFit, foamFront, touchesFoam, settleFoam, fizzWant, the spring's dry test) stay in doubles. Points 4-6 replace the
+ *  motion, the endpoints and the parking. Firmware stepFizzVertical. */
+function stepFizzVertical(i: number, p: Params, dt: number, along: number, across: number, agitation: number): void {
+  dt = F(dt); along = F(along); across = F(across); agitation = F(agitation);
+  const speed = F(F(p.fizzSpeed) * F(1 + F(3 * agitation)));
+  const up = F(Math.sqrt(Math.max(0, F(F(1 - F(along * along)) - F(across * across)))));
+  const a = Math.max(-1, Math.min(1, F(across * F(p.fizzAcrossGain)))), al = Math.max(-1, Math.min(1, F(along * F(p.fizzDriftGain))));
+  const flat = F(up * F(p.fizzFlatRise));   // the face-up rise goes along the tube (+x: the viewer's up)
+  const vy = F(-speed * a);
+  const vxTilt = F(-speed * F(al - F(F(1 - Math.abs(al)) * flat)));
+  const H = tubeLayout(p).H, spring = p.fizzSource === 1, wall = fizzWall32(p);
+  const hold = spring && p.fizzFoamLife > 0 && vy !== 0;
+  const agK = F(1 + F(3 * agitation));
+  const letGo = hold ? F(F(dt * agK) / F(p.fizzFoamLife)) : 0;
+  const len = fizzLen[i], surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i], arr = fizz[i];
+  if (surf.length !== H || len <= 0) return;   // no surfaces for this height yet (drawTube publishes them)
+  fizzBodiesFor(i, p, H);
+  const body = fizzBody[i], contact = fizzContact[i];
+  const yc = F((H - 1) * 0.5), R = boreR32(p);
+  // The spring point (springV's, a mean bubble, no jitter): row sy at depth 0, dry once the slug slides it past its
+  // home surface.
+  const sr = fizzR32(p, 1), sy = F(yc + F(F(F(2 * F(p.fizzSourceY)) - 1) * Math.max(0, F(R - sr))));
+  const sxl = spring ? -discFit(surfL, H, sy, sr, -1) + FOAM_CATCH : 0, sxh = spring ? discFit(surf, H, sy, sr, 1) - FOAM_CATCH : 0;
+  const sx = sxl + p.fizzSourceX * Math.max(0, sxh - sxl) - fizzShift[i];
+  if (spring) springScatter[i] = sx <= -foamFront(surfL, H, sy, -1) ? 1 : Math.max(0, springScatter[i] - dt / SPRING_BACK);
+  const dir = exposed & 1 ? 1 : exposed & 2 ? -1 : 0;
+  const vx = F(vxTilt + F(F(F(speed * up) * F(p.fizzEdgeRise)) * dir));
+  const side = p.fizzFoamLife <= 0 ? 0 : vx > 0 && (spring || exposed & 1) ? 1 : vx < 0 && (spring || exposed & 2) ? -1 : 0;
+  const glass = side !== 0 && !(exposed & (side > 0 ? 1 : 2));
+  const respawn = (f: Fizz, at: number): void => {   // stepFizzTube's respawn
+    const r = fizzR(p, f.v), lo = -discFit(surfL, H, f.y, r, -1) + FOAM_CATCH, hi = discFit(surf, H, f.y, r, 1) - FOAM_CATCH;
+    f.x = hi <= lo ? (lo + hi) / 2 : at < 0 ? lo + Math.random() * (hi - lo) : at > 0 ? lo : hi;
+  };
+  // Scattered birth: a new size, uniform over the bore's cross-section, x as respawn(at) on its row; lowSide +1 / -1 keeps
+  // it on the y ≥ 0 / y ≤ 0 half (a recycle entering from that wall), 0 anywhere. False: postponed (idle slot).
+  const scatterV = (f: Fizz, k: number, lowSide: number, at: number): boolean => {
+    f.life = 0; f.v = fizzV32();
+    const ar = F(R - fizzR32(p, f.v));
+    if (!(ar > 0)) { f.v = 0; fizzBlockedN[i]++; return false; }
+    let [y, z] = fizzDisc32(ar);
+    if (lowSide) y = lowSide * Math.abs(y);
+    body[2 * k] = y; body[2 * k + 1] = z; contact[k] = 0;
+    f.y = F(yc + y); respawn(f, at); f.z = fizzLevelOf32(z, ar);
+    return true;
+  };
+  // Spring birth: at a fixed depth, z = 0 (no depth param: the bore's mid-plane), across at fizzSourceY of the eroded
+  // disc's diameter; y and z each jittered by up to ±fizzSourceSpread px and pulled back radially into the disc; x as
+  // springSpawn. The dry test above uses the same point. False: postponed (idle slot).
+  const springV = (f: Fizz, k: number): boolean => {
+    f.v = fizzV32(); f.life = 0;
+    const r = fizzR32(p, f.v), ar = F(R - r), s = F(p.fizzSourceSpread);
+    if (!(ar > 0)) { f.v = 0; fizzBlockedN[i]++; return false; }
+    let y = F(F(F(F(2 * F(p.fizzSourceY)) - 1) * ar) + F(F(F(2 * Math.random()) - 1) * s));
+    let z = F(F(F(2 * Math.random()) - 1) * s);
+    const d2 = F(F(y * y) + F(z * z));
+    if (d2 > F(ar * ar)) { const q = F(ar / F(Math.sqrt(d2))); y = F(y * q); z = F(z * q); }
+    body[2 * k] = y; body[2 * k + 1] = z; contact[k] = 0;
+    f.y = F(yc + y); f.z = fizzLevelOf32(z, ar);
+    const xl = -discFit(surfL, H, f.y, r, -1) + FOAM_CATCH, xh = discFit(surf, H, f.y, r, 1) - FOAM_CATCH;
+    f.x = xh <= xl ? (xl + xh) / 2 : Math.max(xl, Math.min(xh, xl + p.fizzSourceX * (xh - xl) - fizzShift[i] + (2 * Math.random() - 1) * s));
+    return true;
+  };
+  const free = (f: Fizz): void => { f.v = 0; f.life = 0; };
+  // held by the bore wall the rise points at: its body on the row where the disc touches the glass (stepFizzTube's wallY)
+  const wallY = (g: Fizz): number => F((vy < 0 ? F(wall + fizzR32(p, g.v)) : F(F(H - wall) - fizzR32(p, g.v))) - yc);
+  const held = (j: number): boolean => { const g = arr[j]; return g.v !== 0 && g.life === 0 && Math.abs(F(body[2 * j] - wallY(g))) < F(1e-3); };
+  for (let k = 0; k < arr.length; k++) {
+    const f = arr[k];
+    if (f.v === 0) { if (!spring) scatterV(f, k, 0, -1); continue; }
+    if (f.life !== 0) {
+      const was = f.life > 0 ? 1 : -1;
+      if (was !== side) {   // the surface tilted away: the foam releases into the flow, from where it is drawn
+        f.x = was * Math.min(was * f.x, foamFront(was > 0 ? surf : surfL, H, f.y, was));
+        f.life = 0;
+      }
+      else {
+        const left = F(Math.abs(f.life) - F(dt * agK));
+        if (left > 0) f.life = F(side * left);
+        else if (spring) free(f);
+        else scatterV(f, k, 0, -1);
+        continue;
+      }
+    }
+    const r = fizzR32(p, f.v), wlo = F(wall + r), whi = F(H - wlo), ylo = F(wlo - yc), yhi = F(whi - yc), grip = hold && whi > wlo;
+    if (grip && held(k) && Math.random() >= letGo) f.x = F(f.x + F(vx * dt));   // held by the glass: slides along it
+    else {
+      const inBore = body[2 * k] > ylo && body[2 * k] < yhi;
+      body[2 * k] = F(body[2 * k] + F(F(vy * f.v) * dt));
+      f.x = F(f.x + F(F(vx * f.v) * dt));
+      if (grip && inBore && (vy < 0 ? body[2 * k] < ylo : body[2 * k] > yhi)) {   // carried into the glass: held, or coalesces
+        body[2 * k] = vy < 0 ? ylo : yhi;
+        let merge = false;
+        for (let j = 0; j < arr.length; j++) {
+          if (j === k || !held(j)) continue;
+          const g = arr[j], m = F(F(r + fizzR32(p, g.v)) + 0.5), dx = F(g.x - f.x), dy = F(body[2 * j] - body[2 * k]);
+          if (F(F(dx * dx) + F(dy * dy)) < F(m * m)) { merge = true; break; }
+        }
+        if (merge) { free(f); continue; }
+      }
+    }
+    f.y = F(yc + body[2 * k]);
+    const hide = fizzHideY32(p, f.v);   // once fully behind the wall band: recycled from the other wall's half
+    if (f.y < hide || f.y >= F(H - hide)) {
+      if (spring) free(f);
+      else scatterV(f, k, vy <= 0 ? 1 : -1, -1);
+      continue;
+    }
+    const outR = vx > 0 && f.x > discFit(surf, H, f.y, r, 1) - FOAM_CATCH, outL = vx < 0 && -f.x > discFit(surfL, H, f.y, r, -1) - FOAM_CATCH;
+    if ((side > 0 && outR) || (side < 0 && outL) || (side !== 0 && touchesFoam(arr, f, r, p, side))) f.life = F(F(side * F(p.fizzFoamLife)) * F(0.5 + Math.random()));
+    else if ((outR || outL) && spring) free(f);
+    else if (outR || outL) scatterV(f, k, 0, vx < 0 ? 0 : 1);
+    else f.x = Math.max(-foamFront(surfL, H, f.y, -1), Math.min(foamFront(surf, H, f.y, 1), f.x));
+  }
+  if (spring) {   // stepFizzTube's cadence; a postponed birth (nothing fits) keeps its one birth of credit
+    const cap = fizzWant(p, len, agitation);
+    let live = 0;
+    for (const f of arr) if (f.v !== 0) live++;
+    springClock[i] = F(springClock[i] + F(F(Math.max(0, F(p.fizzSourceRate)) * F(1 + (agitation < F(0.05) ? 0 : agitation))) * dt));
+    let slot = 0;
+    while (springClock[i] >= 1) {
+      if (live >= cap) { springClock[i] = 1; break; }
+      while (slot < arr.length && arr[slot].v !== 0) slot++;
+      if (slot === arr.length) arr.push({ x: 0, y: 0, v: 0, life: 0, z: 0 });
+      const born = springBirth(i) ? springV(arr[slot], slot) : scatterV(arr[slot], slot, 0, -1);
+      if (!born) { springClock[i] = 1; break; }
+      springClock[i] = F(springClock[i] - 1); live++;
+    }
+    while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
+  }
+  if (side !== 0) {
+    settleFoam(arr, p, H, speed, side > 0 ? surf : surfL, side, dt, glass ? vy : NaN);
+    for (let k = 0; k < arr.length; k++) if (arr[k].life !== 0) body[2 * k] = F(F(arr[k].y) - yc);   // the foam packed on rows
+  }
 }
 /** Furthest centre (in u = side · x) a bubble of radius r at row y can take with its whole disc inside the
  *  surface `surf` (liquid frame): the tightest row of the disc. */

@@ -25,7 +25,8 @@ render.cpp + physics.cpp build and in sim/tools/render-ref.ts (its fizzSteps mod
 generator (xorshift32, (word >>> 8) / 2^24: a test-only esp_random stub, Math.random in the sim job): a frame before
 the first step and after every 2nd, the fizz stepped at fixed inputs (along, across, normal, agitation; normal is
 carried for the signed-normal input and not read yet). After every step each tube's slot count and the generator's
-draw count (exact), the spring clocks and every slot's fields (within SIM_TOL) are compared; the first mismatch is
+draw count, the vertical bodies' height key and postponed births (exact), the spring clocks and every slot's fields
+(x y v life z, and the body's y z: within SIM_TOL) are compared; the first mismatch is
 reported. Each native job runs twice (identical output: the jobs repeat exactly). The legacy kernel computes in doubles
 in the sim and in floats in the firmware (-ffp-contract=off): a decision a rounding flips shows as a count mismatch.
 """
@@ -137,24 +138,76 @@ static bool setState(TubeState &s, const char *f, float v) {
   for (auto &e : F) if (!strcmp(e.n, f)) { s.*e.m = v; return true; }
   return false;
 }
+static const Params *tubeP[TUBE_COUNT];   // each tube's params now (main)
 static void emit(int step, int i) {   // one tube's state line (render-ref.ts fizzJob writes the same)
   const Tube &t = tubeAt(i);
-  printf("S %d %d %d %llu %.9g %.9g", step, i, t.fizzN, (unsigned long long)fizzTestDraws(), t.springClock, t.springScatter);
-  for (int k = 0; k < t.fizzN; k++) { const Fizz &f = t.fizz[k]; printf(" %.9g %.9g %.9g %.9g %.9g", f.x, f.y, f.v, f.life, f.z); }
+  printf("S %d %d %d %llu %.9g %.9g %d %u", step, i, t.fizzN, (unsigned long long)fizzTestDraws(), t.springClock, t.springScatter, t.bodyH, (unsigned)t.fizzBlocked);
+  for (int k = 0; k < t.fizzN; k++) {
+    const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k];
+    printf(" %.9g %.9g %.9g %.9g %.9g %.9g %.9g", f.x, f.y, f.v, f.life, f.z, b.y, b.z);
+  }
   printf(" %.9g %d %.9g %d", t.fizzLen, t.fizzExposed, t.fizzShift, t.H);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurf[r]);
   for (int r = 0; r < t.H; r++) printf(" %.9g", t.fizzSurfL[r]);
   printf("\n");
+  if (t.bodyH) {   // vertical: free bodies outside the eroded disc (stderr; the containment expectation reads it)
+    const float R = boreR(*tubeP[i]); int out = 0;
+    for (int k = 0; k < t.fizzN; k++) {
+      const Fizz &f = t.fizz[k]; const FizzBody &b = t.body[k]; const float a = R - fizzR(*tubeP[i], f.v);
+      if (f.v != 0 && f.life == 0 && b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) out++;   // free: the parked foam packs on rows (settleFoam) until point 5
+    }
+    if (out) fprintf(stderr, "OUT step %d tube %d: %d\n", step, i, out);
+  }
+}
+// `selftest`: the vertical births (springSpawnV, fizzScatterV, ensureFizz) over tube heights, sizes, source rows and
+// spreads, against a straight column: contained in the eroded disc, the row and tint level derived from the body, a
+// spring within its spread of (fizzSourceY, z = 0), postponed only when the drawn size cannot fit, uniform over the disc.
+static int birthSelftest() {
+  Tube &t = tubeAt(0); long n = 0, bad = 0, postponed = 0, wrongPostpone = 0; double sum2 = 0, sumY = 0, sumZ = 0; long nU = 0;
+  auto fail = [&](const char *what, float H, float y, float z, float a) { if (bad++ < 5) fprintf(stderr, "selftest: %s H %g y %g z %g a %g\n", what, H, y, z, a); };
+  const int HS[] = {4, 6, 8, 12, 20, 40, 54, 80};
+  const float SIZE[] = {2, 5, 9, 14}, VAR[] = {0, 0.5f}, SY[] = {0, 0.5f, 1, 1.3f}, SP[] = {0, 1, 4, 30};
+  for (int H : HS) for (float size : SIZE) for (float var : VAR) for (float sy : SY) for (float sp : SP) {
+    Params p = PRESET_DEFAULT; p.vertical = true; p.glassWall = 3; p.tubeHeight = H; p.fizzSize = size; p.fizzSizeVar = var;
+    p.fizzSourceY = sy; p.fizzSourceSpread = sp; p.fizzSourceX = 0.3f;
+    t.H = tubeLayout(p).H; t.fizzShift = 0;
+    for (int r = 0; r < t.H; r++) { t.fizzSurf[r] = 300; t.fizzSurfL[r] = 0; }
+    const float R = boreR(p), aMax = R - fizzR(p, 0.5f + (FIZZ_SIZES - 0.5f) / FIZZ_SIZES), yc = fizzYc(t.H);
+    for (int rep = 0; rep < 60; rep++) for (int kind = 0; kind < 3; kind++) {
+      Fizz f{}; FizzBody b{}; const uint32_t blk = t.fizzBlocked;
+      const int low = rep % 3 - 1;
+      const bool ok = kind == 0 ? springSpawnV(t, p, f, b) : fizzScatterV(t, p, f, b, kind == 2 ? low : 0, -1);
+      n++;
+      if (!ok) { postponed++; if (aMax > 0 || t.fizzBlocked != blk + 1 || f.v != 0) { wrongPostpone++; fail("postponed", H, 0, 0, aMax); } continue; }
+      const float a = R - fizzR(p, f.v);
+      if (!(a > 0)) fail("born without room", H, b.y, b.z, a);
+      if (b.y * b.y + b.z * b.z > a * a * (1 + 1e-5f) + 1e-6f) fail("outside the disc", H, b.y, b.z, a);
+      if (f.y != yc + b.y || f.z != fizzLevelOf(b.z, a)) fail("row / level not derived", H, b.y, b.z, a);
+      if (kind == 0) {
+        const float y0 = (2 * sy - 1) * a;
+        if (fabsf(b.z) > sp * (1 + 1e-5f) + 1e-5f) fail("spring off its depth", H, b.y, b.z, a);
+        if (fabsf(b.y - y0) > sp * (1 + 1e-5f) + 1e-5f && b.y * b.y + b.z * b.z < a * a * (1 - 1e-4f)) fail("spring off its row", H, b.y, b.z, a);
+      }
+      if (kind == 2 && low && b.y * low < 0) fail("recycle on the wrong half", H, b.y, b.z, a);
+      if (f.x < 0 || f.x > 300) fail("x outside the column", H, f.x, 0, a);
+      if (kind == 1 && H == 54 && size == 5) { sum2 += (b.y * b.y + b.z * b.z) / (a * a); sumY += b.y / a; sumZ += b.z / a; nU++; }
+    }
+  }
+  const double m2 = sum2 / nU, my = sumY / nU, mz = sumZ / nU;   // uniform over the disc: E rho^2 / a^2 = 1/2, E y = E z = 0
+  if (fabs(m2 - 0.5) > 0.03 || fabs(my) > 0.05 || fabs(mz) > 0.05) { bad++; fprintf(stderr, "selftest: not uniform: E rho2 %g E y %g E z %g (%ld)\n", m2, my, mz, nU); }
+  printf("SELFTEST births %ld postponed %ld (wrongly %ld) failures %ld uniform E rho2/a2 %.3f E y %.3f E z %.3f\n", n, postponed, wrongPostpone, bad, m2, my, mz);
+  return bad ? 9 : 0;
 }
 int main() {
   if (!render_init() || !physics_init()) return 3;
+  const unsigned long bootAllocs = heapCalls();
   Params design = PRESET_DEFAULT, p[TUBE_COUNT]; TubeState st[TUBE_COUNT]; uint32_t gen = 1; int every = 2, step = 0; bool started = false, changed = false;
   for (int i = 0; i < TUBE_COUNT; i++) {
     st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i);
     if (st[i].trace) memset(st[i].trace, 0, TUBE_LENGTH_PX * sizeof(uint16_t));
     if (st[i].traceWet) memset(st[i].traceWet, 0, TUBE_LENGTH_PX * sizeof(uint16_t));
   }
-  auto derive = [&]() { for (int i = 0; i < TUBE_COUNT; i++) boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ); gen++; };
+  auto derive = [&]() { for (int i = 0; i < TUBE_COUNT; i++) { boardParams(design, p[i], TUBE_PX_SCALE(i), PX_SCALE_FIZZ); tubeP[i] = &p[i]; } gen++; };
   auto frame = [&]() {
 #if TUBE_COUNT == 3
     const FaceLayout lay = faceLayout(p[0], p[1], p[2]);
@@ -173,6 +226,7 @@ int main() {
       continue;
     }
     char a[64], b[64]; int n, i; float dt, along, across, normal, agit; unsigned long seed;
+    if (!strcmp(line, "selftest")) return birthSelftest();
     if (sscanf(line, "seed %lu", &seed) == 1) fizzTestRng() = seed ? (uint32_t)seed : 1u;
     else if (sscanf(line, "every %d", &every) == 1) {}
     else if (sscanf(line, "tube %d %63s %63s", &i, a, b) == 3) { if (i >= TUBE_COUNT || !setState(st[i], a, atof(b))) return 5; }
@@ -190,6 +244,7 @@ int main() {
     }
     else return 7;
   }
+  if (heapCalls() != bootAllocs) { fprintf(stderr, "%lu allocations after boot\n", heapCalls() - bootAllocs); return 8; }
   return 0;
 }
 """
@@ -198,6 +253,12 @@ SIM_RANDOM = ('#pragma once\n#include <cstdint>\n'
               'inline uint32_t &fizzTestRng() { static uint32_t s = 1; return s; }\n'
               'inline uint64_t &fizzTestDraws() { static uint64_t n = 0; return n; }\n'
               'inline uint32_t esp_random() { uint32_t &x = fizzTestRng(); x ^= x << 13; x ^= x >> 17; x ^= x << 5; fizzTestDraws()++; return x; }\n')
+# Counted boot allocations (the jobs fail on any after render_init); FAIL_ALLOC_BYTES=n: every request of n bytes fails.
+SIM_HEAP = ('#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_SPIRAM 0\n'
+            'inline unsigned long &heapCalls() { static unsigned long n = 0; return n; }\n'
+            'inline void *heap_caps_malloc(size_t n, int) { heapCalls()++; const char *f = std::getenv("FAIL_ALLOC_BYTES");\n'
+            '  return f && (size_t)std::atol(f) == n ? nullptr : std::calloc(n, 1); }\n')
+BODY_BYTES = 480 * 12   # FIZZ_POOL x sizeof(FizzBody): one tube's vertical bodies (render_init)
 LOOK = ROOT / 'firmware/tools/testdata/tilted-fizz-board-look.json'   # the tilted-fizz board look (saved on lcd316 320w8-8)
 SIM_BOARD = ('lcd316', '320w8-8')
 DT = 0.02   # PHYS_DT
@@ -231,16 +292,34 @@ SIM_JOBS = {
     'height + mode changes': ({}, [_run(80, UP), _run(60, UP, tubeHeight=40), _run(60, UP, vertical=False),
                                    _run(60, UP, vertical=True), _run(60, _tilt(20, -0.4), tubeHeight=54)]),
     'landscape': ({'vertical': False, 'fizzSource': 0}, [_run(60, (0.0, 0.0, 1.0)), _run(150, (-0.3, 0.6, 0.74))]),
+    'spring dry, slug away': ({}, [_run(150, UP)]),
 }
+JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
+
+def _clock_held(lines, err):   # at the pool cap a birth waits: the spring clock sits at its one birth of credit
+    return None if any(w[2] == '0' and float(w[5]) == 1 for w in lines) else 'the spring clock never waited at the cap'
+
+def _dry(lines, err):   # tube 0's spring point dry: every birth scattered (springScatter 1), tube 1's wet (0)
+    t0 = [float(w[6]) for w in lines if w[2] == '0']; t1 = [float(w[6]) for w in lines if w[2] == '1']
+    return None if t0 and min(t0) == 1 and max(t1) == 0 else f'springScatter hours {min(t0)}..{max(t0)}, minutes {min(t1)}..{max(t1)}'
+
+def _contained(lines, err):   # no across rise: every live body stays in the bore's eroded disc (the harness's OUT lines)
+    out = [l for l in err.splitlines() if l.startswith('OUT ')]
+    return f'{len(out)} steps with bodies outside, first: {out[0]}' if out else None
+
+# name: (what, check over the firmware's state lines (split) -> None or why not)
+SIM_EXPECT = {'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
+              'upright': ('containment', _contained), 'back 15': ('containment', _contained)}
 SIM_SEED = 0x2545F491
 # Sim vs firmware in lockstep (each step from the firmware's state): per field, the largest difference accepted. Slot and
 # draw counts, which slots are foam and on which side, are exact. Free bubbles: one step's float rounding. Parked foam
 # (x, y): FOAM_TOL px, because the legacy packing tests contacts its last sweep left at exactly touching distance
 # (settleFoam), so doubles and floats take or skip a push or a slide (<= FOAM_SLIDE * speed * dt) at random there.
-SIM_TOL = {'x': 1e-3, 'y': 1e-3, 'v': 1e-6, 'life': 1e-4, 'z': 1e-6, 'springClock': 1e-4, 'springScatter': 1e-4}
+SIM_TOL = {'x': 1e-3, 'y': 1e-3, 'v': 1e-6, 'life': 1e-4, 'z': 1e-6, 'by': 1e-3, 'bz': 1e-3, 'springClock': 1e-4, 'springScatter': 1e-4}
 FOAM_TOL = 2.0
-FOAM_FIELDS = ('x', 'y')
-SLOT_FIELDS = ('x', 'y', 'v', 'life', 'z')
+FOAM_FIELDS = ('x', 'y', 'by')
+SLOT_FIELDS = ('x', 'y', 'v', 'life', 'z', 'by', 'bz')   # by, bz: the vertical watch's physical y, z (FizzBody)
+HEAD = 9   # S step tube fizzN draws springClock springScatter bodyH blocked
 
 def sim_main(a):
     import shutil
@@ -255,8 +334,7 @@ def sim_main(a):
     names = ['hours', 'minutes', 'seconds'][:a.tubes]
     with tempfile.TemporaryDirectory(prefix='watches-simsteps-') as tmp:
         tmp = Path(tmp)
-        (tmp / 'esp_heap_caps.h').write_text('#pragma once\n#include <cstdlib>\n#define MALLOC_CAP_SPIRAM 0\n'
-                                             'inline void *heap_caps_malloc(size_t n, int) { return std::calloc(n, 1); }\n')
+        (tmp / 'esp_heap_caps.h').write_text(SIM_HEAP)
         (tmp / 'esp_random.h').write_text(SIM_RANDOM)
         (tmp / 'h.cpp').write_text(SIM_HARNESS)
         flags = [*boardtag.tubes_flags(a.tubes), *(['-DBOARD_LCD316', *boardtag.res_flags(res, a.tubes)] if lcd else [])]
@@ -271,12 +349,20 @@ def sim_main(a):
         (out / 'node_modules' / '@spec').mkdir(parents=True)
         shutil.copy(out / 'spec' / 'layout.js', out / 'node_modules' / '@spec' / 'layout.js')
         if build.wait(): raise SystemExit('native: host build failed')
+        bad = 0   # the self-tests, then the jobs (jbad)
+        r = subprocess.run([str(tmp / 'native')], input=b'---\nselftest\n', capture_output=True)
+        print(f'{"births":24s} ' + (r.stdout.decode().strip() or '') + ('' if not r.returncode else f' FAILED ({r.returncode}) {r.stderr.decode()[-400:]}'))
+        bad += r.returncode != 0
+        r = subprocess.run([str(tmp / 'native')], input=b'---\n', capture_output=True, env={**os.environ, 'FAIL_ALLOC_BYTES': str(BODY_BYTES)})
+        print(f'{"body allocation fails":24s} ' + ('render_init refused (exit 3)' if r.returncode == 3 else f'FAILED: exit {r.returncode}, not 3'))
+        bad += r.returncode != 3
 
         def run(item):
             k, (name, (over, runs)) = item
             design = {**look, **over}   # the sim migrates from its version v (the firmware takes the fields as they are)
             script = ''.join(f'{f}={fmt(v)}\n' for f, v in design.items() if f != 'v') + f'---\nseed {SIM_SEED}\nevery 2\n'
-            script += ''.join(f'tube {i} {f} {v!r}\n' for i, n in enumerate(names) for f, v in FILLS[n].items())
+            tubes = {n: {**FILLS[n], **JOB_TUBES.get(name, {}).get(n, {})} for n in names}
+            script += ''.join(f'tube {i} {f} {v!r}\n' for i, n in enumerate(names) for f, v in tubes[n].items())
             for r in runs:
                 script += ''.join(f'set {f} {fmt(v)}\n' for f, v in r.get('set', {}).items())
                 script += f'run {r["n"]} {r["dt"]!r} {r["along"]!r} {r["across"]!r} {r["normal"]!r} {r["agitation"]!r}\n'
@@ -285,24 +371,28 @@ def sim_main(a):
             if nat[0].stdout != nat[1].stdout: return name, 'native: two runs of the job differ (not deterministic)', None
             jobf, natf = tmp / f'job{k}.json', tmp / f'native{k}.txt'
             natf.write_bytes(nat[0].stdout)
-            json.dump({'params': design, **{n: FILLS[n] for n in names},
+            json.dump({'params': design, **tubes,
                        'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({} if a.free else {'lockstep': str(natf)})}}, open(jobf, 'w'))
             r = subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jobf), '-'], env=env, capture_output=True)
             if r.returncode: return name, f'sim exited {r.returncode}: {r.stderr.decode()[-500:]}', None
             if a.keep: (a.keep / f'{name}.native.txt').write_bytes(nat[0].stdout); (a.keep / f'{name}.sim.txt').write_bytes(r.stdout)
-            return name, None, sim_compare(nat[0].stdout.decode(), r.stdout.decode())
+            res_ = sim_compare(nat[0].stdout.decode(), r.stdout.decode())
+            if not res_[0] and name in SIM_EXPECT:
+                why = SIM_EXPECT[name][1]([l.split() for l in nat[0].stdout.decode().splitlines()], nat[0].stderr.decode())
+                if why: return name, f'{SIM_EXPECT[name][0]}: {why}', None
+            return name, None, res_
 
-        bad = 0
+        jbad = 0
         with ThreadPoolExecutor(a.j) as ex:
             for name, err, res_ in ex.map(run, enumerate(jobs.items())):
-                if err: bad += 1; print(f'{name:24s} ERROR {err}'); continue
+                if err: jbad += 1; print(f'{name:24s} ERROR {err}'); continue
                 diff, steps, worst, most = res_
-                if diff: bad += 1; print(f'{name:24s} DIFFERS {diff}'); continue
+                if diff: jbad += 1; print(f'{name:24s} DIFFERS {diff}'); continue
                 print(f'{name:24s} {steps} steps match' + (f'; slots max {"/".join(map(str, most))}; worst '
                       + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) if a.v else ''))
         tag = f'{board}{"@" + res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
-        print(f'{tag}: {len(jobs) - bad} of {len(jobs)} jobs match, sim vs firmware, step by step')
-        sys.exit(1 if bad else 0)
+        print(f'{tag}: {len(jobs) - jbad} of {len(jobs)} jobs match, sim vs firmware, step by step' + ('' if bad == 0 else '; a self-test FAILED'))
+        sys.exit(1 if bad or jbad else 0)
 
 def sim_compare(nat, sim):
     """(first mismatch or None, steps, worst difference per field, most slots per tube) of the two sides' state lines."""
@@ -316,18 +406,19 @@ def sim_compare(nat, sim):
         if p[:4] != q[:4]: return f'{where}: slots native {p[3]} sim {q[3]}', 0, worst, []
         most[p[2]] = max(most.get(p[2], 0), int(p[3]))
         if p[4] != q[4]: return f'{where}: draws native {p[4]} sim {q[4]}', 0, worst, []
+        if p[7:9] != q[7:9]: return f'{where}: bodyH / blocked native {" ".join(p[7:9])} sim {" ".join(q[7:9])}', 0, worst, []
         for f, i in (('springClock', 5), ('springScatter', 6)):
             d = abs(float(p[i]) - float(q[i])); worst[f] = max(worst[f], d)
             if d > SIM_TOL[f]: return f'{where}: {f} native {p[i]} sim {q[i]}', 0, worst, []
         for s in range(int(p[3])):
-            o = 7 + w * s; lp, lq = float(p[o + L]), float(q[o + L])
+            o = HEAD + w * s; lp, lq = float(p[o + L]), float(q[o + L])
             if (lp > 0) != (lq > 0) or (lp < 0) != (lq < 0): return f'{where} slot {s}: life native {lp} sim {lq}', 0, worst, []
             for j, f in enumerate(SLOT_FIELDS):
                 d = abs(float(p[o + j]) - float(q[o + j]))
                 k, tol = (f'foam {f}', FOAM_TOL) if lp != 0 and f in FOAM_FIELDS else (f, SIM_TOL[f])
                 worst[k] = max(worst[k], d)
                 if d > tol: return f'{where} slot {s}: {k} native {p[o + j]} sim {q[o + j]}', 0, worst, []
-        e = 7 + w * int(p[3])   # the frame's surfaces (render parity): reported (-v), not held to a tolerance
+        e = HEAD + w * int(p[3])   # the frame's surfaces (render parity): reported (-v), not held to a tolerance
         if p[e + 1] != q[e + 1] or p[e + 3] != q[e + 3]: return f'{where}: exposed / rows native {p[e + 1]} {p[e + 3]} sim {q[e + 1]} {q[e + 3]}', 0, worst, []
         for i in [e, e + 2, *range(e + 4, len(p))]:
             worst['surf'] = max(worst['surf'], abs(float(p[i]) - float(q[i])))
