@@ -44,11 +44,13 @@
 #include "physics.h"
 #include "render.h"
 #include "seq.h"
+#include "state_dump.h"
 #include "tiles.h"
 #ifdef AB_COMPARE
 #include "render_ab.h"
 #endif
 #include "gen/params_gen.h"
+#include "params_nvs.h"
 
 #ifndef BOOT_MODE
 #define BOOT_MODE 'l'
@@ -124,9 +126,9 @@ static void paramsChanged() {
 #endif
   paramsGen++;
 }
-// NVS autosave: namespace lw, blob cur. Written 2 s after the last change; ignored if the schema CRC differs.
-// What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only, and the autosave writes this
-// copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
+// NVS autosave: namespace lw, blob cur. Written 2 s after the last change; a v31 / v32 blob is migrated at boot, another
+// schema ignored (params_nvs.h). What NVS keeps: `p` writes go to params and here, `p~` writes (volatile) to params only,
+// and the autosave writes this copy. PSRAM, allocated once at boot (paramsLoad); without it `p~` is refused.
 static Preferences prefs;
 static uint32_t paramsDirtyAt = 0;
 static Params *paramsSaved = nullptr;
@@ -134,17 +136,14 @@ static void paramsLoad() {
   paramsSaved = (Params *)heap_caps_malloc(sizeof(Params), MALLOC_CAP_SPIRAM);
   if (!paramsSaved) out.println("error params: no PSRAM for the saved copy (p~ refused)");
   prefs.begin("lw", false);
-  const uint32_t crc = prefs.getUInt("crc");
-  if (crc == PARAMS_SCHEMA_CRC && prefs.getBytesLength("cur") == sizeof(Params)) {
-    prefs.getBytes("cur", &params, sizeof(Params)); paramsChanged(); out.println("params: restored from nvs");
-  }   // another schema (v33 viewElevation dropped the v31 -> v32 migration): the defaults; the blob is replaced on the next save
+  if (paramsNvsLoad(prefs, params, out)) paramsChanged();
   if (paramsSaved) *paramsSaved = params;
 }
 static void paramsTouch() { paramsDirtyAt = millis() | 1; }
 static void paramsFlush() {
   if (!paramsDirtyAt || millis() - paramsDirtyAt < 2000) return;
   paramsDirtyAt = 0;
-  prefs.putBytes("cur", paramsSaved ? paramsSaved : &params, sizeof(Params)); prefs.putUInt("crc", PARAMS_SCHEMA_CRC);
+  paramsNvsSave(prefs, paramsSaved ? *paramsSaved : params, out, "autosave");
 }
 static void paramsErase() { paramsDirtyAt = 0; prefs.remove("cur"); prefs.remove("crc"); }
 static TubeState tubeH, tubeM;
@@ -941,11 +940,9 @@ static void handleLine(char *line) {
       renderTube(0, tubeH, effH, paramsGen, strip[0], nullptr, l.yH); renderTube(1, tubeM, effM, paramsGen, strip[1], nullptr, l.yM);
       out.printf("LAYOUT %d %d %d %d %d %d\n", PANEL_W, PANEL_H, l.Hh, l.yH, l.yM, l.Hm);
 #endif
-      auto dumpState = [&](const TubeState &t) {
-        out.printf(" %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %d %d %d",
-                   t.fillTarget, t.fillPos, t.angle, t.light, t.edgeLight, t.agitation,
-                   t.acrossTilt, t.cap, t.filmFree, t.filmHome, t.slugPos, t.reading, t.pinFree, t.pinHome,
-                   t.lineVFree, t.lineVHome, t.rearX16, t.rearY16, t.rearX16w, t.rearY16w);   // the rear parallax as rendered (1/16 px)
+      auto dumpState = [&](const TubeState &t) {   // state_dump.h: the fields render-ref replays (compare-device.py)
+        const int n = formatTubeState(dumpHex, DUMP_HEX_BYTES, t);
+        if (n > 0 && n < DUMP_HEX_BYTES) out.print(dumpHex); else out.print(" [STATE TRUNC]");
       };
       out.print("STATE"); for (int t = 0; t < TUBE_COUNT; t++) dumpState(tubeOf(t)); out.println();
       char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
