@@ -479,3 +479,14 @@ block 2.0 KB; stand bench in the window 52.2 fps. Decision: stepFizzVertical in 
   3.80 / 17.2 / 34.6 -> 3.17 / 10.8 / 42.0 ms, 480 noisy at the 5-step cap); IRAM -128 B, DRAM 0, PSRAM +8.0 KB (FoamWork: box bounds,
   size-class table). The placement rewrite moves the board's madd.s contraction: X sequence identical for 238 frames, the
   minutes tube differs from frame 239 (last bit); parity lines unchanged. ~1 ms needs a behaviour change (KAIZEN).
+
+## State at end of 2026-11-22 (tilted_rise 5d73573, board elf 75b6095b, user's look = testdata/tilted-fizz-board-look-lid.json)
+Done: blocks 1-3, pulse fix (grey blick), surface laws (Fable), derived foam life, lid (viewElevation 20) + fizz on the
+lid, fp-contract pin (0 madd.s), NVS v31→v32→v33 migration, STATE backTilt, reviews 1-4 (Astra + Fable) addressed.
+Open, waiting for the user:
+- Lid vs tilt constants (e = 20: T −30° 0.922 / −10° 0.453 / 0° 0.364 / 13° 0.354 / 30° 0.401 / 40° 0.308 / 45° 0.188):
+  proposed fade start 15° → gone 45° (was e+10 → e+35) and forward gain 1.2 (was 1.5), so back tilt only shrinks the lid
+  and −30° is ~2x, not 2.6x.
+Next: same-look perf A/B vs the original kernel (2fddb7c) on the board (fizz step 2.25 ms at 165 bubbles, 41.6 fps stand
+pose; target ~1.2 ms missed: packing ~60 %), review of block 5 (ffd84f0, 901197f, 5ef9bd0, 409f196), look check with the
+user (point 9), STATUS.md. Board-vs-host fizz state diverges after frame ~120 (libm suspected; KAIZEN).
