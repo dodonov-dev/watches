@@ -26,8 +26,11 @@ generator (xorshift32, (word >>> 8) / 2^24: a test-only esp_random stub, Math.ra
 the first step and after every 2nd, the fizz stepped at fixed inputs (along, across, normal, agitation; normal is
 carried for the signed-normal input and not read yet). After every step each tube's slot count and the generator's
 draw count, the vertical bodies' height key and postponed births (exact), the spring clocks and every slot's fields
-(x y v life z, and the body's y z: within SIM_TOL) are compared; the first mismatch is
-reported. Each native job runs twice (identical output: the jobs repeat exactly). The legacy kernel computes in doubles
+(x y v life z, and the body's y z: within SIM_TOL) and the frame's surfaces the kernel steps on (len, shift, surf / surfL
+rows: SURF_TOL; exposed, rows exact) are compared, every record's length checked and every field finite on both sides;
+the first mismatch is reported. Lockstep (each step from the firmware's state) is a diagnostic: it erases accumulated
+divergence. --free (the sim runs on its own state) is the acceptance mode for vertical jobs. The comparator's mutation
+self-checks (NaN / inf, a record too short / long, a surface, len, shift moved) must all be rejected. Each native job runs twice (identical output: the jobs repeat exactly). The legacy kernel computes in doubles
 in the sim and in floats in the firmware (-ffp-contract=off): a decision a rounding flips shows as a count mismatch.
 """
 import argparse, glob, json, math, os, subprocess, sys, tempfile
@@ -370,7 +373,7 @@ def sim_main(a):
             if nat[0].returncode: return name, f'native exited {nat[0].returncode}: {nat[0].stderr.decode()[-300:]}', None
             if nat[0].stdout != nat[1].stdout: return name, 'native: two runs of the job differ (not deterministic)', None
             jobf, natf = tmp / f'job{k}.json', tmp / f'native{k}.txt'
-            natf.write_bytes(nat[0].stdout)
+            natf.write_bytes(nat[0].stdout); natives.setdefault('job', (name, nat[0].stdout.decode()))
             json.dump({'params': design, **tubes,
                        'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({} if a.free else {'lockstep': str(natf)})}}, open(jobf, 'w'))
             r = subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jobf), '-'], env=env, capture_output=True)
@@ -382,6 +385,9 @@ def sim_main(a):
                 if why: return name, f'{SIM_EXPECT[name][0]}: {why}', None
             return name, None, res_
 
+        mode = 'free (acceptance)' if a.free else 'lockstep (diagnostic)'
+        print(f'{"mode":24s} {mode}' + ('' if a.free else ': every step from the firmware state; --free is the acceptance mode for vertical jobs'))
+        natives = {}   # one job's native state lines: the comparator's mutation self-checks
         jbad = 0
         with ThreadPoolExecutor(a.j) as ex:
             for name, err, res_ in ex.map(run, enumerate(jobs.items())):
@@ -390,20 +396,50 @@ def sim_main(a):
                 if diff: jbad += 1; print(f'{name:24s} DIFFERS {diff}'); continue
                 print(f'{name:24s} {steps} steps match' + (f'; slots max {"/".join(map(str, most))}; worst '
                       + ', '.join(f'{f} {v:.2g}' for f, v in worst.items()) if a.v else ''))
+        if natives:
+            jn, lines = natives['job']; base, accepted, nm = sim_compare_selftest(lines)
+            ok = base is None and not accepted; bad += not ok
+            print(f'{"comparator mutations":24s} ' + (f'{nm} of {nm} rejected, unmutated {jn!r} accepted' if ok else
+                  f'FAILED: unmutated {"rejected: " + base if base else "accepted"}; accepted {", ".join(accepted) or "none"}'))
         tag = f'{board}{"@" + res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
-        print(f'{tag}: {len(jobs) - jbad} of {len(jobs)} jobs match, sim vs firmware, step by step' + ('' if bad == 0 else '; a self-test FAILED'))
+        print(f'{tag}: {len(jobs) - jbad} of {len(jobs)} jobs match, sim vs firmware, step by step, {mode}' + ('' if bad == 0 else '; a self-test FAILED'))
         sys.exit(1 if bad or jbad else 0)
+
+# The frame's surfaces the kernel steps on (fizzLen, fizzShift, fizzSurf / fizzSurfL per row): canvas px up to ~1000
+# (float ulp <= 1.2e-4 px there). Both sides derive them from the same float TubeState with the same formulae, the sim
+# in doubles: they differ by a few ulps at that scale, also after a subtraction (cancellation keeps the absolute
+# error). 1e-3 px = 8 ulps at 1024 and a thousandth of a pixel; measured worst 3e-5. Between frames (lockstep) the sim
+# steps on the firmware's own surfaces, so they match exactly there.
+SURF_TOL = 1e-3
+
+def _record(line, side):
+    """(fields, why not) of one state line: 'S', HEAD + 7 * fizzN + 4 + 2 * H fields, all finite numbers."""
+    p = line.split()
+    if len(p) < HEAD + 4 or p[0] != 'S': return None, f'{side}: not a state line: {line[:60]!r}'
+    try: v = [float(s) for s in p[1:]]
+    except ValueError: return None, f'{side}: not a number in {line[:60]!r}'
+    bad = next((i for i, x in enumerate(v, 1) if not math.isfinite(x)), None)
+    if bad is not None: return None, f'{side} step {p[1]} tube {p[2]}: field {bad} is {p[bad]}'
+    n = int(v[2]) if v[2] == int(v[2]) and v[2] >= 0 else -1
+    e = HEAD + len(SLOT_FIELDS) * n
+    H = int(v[e + 2]) if n >= 0 and e + 3 < len(p) and v[e + 2] == int(v[e + 2]) and v[e + 2] >= 0 else -1
+    if n < 0 or H < 0 or len(p) != e + 4 + 2 * H: return None, f'{side} step {p[1]} tube {p[2]}: {len(p)} fields for fizzN {p[3]}'
+    return p, None
 
 def sim_compare(nat, sim):
     """(first mismatch or None, steps, worst difference per field, most slots per tube) of the two sides' state lines."""
     la, lb = nat.splitlines(), sim.splitlines()
     worst = {**{f: 0.0 for f in SIM_TOL}, **{f'foam {f}': 0.0 for f in FOAM_FIELDS}, 'surf': 0.0}; most = {}
     if len(la) != len(lb): return f'{len(la)} native state lines, {len(lb)} sim', 0, worst, []
+    if not la: return 'no state lines', 0, worst, []
     w = len(SLOT_FIELDS); L = SLOT_FIELDS.index('life')
     for x, y in zip(la, lb):
-        p, q = x.split(), y.split()
+        p, why = _record(x, 'native')
+        if why: return why, 0, worst, []
+        q, why = _record(y, 'sim')
+        if why: return why, 0, worst, []
         where = f'step {p[1]} tube {p[2]}'
-        if p[:4] != q[:4]: return f'{where}: slots native {p[3]} sim {q[3]}', 0, worst, []
+        if p[:4] != q[:4]: return f'{where}: step / tube / slots native {" ".join(p[1:4])} sim {" ".join(q[1:4])}', 0, worst, []
         most[p[2]] = max(most.get(p[2], 0), int(p[3]))
         if p[4] != q[4]: return f'{where}: draws native {p[4]} sim {q[4]}', 0, worst, []
         if p[7:9] != q[7:9]: return f'{where}: bodyH / blocked native {" ".join(p[7:9])} sim {" ".join(q[7:9])}', 0, worst, []
@@ -418,11 +454,37 @@ def sim_compare(nat, sim):
                 k, tol = (f'foam {f}', FOAM_TOL) if lp != 0 and f in FOAM_FIELDS else (f, SIM_TOL[f])
                 worst[k] = max(worst[k], d)
                 if d > tol: return f'{where} slot {s}: {k} native {p[o + j]} sim {q[o + j]}', 0, worst, []
-        e = HEAD + w * int(p[3])   # the frame's surfaces (render parity): reported (-v), not held to a tolerance
+        e = HEAD + w * int(p[3])   # the frame's surfaces the kernel steps on: exposed / rows exact, len shift surf surfL SURF_TOL
         if p[e + 1] != q[e + 1] or p[e + 3] != q[e + 3]: return f'{where}: exposed / rows native {p[e + 1]} {p[e + 3]} sim {q[e + 1]} {q[e + 3]}', 0, worst, []
+        H = int(p[e + 3])
         for i in [e, e + 2, *range(e + 4, len(p))]:
-            worst['surf'] = max(worst['surf'], abs(float(p[i]) - float(q[i])))
+            d = abs(float(p[i]) - float(q[i])); worst['surf'] = max(worst['surf'], d)
+            k = 'len' if i == e else 'shift' if i == e + 2 else f'surf row {i - e - 4}' if i < e + 4 + H else f'surfL row {i - e - 4 - H}'
+            if d > SURF_TOL: return f'{where}: {k} native {p[i]} sim {q[i]}', 0, worst, []
     return None, len(la) // max(1, len(most)), worst, [most[t] for t in sorted(most)]
+
+def sim_compare_selftest(nat):
+    """The comparator on one job's native lines against themselves (must match), then mutated (each must be rejected):
+    (why the unmutated lines were rejected or None, the mutations accepted, how many)."""
+    lines = nat.splitlines()
+    k = next(i for i, l in enumerate(lines) if int(l.split()[3]) > 0 and int(l.split()[HEAD + len(SLOT_FIELDS) * int(l.split()[3]) + 3]) > 0)
+    p = lines[k].split(); e = HEAD + len(SLOT_FIELDS) * int(p[3]); H = int(p[e + 3])
+    def at(i, v, both=False):   # the lines with field i of line k set to v (both: on the native side too)
+        q = list(p); q[i] = v(q[i]) if callable(v) else v; m = [*lines[:k], ' '.join(q), *lines[k + 1:]]
+        return ('\n'.join(m) if both else nat), '\n'.join(m)
+    X, LIFE = HEAD, HEAD + SLOT_FIELDS.index('life')
+    muts = {
+        'x NaN': at(X, 'nan'), 'x NaN (JS)': at(X, 'NaN'), 'life inf both sides': at(LIFE, 'inf', True),
+        'bodyH NaN both sides': at(7, 'NaN', True), 'surf row NaN': at(e + 4, 'nan'),
+        'surface 10 -> 1000': at(e + 4, lambda s: repr(float(s) + 990)), 'surfL row +1': at(e + 4 + H, lambda s: repr(float(s) + 1)),
+        'len +1': at(e, lambda s: repr(float(s) + 1)), 'shift +1': at(e + 2, lambda s: repr(float(s) + 1)),
+        'record short': (nat, '\n'.join([*lines[:k], ' '.join(p[:-1]), *lines[k + 1:]])),
+        'record long': (nat, '\n'.join([*lines[:k], ' '.join([*p, '0']), *lines[k + 1:]])),
+        'record long both sides': ('\n'.join(m := [*lines[:k], ' '.join([*p, '0']), *lines[k + 1:]]), '\n'.join(m)),
+        'line missing': (nat, '\n'.join(lines[:-1])), 'no lines': ('', ''),
+    }
+    accepted = [n for n, (a_, b_) in muts.items() if sim_compare(a_, b_)[0] is None]
+    return sim_compare(nat, nat)[0], accepted, len(muts)
 
 def fmt(v):
     return ('1' if v else '0') if isinstance(v, bool) else str(v)
@@ -441,7 +503,7 @@ def main():
     ap.add_argument('--sim', action='store_true', help='stepped fizz state, sim vs firmware, on the shared seeded jobs (SIM_JOBS)')
     ap.add_argument('--job', action='append', help='--sim: only this job (repeatable; names: SIM_JOBS)')
     ap.add_argument('--keep', type=Path, help='--sim: write each job\'s state lines here (NAME.native.txt, NAME.sim.txt)')
-    ap.add_argument('--free', action='store_true', help='--sim: the sim runs on from its own state (default lockstep: every step starts from the firmware state)')
+    ap.add_argument('--free', action='store_true', help='--sim: the sim runs on from its own state: the acceptance mode for vertical jobs (default lockstep, a diagnostic: every step starts from the firmware state)')
     ap.add_argument('--fma', action='store_true', help='-mfma -ffp-contract=fast on both sides (fused multiply-add like the board)')
     ap.add_argument('--board', default=None, choices=('amoled191', 'lcd316'), help='default amoled191 (--sim: lcd316 --res 320w8-8)')
     ap.add_argument('--res', default=None, help='lcd316 res tag: rows + tube widths (320 / 320f / 320fh / 320fm, tools/boardtag.py)')
