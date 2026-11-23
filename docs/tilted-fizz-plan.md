@@ -490,3 +490,13 @@ Open, waiting for the user:
 Next: same-look perf A/B vs the original kernel (2fddb7c) on the board (fizz step 2.25 ms at 165 bubbles, 41.6 fps stand
 pose; target ~1.2 ms missed: packing ~60 %), review of block 5 (ffd84f0, 901197f, 5ef9bd0, 409f196), look check with the
 user (point 9), STATUS.md. Board-vs-host fizz state diverges after frame ~120 (libm suspected; KAIZEN).
+
+## 2026-11-23: lid constants, review 5, drain fix (tilted_rise 2267723, board elf 5b484256)
+- Lid vs tilt settled (fade e−5°→e+25°, forward gain 0.2). Review 5 (Astra) items 1-5 fixed (bee1a78, ac09918); item 6 (NVS
+  CRC write) dropped by the user.
+- Board A/B at the stand (same session): 2fddb7c 50.6 fps / fizz 1.70 ms; 4ef9323 41.2 / 2.42 ms; 2267723 41.6 / 2.37 ms.
+- User: "at the end of an hour ... liquid was going down in jumps". Cause: the wrap retract left every bubble as foam (140/140),
+  settle 0.2-2.5 s a frame, 5-step cap, drain > 6 s; the two settleFoam panics were watchdog aborts of the same cost. Fixed by
+  the drain rule (surface-model "Drain"): board wrap 1.96 s, frames ~23 ms (one 77-142 ms frame at the start with ~150 live).
+- The user's look changed on the board (viewElevation 10, glassWall 8.5, ...): fixture tilted-fizz-board-look-lid.json updated
+  from p?. Next: look check with the user (lid, ridge of fizz on the front glass, foam), fizz step toward ~1.2 ms.

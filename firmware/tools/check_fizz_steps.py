@@ -1032,7 +1032,7 @@ SIM_JOBS = {
     'board look 60 s': ({}, [_run(3000, UP)]),   # the diagnosed pulse replay (docs/tilted-fizz-plan.md): parks, foam count
     'board look 60 s, across 0.05': ({}, [_run(3000, (-math.sqrt(1 - 0.05 ** 2), 0.05, 0.0))]),
     'stand 13 back, 30 s': ({}, [_run(1500, (-0.976, -0.01, 0.22))]),   # the board's 'fizz explosion' pose (2026-11-22)
-    # the desk view's lid (testdata/tilted-fizz-board-look-lid.json: viewElevation 20): the time edge's endpoint rule flipped
+    # the desk view's lid (testdata/tilted-fizz-board-look-lid.json: the user's look, viewElevation 10 since 2026-11-23): the time edge's endpoint rule flipped
     'lid stand 13 back, 30 s': (LID_OVER, [_run(1500, (-0.976, -0.01, 0.22))]),
     'lid back 15': (LID_OVER, [_run(100, UP), _run(250, _tilt(15))]),
     'lid across + back': (LID_OVER, [_run(100, UP), _run(250, _tilt(15, 0.3))]),

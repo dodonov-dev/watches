@@ -1,6 +1,18 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-22 (desk-view lid)_
+_Last update: 2026-11-23 (drain fix, review 5, board-checked)_
+
+## Tilted fizz / desk view, 2026-11-23, branch `tilted_rise` 2267723, board-checked (lcd316@320w8-8)
+
+- Lid vs tilt (4ef9323): T = (tan τ + tan(e − τ))·(1 − smoothstep(e − 5°, e + 25°, τ))·(1 + 0.2 smoothstep(0°, 30°, −τ)), τ signed.
+- Review 5 (docs/tilted-fizz-review5.md, fixes bee1a78 + ac09918): δ ≤ 75°; back fade ends by the 45° clamp (e ≤ 20 bit-identical);
+  ordered body bounds on every row; float32 lid rows (lid jobs: independent pipeline sim == firmware); signed fizz protrusion
+  P = r(1/cos δ − 1/cos τ), skips proven by host bound asserts (FIZZ_BOUND_CHECK, 0 fails in ~45 M checks).
+- Drain (fc6b813, docs/tilted-fizz-surface-model.md "Drain"): stranded foam bursts, monolayer cap (Σr² ≤ 0.82 R²), empty tube
+  clears, births wait without a span. Board: wrap drain 5-6 s at 1-5 fps -> 1.96 s at ~23 ms frames; no settleFoam panic in two
+  fizz_bench runs (two watchdog aborts on 4ef9323); births postponed 0.
+- Stand bench (user's look): 41.6 fps, fizz step 2.37 ms (edge-shade base 2fddb7c: 50.6 fps / 1.70 ms, no lid).
+- Open: look check with the user; ~1.2 ms fizz target; one 77-142 ms frame at a drain's start with ~150 live bubbles (KAIZEN).
 
 ## Desk-view lid (2026-11-22), branch `tilted_rise`, host only (docs/tilted-fizz-deskview.md)
 

@@ -1044,3 +1044,4 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Full-monolayer settle (~50 jammed foam right after an end opens over a pile): ~6.3K placements a step (host 0.46 ms, ~0.2 s on the S3) for ~0.5 s; a cheaper jam rule (seated pairs skip the parting) would smooth it.
 - fizzBodiesFor's geometry rebuild clears FIZZ_C_BURST (contact = 0): a popping bubble then settles as foam for its last <= 0.3 s.
 - check_fizz_steps: the board/host settle cost ratio (~250-500x on the drain) is only inferred from frame logs; a FIZZ_PROF placement counter on the board would pin it.
+- Drain start with ~150 live bubbles: one 77-142 ms frame (stranded-foam bursts in one step at retract 0.03-0.08); spreading the bursts over steps would hide it.
