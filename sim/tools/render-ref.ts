@@ -55,7 +55,10 @@ else {
   console.log('ok');
 }
 
-interface FizzRun { n: number; dt: number; along: number; across: number; normal?: number; agitation: number; set?: Partial<Params> }
+// tubes: TubeState fields set before the run (tube index -> fields; the native job's `tube` lines), e.g. a clock wrap's
+// fillTarget step by step
+interface FizzRun { n: number; dt: number; along: number; across: number; normal?: number; agitation: number; set?: Partial<Params>;
+  tubes?: Record<string, Partial<TubeState>> }
 // lockstep: the firmware's state lines of the same job (a file): each step starts from the firmware's state after the
 // step before (and its frame), so a comparison sees one step's arithmetic, not doubles and floats drifting apart.
 // inputs (a file of the firmware's F lines, one per tube after each of its frames: len exposed shift H, surf, surfL,
@@ -97,6 +100,10 @@ function fizzJob(fj: { seed: number; every: number; runs: FizzRun[]; lockstep?: 
   let design: Params = { ...DEFAULT_PARAMS, ...migrateParams(job.params) }, ps = tubeParams(design);
   const g = g9;
   for (const run of fj.runs) {
+    for (const [k, v] of Object.entries(run.tubes ?? {})) {
+      if (!tubes[+k]) throw new Error(`render-ref: run.tubes: no tube ${k}`);
+      Object.assign(tubes[+k], v);
+    }
     if (run.set) { design = { ...design, ...run.set }; ps = tubeParams(design); }
     // the run's gain-free pose: physics.cpp updatePose in float32 (the native harness's), face up when it is not valid
     const f = Math.fround, px = f(-f(run.along)), py = f(-f(run.across)), pz = f(run.normal ?? 1), m2 = f(f(f(px * px) + f(py * py)) + f(pz * pz));

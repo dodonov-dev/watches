@@ -23,12 +23,27 @@ aggressively"; "worth modelling how it behaves at the surface, even if it means 
   - Measured on c6e77da (host replay, stand pose, 60 s): foam in-plane p90 0.48U, p99 1.0U (the cap); 4 % of foam-steps
     sink faster than 5 px/s — the "aggressive" motion.
 - Coalescence: inter-bubble films as stable as the cap film → no merging; size classes untouched. Monolayer capacity
-  ≈ 0.82(R/r)² (58 for the board look vs 7–8 present); layering is an overflow fallback, the newcomer queues below.
+  ≈ 0.82(R/r)² (58 for the board look vs 7–8 present); past it an arrival bursts (FOAM_MONO, see Drain), no layering.
 - Projection: the (y, z) raft seen edge-on; front bubbles crisp on the stroke end (k = 1), deeper ones lower in the band
   and veiled; u slaved to each bubble's own endpoint, k from the current body, no floor.
 - Expected look (stand pose): a small calm cap of 7–8 bubbles at the front contact line, ~half the tube wide; arrivals
   shoulder in from the rope, neighbours creep outward ≤ 0.15–0.35U, nothing sinks, holes close after pops; no wall
   ring, no merges.
+
+## Drain (2026-11-23, the board's hour wrap)
+- Foam is a film the liquid holds. When the column recedes (a clock wrap's 2 s retract, an end opening, a sliding slug),
+  a bubble the surface leaves behind faster than it can follow is stranded and bursts: foam whose endpoint target sinks
+  more than its radius below u − fizzSpeed·dt (its reach this step), a free bubble whose zone it reaches with the target
+  already more than r below it, and every bubble once the tube is empty (fizzLen 0). It starts the FOAM_POP_T
+  presentation pop (fizzBurst; a pop under way keeps its own), is marked FIZZ_C_BURST and leaves the packing and the
+  contacts at once: popping bubbles cost no placements.
+- Monolayer cap: a surface holds foam up to Σr² ≤ FOAM_MONO·R² (0.82, ≈ 0.82 (R/r)² bubbles: ~50 on the board look);
+  an arrival past it bursts on arrival instead of layering.
+- Without it (4ef9323) every bubble the surface passed became foam (126 of 148), the settle grew from ~230 to ~14K
+  placements a step (host 20 µs → 2 ms; the S3 0.4–2.5 s), and a pile of 476 bubbles against a closing end that opens
+  went to ~130–190K a step, past the 5 s task watchdog. Now: drain worst ≤ the quiet stand's, pile-up ≤ ~6.3K.
+- A spring point without a span of the column (just after the wrap) waits without trying: no postponed birth counted
+  every step.
 
 ## "Parked surface narrower" check (LCD 320w8-8, H = 72)
 - Geometry consistent: foam |y| reaches 24.6 of 24.8 px allowed (R − r, R = 35.5 − 7.33); the lens moves the rim < 0.5 px.

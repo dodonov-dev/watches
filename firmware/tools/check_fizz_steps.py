@@ -44,7 +44,7 @@ The comparator's mutation self-checks (NaN / inf, a record too short / long, a s
 position moved; a bad or missing F record; a G surface or stroke moved) must all be rejected; render-ref must refuse a
 corrupt inputs file. Each native job runs twice (identical output: the jobs repeat exactly).
 """
-import argparse, glob, json, math, os, subprocess, sys, tempfile
+import argparse, glob, json, math, os, struct, subprocess, sys, tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -130,7 +130,7 @@ int main() {
 '''
 
 # --sim: the native side of the shared stepped jobs. stdin: design params `name=value`, `---`, then commands: `seed N`,
-# `every F`, `tube I field value` (TubeState, before the first run), `set name value` (a design param from here on:
+# `every F`, `tube I field value` (TubeState, before a run: a clock wrap's fill step by step), `set name value` (a design param from here on:
 # every tube's params derived again, a new generation), `run n dt along across normal agitation`.
 SIM_HARNESS = r"""
 #include <cstdio>
@@ -140,6 +140,8 @@ static double parkWorst = -1e30; static long parkN = 0;   // the vertical kernel
 #define FIZZ_PARK_HOOK(t, k, u, uc) (parkN++, parkWorst = (uc) - FOAM_CATCH - (u) > parkWorst ? (uc) - FOAM_CATCH - (u) : parkWorst)
 struct Tube; static void motionBirth(const Tube &t, int k);   // births (FIZZ_BIRTH_HOOK): the MOTION line
 #define FIZZ_BIRTH_HOOK(t, k) motionBirth(t, k)
+static long plN = 0;   // settleFoam's placements in the tube stepping now (FIZZ_PLACE_HOOK): the PL lines, the settle's cost
+#define FIZZ_PLACE_HOOK(t, s) (plN++)
 #include RENDER_SRC
 // MOTION (stderr, every job): over every step of a vertical tube, the largest move of a live bubble back down the tube
 // (away from the end the rise heads for; not born that step) as a multiple of fizzSpeed dt (the rise's own step: the
@@ -941,7 +943,10 @@ int main() {
       for (int k = 0; k < n; k++) {
         for (int j = 0; j < TUBE_COUNT; j++) st[j].agitation = agit;
         mvSide = (mirrored(p[0]) ? -pose.x : pose.x) >= 0 ? 1 : -1;
-        for (int j = 0; j < TUBE_COUNT; j++) { motionBefore(j); stepFizzTube(j, p[j], dt, along, across, agit, pose); motionAfter(j, p[j], dt); }
+        for (int j = 0; j < TUBE_COUNT; j++) {
+          motionBefore(j); plN = 0; stepFizzTube(j, p[j], dt, along, across, agit, pose); motionAfter(j, p[j], dt);
+          if (plN) fprintf(stderr, "PL %d %d %ld\n", step + 1, j, plN);   // the step's settle placements in tube j (the drain / pile-up expectations)
+        }
         step++;
         if (step % every == 0) frame();
         for (int j = 0; j < TUBE_COUNT; j++) emit(step, j);   // after the step and its frame
@@ -984,6 +989,23 @@ def _shake(n):
     return [_run(1, (-1 + 0.3 * math.sin(k * DT * 25.13), 0.25 * math.sin(k * DT * 25.13), 0.2 * math.sin(k * DT * 25.13)),
                  0.8 * (1 - k / n)) for k in range(n)]
 
+def _f32(v): return struct.unpack('f', struct.pack('f', v))[0]   # a value both sides read alike (the native TubeState is float)
+
+def _fill(run, tubes):
+    """run with TubeState set before it (tube index -> fillTarget): the native `tube` lines, render-ref's run.tubes."""
+    return {**run, 'tubes': {str(i): {'fillTarget': _f32(v)} for i, v in tubes.items()}}
+
+STAND = (-0.976, -0.01, 0.22)   # the board's stand pose (g -0.976 -0.01 0 0 0.22)
+DRAIN_AT, FULL = 1000, 0.999    # the wrap jobs: steps at the stand before the retract (the foam formed), the full column
+
+def _wrap(tubes):
+    """A clock wrap (physics.cpp followClock): fillTarget full -> 0 over RETRACT_S = 2 s (smoothstep, one step at a time) on
+    `tubes`, then the empty column 1 s, the clock's first minute (0.02) and a refill (0.3): the source works again."""
+    runs = [_run(DRAIN_AT, STAND)]
+    for k in range(1, 101):
+        u = k / 100; runs.append(_fill(_run(1, STAND), {i: FULL * (1 - u * u * (3 - 2 * u)) for i in tubes}))
+    return runs + [_run(50, STAND), _fill(_run(100, STAND), {i: 0.02 for i in tubes}), _fill(_run(200, STAND), {i: 0.3 for i in tubes})]
+
 # the lid fixture's fields over the board look (viewElevation 20, surfaceBlick 0.2: the user's look on the board)
 LID_OVER = (lambda a, b: {k: v for k, v in b.items() if a.get(k) != v})(   # v too: the sim migrates from it
     json.load(open(ROOT / 'firmware/tools/testdata/tilted-fizz-board-look.json')), json.load(open(ROOT / 'firmware/tools/testdata/tilted-fizz-board-look-lid.json')))
@@ -1019,8 +1041,19 @@ SIM_JOBS = {
     'lid back 35': (LID_OVER, [_run(100, UP), _run(250, _tilt(35))]),   # e 20: P -0.185 r (the lid faded to 26 %)
     'lid forward 30': (LID_OVER, [_run(100, UP), _run(250, _tilt(-30))]),   # e 20: P +0.401 r
     'lid e 45, back 40': ({**LID_OVER, 'viewElevation': 45}, [_run(100, UP), _run(250, _tilt(40))]),   # P -0.302 r
+    # the drain (docs/tilted-fizz-surface-model.md "Drain"; the board's hour wrap, 2026-11-23): the user's look at the stand,
+    # a full column's clock wraps; stranded foam and the bubbles the surface leaves burst, the empty tube clears
+    'wrap retract, minutes': (LID_OVER, _wrap([1])),
+    'wrap retract, both tubes': (LID_OVER, _wrap([0, 1])),
+    # fizz_bench's load (480 scattered, then a 240 spring at 20/s): the hours column full against the glass (closed, the
+    # bubbles pile up there), then its end opens under the pile (the board's settleFoam watchdog panic, 2026-11-23)
+    'pile-up, 480 then spring 240': (LID_OVER, [_run(400, STAND, fizzSource=0, fizzCount=480), _fill(_run(100, STAND), {0: FULL}),
+                                               _run(300, STAND, fizzSource=1, fizzSourceRate=20, fizzCount=240)]),
 }
-JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
+JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}},   # TubeState over FILLS: the slug slid off its spring
+             'wrap retract, minutes': {'minutes': {'fillTarget': FULL}},
+             'wrap retract, both tubes': {'hours': {'fillTarget': FULL}, 'minutes': {'fillTarget': FULL}},
+             'pile-up, 480 then spring 240': {'hours': {'fillTarget': 1.0}, 'minutes': {'fillTarget': 0.992}}}
 
 def _clock_held(lines, err):   # at the pool cap a birth waits: the spring clock sits at its one birth of credit
     return None if any(w[2] == '0' and float(w[5]) == 1 for w in lines) else 'the spring clock never waited at the cap'
@@ -1041,8 +1074,36 @@ def _overdamped(lines, err):   # the stand: nothing moves back down faster than 
     # step: 1.3 leaves room for a front at a lower row after a slide along a curved meniscus (measured worst 1.0x)
     return None if down <= 1.3 and gap >= 20 else f'moved down {down:.3g} x fizzSpeed dt (max 1.3), a birth {gap:.3g} px from the surface (min 20)'
 
+DRAIN_RATIO = 3      # the drain's worst settle (placements a step) at most this multiple of the same job's quiet stand
+BLOCKED_MAX = 20     # births postponed in a wrapped tube by the job's end (a spring point without room waits uncounted)
+PILE_MAX = 10000     # the pile-up's worst settle (placements a step); 4ef9323: 193,764 (every piled bubble foam at once)
+def _placements(err):   # the harness's PL lines: (step, tube) -> settleFoam's placements that step
+    return {(int(w[1]), int(w[2])): int(w[3]) for w in (l.split() for l in err.splitlines() if l.startswith('PL '))}
+
+def _drained(tubes):
+    """The wrap: the drain's worst settle within DRAIN_RATIO x the quiet stand's (steps up to DRAIN_AT), the wrapped tubes
+    empty a second after the retract, the spring born again in the refilled column, births postponed bounded."""
+    def check(lines, err):
+        pl = _placements(err); end = DRAIN_AT + 150
+        quiet = max([n for (s, t), n in pl.items() if t in tubes and s <= DRAIN_AT] or [0])
+        drain = max([n for (s, t), n in pl.items() if t in tubes and DRAIN_AT < s <= end] or [0])
+        if not quiet or drain > DRAIN_RATIO * quiet: return f'settle placements: drain worst {drain}, quiet stand worst {quiet} (max x{DRAIN_RATIO})'
+        st = {(int(w[1]), int(w[2])): w for w in lines}
+        for t in tubes:
+            w = st[(end, t)]; live = sum(float(w[HEAD + 8 * k + 2]) != 0 for k in range(int(w[3])))
+            if live: return f'tube {t}: {live} bubbles left {end - DRAIN_AT - 100} steps after the retract'
+            w = st[(max(s for s, _ in st), t)]; live = sum(float(w[HEAD + 8 * k + 2]) != 0 for k in range(int(w[3])))
+            if not live or int(w[8]) > BLOCKED_MAX: return f'tube {t} at the end: {live} live, {w[8]} births postponed (max {BLOCKED_MAX})'
+        return None
+    return check
+
+def _piled(lines, err):   # the pile-up: the opening end's settle stays bounded (the monolayer; the rest bursts)
+    worst = max(_placements(err).values() or [0])
+    return None if worst <= PILE_MAX else f'settle placements worst {worst} a step (max {PILE_MAX})'
+
 # name: (what, check over the firmware's state lines (split) -> None or why not)
-SIM_EXPECT = {'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
+SIM_EXPECT = {'wrap retract, minutes': ('drain', _drained([1])), 'wrap retract, both tubes': ('drain', _drained([0, 1])),
+              'pile-up, 480 then spring 240': ('bounded settle', _piled),'crowded foam': ('pool saturation', _clock_held), 'spring dry, slug away': ('spring dry / wet', _dry),
               'upright': ('containment', _contained), 'back 15': ('containment', _contained), 'height changes': ('containment', _contained),
               'back 15, 20 s': ('containment', _contained), 'shaking': ('containment', _contained),
               'stand 13 back, 30 s': ('overdamped contacts', _overdamped), 'lid stand 13 back, 30 s': ('overdamped contacts', _overdamped),
@@ -1105,7 +1166,8 @@ def sim_main(a):
             script = ''.join(f'{f}={fmt(v)}\n' for f, v in design.items() if f != 'v') + f'---\nseed {SIM_SEED}\nevery 2\n'
             tubes = {n: {**FILLS[n], **JOB_TUBES.get(name, {}).get(n, {})} for n in names}
             script += ''.join(f'tube {i} {f} {v!r}\n' for i, n in enumerate(names) for f, v in tubes[n].items())
-            for r in runs:
+            for r in runs:   # a run's TubeState (`tubes`, render-ref's run.tubes) and design params, then its steps
+                script += ''.join(f'tube {i} {f} {v!r}\n' for i, tv in r.get('tubes', {}).items() for f, v in tv.items())
                 script += ''.join(f'set {f} {fmt(v)}\n' for f, v in r.get('set', {}).items())
                 script += f'run {r["n"]} {r["dt"]!r} {r["along"]!r} {r["across"]!r} {r["normal"]!r} {r["agitation"]!r}\n'
             nat = [subprocess.run([str(tmp / 'native')], input=script.encode(), capture_output=True) for _ in range(2)]
