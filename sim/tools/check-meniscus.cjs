@@ -403,10 +403,27 @@ assert.ok(sloshCases === 864, `slosh cases: ${sloshCases}`);
 // T = tan tau + tan(e - tau); off (viewElevation 0) byte-identical to the side view; the marks behind it see liquid only
 // where the path has liquid (most at the front line, none at the back line).
 const lidBase = { vertical: true, freeLiquid: false };
-// T = (tan τ + tan(e − τ)) · (1 − smoothstep(e − 5°, e + 25°, τ)) · (1 + 0.2 smoothstep(0°, 30°, −τ)), τ in ±45° (render lidSlope)
+// T = (tan τ + tan δ) · (1 − smoothstep(lo, lo + 30°, τ)) · (1 + 0.2 smoothstep(0°, 30°, −τ)), τ in ±45°, δ = min(e − τ, 75°),
+// lo = min(e − 5°, 15°) (render lidSlope)
 const lidSS = (x) => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); }, DEG = Math.PI / 180;
-const lidT = (e, tau) => { const t = Math.max(-45 * DEG, Math.min(45 * DEG, tau));
-  return Math.max(1e-6, (Math.tan(t) + Math.tan(e * DEG - t)) * (1 - lidSS((t - (e - 5) * DEG) / (30 * DEG))) * (1 + 0.2 * lidSS(-t / (30 * DEG)))); };
+const lidT = (e, tau) => { const t = Math.max(-45 * DEG, Math.min(45 * DEG, tau)), d = Math.min(e * DEG - t, 75 * DEG), lo = Math.min(e - 5, 15) * DEG;
+  return Math.max(1e-6, (Math.tan(t) + Math.tan(d)) * (1 - lidSS((t - lo) / (30 * DEG))) * (1 + 0.2 * lidSS(-t / (30 * DEG)))); };
+// Astra review 5 items 1 + 3: T bounded through grazing incidence (δ ≤ 75°) and continuous in τ; the back fade complete
+// by τ's clamp (45°) at every elevation; e ≤ 20 unchanged (the user's look)
+for (const e of [10, 20, 30, 45, 60, 80]) {
+  const p = { ...base, vertical: true, viewElevation: e };
+  let prev = null, worst = 0, peak = 0;
+  for (let q = -900; q <= 900; q++) {
+    const T = R.lidSlope(p, q * 0.05 * DEG);
+    assert.ok(Number.isFinite(T) && T > 0 && T <= 1.2 * (1 + Math.tan(75 * DEG)) + 1e-4, `lid slope bounded (e ${e}, tau ${q * 0.05}: ${T})`);
+    assert.ok(Math.abs(T - lidT(e, q * 0.05 * DEG)) < 1e-4 * Math.max(1, T), `lid slope law (e ${e}, tau ${q * 0.05}: ${T} vs ${lidT(e, q * 0.05 * DEG)})`);
+    if (prev !== null) worst = Math.max(worst, Math.abs(T - prev));   // steepest smooth step 1.2 (sec² 45° + sec² 75°) 0.05° ≈ 0.017; the singularity jumped 6872
+    prev = T; peak = Math.max(peak, T);
+  }
+  assert.ok(worst < 0.03, `lid slope jumps in a 0.05 deg step (e ${e}: ${worst})`);
+  assert.equal(R.lidSlope(p, 45 * DEG), Math.fround(1e-6), `lid faded out by tau's clamp (e ${e})`);
+  assert.equal(R.lidSlope(p, 60 * DEG), Math.fround(1e-6), `lid faded out past tau's clamp (e ${e})`);
+}
 const lidOff = render('lid-off-ref', lidBase), lidZero = render('lid-off-0', { ...lidBase, viewElevation: 0 }, { backTilt: 0.3 });
 assert.equal(delta(lidOff, lidZero), 0, 'viewElevation 0 must be the side view exactly');
 let lidScenes = 0;
@@ -487,9 +504,9 @@ const lidCheck = (tag, changes, state) => {
   const b = R.markBounds[0].band, st = R.fizzTestState(0);
   for (let ry = 0; ry < H; ry++) {
     assert.ok(Number.isFinite(st.surf[ry]) && Number.isFinite(st.surfL[ry]) && st.strokeR[ry] >= 0, `lid inputs finite (${tag}, row ${ry})`);
-    // (a back line already behind the home profile, a bead's crossing caps: no lid there)
-    if (p.freeLiquid) assert.ok(st.surf[ry] >= st.surfL[ry] - 1e-3 || st.strokeR[ry] === 0, `front line behind the home profile (${tag}, row ${ry}: ${st.surf[ry]} vs ${st.surfL[ry]})`);
-    if (b && p.freeLiquid) assert.ok(b.xm[0][ry] >= b.xm[1][ry] - 1e-3 || b.w[0][ry] === 0, `body bounds crossed (${tag}, row ${ry})`);
+    // ordered on every row, zero width too (review 5 item 2): home <= front (body end) <= back line
+    if (b && b.lid && p.freeLiquid) assert.ok(st.surf[ry] >= st.surfL[ry], `front line behind the home profile (${tag}, row ${ry}: ${st.surf[ry]} vs ${st.surfL[ry]}, width ${st.strokeR[ry]})`);
+    if (b && b.lid && p.freeLiquid) assert.ok(b.xm[0][ry] >= b.xm[1][ry], `body bounds crossed (${tag}, row ${ry}: front ${b.xm[0][ry]} home ${b.xm[1][ry]}, width ${b.w[0][ry]})`);
     if (!(st.exposed & 1)) assert.equal(st.strokeR[ry], 0, `a lid at a closed time edge (${tag}, row ${ry})`);
   }
   lidBudget++;
@@ -501,6 +518,12 @@ for (const backTilt of [0, 0.26, 0.6]) for (const e of [20, 60]) {
   for (const fillTarget of [0, 0.002, 0.95, 0.99, 0.999, 1]) { lidCheck(`fill-${fillTarget}-${backTilt}-${e}`, { viewElevation: e }, { backTilt, fillTarget }); jobs.pop(); }
   const { b } = lidCheck(`remaining-${backTilt}-${e}`, { remaining: true, viewElevation: e }, { backTilt }); jobs.pop();
   assert.ok(b && b.lid, `remaining mode (vertical: not mirrored) keeps the lid (${backTilt}, ${e})`);
+}
+{   // Astra review 5 item 2: H 61, wall 3, contact angle 70°, e 60°, τ 0, free slug at 60 of length 16.08 (row 3 had home
+    // 55.44 / front 29.31 / width 0: crossed by 26 px)
+  const { b, st } = lidCheck('astra5-slug16-ca70', { freeLiquid: true, glassWall: 3, viewElevation: 60, contactAngle: 70 }, { backTilt: 0, slugPos: 60, fillTarget: 16.08 / 536 });
+  assert.ok(b && b.lid && (st.exposed & 1), 'review 5 repro draws its lid');
+  assert.ok(b.xm[0][3] >= b.xm[1][3] && st.surf[3] >= st.surfL[3], `review 5 repro: row 3 ordered (front ${b.xm[0][3]}, home ${b.xm[1][3]})`);
 }
 {   // full: closed, no lid at all
   const { st } = lidCheck('full-closed', { viewElevation: 60 }, { backTilt: 0.26, fillTarget: 1 }); jobs.pop();
