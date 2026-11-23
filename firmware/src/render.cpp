@@ -5035,14 +5035,19 @@ inline float Tube::wallXL(int ry, float xs, float tanA, const CapShape &c) const
 }
 // Desk view (sim lidSlope, docs/tilted-fizz-deskview.md): the lid's slope T = tan tau + tan(e - tau), tau = the stand's
 // back tilt (TubeState.backTilt), e = viewElevation; 0 = off (landscape, or viewElevation 0).
-// lidAngles: tau clamped to poseBackTilt's range (t) and delta = e - t, the view's elevation above the screen normal.
+// lidAngles: tau clamped to poseBackTilt's range (t) and delta = e - t, the view's elevation above the screen normal,
+// at most LID_DELTA_MAX: tipped forward past e - 75 deg the eye would graze the glass (tan delta -> inf at 90 deg: T and
+// the fizz's 1 / cos delta blow up); bounded there, continuous in tau, used by T and the fizz alike (fizzLidOf).
+#define LID_DELTA_MAX 75.0f
 static inline void lidAngles(const Params &p, float tau, float &t, float &d) {
   const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad, hi = BACK_TILT_MAX_DEG * rad;
-  t = fmn(hi, fmx(-hi, tau)); d = e - t;   // poseBackTilt's range (signed: < 0 forward)
+  t = fmn(hi, fmx(-hi, tau)); d = fmn(e - t, LID_DELTA_MAX * rad);   // poseBackTilt's range (signed: < 0 forward)
 }
 // The viewing angle is unknown: the lid assumes the eye at viewElevation e and scales with the stand's tilt tau (sim
 // lidSlope): far back the eye sits below the screen normal and looks along the tube's end, the capillary-held end
-// meniscus edge-on, so the lid fades out, 1 - smoothstep(e + LID_BACK_FADE0, e + LID_BACK_FADE0 + LID_BACK_FADE_W, tau);
+// meniscus edge-on, so the lid fades out, 1 - smoothstep(lo, lo + LID_BACK_FADE_W, tau), lo = min(e + LID_BACK_FADE0,
+// BACK_TILT_MAX_DEG - LID_BACK_FADE_W): the fade ends by tau's clamp (e > 20: it would stop part-way, a lid left face up);
+// e <= 20 (the user's look): lo = e + LID_BACK_FADE0 as before, bit for bit (the branch is picked in degrees);
 // tipped forward (the user tilts it to look in) it grows, 1 + LID_FWD_GAIN smoothstep(0, LID_FWD_FULL, -tau).
 #define LID_BACK_FADE0 -5.0f
 #define LID_BACK_FADE_W 30.0f
@@ -5054,7 +5059,8 @@ static inline float lidSlope(const Params &p, float tau) {
   const float rad = (float)M_PI / 180, e = fmn(80, p.viewElevation) * rad;
   float t, d; lidAngles(p, tau, t, d);
   const float geo = tanf(t) + tanf(d);
-  const float back = 1 - lidSmooth((t - (e + LID_BACK_FADE0 * rad)) * (1 / (LID_BACK_FADE_W * rad)));
+  const float loMax = BACK_TILT_MAX_DEG - LID_BACK_FADE_W, lo = fmn(80, p.viewElevation) + LID_BACK_FADE0 <= loMax ? e + LID_BACK_FADE0 * rad : loMax * rad;
+  const float back = 1 - lidSmooth((t - lo) * (1 / (LID_BACK_FADE_W * rad)));
   const float fwd = 1 + LID_FWD_GAIN * lidSmooth(-t * (1 / (LID_FWD_FULL * rad)));
   return fmx(1e-6f, geo * back * fwd);   // on stays on (a faded lid is a flat line, not the side view's band: no jump)
 }
@@ -5394,8 +5400,9 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
   // Desk view (sim drawTube): the time edge is the lid's front contact line; its height per row goes to strokeR until the
   // band facts below (which keep it where the lid is drawn). One sqrtf a row.
   // The back line keeps the time: the ring normalised by its whole centre-row lead k (h - cap) (its row shape kept), its
-  // apex at xe. The lid (back line - front line) is budgeted: never past the home profile (the body's bounds stay
-  // ordered on a short slug), and shrinking to nothing as the time edge closes against the end glass (fizzExposed: xe
+  // apex at xe. The lid (back line - front line) is budgeted: the back line never behind the home profile and the lid
+  // only what is left between them, so home <= front <= back on every row, a zero-width row too (a short slug under a
+  // tall lid: its edge rows sit home = front = back), and shrinking to nothing as the time edge closes against the end glass (fizzExposed: xe
   // >= L - 0.5), over 2 R tan tau of fill: the fill over which the level plane meets the glass (at least 1 px).
   const float lidT = mir || !(hasLiquid && p.surfaceBand > 0) ? 0.0f : lidSlope(p, st.backTilt), lidR = rc.boreR, lidYc = (H - 1) / 2.0f;   // only where the band is drawn
   float lidTau = 0, lidDelta = 0, lidEnd = 1;
@@ -5407,8 +5414,8 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
     const float exL = p.freeLiquid ? edgeXL(ry, xs, tanL, capL) : 0;
     if (lidT > 0) {
       const float dy = ry - lidYc, z2 = lidR * lidR - dy * dy, z = z2 > 0 ? sqrtf(z2) : 0.0f;
-      const float xb = wallX(ry, xe, tanR, capR) - capR.k * (capR.h - capR.cap) - lidT * lidR + lidT * z;   // the back line
-      const float w = fmn(2 * lidT * z * lidEnd, fmx(0, xb - exL));
+      const float xb = fmx(exL, wallX(ry, xe, tanR, capR) - capR.k * (capR.h - capR.cap) - lidT * lidR + lidT * z);   // the back line, never behind the home profile
+      const float w = fmn(2 * lidT * z * lidEnd, fmx(0, xb - exL));   // the lid: what is left of the body
       ex = xb - w; strokeR[ry] = w;
     } else ex = edgeX(ry, xe, tanR, capR);
     edges[ry] = ex; edgesL[ry] = exL;

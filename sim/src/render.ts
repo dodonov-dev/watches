@@ -2167,24 +2167,29 @@ function wallXL(ry: number, xs: number, tanA: number, p: Params, c: CapShape, k:
 // there): x0 + h_m = the wall ring (wallX, its tilt skew and across sag) less its lead k·h, less T·R. Time edge only
 // (the home edge of a free slug keeps its band); off (0) without vertical or at viewElevation 0.
 const LID_BACK_W = 0.5;   // px: the back contour, thinner than the front rim's 1 px
-/** The lid's slope T (0 = off), in float32 as the firmware's lidSlope. */
-/** [τ clamped to poseBackTilt's range (signed: < 0 forward), δ = e − τ] in float32 (firmware lidAngles). */
+/** [τ clamped to poseBackTilt's range (signed: < 0 forward), δ = min(e − τ, LID_DELTA_MAX)] in float32 (firmware
+ *  lidAngles): tipped forward past e − 75° the eye would graze the glass (tan δ → ∞ at 90°: T and the fizz's 1 / cos δ
+ *  blow up); bounded there, continuous in τ, used by T and the fizz alike (fizzLidOf32). */
+const LID_DELTA_MAX = 75;   // degrees
 export function lidAngles(p: Params, tau: number): [number, number] {
   const F = Math.fround, rad = F(F(Math.PI) / 180), hi = F(BACK_TILT_MAX_DEG * rad);
   const e = F(Math.min(80, p.viewElevation) * rad), t = F(Math.min(hi, Math.max(-hi, tau)));   // poseBackTilt's range
-  return [t, F(e - t)];
+  return [t, Math.min(F(e - t), F(LID_DELTA_MAX * rad))];
 }
 // The viewing angle is unknown: the lid assumes the eye at viewElevation e and scales with the stand's tilt τ (internal
 // constants, firmware LID_*): far back the eye sits below the screen normal and looks along the tube's end, the
-// capillary-held end meniscus edge-on, so the lid fades out, 1 − smoothstep(e − 5°, e + 25°, τ); tipped forward (the
-// user tilts it to look in) it grows, 1 + 0.2 smoothstep(0°, 30°, −τ) (≈ 1.2× at −30°). Float32, + − × only.
+// capillary-held end meniscus edge-on, so the lid fades out, 1 − smoothstep(lo, lo + 30°, τ), lo = min(e − 5°, 45° − 30°):
+// the fade ends by τ's clamp (e > 20°: it would stop part-way, a lid left face up); e ≤ 20° (the user's look) as before,
+// bit for bit (the branch is picked in degrees); tipped forward (the user tilts it to look in) it grows,
+// 1 + 0.2 smoothstep(0°, 30°, −τ) (≈ 1.2× at −30°). Float32, + − × only. The lid's slope T (0 = off), as the firmware's lidSlope.
 const LID_BACK_FADE0 = -5, LID_BACK_FADE_W = 30, LID_FWD_GAIN = 0.2, LID_FWD_FULL = 30;   // degrees, gain
 const smooth32 = (x: number): number => { const F = Math.fround, t = x < 0 ? 0 : x > 1 ? 1 : x; return F(F(t * t) * F(3 - F(2 * t))); };
 export function lidSlope(p: Params, tau: number): number {
   if (!p.vertical || !(p.viewElevation > 0)) return 0;
   const F = Math.fround, rad = F(F(Math.PI) / 180), [t, d] = lidAngles(p, tau), e = F(Math.min(80, p.viewElevation) * rad);
   const geo = F(F(Math.tan(t)) + F(Math.tan(d)));
-  const back = F(1 - smooth32(F(F(t - F(e + F(LID_BACK_FADE0 * rad))) * F(1 / F(LID_BACK_FADE_W * rad)))));
+  const loMax = BACK_TILT_MAX_DEG - LID_BACK_FADE_W, lo = F(F(Math.min(80, p.viewElevation)) + LID_BACK_FADE0) <= loMax ? F(e + F(LID_BACK_FADE0 * rad)) : F(loMax * rad);
+  const back = F(1 - smooth32(F(F(t - lo) * F(1 / F(LID_BACK_FADE_W * rad)))));
   const fwd = F(1 + F(LID_FWD_GAIN * smooth32(F(F(-t) * F(1 / F(LID_FWD_FULL * rad))))));
   return Math.max(F(1e-6), F(F(geo * back) * fwd));   // on stays on (a faded lid is a flat line, not the side view's band: no jump)
 }
@@ -2288,23 +2293,26 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   fizzExposed[idx] = (xe < L - 0.5 ? 1 : 0) | (p.freeLiquid && xs > 0.5 ? 2 : 0);
   // Desk view: the time edge is the lid's front contact line, lidH its height per row (lidSlope)
   // The back line keeps the time: the ring normalised by its whole centre-row lead k (h − cap), apex at xe. The lid is
-  // budgeted: never past the home profile (ordered body bounds on a short slug), shrinking to nothing as the time edge
-  // closes against the end glass (xe ≥ L − 0.5) over 2 R tan τ of fill (at least 1 px). Firmware drawTube.
-  const lidT = mir || !(hasLiquid && p.surfaceBand > 0) ? 0 : lidSlope(p, state.backTilt), lidH = new Float32Array(H), lidR = boreR(p), lidYc = (H - 1) / 2;
+  // budgeted: the back line never behind the home profile and the lid only what is left between them, so home ≤ front ≤
+  // back on every row, a zero-width row too (a short slug under a tall lid: its edge rows sit home = front = back);
+  // shrinking to nothing as the time edge closes against the end glass (xe ≥ L − 0.5) over 2 R tan τ of fill (at least
+  // 1 px). Firmware drawTube, float32 in its order (the side view's wallX / edgeXL / xe still doubles, rounded once).
+  const lidT = mir || !(hasLiquid && p.surfaceBand > 0) ? 0 : lidSlope(p, state.backTilt), lidH = new Float32Array(H), lidR = boreR32(p), lidYc = F((H - 1) / 2);
   const [lidTau, lidDelta] = lidT > 0 ? lidAngles(p, state.backTilt) : [0, 0];
-  const lidEnd = lidT > 0 ? Math.max(0, Math.min(1, (L - 0.5 - xe) / Math.max(1, 2 * lidR * Math.abs(Math.tan(lidTau))))) : 1;
+  const lidEnd = lidT > 0 ? clamp32(F(F(F(L - 0.5) - F(xe)) / Math.max(1, F(F(2 * lidR) * Math.abs(F(Math.tan(lidTau)))))), 0, 1) : 1;
   fizzLidT[idx] = lidT; fizzLidTau[idx] = lidTau; fizzLidDelta[idx] = lidDelta;   // the stepper's lid inputs (with the strokes)
   for (let ry = 0; ry < H; ry++) {
-    let ex: number;
+    let ex: number, exS: number;   // exS: the home profile the stepper's surfL takes (the lid's: float32, as the front line's bound)
     const exL = p.freeLiquid ? edgeXL(ry, xs, tanL, p, capL, capKL) : 0;
     if (lidT > 0) {
-      const dy = ry - lidYc, z2 = lidR * lidR - dy * dy, z = z2 > 0 ? Math.sqrt(z2) : 0;
-      const xb = wallX(ry, xe, tanR, p, capR, capK) - capK * (capR.h - capR.cap) - lidT * lidR + lidT * z;   // the back line
-      const w = Math.min(2 * lidT * z * lidEnd, Math.max(0, xb - exL));
-      ex = xb - w; lidH[ry] = w;
-    } else ex = edgeX(ry, xe, tanR, p, capR, capK);
+      const dy = F(ry - lidYc), z2 = F(F(lidR * lidR) - F(dy * dy)), z = z2 > 0 ? F(Math.sqrt(z2)) : 0, exL32 = exS = F(exL);
+      const xw = F(F(wallX(ry, xe, tanR, p, capR, capK)) - F(F(capK) * F(F(capR.h) - F(capR.cap))));
+      const xb = Math.max(exL32, F(F(xw - F(lidT * lidR)) + F(lidT * z)));   // the back line, never behind the home profile
+      const w = Math.min(F(F(F(2 * lidT) * z) * lidEnd), Math.max(0, F(xb - exL32)));   // the lid: what is left of the body
+      ex = F(xb - w); lidH[ry] = w;
+    } else { ex = edgeX(ry, xe, tanR, p, capR, capK); exS = exL; }
     edges[ry] = ex; edgesL[ry] = exL;
-    surf[ry] = ex - xs; surfL[ry] = exL - xs;
+    surf[ry] = ex - xs; surfL[ry] = exS - xs;
     let x0 = 0;
     if (p.cornerR > 0) { // rounded left end cap
       const r = Math.min(p.cornerR, H / 2), yc = (H - 1) / 2, dy = Math.abs(ry - yc);
