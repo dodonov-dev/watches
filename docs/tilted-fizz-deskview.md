@@ -34,16 +34,18 @@ others kept. The lid must read as two thin contact lines over see-through liquid
 
 ## Fizz (after the perf pass merges)
 - k = clamp((z_R − z) / (2·z_R), 0, 1), z_R = √(R² − y²) (un-eroded R): 0 on the front glass, 1 on the back.
-- L = S + k·B with S = front line, B = 2·z_R·T (S + B = back line); P = r·(1 − cos τ + sin τ·tan δ) ≈ 0.1r;
-  u_target = L − r + P. Veil × 0 (foam seen through the lid from above, no wedge in front).
-  Implemented as max(0, ·) (negative for τ < 0 and τ > 2e). Open (2026-11-23, review 5 item 4), not changed yet:
-  exact under the same oblique projection (bubble centre r below its contact along n = (cos τ, 0, sin τ), x' = x − z tan δ,
-  checked numerically over e 10-60, τ ±45°, error 6e-8): the sphere's silhouette top is r (1 − cos e) / cos δ (≥ 0) above
-  the CONTACT, but L is the level line at the bubble CENTRE's depth z (k from the body's z) and the contact sits r sin τ
-  deeper, r sin τ T lower in x'; above L the silhouette top is r (1 / cos δ − 1 / cos τ), signed (< 0 for τ > e / 2, e.g.
-  −0.019 r on the stand at e 20, τ 13°). Either P = r (1 / cos δ − 1 / cos τ) (signed: the lp ≥ 0 sentinel and the
-  P ≥ 0 skips revisited) or P = r (1 − cos e) / cos δ with L at the contact's depth (k from z + r sin τ). With the
-  faded / gained T (below) the level line is not the geometric one either.
+- L = S + k·B with S = front line, B = 2·z_R·T (S + B = back line); u_target = L − r + P. Veil × 0 (foam seen through
+  the lid from above, no wedge in front).
+- P = r (1/cos δ − 1/cos τ), signed (2026-11-23, review 5 item 4; was r (1 − cos τ + sin τ tan δ) clamped at 0): the
+  exact protrusion of the sphere's silhouette top over the level line at the bubble centre's depth, under the same oblique
+  projection (centre r below its contact along n = (cos τ, 0, sin τ): r / cos τ under the line at its own depth; the
+  silhouette reaches r / cos δ above the centre in x' = x − z tan δ; checked numerically, error 6e-8). The drawn disc
+  (radius r) tops out on that silhouette top. < 0 for τ > e/2 (e 20: −30° +0.401, 0° +0.064, 13° −0.019, 30° −0.139 r).
+  P is the exact protrusion against the drawn level line at the centre's depth; the faded / gained T stays a presentation
+  scale of that line (its fade and gain do not enter P).
+  Once a frame (fizzLidOf: 1/cos by fizzSinCos, two divisions). "Lid on" is its own flag (the FizzLid pointer), not
+  P ≥ 0. The skips by s S − r (the other end's discFitLow / least row, the render clamp) take −P (+ 1e-2) of margin when
+  P < 0; fizzEndLow / fizzEndLowBox carry P per row. Host check: -DFIZZ_BOUND_CHECK (bounds ≤ exact, skipped = computed).
 - Drift: buoyancy is normal to the level plane → no surface drift from the plane's slope (σ_z = −tan τ, σ_y meniscus
   only); foam stays at the front arc because bubbles arrive along the front glass.
 - General form L = x0 + c(ρ) − z·T; today's rule is T = 0.

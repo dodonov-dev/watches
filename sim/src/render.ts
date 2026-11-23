@@ -1352,32 +1352,34 @@ function fizzEndK32(y: number, z: number, a: number, r: number, B0: number): num
  *  on L: the endpoint zone starts FOAM_CATCH short of it) and L + P − h (where its centre parks), h the footprint's
  *  half chord: r along the tube, ry across, h = √(r² − (m dy)²) — the stepper's the physical circle (fizzEndSupport32:
  *  ry = r, m = 1), the render's the disc as drawn, squashed across by the lens (fizzEndClampX). Firmware fizzEndSupportE. */
-function fizzEndSupportE32(S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, ry: number, m: number, k: number, lp = -1): [number, number] {
+function fizzEndSupportE32(S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, ry: number, m: number, k: number, lp: FizzLid | null = null): [number, number] {
   const a0 = Math.max(0, Math.ceil(F(yr - ry))), b0 = Math.min(H - 1, Math.floor(F(yr + ry))), inv2r = F(0.5 / r);
   if (a0 > b0) {
     const Bc = rowLerp32(B, H, yr), uc = F(F(foamFront32(S, H, yr, s) + F(k * Bc)) - r);
-    return [uc, F(uc + (lp >= 0 ? F(r * lp) : F(r * Math.max(F(0.3), F(1 - F(Bc * inv2r))))))];
+    return [uc, F(uc + (lp ? F(r * lp.pf) : F(r * Math.max(F(0.3), F(1 - F(Bc * inv2r))))))];
   }
   let c = Infinity, t = Infinity;
-  const P = lp >= 0 ? F(r * lp) : 0;   // the lid (lp >= 0): P = r lp on every row
+  const P = lp ? F(r * lp.pf) : 0;   // the lid (lp): P = r pf on every row, signed
   for (let iy = a0; iy <= b0; iy++) {
     const dy = F(F(iy - yr) * m), h = F(Math.sqrt(Math.max(0, F(F(r * r) - F(dy * dy))))), L = F(F(s * S[iy]) + F(k * B[iy]));
-    c = Math.min(c, F(L - h)); t = Math.min(t, F(F(L + (lp >= 0 ? P : F(r * Math.max(F(0.3), F(1 - F(B[iy] * inv2r)))))) - h));
+    c = Math.min(c, F(L - h)); t = Math.min(t, F(F(L + (lp ? P : F(r * Math.max(F(0.3), F(1 - F(B[iy] * inv2r)))))) - h));
   }
   return [c, t];
 }
-const fizzEndSupport32 = (S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, k: number, lp = -1): [number, number] =>
+const fizzEndSupport32 = (S: Float32Array, B: Float32Array, H: number, s: number, yr: number, r: number, k: number, lp: FizzLid | null = null): [number, number] =>
   fizzEndSupportE32(S, B, H, s, yr, r, r, 1, k, lp);
 /** Desk view (docs/tilted-fizz-deskview.md "Fizz"; firmware FizzLid / fizzLidK / fizzEndKS / fizzEndLp / fizzLidOf): under the
  *  lid the time edge's S is the front contact line, B = 2 z_R T the lid's height, so L = S + k B with k = clamp((z_R − z) /
  *  2 z_R, 0, 1), z_R = √(R² − y²) of the un-eroded bore, is the level line at the body's depth (0 front glass, 1 back);
- *  P = r pf, pf = max(0, 1 − cos τ + sin τ tan δ); the drift's σ_z = −tan τ (the level plane). */
+ *  P = r pf, pf = 1 / cos δ − 1 / cos τ (signed; δ ≤ 75°): the drawn disc's top on the sphere's silhouette top over the level
+ *  line at the bubble centre's depth (the centre hangs r / cos τ under it, the silhouette reaches r / cos δ above the
+ *  centre); the drift's σ_z = −tan τ (the level plane). Once a frame (two divisions). */
 interface FizzLid { on: boolean; R: number; pf: number; tanT: number }
 function fizzLidOf32(T: number, tau: number, delta: number, R: number): FizzLid {
   if (!(T > 0)) return { on: false, R: 0, pf: 0, tanT: 0 };
-  const [st0, ct] = fizzSinCos32(Math.abs(tau)), [sd0, cd] = fizzSinCos32(Math.abs(delta)), td = F((delta < 0 ? -sd0 : sd0) / cd);
+  const [st0, ct] = fizzSinCos32(Math.abs(tau)), [, cd] = fizzSinCos32(Math.abs(delta));
   const st = tau < 0 ? -st0 : st0;   // τ signed (< 0 forward)
-  return { on: true, R, pf: Math.max(0, F(F(1 - ct) + F(st * td))), tanT: F(st / ct) };
+  return { on: true, R, pf: F(F(1 / cd) - F(1 / ct)), tanT: F(st / ct) };
 }
 function fizzLidK32(y: number, z: number, R: number): number {
   const zR = F(Math.sqrt(Math.max(0, F(F(R * R) - F(y * y)))));
@@ -1386,7 +1388,10 @@ function fizzLidK32(y: number, z: number, R: number): number {
 }
 const fizzEndKS32 = (l: FizzLid | null, s: number, y: number, z: number, a: number, r: number, B: Float32Array, H: number, yr: number): number =>
   l && l.on && s > 0 ? fizzLidK32(y, z, l.R) : fizzEndK32(y, z, a, r, rowLerp32(B, H, yr));
-const fizzEndLp32 = (l: FizzLid | null, s: number): number => l && l.on && s > 0 ? l.pf : -1;
+const fizzEndLp32 = (l: FizzLid | null, s: number): FizzLid | null => l && l.on && s > 0 ? l : null;   // the flag: the lid itself (pf any sign)
+/** What side s's target may sit below every row's s S − h (the skips by s S − r): the lid's −P when negative, plus
+ *  FIZZ_END_SLACK over the support's rounding; 0 for P ≥ 0 (the band rule: P ≥ 0.3 r). Firmware fizzEndNegP. */
+const fizzEndNegP32 = (l: FizzLid | null, s: number, r: number): number => l && l.on && s > 0 && l.pf < 0 ? F(F(-r * l.pf) + F(1e-2)) : 0;
 /** Tube i's lid rule from its published T, τ, δ. */
 const fizzLidFor = (i: number, p: Params): FizzLid | null => {
   const l = fizzLidOf32(fizzLidT[i], fizzLidTau[i], fizzLidDelta[i], boreR32(p));
@@ -1927,7 +1932,7 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
       const Ss = s > 0 ? surf : surfL, u = F(s * f.x);
       if (!(exposed & (s > 0 ? 1 : 2))) {
         if (u > discFitLow32(Ss, H, f.y, r, s)) { const lim = discFit32(Ss, H, f.y, r, s); if (u > lim) { f.x = F(s * lim); c |= FIZZ_C_END; } }
-      } else if (u > discFitLow32(Ss, H, f.y, r, s)) {   // else short of its target (every row's L + P − h > s S − r)
+      } else if (u > F(discFitLow32(Ss, H, f.y, r, s) - fizzEndNegP32(lid, s, r))) {   // else short of its target (every row's L + P − h ≥ s S − h + min(0, P))
         const Bs = s > 0 ? strokeR : strokeL, lim = fizzEndSupport32(Ss, Bs, H, s, f.y, r, fizzEndKS32(lid, s, y, z, a, r, Bs, H, f.y), fizzEndLp32(lid, s))[1];
         if (u > lim) f.x = F(s * lim);
       }
@@ -3221,7 +3226,7 @@ export function lensSourceRows(H: number, p: Params): Int16Array | null {
  *  centre u = s x at most its own endpoint target on each edge, the whole-disc support of L + P against this frame's
  *  profiles and bands (the stepper ran on an older frame's), over the footprint it is drawn with: r along the tube, r / m
  *  across (m = fizzMag: the lens magnifies the rows, so the sprite is pre-squashed). Once per bubble; an edge farther
- *  than r from every row of the footprint skips its roots (u ≤ min s S − r < every row's L + P − h, P ≥ 0.3 r). */
+ *  than r from every row of the footprint skips its roots (u ≤ min s S − r + min(0, P) ≤ every row's L + P − h; fizzEndNegP32). */
 function fizzEndClampX(p: Params, H: number, f: { x: number; y: number; v: number }, by: number, bz: number, R: number, mag: Float32Array,
                        surf: Float32Array, surfL: Float32Array, strokeR: Float32Array, strokeL: Float32Array, lid: FizzLid | null = null): [number, number, number] {
   const r = fizzR32(p, f.v), a = F(R - r), m = F(fizzMag(mag, H, f.y, r)), ry = F(r / m);
@@ -3230,7 +3235,7 @@ function fizzEndClampX(p: Params, H: number, f: { x: number; y: number; v: numbe
   let x = f.x;
   for (let s = 1; s >= -1; s -= 2) {   // the time edge, then the home edge (the last word, as before)
     const S = s > 0 ? surf : surfL, B = s > 0 ? strokeR : strokeL, u = F(s * x);
-    if (a0 <= b0) { let lo = Infinity; for (let iy = a0; iy <= b0; iy++) lo = Math.min(lo, F(s * S[iy])); if (!(u > F(lo - r))) continue; }
+    if (a0 <= b0) { let lo = Infinity; for (let iy = a0; iy <= b0; iy++) lo = Math.min(lo, F(s * S[iy])); if (!(u > F(F(lo - r) - fizzEndNegP32(lid, s, r)))) continue; }
     const ut = fizzEndSupportE32(S, B, H, s, f.y, r, ry, m, s > 0 ? kR : kL, fizzEndLp32(lid, s))[1];
     if (u > ut) x = F(s * ut);
   }

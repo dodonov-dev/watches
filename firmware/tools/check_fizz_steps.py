@@ -828,7 +828,7 @@ static int lidSelftest() {
   }
   t.surfH = H; t.bodyH = H; t.bodyR = R; t.bodySize = p.fizzSize; t.bodyVar = p.fizzSizeVar;
   t.fizzLidT = T; t.fizzLidTau = tau; t.fizzLidDelta = delta; t.lid = fizzLidOf(T, tau, delta, R);
-  const float pf = 1 - cosf(tau) + sinf(tau) * tanf(delta);
+  const float pf = 1 / cosf(delta) - 1 / cosf(tau);   // signed: < 0 here (tau > delta)
   if (!t.lid.on || fabsf(t.lid.pf - pf) > 1e-5f || fabsf(t.lid.tanT - tanf(tau)) > 1e-5f) fail("fizzLidOf pf", t.lid.pf, pf);
   const float Z[3] = {a, 0, -a}; float end[3] = {0, 0, 0};
   t.fizzN = 3; t.foam->nOrder = 0;
@@ -1015,6 +1015,10 @@ SIM_JOBS = {
     'lid back 15': (LID_OVER, [_run(100, UP), _run(250, _tilt(15))]),
     'lid across + back': (LID_OVER, [_run(100, UP), _run(250, _tilt(15, 0.3))]),
     'lid upright, shaking': (LID_OVER, [_run(80, UP), *_shake(200), _run(70, UP)]),
+    # signed P (P / r = 1 / cos delta - 1 / cos tau): far back < 0, forward > 0
+    'lid back 35': (LID_OVER, [_run(100, UP), _run(250, _tilt(35))]),   # e 20: P -0.185 r (the lid faded to 26 %)
+    'lid forward 30': (LID_OVER, [_run(100, UP), _run(250, _tilt(-30))]),   # e 20: P +0.401 r
+    'lid e 45, back 40': ({**LID_OVER, 'viewElevation': 45}, [_run(100, UP), _run(250, _tilt(40))]),   # P -0.302 r
 }
 JOB_TUBES = {'spring dry, slug away': {'hours': {'slugPos': 220.0}}}   # TubeState over FILLS: the slug slid off its spring
 
