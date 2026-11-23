@@ -2176,9 +2176,9 @@ export function lidAngles(p: Params, tau: number): [number, number] {
 }
 // The viewing angle is unknown: the lid assumes the eye at viewElevation e and scales with the stand's tilt τ (internal
 // constants, firmware LID_*): far back the eye sits below the screen normal and looks along the tube's end, the
-// capillary-held end meniscus edge-on, so the lid fades out, 1 − smoothstep(e + 10°, e + 35°, τ); tipped forward (the
-// user tilts it to look in) it grows, 1 + 0.5 smoothstep(0°, 30°, −τ) (≈ 1.5× at −30°). Float32, + − × only.
-const LID_BACK_FADE0 = 10, LID_BACK_FADE_W = 25, LID_FWD_GAIN = 0.5, LID_FWD_FULL = 30;   // degrees, gain
+// capillary-held end meniscus edge-on, so the lid fades out, 1 − smoothstep(e − 5°, e + 25°, τ); tipped forward (the
+// user tilts it to look in) it grows, 1 + 0.2 smoothstep(0°, 30°, −τ) (≈ 1.2× at −30°). Float32, + − × only.
+const LID_BACK_FADE0 = -5, LID_BACK_FADE_W = 30, LID_FWD_GAIN = 0.2, LID_FWD_FULL = 30;   // degrees, gain
 const smooth32 = (x: number): number => { const F = Math.fround, t = x < 0 ? 0 : x > 1 ? 1 : x; return F(F(t * t) * F(3 - F(2 * t))); };
 export function lidSlope(p: Params, tau: number): number {
   if (!p.vertical || !(p.viewElevation > 0)) return 0;

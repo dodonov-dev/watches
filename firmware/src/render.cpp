@@ -5044,9 +5044,9 @@ static inline void lidAngles(const Params &p, float tau, float &t, float &d) {
 // lidSlope): far back the eye sits below the screen normal and looks along the tube's end, the capillary-held end
 // meniscus edge-on, so the lid fades out, 1 - smoothstep(e + LID_BACK_FADE0, e + LID_BACK_FADE0 + LID_BACK_FADE_W, tau);
 // tipped forward (the user tilts it to look in) it grows, 1 + LID_FWD_GAIN smoothstep(0, LID_FWD_FULL, -tau).
-#define LID_BACK_FADE0 10.0f
-#define LID_BACK_FADE_W 25.0f
-#define LID_FWD_GAIN 0.5f
+#define LID_BACK_FADE0 -5.0f
+#define LID_BACK_FADE_W 30.0f
+#define LID_FWD_GAIN 0.2f
 #define LID_FWD_FULL 30.0f
 static inline float lidSmooth(float x) { const float t = clampf(x, 0, 1); return t * t * (3 - 2 * t); }
 static inline float lidSlope(const Params &p, float tau) {

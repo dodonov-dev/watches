@@ -403,10 +403,10 @@ assert.ok(sloshCases === 864, `slosh cases: ${sloshCases}`);
 // T = tan tau + tan(e - tau); off (viewElevation 0) byte-identical to the side view; the marks behind it see liquid only
 // where the path has liquid (most at the front line, none at the back line).
 const lidBase = { vertical: true, freeLiquid: false };
-// T = (tan τ + tan(e − τ)) · (1 − smoothstep(e + 10°, e + 35°, τ)) · (1 + 0.5 smoothstep(0°, 30°, −τ)), τ in ±45° (render lidSlope)
+// T = (tan τ + tan(e − τ)) · (1 − smoothstep(e − 5°, e + 25°, τ)) · (1 + 0.2 smoothstep(0°, 30°, −τ)), τ in ±45° (render lidSlope)
 const lidSS = (x) => { const t = Math.max(0, Math.min(1, x)); return t * t * (3 - 2 * t); }, DEG = Math.PI / 180;
 const lidT = (e, tau) => { const t = Math.max(-45 * DEG, Math.min(45 * DEG, tau));
-  return Math.max(1e-6, (Math.tan(t) + Math.tan(e * DEG - t)) * (1 - lidSS((t - (e + 10) * DEG) / (25 * DEG))) * (1 + 0.5 * lidSS(-t / (30 * DEG)))); };
+  return Math.max(1e-6, (Math.tan(t) + Math.tan(e * DEG - t)) * (1 - lidSS((t - (e - 5) * DEG) / (30 * DEG))) * (1 + 0.2 * lidSS(-t / (30 * DEG)))); };
 const lidOff = render('lid-off-ref', lidBase), lidZero = render('lid-off-0', { ...lidBase, viewElevation: 0 }, { backTilt: 0.3 });
 assert.equal(delta(lidOff, lidZero), 0, 'viewElevation 0 must be the side view exactly');
 let lidScenes = 0;
@@ -527,8 +527,9 @@ for (const cap of [-4, 4]) for (const fillVel of [0, 10, -10]) {
   let prev = null, prevW = null, worstW = 0, worstD = 0, worstAt = 0, worstPx = null;
   for (let q = -900; q <= 900; q++) {   // 0.05 deg steps: the height follows T(tau) exactly, each frame within a rounding step of the last
     const tau = q * 0.05 * DEG, f = render('lid-sweep', { ...lidBase, viewElevation: e }, { backTilt: tau }); jobs.pop();
-    const w = R.markBounds[0].band.w[0][30];
-    assert.ok(Math.abs(w - 2 * lidT(e, tau) * Rb) < 1e-3, `lid height off T(tau) at ${(tau / DEG).toFixed(2)} deg: ${w}`);
+    const w = R.markBounds[0].band.w[0][30], wT = 2 * lidT(e, tau) * Rb;   // a lid under 1/255 opacity draws nothing (render lid())
+    const wX = Math.min(1, 1.6 * { ...base, ...lidBase }.surfaceBand) * Math.min(1, wT) < 1 / 255 ? 0 : wT;
+    assert.ok(Math.abs(w - wX) < 1e-3, `lid height off T(tau) at ${(tau / DEG).toFixed(2)} deg: ${w} vs ${wX}`);
     if (prev) { worstW = Math.max(worstW, Math.abs(w - prevW)); const dd = Math.abs(w - prevW) <= 0.2 ? delta(prev, f) : 0; if (dd > worstD) {   // (steeper steps: the front line itself moves; its height is checked above) worstD = dd; worstAt = tau / DEG;
       let k = 0; for (let i = 0; i < f.length; i++) if (delta([f[i]], [prev[i]]) === dd) { k = i; break; } worstPx = [k % 536, Math.floor(k / 536), w]; } }
     prev = f; prevW = w;

@@ -39,5 +39,5 @@ others kept. The lid must read as two thin contact lines over see-through liquid
 
 ## Lid size vs tilt (user, 2026-11-22)
 The eye is unknown: assume viewElevation e, scale with the signed stand tilt τ (forward < 0), internal constants:
-T = (tan τ + tan(e − τ)) · f_back · g_fwd; f_back = 1 − smoothstep(e + 10°, e + 35°, τ) (far back the capillary-held end
-meniscus is seen edge-on: the lid vanishes); g_fwd = 1 + 0.5·smoothstep(0°, 30°, −τ) (tilting it forward = looking in).
+T = (tan τ + tan(e − τ)) · f_back · g_fwd; f_back = 1 − smoothstep(e − 5°, e + 25°, τ) (far back the capillary-held end
+meniscus is seen edge-on: the lid vanishes); g_fwd = 1 + 0.2·smoothstep(0°, 30°, −τ) (tilting it forward = looking in; 2026-11-23: was e+10→e+35 and 0.5, so back tilt from the stand grew the lid and −30° was 2.6x).
