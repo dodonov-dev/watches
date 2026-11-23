@@ -1000,3 +1000,22 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Battery's way up now needs a ~0.85 mm sideways step at 1.5 mm above the seam (straight up leaves -0.07 per side): a 1 mm narrower cell (or a 0.5 mm wider seam) would make it straight again.
 - Plug's sweep up into the port is geometrically the same test as the seated head (nothing of the body lies below the head's bottom); kept as a separate assert for the assembly order.
 - Mass-model asserts are now collected and raised after the report is written (a failing case still fails the build, with numbers on paper).
+
+## 2026-11-21 roly-poly round 7
+- A vertical face plane must sit behind the natural surface at the slots' top-left corner, where the body has already leaned back ~4 mm: the zone ends up 2-6.6 mm recessed. A plane tilted with the front's lean (a few degrees) would need far less recess; not pursued (vertical asked).
+- The printed cups carry round 6's alcove flare at their front rim: the body meets it exactly at the seam, with a slope change across the parting line. A cup reprint without the flare would let the front run smooth through the seam.
+- Rods could be dropped in through the slots from the front after the board is in (8.0 into 8.1): the board's up-move would then need only ~1 mm behind its seat instead of 4.05.
+- `misc` (10 g: wires, USB head, LEDs) stays at the study's (0, 8, 35) though the head moved ~1.4 forward.
+- Two surfaces (round 6 for the cups, round 7 for the body) are lofted every build: ~2 extra minutes; cache the cups (they are fixed now) or load them from the STEP.
+- Trim-spot placement (0.5 mm z search with OCC overlaps per step) takes ~10 min of the ~25 min build: search on the designed sections first, confirm once on the solid.
+- The flat zone fades into the cups' flare over 6 mm above the seam: from the front the cup's dent reads as a small shelf at the parting line (face-views.png, right panel).
+- Bad case (board 52 g) still misses the 8 mm margin (6.16) and rests on its side at ~101 deg; it now needs a third trim spot (x +20, above the other two) for plumb.
+- `face-views.png`'s slot cut panel is hard to read (camera inside the cavity); a 2D section plot would be clearer.
+- Closure line (ring test 2026-11-21: B = no overhang slowdown best, still a faint line): try slot tops that are not one flat z (arched/pointed), so the closure spreads over many layers.
+
+## 2026-11-23 roly-poly round 7b (logo stencil)
+- The belly turns ~33 deg across the 14 mm letters: a flat stencil floor would leave 1.0..~3.4 of skin (more than the 2.4 wall). The stencil's front follows the floor instead (flat back). A logo on a flatter spot, or a narrower one, would allow a plain flat stencil.
+- The front seam boss (x 22.5) sits right behind the pocket's lower left corner: the logo moved up 1 mm. That boss 2 mm further left (at the next cup reprint) would free the logo's height.
+- The stencil is up to ~3 mm thick at its centre: flare the letter holes towards the back (or paint only the front face) so the LEDs' oblique light reaches the outer strokes.
+- The stencil's curved front prints as 0.08 terraces against the smooth floor; try ironing / finer top layers if the letter edges halo.
+- overlap() against the whole body takes ~100 s per call; clipping the body to a local box first would speed the logo and trim checks.

@@ -1,101 +1,91 @@
-DESK HOUSING track B: roly-poly, FDM prototype, round 6  (outline: the study's XOFF -5.0 Z2L 90 A2L 28.5 Z2R 102 A2R 34; keel 'square' NC 4.5; wall 2.4; slot E)
-[m] measured on the exported files / solids; [d] designed; [calc] calculated from them with ASSUMED masses: nominal board 30 g, battery 55 g, misc 10 g, cast 5.1 g/cm3; bad case board 52, battery 60, cast 4.8
+DESK HOUSING track B: roly-poly, FDM prototype, round 7  (outline: the study's XOFF -5.0 Z2L 90 A2L 28.5 Z2R 102 A2R 34; keel 'square' NC 4.5; wall 2.4; slot E; no door)
+[m] measured on the exported files / solids; [d] designed; [calc] calculated from them with ASSUMED masses: nominal board 30 g, battery 55 g, misc 10 g, cast 5.1 g/cm3; bad case board 52, battery 60, cast 4.8; [est] estimated around the built design
 
 FAILED (mass model, assumed masses; the build raises after writing this report):
-  nominal: sideways rest positions [-0.25, 0.25, 93.75, 94.25, 96.25, 97.25] (upright only, expected)
-  bad: sideways rest positions [-0.25, 0.25, 81.25, 101.5] (upright only, expected)
-  bad case: centre of mass 5.85 under the rocking centre (needs 8.0)
+  bad: sideways rest positions [-0.25, 0.25, 101.5] (upright only, expected)
+  bad case: centre of mass 6.17 under the rocking centre (needs 8.0)
 
-ROUND 6 (first print)
-  usb        the breakout, its ledges / wall pocket / back hole / bulkhead notch and the J5 pigtail are gone; a right-angle USB-C extension plugs straight into the board's own port from below (head 12 x 21 x 8.5 ASSUMED, z 17.5..26.0); its D5 cable leaves straight back at z 21.0, x -5 through a round D5.6 hole split by the seam (body notch open downward, a notch open upward in each cup): each cup comes off straight down with the plug in
-  battery    raised 4 to z 27 (1 over the head); bulkhead to z 65, notched 13 wide to z 26.5 for the head; its way up from below now has a 0.85 mm sideways step
-  cast       top lowered 17.9 -> 17 (0.5 under the head; the trim terrace with it); segments under the head and the cable dropped (rock 4 vs 6, flat 7 vs 12)
-  trim spot  bottom 27.5 -> 26 (lowest that clears the body, 0.5 steps)
-  slots      8.1 wide (was 8.6) with a 0.6 straight land at the door's inner face, then 45 deg out to the face (smooth shells' round 3)
-  logo       skin 0.8 -> 1 (per-letter pockets with 45 deg roofs kept)
-  masses     bad case board 40 -> 52 g; door tool path moved right of the USB head
-ROUND 5: the letter pockets get 45 deg roofs (a slicer filled them with support); lit outline, floors and skin unchanged
-ROUND 4: the logo moved from x 28 to x 32 (off the alcove's flare onto the plain belly; same 14 mm, z 30, glow-through); everything else as round 3
-ROUND 3: checks and build-sheet text only, no geometry change (pole continuity, logo skin and openness over both letter floors, LED room / door tool minimums, final trim layouts, fore-aft from upright and from rest, tip ranges)
-
-ROUND 2 CHANGES
-  keel       side view's lower corner squared: corner exponent 3.2 -> 4.5 (same corner height 28, same depth, front view, R44 arc and seam); comparison: keel-compare.png
-  pole       the outer loft closes at the bottom pole in a point: the R44 arc runs through it (no flat)
-  cup-rock   printed standing on its back: every layer draws the R44 arc; arc-gauge.stl to check (and true) it
-  ballast    the cast is 304 balls 2-6 mm locked in epoxy, filled by weight; trim plan: segments slide along their rows
-  breakout   no cradle: it comes up through a bulkhead notch in front of its seat and slides back (swept, asserted)
-  magnets    pockets magnet + 0.1, set flush against a flat plate in glue; joint proof test in the build sheet
-  checks     sideways over the full revolution; fore-aft limit to 0.02 deg; bad case asserted; only the pourable cast counted
-  dropped    cup-rock-steps (BUILD_STEPS = False); no hole for the power slide
+ROUND 7 (no door, flush front)
+  removed    the door, its opening, the alcove and its flare, the four tabs, the door magnets, the door tool's path and the suction cup, the battery bulkhead (and its notch); their checks and report lines
+  front      the body's own surface with a flat zone where the tubes are: the plane y -16.40 (round 6's door face -15.03: 1.37 further forward) over x -23.18..+13.18, z ..102.25 (both slots' openings on the face + 1.5, corners R3; down through the seam); set back from the study's natural surface by 2.08 (the top-left corner, where the body has leaned back) .. 6.60 (low centre) [d]; blended C1 (an ease of two parabolas) over 9.5 on the right (the logo's side), 14 on the left, 12 over the top, a soft maximum of 2 where the plane meets the body; smallest radius of curvature in the blend 3.13 [d] (asserted >= 2.5); the plane needs y >= -16.48 to stay 2 behind the natural surface over the whole zone [d]
+  zone [m]   on the lofted outer solid the zone lies within 0.0055 of the plane (10204 points, asserted <= 0.01); the function within 0.0e+00
+  seam       the body's section at z 22 is round 6's exactly (the printed cups carry the lower 4.8 mm of round 6's alcove flare at their front rim); the difference fades out over 6 above the seam (smoothstep: C1 in the body; across the parting line the slope changes); the cups' flare corner gives the blend there a radius of 2.28 [d]; inner edge at the seam differs from the cups' by up to 0.48 [d] (inside)
+  slots      E cut straight into the zone: 8.1 x 66.85, a 0.6 straight land at the inner face, 45 deg out to 12.90 on the face [d]; [m] on 23 sections of the body along each slot: 8.100..8.100 wide at the inner face, straight for 0.60..0.60, opening 12.89 on the face; rods to the body 0.058 at the closest
+  thickness  [m] the front along both slots' edges (rays 0.1 outside each opening, 744 points along the long sides and across the ends): 3.000..3.001 (asserted <= 3 + 0.05); the face there at y -16.401..-16.400. The rods (8 x 4 half-rounds, flat on the glass) stand 0.75 proud of the face at their crowns, over their middle 4.66 of 8, along their whole length
+  land       [m] the inner land is flat at y -13.40 over the glass + 1 (7112 points every 0.5: material 0.02 in front, free 0.02 behind, outside the slots); glass on it 0.50 (the gasket tape); its lower edge rises 50 deg towards the back
+  board      in from below (cup off), rods taped on: straight up 4.25 behind its seat (the rods' crowns 0.50 behind the land), then forward onto the land; [m] least gaps: up 0.44, forward 0.50 (asserted >= 0.3); the rods into their slots 0.050 a side; PCB bottom z 26 as round 6 (the USB head stays at its height); held by the gasket tape on the glass's border against the land and a foam pad behind the battery; no printed retainer (see the build sheet)
+  battery    taped to the board's back (Kapton, 1); no bulkhead. In from below after the board, 0.5 behind its seat: up at x -0.15, from z 23.50 -0.85 sideways, up to z 27 at x -1.00, forward onto the board; [m] up 0.54, across 0.51, up to the seat 0.51, forward 0.56 (asserted >= 0.25); to the seated board >= 1.00; seated: 0.69 to the body, 1.00 over the USB head (asserted >= 1)
+  trim spots on the back inner wall, right of the centre line, turned to the wall: x +27.5: z 25.5..44.5, turned -26.4 deg, centre y +17.0, resting on its edges (1.67 off the wall at its middle), 0.023 to the body, 4.95 to the battery (seated and on its way in), 6.00 to the USB head / cable, 6.00 to the board's way in; x +13.0: z 28.5..47.5, turned -6.9 deg, centre y +21.0, resting on its edges (0.87 off the wall at its middle), 0.000 to the body, 6.00 to the battery (seated and on its way in), 6.00 to the USB head / cable, 6.00 to the board's way in; x +20.0: z 48.0..67.0, turned -19.0 deg, centre y +17.3, resting on its edges (1.89 off the wall at its middle), 0.025 to the body, 5.83 to the battery (seated and on its way in), 6.00 to the USB head / cable, 6.00 to the board's way in [m]
+  logo (7b)  the smooth shells' stencil style instead of the letter pockets: one pocket from inside, a separate stencil (painted black, the letters cut through) pushed in from inside before the board: logos swap without reprinting the body, and may be more complex. Letters 14 mm at x 32, skin 1 as round 6, z 30 -> 31 (at 30 the stencil's lower left corner touches the front seam boss at x 22.5, at 30.5 it clears it by 0.33); [m] the letters 2.75 past the end of the flat zone's blend (asserted >= 2), the pocket's floor 1.70 past it (asserted >= 0); at x 28 the letters would be -1.51. The body changes only there (mesh diff in the hand-off)
+  cups       unchanged, as printed: cup-rock.stl and cup-flat.stl sha256 identical to round 6's (cup-rock f437a46dfae7, cup-flat 9927ea19d62a); the cast step z 17 and the flat cup's floors z 13.4 / 17.4 fixed; their segments re-packed round round 7's USB head (rock 4, flat 8)
+  face trade-off [calc, est: shell on the grid + measured body; board, battery, rods and the front's features moved; trim plan as built]:
+    face y -16.45: set back 2.03..6.55; nominal forward 28.26 / backward 31.08 deg, margin 8.57; bad case forward 25.92 / backward 28.76, margin 6.17
+    face y -16.40 (built): set back 2.08..6.60; nominal forward 28.28 / backward 31.06 deg, margin 8.57; bad case forward 25.94 / backward 28.74, margin 6.17
+    face y -16.00: set back 2.48..7.00; nominal forward 28.44 / backward 30.90 deg, margin 8.57; bad case forward 26.54 / backward 28.56, margin 6.16
+    face y -15.50: set back 2.98..7.50; nominal forward 28.64 / backward 30.70 deg, margin 8.57; bad case forward 26.76 / backward 28.34, margin 6.16
+    face y -15.03: set back 3.45..7.97; nominal forward 29.68 / backward 30.28 deg, margin 8.57; bad case forward 26.96 / backward 28.14, margin 6.16
+ROUND 6 (first print): USB extension in the board's own port (breakout + J5 gone), cable through a D5.6 hole split by the seam; slots 8.1 with a 0.6 land; logo skin 1.0; battery from z 27; cast to z 17; bad case board 52 g
+ROUND 5: logo pockets with 45 deg roofs. ROUND 4: logo x 28 -> 32. ROUND 3: checks only. ROUND 2: squared keel, pole without a flat, cup printed on its back, cast ballast, magnets flush
 
 SIZE AND SURFACE
   outer      [m] 86.5 wide x 49.9 deep x 128.0 tall on the rocking cup; 116.0 on the flat cup
-  surface    [m] outer loft within 0.014 of the study's function (with the square keel); inner lofts within 0.005 of their points
-  pole       [m] cup-rock.stl below z 0.001: 0.01 wide across, 2.00 along (the R44 arc alone: 0.59); arc y 0, z 0.005..21.75 (every level present): off R44 by 0.005, left-right 0.005 (radial); sections x / y 0.01 run as one curve through the bottom (lowest z 0.0009 / 0.0000, largest mesh step there 1.33)
-  wall       [m] body 2.39 at least; cup-rock 2.40, cup-flat 1.38 (foot); [d] thicker at the alcove's shoulder (inner flare 10.5)
-  seam       [d] z 22.0: body above, cups below, all cut from the one outer loft
+  surface    [m] body: outer loft within 0.006 of its function, inner within 0.002 of its points (inner flare 9.5); cups: round 6's lofts (0.014 / 0.005)
+  pole       [m] cup-rock.stl below z 0.001: 0.01 wide across, 2.00 along; arc y 0 off R44 by 0.005, left-right 0.005; sections x / y 0.01 run as one curve through the bottom
+  wall       [m] body 2.40 at least (3 over the glass); cup-rock 2.40, cup-flat 1.38 (foot)
 
 PARTS  [m] volume, mass (solid PLA 1.24), centroid
-  body             45.8 cm3   56.8 g   (-0.87, +5.28, 68.12)
+  body             45.1 cm3   56.0 g   (-1.55, +2.76, 70.16)
   cup-rock         13.5 cm3   16.7 g   (-0.01, +0.88, 11.55)
   cup-flat         10.0 cm3   12.4 g   (-0.01, +0.75, 16.08)
-  door              6.4 cm3    7.9 g   (-5.00, -13.41, 64.21)
+  logo stencil     0.16 cm3   0.20 g   (seated, as designed; in the mass model with the body)
   arc-gauge      concave R44 cradle, 60 x 20
-
-DOOR AND BOARD
-  door       [d] 42.5 x 82.0 R6.75, 3 thick (E), x -5.0, z 24.42..106.42; face y -15.03, set back 7.97 at its centre
-  opening    [d] 43.0 x 82.5 R7.0; the board needs 42.35 x 80.85 (J5/I2C plugs 4.0 assumed)
-  way in     [m] door edge gap 0.25; glass 1.57, pcb 0.50, button-boot 3.82, button-rst 3.54, button-slide 3.82, plug-j5 0.82, plug-i2c 0.82, door ribs 0.37; PCB to the tabs 0.50
-  slots      [d] 8.1 x 66.85 for 66.65 rods (8 wide): 0.1 play per end, as track A (intended: the visible opening is the slot; the rod sits 0.1 short of each end); x -15.23 / 5.23, z 33.90..100.75
-  land       [m] on 23 sections along each slot: at the door's inner (back) face 8.100..8.100 wide, straight for 0.60..0.60 from the inner face (0.01 steps), both sides, both slots; then 45 deg out to an opening of 12.89 on the face; rods to the door 0.058 at the closest
-  stack      [d] board stack 9.0 (housing.py's measured value; the drawing says 9.3): battery to the board 1.00 [m], 0.70 with the drawing's 9.3
-  power      no hole for the slide switch (the user drills one if wanted); RST / BOOT behind the door
-  held by    [d] 4 x D2.0x1.0 pairs, door <-> tabs; opened with a suction cup on the face, or a blunt tool from below on the door's back strip under the PCB ([m] tool path free of the body; 0.50 from the board / battery, asserted >= 0.3)
+  (round 6: body 56.8 g with the bulkhead and tabs, door 7.9 g)
 
 INSIDE
-  battery    [d] 68 x 35 x 10 on its long edge, x -1.03, z 27.0..62, taped to the bulkhead; [m] to the body 0.34; its way up from below (cup off, before the board): straight up at x -0.18 until its bottom is at z 23.50, -0.85 sideways, up to its seat at x -1.03: up 0.32, across 0.32, up to the seat 0.32 [m] (a straight way would leave -0.07 per side [d])
-  usb head   [d] port at x -5, y -4.53 (2 in front of the board's back, ASSUMED); head x -11.0..+1.0, y -9.53..11.47, z 17.5..26.0; [m] seated: body 0.50, battery 1.00, cast 0.50, cup-rock 3.58, cup-flat 3.58; pushed up into the port from below (cup off, battery and board in): body 0.50, battery 1.00, door 2.50, board (except the PCB edge it seats on) / rods 0.00; cups off straight down: cup-rock 3.58, cup-flat 3.58 (asserted >= 0.5, battery >= 1.0)
-  usb cable  [d] D5 straight back from y 11.47 at z 21.0; through the D5.6 hole (body notch z 22..23.8, cup notches z 18.2..22); [m] in the hole: body 0.30, cup-rock 0.30, cup-flat 0.30; its run inside (to 1 mm before the wall): body 0.90, cup-rock 0.58, cup-flat 0.60, cast 1.50, battery 4.61; laid up into the body's notch 0.30; cups off straight down: cup-rock 0.30, cup-flat 0.30; the passage (D5.58) overlaps nothing along the cable: rock 0.0000 mm3, flat 0.0000 mm3, body 0.0000 mm3
-  segments   [m] to the USB head / cable (seated and as the cup comes off): cup-rock nominal 4.24, cup-rock bad 1.66, cup-flat 0.81 (asserted >= 0.5; the trim layouts of both cases, the bulkhead spots, the flat cup's segments)
-  trim spots [m] x +27.5, +15.0, z 26.0..45.0 on the bulkhead's back: no overlap with the body (they sit on the bulkhead: no overlap, not a clearance), >= 0.3 from the battery; final trim layouts (left out, slid, spots) checked against body, cup, battery, USB head and cable for both cases
-  logo       [d] 14 mm letters at x 32.0, z 30.0; [m] pockets with 45 deg roofs: lit outline within 0.15 at the skin (248 points inside / 248 outside the edges, 114 on top edges); faces steeper than 46 deg only within 0.082 of the skin (78 facets), 138 roof facets at 45 deg; skin 1.000..1.000 normal to the surface over 530 points on both letter floors; open to the cavity along the projection: E 100 %, H 100 % of the floor; outside, 2.05 past the end of the alcove's flare (x 25.4..37.7; at x 28 it was -3.33, on the flare); the surface turns 18 / 30 / 51 deg from the front at its left end / centre / right end; LEDs' room (4.5..8.5 behind the letters' centre) free: >= 6 from the battery's way up, >= 6 from the board's way in (asserted >= 3.0)
-  wiring     [d] no J5 wiring (USB through the board's own port); I2C 3V3 -> LEDs 69 + 40; loops lie on the battery's top (z 62..65 behind the board)
+  board      [d] stack 9.0 (housing.py's measured value; the drawing says 9.3): glass y -12.90..-9.00, board back -3.90; battery to the board 1.00 [m], 0.70 with the drawing's 9.3; no hole for the slide switch; RST / BOOT reachable from below with the cup off
+  usb head   [d] port at x -5, y -5.90 (ASSUMED); head y -10.90..10.10 (round 6: -9.53..11.47), z 17.5..26.0; [m] seated: body 2.50, battery 1.00, cast 0.50, cup-rock 2.21, cup-flat 2.21; pushed up into the port from below: body 2.50, battery 1.00, board / rods 0.00; cups off straight down: cup-rock 2.21, cup-flat 2.21
+  usb cable  [d] D5 straight back from y 10.10 at z 21.0 through round 6's D5.6 hole (from y 13.47); [m] in the hole: body 0.30, cup-rock 0.30, cup-flat 0.30; its run inside: body 0.90, cup-rock 0.58, cup-flat 0.60, cast 1.50, battery 4.61; laid up into the body's notch 0.30; cups off: cup-rock 0.30, cup-flat 0.30; the passage overlaps nothing: rock 0.0000 mm3, flat 0.0000 mm3, body 0.0000 mm3
+  segments   [m] to the USB head / cable (seated and as the cup comes off): cup-rock nominal 4.16, cup-rock bad 1.05, cup-flat 0.91
+  pocket     [d] floor 16.20 x 11.03 R2 (the letters' box 14 x 8.83 + 1.1 all round) projected along the logo's normal onto the outer surface moved 1 in: the belly turns 17 / 30 / 51 deg from the front across the letters, so the floor lies 1.00..3.11 behind the logo's tangent plane (a plane across the axis would leave 1.0..3.1 of skin, the wall is 2.4); its flanks 45 deg from the floor's normal, the top one 52 (so 13..49 deg from the axis: it widens along it), from 0.12 behind the floor out to 0.5 past the inner face, corners round
+  pocket     [m] skin 1.000..1.000 over 1000 points of the floor (asserted 0.98..1.05), 1.000 at the thinnest anywhere; open to the cavity over 100 % of the floor; the floor's outline within 0.1 (148 points); printed rim-down, faces steeper than 46 deg only within 0.085 of the skin (the flanks' strip; asserted <= 0.3), the steepest further in 39.3 deg from vertical (the top flank); 1.30 from a seam hole, 0.30 from a boss, 7.56 from the inner land, 8.76 from a slot, its lowest point 2.10 above the seam
+  stencil    [d] the floor's outline less 0.1 all round; its front face the floor's curve, its back one plane across the axis 0.8 behind the floor's deepest point (w 4.09), its sides straight along the axis; [m] 0.83..3.09 thick; its back -0.85..+1.69 proud of the inner face (+: in the cavity); goes in along the axis from 15 inside onto the floor without touching the body; seated 0.090 to the flanks; 0.41 to the LEDs' room (asserted >= 0.2); to the board, battery, rods, USB (seated, and the board's and battery's ways in) >= 6.00 (seated glass; asserted >= 0.5); frame round the letters 0.74 at its front
+  stencils   [m] out-rolypoly/logo-stencil.stl / .step: 3 stencils, webs 0.72, 1.00, 1.40 (the first as designed: E and H have no islands, the web between their cuts is the narrowest); 16.00 x 10.83 x 3.08 each, flat back on the bed (its one flat face), letters straight through along the axis; apertures on the bed face one per letter at its place (from above it reads as from outside), areas mm2: 46.72, 56.75; 40.95, 50.13; 33.11, 41.11
+  LEDs       room free: 4.78 from the battery (seated and its way in), >= 6 from the board's way in (asserted >= 3.0)
+  wiring     [d] I2C 3V3 -> LEDs 67 mm + slack; leads plugged from below with the cup off (each needs ~50 mm to reach past the seam: ASSUMED, check)
 
-SEAM JOINT
-  [d] 6 x D3.0x2.0 pairs + 2 x D3.0x10.0 dowels; pockets 2.1 deep, magnets set flush against a flat plate in glue; [m] wall to the outside: body 1.26, cups 0.98
-  [calc] lifted by the body the joint carries 147 g; proof test (build sheet) before the ballast goes in
+SEAM JOINT (round 6's, unchanged)
+  [d] 6 x D3.0x2.0 pairs + 2 x D3.0x10.0 dowels; [m] wall to the outside: body 1.26, cups 0.98
+  [calc] lifted by the body the joint carries 147 g
 
-BALLAST
-  cast       [m] pourable cavity up to z 17.0 (the step): 23.53 cm3, 14.6 deep; [calc] 120 g at 5.1 (113 g at 4.8); centroid (+0.01, +1.78, 11.27); left out: 2 pockets in the dowel holes (4.7 mm3)
-  balls      [calc] 304 balls to fill by weight: 109 g for 5.1 (packing 0.59), 101 g gives 4.8 (packing 0.54); epoxy ~10 ml; three batches of 5-minute epoxy, each a third of the volume: to z 9.6 / 13.6 / 17.0
+BALLAST (round 6's cups)
+  cast       [m] pourable cavity up to z 17.0: 23.53 cm3; [calc] 120 g at 5.1 (113 g at 4.8); balls 109 g, epoxy ~10 ml, three batches to z 9.6 / 13.6 / 17.0
   trim layer [m] 4 segments fit on the cast (z 17.0..21.0); row y -3.5: 1, row y -3.5: 2, row y +12.5: 1
-  cup-flat   [m] z 13.40: 3, z 17.40: 4 = 7 segments (35 g); floor 1.40
+  cup-flat   [m] z 13.40: 4, z 17.40: 4 = 8 segments; floor 1.40
 
 ROCKING, NOMINAL [calc]
-  plumb      ballast (cast + all 4 segments) centre needed at x +2.26 (non-ballast parts 180 g at x -1.75); plan: 1 segment(s) on the bulkhead's back at x +27.5, leave out 2 of the trim layer (x -19.5 y -3.5, x +8.4 y -3.5), slide the rest 96 % of their rows' slack to the right -> x +0.000; trim layer's reach with all in: -0.70..-0.55 mm
-  result     315 g; centre of mass z 35.89 (y +1.71): 8.11 under the rocking centre; period 1.10 s (ideal rocker); righting 0.44 mN m per deg
-  sideways   rests only upright over the whole revolution (-0.25, +0.25, +93.75, +94.25, +96.25, +97.25 deg: the pole's 0.002 closing cone); crests at -176.0, +93.2, +94.0, +95.0, +96.8 deg
-  fore-aft   rests at +0.02 deg (+ = back); crests found from the rest angle, sampled every 0.02 deg: forward 28.50 from upright (28.52 from rest), backward 29.74 from upright (29.72 from rest); needs 28 from upright
+  plumb      ballast centre needed at x +2.19 (non-ballast parts 172 g at x -1.78); plan: 1 spot(s) on the back wall at x +27.5, leave out 2 of the trim layer (x -19.5 y -3.5, x +8.4 y -3.5), slide the rest 93 % of their rows' slack to the right -> x +0.000; reach with all in: -0.69..-0.54 mm
+  result     307 g; centre of mass z 35.43 (y +1.28): 8.57 under the rocking centre; period 1.07 s; righting 0.45 mN m per deg
+  sideways   rest positions over the whole revolution: -0.25, +0.25 deg (+-0.25: the pole's closing cone); crests at -176.0 deg
+  fore-aft   rests at +0.02 deg; forward 28.28 from upright, backward 31.06; needs 28
 ROCKING, BAD CASE [calc]
-  plumb      ballast (cast + all 4 segments) centre needed at x +3.24 (non-ballast parts 207 g at x -2.08); plan: 2 segment(s) on the bulkhead's back at x +27.5, +15.0, leave out 1 of the trim layer (x -19.5 y -3.5), slide the rest 71 % of their rows' slack to the right -> x +0.000; trim layer's reach with all in: -1.00..-0.86 mm
-  result     345 g; centre of mass z 38.15 (y +1.26): 5.85 under the rocking centre; period 1.34 s (ideal rocker); righting 0.35 mN m per deg
-  sideways   rests only upright over the whole revolution (-0.25, +0.25, +81.25, +101.50 deg: the pole's 0.002 closing cone); crests at -175.8, +80.8, +81.8 deg
-  fore-aft   rests at +0.02 deg (+ = back); crests found from the rest angle, sampled every 0.02 deg: forward 26.02 from upright (26.04 from rest), backward 28.28 from upright (28.26 from rest); needs 25 from upright
-  what-if    [calc] battery upright on the door: 4.46 under, fore-aft 26 / 26 deg
+  plumb      ballast centre needed at x +3.17 (non-ballast parts 199 g at x -2.12); plan: 3 spot(s) on the back wall at x +27.5, +13.0, +20.0, leave out 0 of the trim layer, slide the rest 93 % of their rows' slack to the right -> x +0.000; reach with all in: -0.99..-0.85 mm
+  result     347 g; centre of mass z 37.83 (y +1.05): 6.17 under the rocking centre; period 1.30 s; righting 0.37 mN m per deg
+  sideways   rest positions over the whole revolution: -0.25, +0.25, +101.50 deg (+-0.25: the pole's closing cone); crests at -175.8, +82.8 deg
+  fore-aft   rests at +0.02 deg; forward 25.94 from upright, backward 28.74; needs 25
+  round 6:   nominal 8.11 mm, 1.10 s, forward 28.50 / back 29.74, rest at ~94 deg sideways; bad 5.85 mm, 1.34 s, forward 26.02
 
-STABLE CUP, nominal [calc] 211 g with 7 segments; centre of mass 36.4 over the desk; tips beyond 41-42 deg right, 39-41 left, 31-33 forward, 33-35 backward (a range where the crest is broad: within 0.005 of its top)
-STABLE CUP, bad [calc] 238 g with 7 segments; centre of mass 37.9 over the desk; tips beyond 40-42 deg right, 38-39 left, 29-31 forward, 33-35 backward (a range where the crest is broad: within 0.005 of its top)
+STABLE CUP, nominal [calc] 208 g with 8 segments; centre of mass 35.5 over the desk; tips beyond 41-43 deg right, 40-42 left, 31-33 forward, 34-36 backward
+STABLE CUP, bad [calc] 235 g with 8 segments; centre of mass 37.1 over the desk; tips beyond 40-42 deg right, 38-40 left, 29-31 forward, 34-36 backward
 
 PRINT ORIENTATION, overhangs steeper than 45 deg [m on the meshes]
-  body rim-down:    1008 mm2 in all (0 on the outside); inside the crown above z 100: 880; the opening's top edge: 96
-  cup-rock on back: 1594 mm2 (668 outside, at the back's lower corner; the rolling band |y| < 12, z < 12: 0)
-  cup-rock rim-down (round 1, not used): 2438 mm2, and a 6.5 mm flat at the pole from one 0.12 layer
+  body rim-down:    917 mm2 in all: outside 0.0 (asserted < 1; the flat zone's top blend stays under 45 deg); the slots' top ends 60 (two bridges 8.1..12.9 wide, unsupported: as on the smooth shells and the pebble); inside the crown above z 100: 784; round the logo pocket 9 (its flanks' strip); the cable notch's arch 10; other inside 53
+  cup-rock on back: 1594 mm2 (668 outside; the rolling band: 0) (round 6's, printed)
 
 FILES  [m] each STEP re-imported (solids, valid, closed, triangulated volume), each STL re-read (closed, one body, volume vs 0.05 mesh)
-  body           STEP 1 solid, 198 faces, -0.0034 %, 13220 kB; STL 297104 triangles, +0.015 %, 14507 kB
+  body           STEP 1 solid, 168 faces, +0.0002 %, 8460 kB; STL 200900 triangles, +0.069 %, 9810 kB
   cup-rock       STEP 1 solid, 62 faces, -0.0016 %, 12900 kB; STL 317018 triangles, +0.075 %, 15480 kB
   cup-flat       STEP 1 solid, 66 faces, -0.0058 %, 10769 kB; STL 85772 triangles, +0.048 %, 4188 kB
-  door           STEP 1 solid, 58 faces, -0.0000 %, 181 kB; STL 2692 triangles, +0.008 %, 132 kB
   arc-gauge      STEP 1 solid, 6 faces, -0.0000 %, 16 kB; STL 208 triangles, -0.035 %, 10 kB
+  logo-stencil   STEP 3 solid, 166 faces, -0.0818 %, 2519 kB; STL 5942 triangles, +0.000 %, 290 kB
 
-NOT VERIFIED HERE: the real masses and the cast's packing; the USB extension's head (12 x 21 x 8.5 envelope, plug axis 5 from its closed end, cable at its mid-thickness, D5 cable: ASSUMED from housing.py's MOGOOD box), the port's position (2.0 in front of the board's back, x centre, ASSUMED) and the cable's stiffness in the hole; the plugs' protrusion (4 assumed); magnet pull in the print; slicer toolpaths (supports, 1.0 logo skin, the opening's bridge); 5-minute epoxy heat per batch; cable lean; rocking feel; logo glow
+NOT VERIFIED HERE: the real masses and the cast's packing; the USB extension's head (12 x 21 x 8.5, ASSUMED) and the port's position (2.0 in front of the board's back, ASSUMED); the plugs' protrusion (4 assumed); the leads' length to plug from below; the gasket tape's hold; the face's look (clay views only); the slicer's toolpaths (the slots' bridges, the closure trench: the closure-ring test is pending); magnet pull; cable lean; rocking feel; the stencil's fit (its curved front printed in layers) and the logo's glow through it

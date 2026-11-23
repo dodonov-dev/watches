@@ -5,7 +5,24 @@ plumb. No stand and no mechanism: a rounded, weighted underside. The liquid on t
 Order of work: the decisions are settled and the clay views accepted; **the CAD for a cheap FDM print is built
 (round 2, see "CAD state"); then the user's print test, then the final white body by SLA.**
 
-## Start here: round 6 built and on the printer (2026-11-20), worktree `../watches-rolypoly`, branch `rolypoly-print`
+## Start here: round 7 printed, round 8 next (2026-11-23), worktree `../watches-rolypoly`, branch `rolypoly-print`
+Round 7 = no door: board and battery in from below (cup off), battery taped to the board's back, no bulkhead, trim
+spots on the back inner wall; front = a vertical flat zone (y -16.40) over the slots, 3.0 thick at the slot edges (rods
+0.75 proud); cups byte-identical to round 6. Round 7b = logo as one rounded pocket (1.0 skin, curved floor) + a
+separate black-painted stencil (`out-rolypoly/logo-stencil.stl`), logo at z 31. Faults 45/45. Nominal margin 8.57,
+fwd 28.3 / back 31.1, upright only; bad case 6.17 (fails, as before). Plate: `to-print/_7_plate_roly_poly_pebble_ringE.3mf`
+(builder `to-print/mkplate7.py`), body + `enable_overhang_speed` 0 (closure-ring test: B best).
+- **Print results (2026-11-23, photos `to-print/_7_plate_res/`):** good overall. Slicer tree supports from the plate
+  to the slot tops improved them (keep). Logo pocket faintly visible (letter pockets -> stencil, done in 7b). Rocking
+  cup front shows topographic rings (turn it on the plate so that patch lands on the back). The vertical flat zone
+  reads as a recess with a brow above and a shelf at the seam (the cups still carry round 6's alcove). Flat cup looks
+  fat: dropped, the pebble is the flat version.
+- **Round 8 (user):** face + tubes tilted back ~8 deg (angle to settle from CAD side views 6/8/10), front = the body's own
+  smooth oval curve like pebble-A (rounded slot lips, 7 mm strip between the slots), no recess / brow / shelf; new
+  rocking cup rim; no flat cup. Concepts: `images/rolypoly-r8/` (Codex did not show the tilt; front treatment only).
+- Still open: weigh board + battery (bad case); the user is testing weights and magnets.
+
+## Round 6 (2026-11-20)
 Round 6 = first print: the USB extension plugs into the board's own port from below (breakout + J5 gone), cable out
 through a Ø5.6 hole split by the seam at x -5, z 21; slots 8.1 with a 0.6 land; logo skin 1.0; battery up to z 27
 (clears the plug head); cast top 17.0 (120 g), 4 trim segments in cup-rock (was 6), 7 in cup-flat (was 12); bad case
