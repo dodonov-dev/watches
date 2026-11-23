@@ -1263,9 +1263,34 @@ function fizzSpawnY(p: Params, H: number, v: number): number {
 // fizzBlockedN counts it. Firmware fizzScatterV / springSpawnV.
 const F = Math.fround;
 const FIZZ_KW = F(0.6), FIZZ_STIR = F(3), FIZZ_ROW_BIAS = F(0.75), FOAM_GAP = F(0.01);   // firmware FIZZ_KW, FIZZ_STIR, FIZZ_ROW_BIAS, FOAM_GAP
-const FIZZ_C_WALL = 1, FIZZ_C_END = 2, FIZZ_C_HELD = 4;   // contact bits (firmware FizzBody; HELD: a free bubble pressed into the foam this step)
+// contact bits (firmware FizzBody; HELD: a free bubble pressed into the foam this step; BURST: a foam bubble that burst,
+// popping, out of the packing and the contacts: fizzBurst32)
+const FIZZ_C_WALL = 1, FIZZ_C_END = 2, FIZZ_C_HELD = 4, FIZZ_C_BURST = 8;
 const FIZZ_WALL_TOL = F(1e-3);   // firmware FIZZ_WALL_TOL
 const FOAM_PUSH = F(0.35355339), FOAM_SEAT = F(0.5);   // firmware FOAM_PUSH (a contact's in-plane share, x U_i dt), FOAM_SEAT (px: seated)
+const FOAM_MONO = F(0.82);   // firmware FOAM_MONO: a surface's monolayer capacity, foam Σr² ≤ FOAM_MONO R² (an arrival past it bursts)
+const FOAM_POP_T32 = F(FOAM_POP_T);
+/** The drain (firmware fizzBurst; docs/tilted-fizz-surface-model.md "Drain"): a bubble the liquid left (stranded, or the
+ *  tube emptied) or arriving at a full monolayer starts its pop (the last FOAM_POP_T s; a pop under way keeps its own)
+ *  on its foam side, else on s, and leaves the packing and the contacts (FIZZ_C_BURST). */
+function fizzBurst32(f: Fizz, contact: Uint8Array, k: number, s: number): void {
+  const l = Math.abs(f.life);
+  f.life = F((f.life > 0 ? 1 : f.life < 0 ? -1 : s) * (l > 0 && l < FOAM_POP_T32 ? l : FOAM_POP_T32));
+  contact[k] = FIZZ_C_BURST;
+}
+/** An empty tube (firmware fizzEmptyV): every bubble bursts, its pop runs out, then its slot goes idle; no births. */
+function fizzEmptyV(i: number, dt: number, agitation: number, side: number, spring: boolean): void {
+  const arr = fizz[i], contact = fizzContact[i], agK = F(1 + F(3 * agitation));
+  for (let k = 0; k < arr.length; k++) {
+    const f = arr[k];
+    if (f.v === 0) continue;
+    if (!(contact[k] & FIZZ_C_BURST)) fizzBurst32(f, contact, k, side);
+    const left = F(Math.abs(f.life) - F(dt * agK));
+    if (left > 0) f.life = f.life > 0 ? left : -left;
+    else { f.v = 0; f.life = 0; }
+  }
+  if (spring) while (arr.length > 0 && arr[arr.length - 1].v === 0) arr.pop();
+}
 const FOAM_CATCH32 = F(FOAM_CATCH);
 /** 1/√x in float32 as the firmware's rsqrtApprox (bit-cast seed 0x5f3759df, three Newton steps, no fused multiply-add:
  *  the vertical kernel's clamps, the same bits). */
@@ -1741,11 +1766,14 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
     }
     return jb;
   };
-  for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0) {
-    foamOrderV[n++] = s;
+  const ct = fizzContact[i];
+  for (let s = 0; s < arr.length; s++) if (arr[s].life !== 0 && !(ct[s] & FIZZ_C_BURST)) {   // not the burst (popping)
     const f = arr[s], r = fizzR32(p, f.v);
     foamYSV[s] = bd[2 * s]; foamZSV[s] = bd[2 * s + 1]; foamUSV[s] = F(side * f.x);
-    foamELoV[s] = Math.min(F(foamUSV[s] - back), front(s, f.y, r));   // the lowest target a move in the plane may give it
+    const A = F(foamUSV[s] - back), ut = front(s, f.y, r);
+    if (ut < F(A - r)) { fizzBurst32(f, ct, s, side); continue; }   // the drain: stranded, its target more than r below its reach
+    foamOrderV[n++] = s;
+    foamELoV[s] = Math.min(A, ut);   // the lowest target a move in the plane may give it
   }
   for (let a = 0; a < n; a++) {   // glide and drift, in slot order
     const s = foamOrderV[a], f = arr[s], r = fizzR32(p, f.v);
@@ -1774,7 +1802,6 @@ function settleFoamV(i: number, p: Params, H: number, speed: number, surf: Float
     }
     place(s, u, F(y + dy), F(z + dz));
   }
-  const ct = fizzContact[i];
   for (let h = 0; h < arr.length; h++) {   // an arrival pressed into a resident: the resident's share, aside in the plane (firmware)
     const fh = arr[h];
     if (fh.v === 0 || fh.life !== 0 || !(ct[h] & FIZZ_C_HELD)) continue;
@@ -1837,7 +1864,8 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
   const bx = mirrored(p) ? -F(pose.x) : F(pose.x), by = F(pose.y), bz = F(pose.z);
   const H = tubeLayout(p).H, spring = p.fizzSource === 1, foamOn = p.fizzFoamLife > 0;
   const len = F(fizzLen[i]), surf = fizzSurf[i], surfL = fizzSurfL[i], exposed = fizzExposed[i], arr = fizz[i];
-  if (surf.length !== H || len <= 0) return;   // no surfaces for this height yet (drawTube publishes them)
+  if (surf.length !== H) return;   // no surfaces for this height yet (drawTube publishes them)
+  if (len <= 0) { fizzEmptyV(i, dt, agitation, bx < 0 ? -1 : 1, spring); return; }   // the drain emptied it: what is left bursts
   fizzBodiesFor(i, p, H);
   const body = fizzBody[i], contact = fizzContact[i];
   const strokeR = fizzStrokeR[i].length === H ? fizzStrokeR[i] : (fizzStrokeR[i] = new Float32Array(H));
@@ -1856,14 +1884,19 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
   const S = side >= 0 ? surf : surfL, B = side >= 0 ? strokeR : strokeL;
   const lid = fizzLidFor(i, p);   // the time edge under the desk view's lid (fizzEndKS32 / fizzEndLp32: s > 0 only)
   const cand = foamCand[i];   // touchesFoam's candidates: the step's starting foam on that surface
-  for (let j = 0; j < arr.length; j++) cand[j] = park !== 0 && F(arr[j].life * park) > 0 ? 1 : 0;
+  // not the burst; with their Σr², the monolayer's fill (FOAM_MONO R² its capacity: an arrival past it bursts)
+  let foamA = 0; const foamCap = F(FOAM_MONO * F(R * R));
+  for (let j = 0; j < arr.length; j++) {
+    cand[j] = park !== 0 && F(arr[j].life * park) > 0 && !(contact[j] & FIZZ_C_BURST) ? 1 : 0;
+    if (cand[j]) { const rj = fizzR32(p, arr[j].v); foamA = F(foamA + F(rj * rj)); }
+  }
   const life = F(p.fizzFoamLife), bb = [0, 0, 0];
   for (let k = 0; k < arr.length; k++) {
     const f = arr[k];
     if (f.v === 0) { if (!spring) scatterV(i, p, H, f, k, -1); continue; }
     if (f.life !== 0) {
       const was = f.life > 0 ? 1 : -1;
-      if (!foamOn || !(exposed & (was > 0 ? 1 : 2)) || F(was * bx) < 0) { f.life = 0; contact[k] = 0; }   // into the flow
+      if (!(contact[k] & FIZZ_C_BURST) && (!foamOn || !(exposed & (was > 0 ? 1 : 2)) || F(was * bx) < 0)) { f.life = 0; contact[k] = 0; }   // into the flow (a burst one pops on)
       else {
         const left = F(Math.abs(f.life) - F(dt * agK));
         if (left > 0) f.life = F(was * left);
@@ -1918,7 +1951,10 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
         if (zone) {
           if (!foamOn) { if (spring) { f.v = 0; f.life = 0; } else scatterV(i, p, H, f, k, side < 0 ? 0 : 1); contact[k] = 0; continue; }
           f.x = F(side * Math.min(u, ut));
-          f.life = F(F(side * life) * F(0.5 + Math.random()));
+          // the drain: stranded on arrival (the surface already more than r below it), or the monolayer full: it bursts
+          const r2 = F(r * r);
+          if (F(u - ut) > r || F(foamA + r2) > foamCap) { fizzBurst32(f, contact, k, side); c = FIZZ_C_BURST; }
+          else { f.life = F(F(side * life) * F(0.5 + Math.random())); foamA = F(foamA + r2); }
         }
       }
     }
@@ -1939,9 +1975,11 @@ function stepFizzVertical(i: number, p: Params, dt: number, pose: Pose, agitatio
     let live = 0;
     for (const f of arr) if (f.v !== 0) live++;
     springClock[i] = F(springClock[i] + F(F(Math.max(0, F(p.fizzSourceRate)) * F(1 + (agitation < F(0.05) ? 0 : agitation))) * dt));
+    // a spring point without a span of the column (just after the clock wrapped) waits, its credit kept (firmware)
+    const room = sxh > sxl;
     let slot = 0;
     while (springClock[i] >= 1) {
-      if (live >= cap) { springClock[i] = 1; break; }
+      if (live >= cap || !room) { springClock[i] = 1; break; }
       while (slot < arr.length && arr[slot].v !== 0) slot++;
       if (slot === arr.length) { arr.push({ x: 0, y: 0, v: 0, life: 0, z: 0 }); body[2 * slot] = body[2 * slot + 1] = 0; contact[slot] = 0; }
       const born = springBirth(i) ? springV(i, p, H, arr[slot], slot) : scatterV(i, p, H, arr[slot], slot, -1);
