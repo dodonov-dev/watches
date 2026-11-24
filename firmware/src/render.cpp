@@ -1336,12 +1336,18 @@ static void digitRowColors(const Params &p, int bh, uint16_t *out) {
 // share of the liquid's refraction (source rows blended from the behind-air warp toward the behind-liquid one,
 // parallax scaled), so the warp grows as the surface passes over it. Built by drawTube into its own Tube's
 // table (Tube::wetShare, PSRAM from render_init): the two tubes render at the same time, one per core.
-static void buildWetShare(const Edges &e, int H, uint16_t *share, int16_t *run) {
-  memset(run, 0, (PANEL_W + 1) * sizeof(int16_t));
+// The share is a function of H and the rows' column pairs (a, b) only: key[2 ry], key[2 ry + 1] hold the pairs it was
+// last built from (keyH: its H, -1 = none), so a frame whose pairs all repeat keeps it (perf-cheap B3).
+static void buildWetShare(const Edges &e, int H, uint16_t *share, int16_t *run, int16_t *key, int &keyH) {
+  bool same = keyH == H;
   for (int ry = 0; ry < H; ry++) {
     const int a = (int)fceil(clampf(e.lo[ry], 0, PANEL_W)), b = (int)fceil(clampf(e.hi[ry], 0, PANEL_W));
-    if (b > a) { run[a]++; run[b]--; }
+    if (key[2 * ry] != a || key[2 * ry + 1] != b) { same = false; key[2 * ry] = (int16_t)a; key[2 * ry + 1] = (int16_t)b; }
   }
+  if (same) return;
+  keyH = H;
+  memset(run, 0, (PANEL_W + 1) * sizeof(int16_t));
+  for (int ry = 0; ry < H; ry++) { const int a = key[2 * ry], b = key[2 * ry + 1]; if (b > a) { run[a]++; run[b]--; } }
   for (int x = 0, n = 0; x < PANEL_W; x++) { n += run[x]; share[x] = (uint16_t)((n * 256 + (H >> 1)) / H); }
 }
 // Source row for wet share k (1/256): the behind-air row moved toward the behind-liquid one.
@@ -1584,6 +1590,7 @@ struct Tube {
   // rear-mark wet share per panel column (buildWetShare) + its scratch: PANEL_W / PANEL_W + 1 entries, PSRAM,
   // allocated once by render_init (internal RAM is ~2.7 KB from full once BLE is up; 4.3 KB here hung its init)
   uint16_t *wetShare = nullptr; int16_t *wetRun = nullptr;
+  int16_t *wetKey = nullptr; int wetKeyH = -1;   // buildWetShare's key: the rows' column pairs, 2 x TUBE_HEIGHT_MAX, PSRAM
   // digit source offset from the axis per row behind air, then behind liquid (sim TickFollow dry / wet):
   // 2 x TUBE_HEIGHT_MAX, PSRAM, allocated once by render_init
   float *digitOff = nullptr;
@@ -5695,7 +5702,7 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
   const BandInfo band{{edges, edgesL}, {strokeR, strokeL}, {bandFill[0], bandFill[1]}, {bandBlick[0], bandBlick[1]},
                       {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L, lidT > 0, lidT > 0 ? lidRimB : 0.0f};
   Edges bounds{boundLo, boundHi, hasLiquid && p.surfaceBand > 0 ? &band : nullptr};
-  if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H, wetShare, wetRun);
+  if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H, wetShare, wetRun, wetKey, wetKeyH);
   TU_MARK(TU_BOUNDS);
 
   // The marks' plans (MarkPlan), all before bubbles; the tick and digit layers each sit behind or on top (one each).
@@ -6793,6 +6800,7 @@ bool render_init(bool fast) {
     tb.set.poolS = (uint8_t *)heap_caps_malloc(GLYPH_SPAN_BYTES, MALLOC_CAP_SPIRAM);
     tb.wetShare = (uint16_t *)heap_caps_malloc(PANEL_W * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     tb.wetRun = (int16_t *)heap_caps_malloc((PANEL_W + 1) * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    tb.wetKey = (int16_t *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(int16_t), MALLOC_CAP_SPIRAM); tb.wetKeyH = -1;
     tb.digitOff = (float *)heap_caps_malloc(2 * TUBE_HEIGHT_MAX * sizeof(float), MALLOC_CAP_SPIRAM);
     tb.traceLut = (uint16_t *)heap_caps_malloc(2 * TRACE_LUT * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     tb.fizz = (Fizz *)heap_caps_malloc(FIZZ_POOL * sizeof(Fizz), MALLOC_CAP_SPIRAM);
@@ -6879,7 +6887,7 @@ bool render_init(bool fast) {
     ok = ok && tb.traceStreakTab;
     if (uint8_t *rows = (uint8_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(DigitRow) + 63, MALLOC_CAP_SPIRAM))   // one row per cache line
       tb.digitRows = (DigitRow *)(((uintptr_t)rows + 63) & ~(uintptr_t)63);
-    ok = ok && tb.fizz && tb.set.poolC && tb.set.poolA && tb.set.poolS && tb.wetShare && tb.wetRun && tb.digitOff
+    ok = ok && tb.fizz && tb.set.poolC && tb.set.poolA && tb.set.poolS && tb.wetShare && tb.wetRun && tb.wetKey && tb.digitOff
          && tb.digitRows && tb.traceLut && tb.palCache && tb.traceMemo;
   }
   FILM_PHI = (uint16_t *)heap_caps_malloc(257 * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
