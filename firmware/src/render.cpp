@@ -1613,6 +1613,7 @@ struct Tube {
   DigitRow *digitRows = nullptr;   // TUBE_HEIGHT_MAX, PSRAM, allocated once by render_init (spriteRowFacts, tickBand)
   float boundLo[TUBE_HEIGHT_MAX], boundHi[TUBE_HEIGHT_MAX];   // panel-frame bounds for the mark compositor (edges + surface stroke)
   float strokeR[TUBE_HEIGHT_MAX], strokeL[TUBE_HEIGHT_MAX];   // outward extent of the concave surface stroke per edge (sim strokeR/L)
+  int16_t solidLoB[TUBE_BAND], solidHiB[TUBE_BAND];   // drawTube's band loop: the band's solid spans, clipped to [0, PANEL_W] (as hspan)
   float fizzLidT = 0, fizzLidTau = 0, fizzLidDelta = 0;      // desk view: the frame's lid slope T (0 = off), tau, delta (drawTube, with strokeR; sim fizzLidT / Tau / Delta)
   FizzLid lid = {false, 0, 0, 0};                             // the time edge's endpoint rule they give (fizzLidOf): stepFizzVertical, settleFoam, fizzEndClampX
   float bandFill[2][TUBE_HEIGHT_MAX], bandBlick[2][TUBE_HEIGHT_MAX], bandRim[2][TUBE_HEIGHT_MAX];   // its layer weights per row, 0 = time edge, 1 = home: rear-mark compositor (sim BandInfo)
@@ -5919,13 +5920,18 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
 #endif
   // The tube back, but not under the liquid body's solid span (solidSpan): the body's hspan below rewrites those pixels and
   // nothing between reads them (the residue and the nose backing work outside the edges' ramps), so they were dead stores.
-  int16_t solidLoB[TUBE_BAND], solidHiB[TUBE_BAND];   // the band's solid spans (the body below takes them)
   for (int ry = rb0; ry < rb1; ry++) {
     int sa = L, sb = L;   // the back over [0, sa) and [sb, L): the whole row unless a body span lies inside it
     if (hasLiquid) {
-      int lo, hi; solidSpan(ry, lo, hi); solidLoB[ry - rb0] = (int16_t)lo; solidHiB[ry - rb0] = (int16_t)hi;
-      if (lo < 0) lo = 0; if (hi > L) hi = L;
-      if (hi > lo) { sa = lo; sb = hi; }
+      // the span clipped to [0, PANEL_W] as hspan clips it (so it fits int16_t for any accepted param, and the body's
+      // write is the same), the back's piece further to [0, L]
+      int lo, hi; solidSpan(ry, lo, hi);
+      lo = lo < 0 ? 0 : lo > PANEL_W ? PANEL_W : lo; hi = hi < 0 ? 0 : hi > PANEL_W ? PANEL_W : hi;
+      solidLoB[ry - rb0] = (int16_t)lo; solidHiB[ry - rb0] = (int16_t)hi;
+      if (hi > L) hi = L;
+#ifndef TUBE_VERIFY
+      if (hi > lo) { sa = lo; sb = hi; }   // (TUBE_VERIFY: the whole row, its residue check compares every word of it)
+#endif
     }
     backRow(FB + ry * PANEL_W, sa, sb, L, bBack[ry]);
   }
