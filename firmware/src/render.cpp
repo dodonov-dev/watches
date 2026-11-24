@@ -284,6 +284,22 @@ TUBE_IRAM static void __attribute__((noinline)) traceFillLutI(uint16_t *row, con
 // tipped its inliner into copying them into the IRAM kernel: +382 B internal, the BLE window's).
 static uint16_t __attribute__((noinline)) residueAt(const ResidueTint &t, int T) { return t.at(T); }
 // iZ0: the first phi index of a visible depth (T > 0) at this traceAmount (drawTube, per frame); blkMax: TraceMemo's.
+// The tube back of one strip row (drawTube's band loop): colour c over [0, sa) and [sb, L) (0 <= sa <= sb <= L <= PANEL_W),
+// the stores hspan makes. Out of line: one copy in IRAM for both pieces.
+TUBE_IRAM static void __attribute__((noinline)) backRow(uint16_t *row, int sa, int sb, int L, uint16_t c) {
+  const uint16_t s = __builtin_bswap16(c);
+  const uint32_t ss = (uint32_t)s | ((uint32_t)s << 16);
+  for (int k = 0; k < 2; k++) {
+    uint16_t *p = row + (k ? sb : 0);
+    int n = k ? L - sb : sa;
+    if (n <= 0) continue;
+    TCLIP(p, n);
+    if (((uintptr_t)p & 2) && n) { *p++ = s; n--; }
+    uint32_t *p32 = (uint32_t *)p;
+    for (; n >= 2; n -= 2) *p32++ = ss;
+    if (n) *(uint16_t *)p32 = s;
+  }
+}
 TUBE_IRAM static void __attribute__((noinline)) traceFillRow(uint16_t *row, const uint16_t *traceA, int x0, int x1, int x2, int x3,
                                                     const ResidueTint &tint, int aLo, int aHi, int iZ0, const uint16_t *blkMax,
                                                     uint16_t *lut) {   // lut: 2 x TRACE_LUT entries, the tube's own
@@ -5903,11 +5919,15 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
 #endif
   // The tube back, but not under the liquid body's solid span (solidSpan): the body's hspan below rewrites those pixels and
   // nothing between reads them (the residue and the nose backing work outside the edges' ramps), so they were dead stores.
+  int16_t solidLoB[TUBE_BAND], solidHiB[TUBE_BAND];   // the band's solid spans (the body below takes them)
   for (int ry = rb0; ry < rb1; ry++) {
-    int sa = 0, sb = 0;
-    if (hasLiquid) { solidSpan(ry, sa, sb); if (sa < 0) sa = 0; if (sb > L) sb = L; }
-    if (sb > sa) { hspan(y0 + ry, 0, sa, bBack[ry]); hspan(y0 + ry, sb, L, bBack[ry]); }
-    else hspan(y0 + ry, 0, L, bBack[ry]);
+    int sa = L, sb = L;   // the back over [0, sa) and [sb, L): the whole row unless a body span lies inside it
+    if (hasLiquid) {
+      int lo, hi; solidSpan(ry, lo, hi); solidLoB[ry - rb0] = (int16_t)lo; solidHiB[ry - rb0] = (int16_t)hi;
+      if (lo < 0) lo = 0; if (hi > L) hi = L;
+      if (hi > lo) { sa = lo; sb = hi; }
+    }
+    backRow(FB + ry * PANEL_W, sa, sb, L, bBack[ry]);
   }
   TU_MARK(TU_BACK);
   if (trRows) {
@@ -6049,7 +6069,7 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
     if (!hasLiquid) continue;
     int xi = (int)ffloor(ex); float frac = ex - xi;
     int xiL = (int)ffloor(exL); float fracL = exL - xiL;
-    int solidLo, solidHi; solidSpan(ry, solidLo, solidHi);
+    const int solidLo = solidLoB[ry - rb0], solidHi = solidHiB[ry - rb0];
     hspan(y0 + ry, solidLo, solidHi, bRows[ry]);
     if (p.edgeSoft > 0) {  // soft edge: a coverage ramp `w` px wide centred on the geometric edge.
       // The glow (if any) folds into the same per-pixel alpha min(1, cov + g), anchored to the
