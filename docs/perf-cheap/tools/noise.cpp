@@ -5,9 +5,9 @@
 // sigma: Gaussian accel noise (g) per axis, or -1 = replay NOISE_FILE (along / across / normal deviations a line, the
 // board's recorded `i` stream at rest: imu_rest_dev.txt). q*/h*: an extra quantHyst-like hold applied by the harness to
 // light (deg), angle (deg), backTilt (rad) before the render (0 = none: the build's own physics only), h in steps.
-// mode 0: per frame changed pixels, dirty tile pairs (the push's work), light changes, frame-to-frame deltas; 1: held vs
-// raw on the same frame; 2: held frame vs the raw frames of the last second. rate: an across ramp, g/s. FRAMES_OUT=file
-// writes every frame (cmp.py compares two builds' files). HOLD_EDGES / DUMP: experiments (slug, slosh, cap held; state).
+// mode 0 (the only one): per frame changed pixels and frame-to-frame deltas of the SHOWN rows (the push-lens map applied,
+// panel byte order swapped to native RGB565), dirty tile pairs (the push's work), light changes. rate: an across ramp,
+// g/s. FRAMES_OUT=file writes every frame's shown rows, native RGB565 (cmp.py compares two builds' files). HOLD_EDGES / DUMP: experiments (slug, slosh, cap held; state).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -89,46 +89,21 @@ int main(int argc, char **argv) {
       q[i] = s;
       uint16_t *buf = strip[i][k & 1];
       const int16_t *map = nullptr; renderTube(i, s, p[i], 2, buf, &map, lay.top(i));
-      if (mode == 2 && k >= warm - 50) {   // envelope: the quantised frame against the raw frames of the last 50 steps (1 s)
-        static uint16_t ring[2][50][PANEL_W * TUBE_HEIGHT_MAX];
-        uint16_t *rb = ring[i][k % 50];
-        renderTube(i, st[i], p[i], 2, rb, &map, lay.top(i));
-        if (k >= warm) {
-          const int rows = lay.rows(i);
-          auto ex = [](uint16_t c, int ch) { const int v = ch == 0 ? (c >> 11 & 31) << 3 | (c >> 13) : ch == 1 ? (c >> 5 & 63) << 2 | (c >> 9 & 3) : (c & 31) << 3 | (c >> 2 & 7); return v; };
-          for (int j = 0; j < rows * PANEL_W; j++) {
-            int out = 0;
-            for (int ch = 0; ch < 3; ch++) {
-              int lo = 255, hi = 0; for (int w = 0; w < 50; w++) { const int v = ex(ring[i][w][j], ch); lo = std::min(lo, v); hi = std::max(hi, v); }
-              const int v = ex(buf[j], ch); out = std::max(out, v < lo ? lo - v : v > hi ? v - hi : 0);
-            }
-            if (out) { dHist[out]++; dPx++; if (out > dMax) dMax = out; }
-          }
-        }
-        renderTube(i, s, p[i], 2, buf, &map, lay.top(i));
-      }
-      if (mode == 1 && k >= warm) {
-        static uint16_t rawBuf[PANEL_W * TUBE_HEIGHT_MAX];
-        renderTube(i, st[i], p[i], 2, rawBuf, &map, lay.top(i));
-        const int rows = lay.rows(i);
-        auto ex = [](uint16_t c, int ch) { const int v = ch == 0 ? (c >> 11 & 31) << 3 | (c >> 13) : ch == 1 ? (c >> 5 & 63) << 2 | (c >> 9 & 3) : (c & 31) << 3 | (c >> 2 & 7); return v; };
-        for (int j = 0; j < rows * PANEL_W; j++) if (rawBuf[j] != buf[j]) {
-          int d = 0; for (int ch = 0; ch < 3; ch++) d = std::max(d, abs(ex(rawBuf[j], ch) - ex(buf[j], ch)));
-          dHist[d]++; dPx++; if (d > dMax) dMax = d;
-        }
-        renderTube(i, s, p[i], 2, buf, &map, lay.top(i));   // the quantised frame again (its caches)
-      }
+      // the shown rows (the push applies the lens row map), in native RGB565 (the strip holds panel byte order)
+      static uint16_t shown[2][PANEL_W * TUBE_HEIGHT_MAX];
+      for (int r = 0; r < lay.rows(i); r++)
+        for (int x = 0; x < PANEL_W; x++) shown[i][r * PANEL_W + x] = __builtin_bswap16(buf[(map ? map[r] : r) * PANEL_W + x]);
       if (k >= warm && getenv("FRAMES_OUT")) {
         static FILE *fo = fopen(getenv("FRAMES_OUT"), "wb");
-        fwrite(buf, 2, lay.rows(i) * PANEL_W, fo);
+        fwrite(shown[i], 2, lay.rows(i) * PANEL_W, fo);
         if (k == warm + frames - 1 && i == 1) fclose(fo);
       }
       if (k >= warm) {
         if (i == 0) frameN++;
         const int rows = lay.rows(i); long px = 0;
         auto ex = [](uint16_t c, int ch) { const int v = ch == 0 ? (c >> 11 & 31) << 3 | (c >> 13) : ch == 1 ? (c >> 5 & 63) << 2 | (c >> 9 & 3) : (c & 31) << 3 | (c >> 2 & 7); return v; };
-        for (int j = 0; j < rows * PANEL_W; j++) if (buf[j] != prev[i][j]) {
-          px++; int d = 0; for (int ch = 0; ch < 3; ch++) d = std::max(d, abs(ex(buf[j], ch) - ex(prev[i][j], ch)));
+        for (int j = 0; j < rows * PANEL_W; j++) if (shown[i][j] != prev[i][j]) {
+          px++; int d = 0; for (int ch = 0; ch < 3; ch++) d = std::max(d, abs(ex(shown[i][j], ch) - ex(prev[i][j], ch)));
           if (mode == 0) { fHist[d]++; if (d > fMax) fMax = d; }
         }
         const TileDirty *d = tile_dirty(buf); long pairs = 0;
@@ -140,16 +115,11 @@ int main(int argc, char **argv) {
         if (i == 0) { amin = fminf(amin, st[i].angle); amax = fmaxf(amax, st[i].angle); bmin = fminf(bmin, st[i].backTilt); bmax = fmaxf(bmax, st[i].backTilt); }
       }
       prevLight[i] = s.light;
-      memcpy(prev[i], buf, sizeof prev[i]);
+      memcpy(prev[i], shown[i], sizeof prev[i]);
     }
   }
   if (mode == 0) { long big = 0, n = 0; for (int d = 1; d < 256; d++) { n += fHist[d]; if (d > 12) big += fHist[d]; }
     printf("frame to frame: %ld px changed, max %d/255, > 12/255: %ld, > 24/255:", n, fMax, big); long b24 = 0; for (int d = 25; d < 256; d++) b24 += fHist[d]; printf(" %ld\n", b24); }
-  if (mode == 2) { printf("quantised outside the raw 1-s envelope: %.2f px/frame, max %d/255 past it; hist", dPx / (double)frameN, dMax);
-    for (int d = 1; d <= dMax; d++) if (dHist[d]) printf(" %d:%ld", d, dHist[d]); printf("\n"); }
-  if (mode == 1) { long big = 0; for (int d = 13; d < 256; d++) big += dHist[d];
-    printf("quantised vs raw: %.1f px/frame differ, max %d/255, > 12/255: %ld px over %ld frames; hist", dPx / (double)frameN, dMax, big, frameN);
-    for (int d = 1; d <= dMax; d++) if (dHist[d]) printf(" %d:%ld", d, dHist[d]); printf("\n"); }
   printf("light p2p %.4f/%.4f deg (raw), angle p2p %.4f deg, backTilt p2p %.5f rad | per frame: H px %.1f pairs %.1f lightCh %.3f dirty %.3f | M px %.1f pairs %.1f lightCh %.3f dirty %.3f\n",
          lmax[0] - lmin[0], lmax[1] - lmin[1], amax - amin, bmax - bmin,
          sumPx[0] / frameN, sumPairs[0] / frameN, (double)lightCh[0] / frameN, (double)dirtyFrames[0] / frameN,

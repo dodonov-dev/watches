@@ -1057,8 +1057,10 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   there (the script imports outside sim/): fails on a fresh checkout; run the emitted path.
 - B1 changed GCC's inlining of tickPx / stepFizzTube (+256 B IRAM, no code of theirs touched): the IRAM budget moves with
   unrelated edits in render.cpp's translation unit.
-- The highlight band (highlightTop) moves by whole rows at its light thresholds: a light held within 0.1 deg of its mean can
-  sit on the other side of one than the noisy spring mostly did (~76 px a frame outside the old 1-s envelope, side pose).
+- The stand's back tilt is not held (review 1): holding it would need a quantity linear in the lid (lidEnd's
+  1 / max(1, 2R tan tau) near the end glass); it would save ~6 dirty tile pairs a frame per tube at rest.
+- Host checks allocate with calloc (check_board_render, check_render_frames): uninitialised PSRAM reads stay hidden; a
+  0xa5-filled heap_caps_malloc stub would catch them (used once for perf-cheap B1 / B3).
 - Not done (brief B): hash only possibly-changed tiles (needs every stage's per-band inputs proven equal: palette, shade,
   edges / strokes, residue columns, mark plans, this and last frame's fizz lists, lens); ramp alpha from a phase table
   (edges are arbitrary floats per row, no exact phase key); tick / label plan memo (rear shifts, parallax floats, inkRow,

@@ -1,5 +1,6 @@
-# cmp.py OLD NEW ROWS0 ROWS1: frames of two runs on one input: per frame new vs old (same instant), and new against the
-# old frames of the last 50 steps (1 s) per pixel and channel (the envelope)
+# cmp.py OLD NEW ROWS0 ROWS1: frames of two runs on one input (noise.cpp FRAMES_OUT: the shown rows, the push-lens map
+# applied, native little-endian RGB565): per frame new vs old (same instant), and new against the old frames of the last
+# 50 steps (1 s) per pixel and channel (the envelope)
 import sys, numpy as np
 r0, r1 = int(sys.argv[3]), int(sys.argv[4]); W = 820; n = (r0 + r1) * W
 def load(f):

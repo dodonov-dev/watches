@@ -2,41 +2,51 @@
 
 _Last update: 2026-11-24 (perf-cheap: held physics inputs, exact render memos; host-checked, board half-measured)_
 
-## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af, host-checked; board: baseline only
+## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af, host-checked after Astra review 1; board: baseline only
 
-- A, held physics inputs (ca2749a, 5c8baee): what the render reads, light / angle / the stand's back tilt, is held in steps
-  of 1/8 deg / 1/32 deg / 1/32768 rad by quantHyst (physics.h, sim physics.ts): it follows the spring when that leaves
-  +-3 / 8 / 128 steps, and steps back toward the spring's 1 s mean while that sits over a quarter band away. Springs keep
-  lightRaw / angleRaw; ImuFilter holds backTilt(). Render code and every state-driven harness unchanged.
+- A, held physics inputs (ca2749a, 5c8baee, adbec27): what the render reads of the light angle and the edge skew is held in
+  steps of 1/8 deg / 1/32 deg by quantHyst (physics.h, sim physics.ts): it follows the spring when that leaves +-3 / 8
+  steps (a fast excursion: noise is ignored inside the band), and steps toward the spring's 1 s mean while that sits over a
+  quarter band away (slow changes are followed: e.g. a light alternating slowly between 0.100 and 0.025 deg flips 0 <->
+  0.125; the settled error is <= a quarter band, 0.094 deg / 0.0625 deg). heldClamp keeps it inside the spring's limit (on
+  the limit's step while the spring rests there); heldReseat on every params change (main paramsChanged, sim paramEdited /
+  paramsReplaced). Springs keep lightRaw / angleRaw. The stand's back tilt is NOT held (review 1: the lid's end factor
+  1 / max(1, 2R tan tau) moves the lid up to 0.59 px a 1/32768 rad step near the end glass, a quarter band 17 px; holding it
+  saved ~6 of 7380 tile pairs a frame per tube on the board's rest noise and no render work).
+- Parity: the sim's IMU filter, light rest, springs, means and quantHyst are float32 (Math.fround, step for step as
+  physics.cpp): firmware/tools/check_held.py requires sim == firmware on every step of 10 cases (board rest noise at stand /
+  flat, a slow tilt, a swing; Astra's settled repro lightAngle 32 -> 32.0937652587890625 and four more settled cases; angleMax
+  6 -> 0): 0 differing steps in each.
 - Step proof (docs/perf-cheap/tools/palstep.cpp): 77 presets + 3 looks, both tubes, every 1/8 deg pair over +-85 deg: rows,
-  bubbleIn, tubeBackRows, bubbleRimRows, bandInner, bandLensMix move <= 1 RGB565 LSB per channel; bandRimC 2 G LSB on 2
-  entries (cola, cola-big: a 1-LSB back-row step amplified by its mix; the same at 1/16 deg); the highlight band moves whole
-  rows at its own thresholds as before. Angle: <= 0.058 px a step at the tallest tube's end rows; back tilt: the lid's
-  height <= 0.056 px a step for viewElevation <= 60 (1/4096 rad would allow 0.45 px tipped forward).
+  bubbleIn, tubeBackRows, bubbleRimRows, bandInner, bandLensMix <= 1 RGB565 LSB per channel; bandRimC 2 G LSB on 2 entries
+  (cola, cola-big: a 1-LSB back-row step amplified by its mix; the same at 1/16 deg); the highlight band moves whole rows at
+  its own thresholds as before. Angle: <= 0.058 px a step at the 320w8-8 tallest tube's end rows (0.065 px at 9 mm, H 121).
 - Noise (board, `i` stream at rest, 40 s, ~0.4 mg; docs/perf-cheap/tools/imu_rest_dev.txt) through ImuFilter + stepTube on
-  the lid fixture: spring p2p light 0.26 deg (stand) / 0.04 (flat) / 0.37 (on its side); angle 0.08 / 0.21 deg; back tilt
-  0.0029 rad (stand). A band reverses only past 0.625 deg / 0.47 deg / 0.0078 rad (1.7-2.7x those).
-- Host still board (docs/perf-cheap/tools/noise.cpp, lcd316 tiles, push lens, fizz off), per frame px changed / dirty tile
-  pairs, 87f19af -> now: stand hours 143 / 75 -> 0.0 / 0.0, minutes 153 / 77 -> 0.0 / 0.0 (light changes 1.0 -> 0 a frame);
-  flat 1.0 / 0.8 -> 0; on its side hours 18.8 / 10.8 -> 1.4 / 1.4, minutes 326 -> 322 (its free slug slides: real motion).
-- Invisible vs 87f19af (cmp.py, same input, 350 frames): the old shimmers at rest (stand: 1327 px a frame differ from the
-  new at the same instant, up to 231/255: the highlight band row and palette-floored marks toggling); the new frame lies
-  inside the old's own last-second range but for 1.85 px a frame (stand), 0 (flat), 76 (side: the light held within
-  0.1 deg of its mean, the other side of a highlight threshold the noisy spring mostly kept). Slow tilt: lag <= the band
-  (0.375 / 0.25 deg), never a bigger step than the spring's own move (check_held).
-- B1 (7eb1585, 86a3b26): no tube-back fill under the body's solid span (one solidSpan per band row, back fill through one
-  noinline IRAM backRow). B2 (19a5e33): fizz depth colours keyed on pal.ver / shade build / H / fizzDepth /
-  liquidTransparency / bubbleDark / blickC. B3 (2f898cf): wet share kept while every row's (ceil lo, ceil hi) repeats
-  (key: 2 x TUBE_HEIGHT_MAX int16 a tube, PSRAM at render_init). Skipped (KAIZEN): hash-only-changed tiles, ramp phase
-  table, tick / label plan memo, residue row constants, idle-frame skip.
-- Host (HEAD 5c8baee): check_render_frames vs 87f19af (strip, --tiles, --big-fizz, --no-fizz) 13136 byte-identical;
-  check_fizz_steps vs 87f19af 80 / 80 (amoled191, lcd316 tiles); --sim --free 25 / 25 vertical; check_board_render
-  320w8-8 (strip, --tiles, --tiles --push-lens), 240f, amoled191, 3 looks: every line as 87f19af (75 / 77, cola / malt);
-  check_held 4 / 4; check:meniscus 560 scenes, 14312 px, max 9/255 (as 87f19af); check:imu, check:presets, check_mirrors
-  (9 idiom drifts as before), sim tsc / build.
-- Builds vs 87f19af: lcd316@320w8-8 IRAM +632 B (B1: backRow 160, band loop 235, GCC re-inlining tickPx / stepFizzTube
-  256), DRAM data +48 B (TubeState +16 B each, ImuFilter +8), flash text +1716 B, bin +2400 B; PSRAM +432 B a tube (wet
-  share key); amoled191 IRAM 0, data +48, bss +16, text +1648 B.
+  the lid fixture: spring p2p light 0.26 deg (stand) / 0.04 (flat) / 0.37 (on its side); angle 0.08 / 0.21 deg.
+- Host still board (docs/perf-cheap/tools/noise.cpp: lcd316 tiles, the shown rows through the push-lens map, fizz off; the
+  board's noise), per frame px changed / dirty tile pairs, 87f19af -> now: stand hours 150 / 77 -> 7.6 / 6.1, minutes 180 /
+  81 -> 10.1 / 6.5 (the unheld back tilt; palette rebuilds every frame -> none); flat 1.0 / 0.8 -> 0; on its side hours
+  18.2 / 10.5 -> 1.6 / 1.6, minutes 372 -> 369 (its free slug slides: real motion).
+- Invisible vs 87f19af (cmp.py, panel byte order decoded, same input, 350 frames): same instant, max 9/255, 0 px > 12/255 at
+  stand (1384 px a frame differ: the old shimmers), flat and side; outside the old's own last-second range 0.03 / 0 / 0.54 px
+  a frame, max 9/255. At 2.5 mg (6x the board's noise): stand max 91/255 (298 px > 12/255 in 350 frames, discrete
+  wet-share / highlight rows), 0.22 px a frame outside the old's range (max 20/255).
+- B1 (7eb1585, 86a3b26, bc56999): no tube-back fill under the body's solid span; one solidSpan per band row, both ends
+  clipped to [0, PANEL_W] (hspan's own clip; exact for any accepted param: edgeSoft 40000 / 70000, edgeGlow 50000, edgeSoft
+  -5 byte-identical on amoled191 strip and lcd316 strip / tiles), the back through one noinline IRAM backRow, the band's
+  spans in the Tube. B2 (19a5e33): fizz depth colours keyed on pal.ver / shade build / H / fizzDepth / liquidTransparency /
+  bubbleDark / blickC. B3 (2f898cf, 6f35940): wet share kept while every row's (ceil lo, ceil hi) repeats; the key is written
+  without reads on first use or a new H. Skipped (KAIZEN): hash-only-changed tiles, ramp phase table, tick / label plan memo,
+  residue row constants, idle-frame skip.
+- Host (HEAD): check_render_frames vs 87f19af (strip, --tiles, --big-fizz, --no-fizz) 13136 byte-identical; check_fizz_steps
+  vs 87f19af 80 / 80 (amoled191, lcd316 tiles: B only, both sides this physics); --sim --free 25 / 25 vertical;
+  check_board_render 320w8-8 (strip, --tiles, --tiles --push-lens), 240f, amoled191, 3 looks: every line as 87f19af (75 / 77,
+  cola / malt); check_held 10 / 10; check:meniscus 560 scenes, 14312 px, max 9/255 (as 87f19af); check:imu, check:presets,
+  check_mirrors (9 idiom drifts as before), sim tsc / build.
+- Builds vs 87f19af: lcd316@320w8-8 IRAM +664 B (backRow 160, the band loop, GCC re-inlining tickPx / stepFizzTube ~256),
+  DRAM data +32 B (TubeState +16 B each), flash text +1800 B, bin +2528 B; PSRAM +460 B a tube allocated at boot (wet-share
+  key 432 B, FizzLook key +28 B); Tube +16 B (tiled) / +32 B (strip) of band span scratch; amoled191 IRAM 0, data +32, bss
+  +80, text +1676 B.
 - Board (lcd316@320w8-8, the user's look, lying on its side, 87f19af elf 60fd1395): stand pose pinned 51.9 fps, render
   18.70 ms, push 1.43 ms; live IMU 43.2 / 43.7 fps, render 21.71 / 21.45, push 1.18 / 1.11; pinned (inputGain 0)
   47.4 / 47.4 fps, render 19.80 / 19.83, push 0.90 / 0.93. The new builds are not measured: the board's serial port went
