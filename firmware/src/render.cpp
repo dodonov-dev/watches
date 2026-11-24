@@ -1355,10 +1355,10 @@ static void digitRowColors(const Params &p, int bh, uint16_t *out) {
 // The share is a function of H and the rows' column pairs (a, b) only: key[2 ry], key[2 ry + 1] hold the pairs it was
 // last built from (keyH: its H, -1 = none), so a frame whose pairs all repeat keeps it (perf-cheap B3).
 static void buildWetShare(const Edges &e, int H, uint16_t *share, int16_t *run, int16_t *key, int &keyH) {
-  bool same = keyH == H;
+  bool same = keyH == H;   // false: the key holds no pairs for these rows (first use, another H): written, never read
   for (int ry = 0; ry < H; ry++) {
     const int a = (int)fceil(clampf(e.lo[ry], 0, PANEL_W)), b = (int)fceil(clampf(e.hi[ry], 0, PANEL_W));
-    if (key[2 * ry] != a || key[2 * ry + 1] != b) { same = false; key[2 * ry] = (int16_t)a; key[2 * ry + 1] = (int16_t)b; }
+    if (!same || key[2 * ry] != a || key[2 * ry + 1] != b) { same = false; key[2 * ry] = (int16_t)a; key[2 * ry + 1] = (int16_t)b; }
   }
   if (same) return;
   keyH = H;
