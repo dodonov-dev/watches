@@ -1,7 +1,7 @@
 import './style.css';
 import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, heldReseat, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -378,12 +378,14 @@ $('settime').onclick = pushTime;
 const LAYOUT_KEYS: (keyof Params)[] = ['tubeHeight', 'hoursY', 'minutesY', 'tubeStack', 'tubeGap'];
 /** Params changed outside a single edit (derive, preset, import): panel, top bar, cuff, grid. */
 function paramsReplaced(): void {
+  tubes.forEach(heldReseat);   // a param may move a spring's rest or limit: no stale held light / angle (firmware paramsChanged)
   panelUi.refresh(); syncView();
 }
 /** One legacy key (`key`) or the whole struct (no key) was edited in the legacy panel / top bar. In
  *  material mode a design key goes into the design and re-derives; a whole-struct change (legacy preset,
  *  import, reset) contributes its design keys. Derived / fixed keys are locked there. */
 function paramEdited(key?: keyof Params): void {
+  tubes.forEach(heldReseat);   // as paramsReplaced
   if (!key) legacyPick = matState.mode === 'legacy' ? panelUi.presetId() : '';
   if (matState.mode === 'material') {
     if (!key) materialUi.adoptDesign();

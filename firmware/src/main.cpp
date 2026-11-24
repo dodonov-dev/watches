@@ -115,6 +115,7 @@ static Params &effOf(int idx) { return idx == 0 ? effH : idx == 1 ? effM : effS;
 static Params &effOf(int idx) { return idx ? effM : effH; }
 #endif
 static uint32_t paramsGen = 1;   // bumped on every param change; renderer caches key on it
+static void heldReseatAll();     // physics.h heldReseat for every tube (defined with the tubes, below)
 // Every param change goes through here (the render worker is idle outside renderBoth, see below).
 static void paramsChanged() {
 #if PX_SCALED
@@ -124,6 +125,8 @@ static void paramsChanged() {
 #if TUBE_COUNT == 3
   if constexpr (EFF_S_OWN) boardParams(params, effSOwn, PX_SCALE_S, PX_SCALE_FIZZ);
 #endif
+  // heldReseat: a param may move a spring's rest or limit (lightAngle, angleMax, vertical): no stale held offset
+  heldReseatAll();
   paramsGen++;
 }
 // NVS autosave: namespace lw, blob cur. Written 2 s after the last change; a v31 / v32 blob is migrated at boot, another
@@ -150,8 +153,10 @@ static TubeState tubeH, tubeM;
 #if TUBE_COUNT == 3
 static TubeState tubeS;   // seconds (148 B internal)
 static TubeState &tubeOf(int idx) { return idx == 0 ? tubeH : idx == 1 ? tubeM : tubeS; }
+static void heldReseatAll() { heldReseat(tubeH); heldReseat(tubeM); heldReseat(tubeS); }
 #else
 static TubeState &tubeOf(int idx) { return idx ? tubeM : tubeH; }
+static void heldReseatAll() { heldReseat(tubeH); heldReseat(tubeM); }
 #endif
 static GravityNorm gnorm;
 static ImuFilter imuFilter;

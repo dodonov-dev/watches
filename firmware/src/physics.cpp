@@ -107,6 +107,11 @@ void followClock(TubeState &s, float clock, float dt, bool snap) {
   s.fillTarget = s.retractFrom + (clock - s.retractFrom) * u * u * (3 - 2 * u);
 }
 
+void heldReseat(TubeState &s) {
+  s.light = floorf(s.lightRaw / LIGHT_Q_DEG + 0.5f) * LIGHT_Q_DEG; s.lightMean = s.lightRaw;
+  s.angle = floorf(s.angleRaw / ANGLE_Q_DEG + 0.5f) * ANGLE_Q_DEG; s.angleMean = s.angleRaw;
+}
+
 float columnLen(float fillTarget, const Params &p) { return (p.remaining ? 1 - fillTarget : fillTarget) * TUBE_LENGTH_PX; }
 
 float boreR(const Params &p) {
@@ -285,7 +290,7 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, floa
   s.angleRaw += s.angleVel * dt;
   if (s.angleRaw > aMax) { s.angleRaw = aMax; s.angleVel = fminf(0, s.angleVel); }
   if (s.angleRaw < -aMax) { s.angleRaw = -aMax; s.angleVel = fmaxf(0, s.angleVel); }
-  s.angle = quantHyst(s.angleRaw, s.angleMean, s.angle, ANGLE_Q_DEG, ANGLE_Q_HYST, dt);   // what the render reads (physics.h)
+  s.angle = heldClamp(quantHyst(s.angleRaw, s.angleMean, s.angle, ANGLE_Q_DEG, ANGLE_Q_HYST, dt), s.angleRaw, aMax, ANGLE_Q_DEG);   // what the render reads (physics.h)
 
   const float rest = lightRest(along, across, p);
   const float lightAcc = -p.acrossK * (s.lightRaw - rest) - p.acrossDamp * s.lightVel + in.gyroAlong * p.acrossGyroGain * 10;
@@ -293,7 +298,7 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, floa
   s.lightRaw += s.lightVel * dt;
   if (s.lightRaw > LIGHT_MAX_DEG) { s.lightRaw = LIGHT_MAX_DEG; s.lightVel = fminf(0, s.lightVel); }
   if (s.lightRaw < -LIGHT_MAX_DEG) { s.lightRaw = -LIGHT_MAX_DEG; s.lightVel = fmaxf(0, s.lightVel); }
-  s.light = quantHyst(s.lightRaw, s.lightMean, s.light, LIGHT_Q_DEG, LIGHT_Q_HYST, dt);
+  s.light = heldClamp(quantHyst(s.lightRaw, s.lightMean, s.light, LIGHT_Q_DEG, LIGHT_Q_HYST, dt), s.lightRaw, LIGHT_MAX_DEG, LIGHT_Q_DEG);
 
   const float shake = fminf(1, ((fabsf(in.gyroAcross) + fabsf(in.gyroAlong)) / 200) * p.shakeGain);
   s.agitation += (shake - s.agitation) * fminf(1, (shake > s.agitation ? 20 : 2) * dt);
@@ -371,12 +376,7 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   lpAcross2 += (lpAcross - lpAcross2) * a;
   lpNormal += (inNormal - lpNormal) * a;
   lpNormal2 += (lpNormal - lpNormal2) * a;
-  if (updatePose(pose, lpAlong2, lpAcross2, lpNormal2)) {
-    const float t = poseBackTilt(pose);
-    if (!poseValid) tiltMean = t;   // the first valid pose: the mean starts there
-    tiltHeld = quantHyst(t, tiltMean, tiltHeld, BACK_TILT_Q_RAD, BACK_TILT_Q_HYST, dt);   // physics.h
-    poseValid = true;
-  }
+  if (updatePose(pose, lpAlong2, lpAcross2, lpNormal2)) poseValid = true;
   float g;
   if (p.gyroHpHz <= 0) g = raw.gyroAcross;
   else {
