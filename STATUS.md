@@ -16,11 +16,14 @@ _Last update: 2026-11-24 (perf-cheap: exact render memos B + palette key A'; the
   tent take it), the surface blick's row, the fizz's highlight row, the inset. Colours only from the key: the Lambert weight lam
   (body shading, glassW's lam term), rowL -> bubbleRimRows, rowK. Colour bound (docs/perf-cheap/tools/palstep.cpp: the palette
   at every exact light, 1/64 deg over +-85 deg, against every key renderTube can hold for it, the same exact-light row on both
-  sides): the user's look <= 1 RGB565 LSB per channel; cola <= 2 green LSB (bandRimC, 2 entries): A' moves colours by <= 2 LSB.
+  sides): the user's look <= 1 RGB565 LSB per channel; cola <= 2 green LSB (bandRimC, 2 entries): A' moves colours by <= 2 LSB,
+  a sampled max (the 1/64 deg grid reaches held offsets up to 0.0625 deg of the 0.075 deg the hysteresis allows).
   Known bound (KAIZEN): a rear tick's contrast floor can flip on a 1-LSB backing step; not reached in the evidence runs.
-- Replay: the `x` dump prints the light with %.9g and an LKEY line (each tube's key after the dump's render); render-ref takes
-  the key as final for that frame; a dump without LKEY renders the palette at the exact light. The sim's highlightTop is
-  render.cpp's float32 expression (Math.sin rounded once for sinf: an ulp apart at an exact boundary is possible).
+- Replay: the `x` dump prints the light with %.9g, an LKEY line (each tube's key after the dump's render) and a HITOP line (the
+  highlight row the board computed: the LCD contracts highlightTop into msub.s, review 5); render-ref takes both as final for
+  that frame; a dump or archived job without LKEY renders the palette at the exact light; the host checks that render the
+  native renderTube alongside ask for the live rule ('live'). render_seq_reset clears the keys (`X` repeatable). The sim's
+  highlightTop is render.cpp's float32 expression, uncontracted (live parity: an ulp apart at an exact boundary).
 - Evidence vs 87f19af (noise.cpp / cmp.py, the board's recorded rest noise, lcd316 tiles, the shown rows, fizz off; the user's
   look = board-look-before.json): same-instant max 8 / 5 / 8 / 0 /255 and 0 px > 12/255 (user's look stand / flat, cola stand /
   flat); outside the old's last-second range 19.3 px a frame (max 8/255, user's look at the stand: whole palette rows a key step
@@ -51,8 +54,9 @@ _Last update: 2026-11-24 (perf-cheap: exact render memos B + palette key A'; the
   HEAD gains about 1.6 fps at the stand pose, 2.5 fps live and 2 fps with the IMU pinned; live minus pinned render 2.4-2.7 ms
   -> 2.1-2.2 ms (the rest: this pose's sliding minutes slug and the edge noise). With medians the side-pose push of the B builds
   is no higher than 87f19af's (0.995-1.00 vs 1.01-1.05 ms pinned): the earlier +0.35 ms was the last-window value, not a
-  median (review 3). compare-device on HEAD: 21 px off, 0 > 12/255. The board is left on HEAD (elf 8423fe49) with the user's
-  look (`p?` = board-look-before.json).
+  median (review 3). compare-device on HEAD: 21 px off, 0 > 12/255. The board is left on 04a75a1 (elf 8423fe49) with the
+  user's look (`p?` = board-look-before.json); the later review-5 commit changes only the `x` dump (HITOP) and the `X`
+  sequence reset, not what a frame renders.
 
 ## Tilted fizz / desk view, 2026-11-23, branch `tilted_rise` 2267723, board-checked (lcd316@320w8-8)
 

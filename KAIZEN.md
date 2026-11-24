@@ -1077,3 +1077,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   a palette rebuild; its key needs pal.ver on the unshaded path too.
 - The sim builds its palette every animation frame, also when paused or when the key and row repeat (review 4-sim): a
   per-tube palette cache keyed on (params, key, row) would save it.
+- render.cpp contracts floating point on the board outside its fp-contract=off regions (only the fizz stepping, capShape,
+  drawTube, the lens / rod maps are pinned): the LCD build fuses highlightTop's yc - yc * sinf(...) into msub.s while the
+  host checks build -ffp-contract=off (review 5: H 72, highlightH 11, light 34.28989 deg: row 10 on the board, 11 on the host).
+  Pre-existing; the `x` dump's HITOP line covers replay. A whole-file pin (or -ffp-contract=off for the LCD) would close it.

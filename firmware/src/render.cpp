@@ -1014,7 +1014,8 @@ struct Tube;
 // ---------------------------------------------------------------------------------------------
 // palette
 // ---------------------------------------------------------------------------------------------
-// perf-cheap A': the palette's colour light in steps of LIGHT_KEY_Q (any palette row moves at most 1 RGB565 LSB a step:
+// perf-cheap A': the palette's colour light in steps of LIGHT_KEY_Q (a held key moves a palette entry by <= 2 RGB565 LSB,
+// sampled max on a 1/64 deg grid:
 // docs/perf-cheap/tools/palstep.cpp), re-keyed when the exact light leaves the key by LIGHT_KEY_HYST (0.6 step). See sim.
 #define LIGHT_KEY_Q 0.125f
 #define LIGHT_KEY_HYST 0.075f
@@ -7018,6 +7019,7 @@ TUBE_IRAM void __attribute__((noinline)) Tube::traceBlur(const uint16_t *trace, 
 
 uint32_t render_palette_builds(int idx) { return tubeAt(idx).pal.ver; }
 float render_light_key(int idx) { const Tube &t = tubeAt(idx); return t.lightKeyOk ? t.lightKey : NAN; }
+int render_hi_top(int idx) { const Tube &t = tubeAt(idx); return t.pal.valid ? t.pal.hiTop : INT_MIN; }
 void render_set_light_key(int idx, float key) { Tube &t = tubeAt(idx); t.lightKey = key; t.lightKeyOk = key == key; }
 // Safe to call for tubes on different lanes (hours and minutes / seconds) concurrently from different tasks: each touches
 // only tubeAt(idx), its lane's scratch and its own strip; params / state are read-only for the duration of the call.
@@ -7037,7 +7039,7 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
   t.buildRowCache(p, gen);
   Palette &pal = t.pal;
   // perf-cheap A': the colours from the light in LIGHT_KEY_Q steps with hysteresis (a still watch's sensor noise no longer
-  // rebuilds the palette every frame: each step moves a palette row by at most 1 RGB565 LSB, STATUS); every decision the
+  // rebuilds the palette every frame: a held key moves a palette entry by <= 2 RGB565 LSB, sampled max, STATUS); every decision the
   // light takes stays on the exact light (the highlight row here, highlightTop; blickY, the fizz's highlight row, the inset)
   if (!t.lightKeyOk || fabsf(s.light - t.lightKey) > LIGHT_KEY_HYST) { t.lightKey = floorf(s.light / LIGHT_KEY_Q + 0.5f) * LIGHT_KEY_Q; t.lightKeyOk = true; }
   const float lightKey = t.lightKey; const int hiTop = t.highlightTop(p, s.light);
@@ -7114,7 +7116,8 @@ const int16_t *render_lens_rows(int idx) { Tube &t = tubeAt(idx); return t.rc.le
 int render_spare_rows(int idx) { return tubeAt(idx).rc.spareN; }   // the spare rows its edge shade asked for (taken or not)
 #endif
 bool render_seq_reset(uint32_t seed) {
-  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.bodyH = 0; if (t.foam) t.foam->nOrder = 0; }
+  for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.bodyH = 0; if (t.foam) t.foam->nOrder = 0;
+    t.lightKeyOk = false; }   // perf-cheap A': a sequence keys its palette afresh (`X` frame hashes repeatable)
   return fizzReseed(seed);
 }
 #ifdef DIGIT_PROF

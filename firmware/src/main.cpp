@@ -946,6 +946,7 @@ static void handleLine(char *line) {
       };
       out.print("STATE"); for (int t = 0; t < TUBE_COUNT; t++) dumpState(tubeOf(t)); out.println();
       out.print("LKEY"); for (int t = 0; t < TUBE_COUNT; t++) out.printf(" %.9g", render_light_key(t)); out.println();   // perf-cheap A': each tube's palette light (render-ref replays it)
+      out.print("HITOP"); for (int t = 0; t < TUBE_COUNT; t++) out.printf(" %d", render_hi_top(t)); out.println();   // and its highlight row (the board's own rounding)
       char *const thex = dumpHex;   // dried-trace residue and its wet part, hex per tube (see compare-device.py)
       auto dumpTrace = [&](const uint16_t *v) {
         if (v) for (int x = 0; x < TUBE_LENGTH_PX; x++) sprintf(thex + x * 4, "%04x", v[x]);

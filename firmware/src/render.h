@@ -113,6 +113,7 @@ void render_shade_build(int idx, uint32_t &last, uint32_t &max, uint32_t &n, uin
 // (a replay of the `x` dump's LKEY line; NAN = none)
 uint32_t render_palette_builds(int idx);
 float render_light_key(int idx);
+int render_hi_top(int idx);   // the highlight row its last render took (INT_MIN: none), for the `x` dump's HITOP line
 void render_set_light_key(int idx, float key);
 #ifdef TUBE_PROF
 // -DTUBE_PROF: drawTube stage cycles of one tube accumulated since the last reset (TU_* order in render.cpp; 240 MHz).

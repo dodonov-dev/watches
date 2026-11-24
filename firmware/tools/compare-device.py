@@ -87,6 +87,10 @@ def parse_dump(dump, params):
         v = lk[0].split()[1:]
         assert len(v) == NT, f'LKEY: {len(v)} keys for {NT} tubes'
         job['lightKeys'] = [None if x.lower() == 'nan' else float(x) for x in v]
+    ht = [l for l in lines if l.startswith('HITOP')]   # each tube's highlight row as the board rounded it (render-ref uses it)
+    if ht:
+        v = ht[0].split()[1:]
+        if len(v) == NT: job['hiTops'] = [None if int(x) == -2147483648 else int(x) for x in v]   # INT_MIN: no palette yet
     return W, H, TH, Y0, dev, job
 
 def render_ref(job, out, env, cache=None):

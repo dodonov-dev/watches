@@ -122,10 +122,13 @@ export function highlightTop(p: Params, H: number, lightDeg: number): number {
 /** perf-cheap A' (firmware render.cpp LIGHT_KEY_*): the palette's colours are made for the light in LIGHT_KEY_Q steps, re-keyed
  *  only when the exact light leaves the key by LIGHT_KEY_HYST (0.6 step), per tube as render state; every decision the light
  *  takes (the highlight row, highlightTop; blickY; the fizz's highlight row; the inset) stays on the exact light. Each step moves
- *  a palette row by at most 1 RGB565 LSB (docs/perf-cheap/tools/palstep.cpp). float32 as the firmware. */
+ *  a palette entry by <= 2 RGB565 LSB (sampled max on a 1/64 deg grid, docs/perf-cheap/tools/palstep.cpp). float32 as the firmware. */
 export const LIGHT_KEY_Q = 0.125;
 export const LIGHT_KEY_HYST = 0.075;
 const lightKeys: (number | undefined)[] = [];
+/** Per tube: the highlight row a replayed `x` dump's HITOP line gives (the board's own rounding), else none. */
+const hiTopOverride: (number | undefined)[] = [];
+export function setHiTop(i: number, row: number | undefined): void { hiTopOverride[i] = row; }
 /** Per tube: 'live' = the key follows the light (the firmware's rule); 'fixed' = a replayed key, authoritative for the frame;
  *  'exact' = no key, the palette at the exact light (a replay of a dump from before A', no LKEY line). */
 const keyModes: ('live' | 'fixed' | 'exact')[] = [];
@@ -2694,7 +2697,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   // Step 4: highlight inset — erase highlight near the edge so it reads as a cylinder (optional)
   // (handled by LUT; inset applied by drawing glass over highlight rows past xe - inset? simpler: skip)
   if (hasLiquid && p.highlightInset > 0) {
-    const hiTop = highlightTop(p, H, s.light);
+    const hiTop = hiTopOverride[idx] ?? highlightTop(p, H, s.light);   // a replayed dump's row (HITOP), else the light's
     for (let ry = Math.max(0, hiTop); ry < hiTop + p.highlightH && ry < H; ry++) {
       const ex = edges[ry];
       // fade the highlight into the body colour over the last `inset` px
@@ -3416,7 +3419,7 @@ export function renderFrame(tubes: readonly TubeState[], ps: readonly Params[], 
   const lay = faceLayout(ps), pals: Palette[] = [], keys: number[] = [], rows: number[] = [];
   tubes.forEach((t, i) => {
     // perf-cheap A': the colours from tube i's stepped light, the highlight row from its exact light (firmware renderTube)
-    const key = lightKeyFor(i, t.light), hiTop = highlightTop(ps[i], tubeLayout(ps[i]).H, t.light);
+    const key = lightKeyFor(i, t.light), hiTop = hiTopOverride[i] ?? highlightTop(ps[i], tubeLayout(ps[i]).H, t.light);
     keys.push(key); rows.push(hiTop);
     const j = tubes.findIndex((_, k) => k < i && ps[k] === ps[i] && keys[k] === key && rows[k] === hiTop);   // equal params, key, row: one palette
     pals.push(j >= 0 ? pals[j] : buildPalette(ps[i], key, hiTop));

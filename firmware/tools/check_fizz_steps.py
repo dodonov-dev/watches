@@ -1179,7 +1179,7 @@ def sim_main(a):
             inf.write_text(''.join(l + '\n' for l in nat[0].stderr.decode().splitlines() if l.startswith('F ')))
             def sim(mode, path):   # the sim job: lockstep / inputs from a file, or (mode None) the full pipeline alone
                 jf = path.with_suffix(f'.{mode or "full"}.json')
-                json.dump({'params': design, **tubes, 'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({mode: str(path)} if mode else {})}}, open(jf, 'w'))
+                json.dump({'params': design, **tubes, 'lightKeys': 'live', 'fizzSteps': {'seed': SIM_SEED, 'every': 2, 'runs': runs, **({mode: str(path)} if mode else {})}}, open(jf, 'w'))
                 return subprocess.run(['node', str(out / 'sim' / 'tools' / 'render-ref.js'), str(jf), '-'], env=env, capture_output=True)
             natives[name] = (nat[0].stdout.decode(), nat[0].stderr.decode(), lambda path: sim('inputs', path), inf)
             r = sim('inputs', inf) if a.free else sim('lockstep', natf)

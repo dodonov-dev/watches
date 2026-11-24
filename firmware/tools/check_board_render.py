@@ -120,7 +120,7 @@ def main():
             params = json.load(open(path))
             if not isinstance(params, dict) or 'tubeHeight' not in params: continue
             params = {**params, 'fizz': False}
-            job = {'params': params, **{t: STATE[t] for t in names}}
+            job = {'params': params, **{t: STATE[t] for t in names}, 'lightKeys': 'live'}   # the firmware's palette key rule (perf-cheap A')
             sprites = job_sprites(params.get('digitFont', 0), tmp)   # the sheet at every cell height: render-ref takes its canvas's
             if sprites: job['sprites'] = sprites
             jf = tmp / f'job{len(jobs)}.json'; jf.write_text(json.dumps(job))
