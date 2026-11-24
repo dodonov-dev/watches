@@ -510,9 +510,7 @@ if (migrateParams({ v: 17, playHold: 0 }).playHold !== 0) fail('play: migration 
       for (let i = 0; i < 300; i++) {
         const o = f.step(script(i), pp);
         poseSame &&= f.pose.x === refPose[i].x && f.pose.y === refPose[i].y && f.pose.z === refPose[i].z;
-        // the filter runs in float32 (physics.cpp's arithmetic): gain x the unit-gain output, one float product
-        const g = Math.fround(inputGain);
-        scaled &&= o.normal === Math.fround(refOut[i].normal * g) && o.along === Math.fround(refOut[i].along * g);
+        scaled &&= Math.abs(o.normal - refOut[i].normal * inputGain) < 1e-12 && Math.abs(o.along - refOut[i].along * inputGain) < 1e-12;
       }
       check(poseSame, `inputGain ${inputGain} moved the pose`);
       check(scaled, `inputGain ${inputGain}: filtered normal / along not gain x the unit-gain output`);

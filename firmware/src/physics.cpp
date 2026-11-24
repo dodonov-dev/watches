@@ -91,7 +91,7 @@ static inline uint32_t traceUneven(uint32_t n) {
 // normal), blended with the fixed style angle by lightPhys. See sim lightRest.
 float lightRest(float along, float across, const Params &p) {
   float n = sqrtf(fmaxf(0, 1 - along * along - across * across));
-  float phys = pAtan2(across, n) * 180 / (float)M_PI / 2;   // physics.h: the light's held steps compare it (sim parity)
+  float phys = atan2f(across, n) * 180 / (float)M_PI / 2;
   // Vertical watch held upright: almost no gravity in the cross-section, the angle is noise — fade to the style angle.
   const float w = p.vertical ? fminf(1, 2 * sqrtf(across * across + n * n)) : 1;
   return p.lightAngle + (phys - p.lightAngle) * p.lightPhys * w;
@@ -105,14 +105,6 @@ void followClock(TubeState &s, float clock, float dt, bool snap) {
   s.retract = fminf(1, s.retract + dt / RETRACT_S);
   const float u = s.retract;
   s.fillTarget = s.retractFrom + (clock - s.retractFrom) * u * u * (3 - 2 * u);
-}
-
-void heldReseat(TubeState &s, const Params &p) {
-  const float aMax = p.vertical ? ANGLE_VERTICAL_MAX_DEG : fminf(p.angleMax, ANGLE_HARD_MAX_DEG);   // stepTube's limits
-  s.angleRaw = clampf(s.angleRaw, -aMax, aMax); s.lightRaw = clampf(s.lightRaw, -LIGHT_MAX_DEG, LIGHT_MAX_DEG);
-  s.angle = s.angleMean = s.angleLo = s.angleHi = s.angleRaw;   // on the springs
-  s.light = s.lightMean = s.lightLo = s.lightHi = s.lightRaw;
-  s.angleQuiet = s.lightQuiet = 0;   // and onto their means once they rest (a changed rest moves the spring on)
 }
 
 float columnLen(float fillTarget, const Params &p) { return (p.remaining ? 1 - fillTarget : fillTarget) * TUBE_LENGTH_PX; }
@@ -286,22 +278,20 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, floa
   // whichever end is down; the renderer leans the home edge the other way), at the cap on its side (see sim).
   const float aMax = p.vertical ? ANGLE_VERTICAL_MAX_DEG : fminf(p.angleMax, ANGLE_HARD_MAX_DEG);
   const float angleRest = clampf(p.vertical
-    ? fminf(1, 2 * sqrtf(poseAlong * poseAlong + poseAcross * poseAcross)) * pAtan2(poseAcross, fabsf(poseAlong)) * 180 / (float)M_PI
+    ? fminf(1, 2 * sqrtf(poseAlong * poseAlong + poseAcross * poseAcross)) * atan2f(poseAcross, fabsf(poseAlong)) * 180 / (float)M_PI
     : across * p.angleTiltGain, -aMax, aMax);   // in-plane gravity only (see sim physics.ts)
-  const float angleAcc = -p.angleK * (s.angleRaw - angleRest) - p.angleDamp * s.angleVel;
+  const float angleAcc = -p.angleK * (s.angle - angleRest) - p.angleDamp * s.angleVel;
   s.angleVel += angleAcc * dt;
-  s.angleRaw += s.angleVel * dt;
-  if (s.angleRaw > aMax) { s.angleRaw = aMax; s.angleVel = fminf(0, s.angleVel); }
-  if (s.angleRaw < -aMax) { s.angleRaw = -aMax; s.angleVel = fmaxf(0, s.angleVel); }
-  s.angle = quantHyst(s.angleRaw, s.angleMean, s.angleLo, s.angleHi, s.angleQuiet, s.angle, ANGLE_Q_DEG, ANGLE_Q_HYST, aMax, dt);   // what the render reads (physics.h)
+  s.angle += s.angleVel * dt;
+  if (s.angle > aMax) { s.angle = aMax; s.angleVel = fminf(0, s.angleVel); }
+  if (s.angle < -aMax) { s.angle = -aMax; s.angleVel = fmaxf(0, s.angleVel); }
 
   const float rest = lightRest(along, across, p);
-  const float lightAcc = -p.acrossK * (s.lightRaw - rest) - p.acrossDamp * s.lightVel + in.gyroAlong * p.acrossGyroGain * 10;
+  const float lightAcc = -p.acrossK * (s.light - rest) - p.acrossDamp * s.lightVel + in.gyroAlong * p.acrossGyroGain * 10;
   s.lightVel += lightAcc * dt;
-  s.lightRaw += s.lightVel * dt;
-  if (s.lightRaw > LIGHT_MAX_DEG) { s.lightRaw = LIGHT_MAX_DEG; s.lightVel = fminf(0, s.lightVel); }
-  if (s.lightRaw < -LIGHT_MAX_DEG) { s.lightRaw = -LIGHT_MAX_DEG; s.lightVel = fmaxf(0, s.lightVel); }
-  s.light = quantHyst(s.lightRaw, s.lightMean, s.lightLo, s.lightHi, s.lightQuiet, s.light, LIGHT_Q_DEG, LIGHT_Q_HYST, LIGHT_MAX_DEG, dt);
+  s.light += s.lightVel * dt;
+  if (s.light > LIGHT_MAX_DEG) { s.light = LIGHT_MAX_DEG; s.lightVel = fminf(0, s.lightVel); }
+  if (s.light < -LIGHT_MAX_DEG) { s.light = -LIGHT_MAX_DEG; s.lightVel = fmaxf(0, s.lightVel); }
 
   const float shake = fminf(1, ((fabsf(in.gyroAcross) + fabsf(in.gyroAlong)) / 200) * p.shakeGain);
   s.agitation += (shake - s.agitation) * fminf(1, (shake > s.agitation ? 20 : 2) * dt);
@@ -372,7 +362,7 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
   const float inAlong = clampf(raw.along, -1.2f, 1.2f), inAcross = clampf(raw.across, -1.2f, 1.2f);
   const float inNormal = clampf(raw.normal, -1.2f, 1.2f);
   if (!init) { lpAlong = lpAlong2 = inAlong; lpAcross = lpAcross2 = inAcross; lpNormal = lpNormal2 = inNormal; hpPrevIn = raw.gyroAcross; init = true; }
-  const float a = 1 - pExpNeg(2 * (float)M_PI * p.accelLpHz * dt);   // physics.h (sim parity)
+  const float a = 1 - expf(-2 * (float)M_PI * p.accelLpHz * dt);
   lpAlong += (inAlong - lpAlong) * a;
   lpAcross += (inAcross - lpAcross) * a;
   lpAlong2 += (lpAlong - lpAlong2) * a;
@@ -387,7 +377,7 @@ TiltInput ImuFilter::step(const TiltInput &raw, const Params &p, float dt) {
     g = k * (hpPrevOut + raw.gyroAcross - hpPrevIn);
     hpPrevIn = raw.gyroAcross; hpPrevOut = g;
   }
-  const float gl = 1 - pExpNeg(2 * (float)M_PI * GYRO_LP_HZ * dt);
+  const float gl = 1 - expf(-2 * (float)M_PI * GYRO_LP_HZ * dt);
   lpGyroAcross += (clampf(dz(g, p.gyroDeadzone), -p.gyroMax, p.gyroMax) - lpGyroAcross) * gl;
   lpGyroAlong += (clampf(dz(raw.gyroAlong, p.gyroDeadzone), -p.gyroMax, p.gyroMax) - lpGyroAlong) * gl;
   return { lpAlong2 * p.inputGain, lpAcross2 * p.inputGain, lpGyroAlong * p.inputGain, lpGyroAcross * p.inputGain, lpNormal2 * p.inputGain };

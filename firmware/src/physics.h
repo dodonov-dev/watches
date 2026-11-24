@@ -24,85 +24,6 @@
 #define REAR_EASE_S 0.15f
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
-// What the render reads of the physics (perf-cheap A): the light angle and the edge skew, each held by quantHyst. In
-// motion it follows the spring's value whenever that leaves +-*_Q_HYST steps of *_Q around it (to the nearest step of
-// the *_Q grid inside the band, one step at a time on a slow tilt) and walks onto the limit while the spring rests on
-// it; a slow change is followed while the value's mean (a QUANT_MEAN_S running average) sits more than half the band
-// away (a step at a time). Once nothing of that has moved it for QUANT_SETTLE steps and the spring passes its mean (it
-// has caught up) it walks to the mean in eighth steps and then holds exactly that mean; it settles again (eighth steps)
-// only when the spring's envelope (its peaks, relaxing toward the mean over QUANT_ENV_S) leaves it.
-// At rest the render then sees one value from inside the spring's own recent range: neither the palette (its key is the
-// light) nor the edge's tiles change, and the image is one the noisy spring showed, its discrete parts included (the
-// highlight band's row, highlightTop of the light; the wet share of the edge rows). Steps: LIGHT_Q_DEG, any palette row
-// moves at most 1 RGB565 LSB a step (STATUS.md, perf-cheap A); ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest
-// 8 mm tube. The bands span about twice the board's noise at rest. The stand's back tilt is not held (the lid's end
-// factor makes it too sensitive near the end glass; STATUS). heldReseat puts both on their springs under new params
-// (main paramsChanged). Every value these thresholds see is computed with + - * / and sqrtf only, in a fixed order
-// (pAtan2, pExpNeg below for the library calls): the sim (physics.ts, float32) gets the same bits.
-#define LIGHT_Q_DEG 0.125f
-#define LIGHT_Q_HYST 3.0f
-#define ANGLE_Q_DEG 0.03125f
-#define ANGLE_Q_HYST 8.0f
-#define QUANT_MEAN_S 1.0f
-#define QUANT_ENV_S 1.0f   // s, the envelope's relaxation toward the mean: the spring's peaks over ~1 s
-#define QUANT_SETTLE 100   // physics steps without a move before the walk to the mean (2 s: the mean has converged)
-#pragma GCC push_options
-#pragma GCC optimize("fp-contract=off")   // no fused multiply-add in what the thresholds see (the sim rounds every step)
-// Parity arithmetic: float32, + - * / and sqrtf only, a fixed order, the constants as float32 values (9 digits): the sim's
-// pAtan2 / pExpNeg give the same bits.
-// atan of x >= 0 (Cephes atanf: reduction by tan(3 pi / 8) and tan(pi / 8), a degree-9 odd polynomial, ~1e-7).
-inline float pAtanPos(float x) {
-  float y = 0, t = x;
-  if (x > 2.41421366f) { y = 1.57079637f; t = -1.0f / x; }
-  else if (x > 0.414213568f) { y = 0.785398185f; t = (x - 1.0f) / (x + 1.0f); }
-  const float z = t * t;
-  return y + (((((0.0805374458f * z - 0.138776854f) * z + 0.199777111f) * z - 0.333329499f) * z) * t + t);
-}
-inline float pAtan2(float y, float x) {
-  const float ax = fabsf(x), ay = fabsf(y);
-  if (ax == 0 && ay == 0) return 0;
-  float r = ax >= ay ? pAtanPos(ay / ax) : 1.57079637f - pAtanPos(ax / ay);
-  if (x < 0) r = 3.14159274f - r;
-  return y < 0 ? -r : r;
-}
-// e^-x, x >= 0 (a filter coefficient): (e^(-x / 16))^16, the inner one by its Taylor series to x^7.
-inline float pExpNeg(float x) {
-  const float t = x * 0.0625f;
-  float e = ((((((-0.000198412701f * t + 0.00138888892f) * t - 0.00833333377f) * t + 0.0416666679f) * t - 0.166666672f) * t + 0.5f) * t - 1.0f) * t + 1.0f;
-  for (int k = 0; k < 4; k++) e = e * e;
-  return e;
-}
-// One physics step of a held value: v = its spring, mean = v's running average and lo / hi = its recent envelope (both
-// updated here, dt), quiet = steps since the hold last moved (QUANT_SETTLE + 1: settled), held = the current value inside
-// +-lim, lim = the spring's limit; returned: the new held value. See sim quantHyst.
-inline float quantHyst(float v, float &mean, float &lo, float &hi, int16_t &quiet, float held, float q, float h, float lim, float dt) {
-  const float k = fminf(1, dt / QUANT_MEAN_S), ke = fminf(1, dt / QUANT_ENV_S);
-  mean += (v - mean) * k;
-  hi = fmaxf(v, hi + (mean - hi) * ke); lo = fminf(v, lo + (mean - lo) * ke);   // the envelope: the spring's peaks, relaxing
-  const float u = v / q, i = held / q, m = mean / q, top = fmaxf(0, lim) / q;   // top: the limit itself
-  float r = i; bool moved = true;
-  if (u - i > h) r = ceilf(u - h);
-  else if (i - u > h) r = floorf(u + h);
-  else if (v >= lim && i < top) r = i + 1;     // the spring rests on its limit: walk onto it, a step at a time
-  else if (v <= -lim && i > -top) r = i - 1;
-  else if (m - i > 0.5f * h && u > i) r = i + 1;   // a slow change: toward the mean, a step at a time
-  else if (i - m > 0.5f * h && u < i) r = i - 1;
-  else {
-    moved = false;
-    // settled, but the spring's envelope has left it (its mean drifted): settle again
-    if (quiet > QUANT_SETTLE && (i > hi / q || i < lo / q)) quiet = QUANT_SETTLE;
-    if (quiet < QUANT_SETTLE) quiet++;
-    else if (quiet == QUANT_SETTLE && fabsf(m - u) <= 0.125f) {   // quiet long enough, the spring passing its mean
-      // (the mean caught up): to the mean in eighth steps, then exactly on it, settled
-      if (m - i > 0.125f) r = i + 0.125f;
-      else if (i - m > 0.125f) r = i - 0.125f;
-      else { r = m; quiet = QUANT_SETTLE + 1; }
-    }
-  }
-  if (moved) quiet = 0;
-  return (r > top ? top : r < -top ? -top : r) * q;
-}
-#pragma GCC pop_options
 #define CAP_DYN_MAX_DESIGN_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
 #define CAP_DYN_MAX_PX_AT(k) (CAP_DYN_MAX_DESIGN_PX * (k))
 #define PIN_RELAX_S 3.0f          // a held contact line creeps back to the static shape (wrist micro-motion), s
@@ -141,11 +62,7 @@ struct TubeState {
   // fillTarget: 0..1 from time, as shown (followClock): clockPrev = the clock's fill at the previous call (wrap
   // detection), retract = 0..1 through a wrap's retract (1 = none running), retractFrom = fillTarget at the wrap
   float clockPrev = 0, retract = 1, retractFrom = 0;
-  // angle / light: what the render reads, held by quantHyst (ANGLE_Q_*, LIGHT_Q_*) from the springs' angleRaw / lightRaw
   float fillTarget = 0, fillPos = 0, fillVel = 0, angle = 0, angleVel = 0, light = 0, lightVel = 0, agitation = 0, edgeLight = 0, acrossTilt = 0;
-  float angleRaw = 0, lightRaw = 0, angleMean = 0, lightMean = 0;   // the springs; quantHyst's running means
-  float angleLo = 0, angleHi = 0, lightLo = 0, lightHi = 0;         // quantHyst's envelopes of the springs
-  int16_t angleQuiet = 0, lightQuiet = 0;                           // quantHyst's steps since a move
   // rear (view-angle) parallax (sim TubeState): the tilt low-passed over rearParallaxSettle; the shift quantised once
   // here, 1/16 px, behind air (X16 / Y16) and behind liquid (w: / liquidIor), panel x / rows down. The render and the
   // `x` dump take these integers.
@@ -231,10 +148,6 @@ void stepTube(TubeState &s, const TiltInput &in, const Params &p, float dt, floa
 // Shown fill from the clock's (0..1): a wrap (the clock falling back by over half the scale) retracts the column
 // over RETRACT_S instead of emptying it in one tick; snap (the clock was set) goes straight to it. See sim followClock.
 void followClock(TubeState &s, float clock, float dt = PHYS_DT, bool snap = false);
-// The held light and angle back on their springs under the params p (the tube's, as stepTube takes them): the springs
-// clamped to p's limits, held at them exactly, the means at them, the settle stage to come. After a params change (it
-// may move a rest or a limit), before anything renders. See sim heldReseat.
-void heldReseat(TubeState &s, const Params &p);
 
 // Slow EMA of |a| used as the gravity divisor (sensor reads ~0.94 g; never divide by instantaneous |a|).
 struct GravityNorm {

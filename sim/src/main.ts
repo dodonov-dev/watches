@@ -1,7 +1,7 @@
 import './style.css';
 import { BOARD, BOARD_TAG, LAST_LCD_RES, LCD_RES, PANEL_W, PANEL_H, TUBE_COUNT, TUBE_COUNTS, TUBE_PX_SCALE, TUBE_MM_MAX, NARROW_MM, parseBoardTag, parseRes, resTag, switchBoard, widthWords, type Board, type TubeWidth } from '@spec/layout';
 import { GAS_MODELS, PRESETS, gasParams, presetParams, tubeParams, type Params } from './params';
-import { ImuFilter, PHYS_DT, fillLevels, followClock, heldReseat, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
+import { ImuFilter, PHYS_DT, fillLevels, followClock, newTube, phoneTilt, stepTube, type TiltInput } from './physics';
 import { renderFrame, blit, stepFizz, fb, fizz, loadSprites, faceLayout, tubeRows } from './render';
 import { DEFAULT_OVERLAY, LEATHER_PAD_X, LEATHER_PAD_Y, applyOverlay, buildOverlayDom } from './overlay';
 import { DEFAULT_VIEW, loadSession, saveSession } from './persist';
@@ -336,7 +336,6 @@ $('pull').onclick = async () => {
   try {
     Object.assign(params, await transport.getParams());
     legacyPick = '';
-    reseatHeld();   // the pulled params (material mode re-derives below and reseats again once accepted)
     if (matState.mode === 'material') { materialUi.adoptDesign(); materialUi.rederive(true); } // the device's design, re-derived
     panelUi.refresh(); syncView(); save(); $('serialst').textContent = 'pulled';
   }
@@ -378,11 +377,7 @@ $('settime').onclick = pushTime;
 // params panel
 const LAYOUT_KEYS: (keyof Params)[] = ['tubeHeight', 'hoursY', 'minutesY', 'tubeStack', 'tubeGap'];
 /** Params changed outside a single edit (derive, preset, import): panel, top bar, cuff, grid. */
-/** The held light / angle / highlight row back on their springs under the params now shown (firmware paramsChanged): a
- *  param may move a rest, a limit or the rows; before the next draw (a paused sim draws them as they are). */
-function reseatHeld(): void { const ps = tubeParams(params); tubes.forEach((t, i) => heldReseat(t, ps[i])); }
 function paramsReplaced(): void {
-  reseatHeld();
   panelUi.refresh(); syncView();
 }
 /** One legacy key (`key`) or the whole struct (no key) was edited in the legacy panel / top bar. In
@@ -397,7 +392,6 @@ function paramEdited(key?: keyof Params): void {
     materialUi.rederive(!key);
     return;
   }
-  reseatHeld();   // a legacy edit applies as is (material mode: onDerived, once the derive is accepted)
   save(); pushParam(key);
   if (!key) syncView();
   if (!key || LAYOUT_KEYS.includes(key)) { applyOverlay(ovlDom, overlay, layoutNow()); drawGrid(); }

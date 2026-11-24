@@ -82,87 +82,6 @@ export const fillSloshMaxPx = (k: number): number => FILL_SLOSH_MAX_DESIGN_PX * 
 export const ANGLE_HARD_MAX_DEG = 20; // |angle| cap (params.angleMax tightens it, never widens)
 export const ANGLE_VERTICAL_MAX_DEG = 45; // |angle| cap of a vertical watch, whose upper surface stays level against the tilted tube
 export const LIGHT_MAX_DEG = 85;      // |light| cap
-// What the render reads of the physics (perf-cheap A): the light angle and the edge skew, each held by quantHyst (the
-// firmware's, physics.h, for the rules: follow the spring past a band, walk onto a limit, follow a slow change of the
-// mean, settle exactly on the mean at rest, settle again when the spring's envelope leaves it). Every value these
-// thresholds see — the IMU filter, the rests, the springs, the means, the envelopes — is float32 here, step for step as
-// the firmware's (physics.cpp, no fused multiply-add), its library calls the shared pAtan2 / pExpNeg (+ - * / and sqrt
-// only): both hold the same bits (firmware/tools/check_held.py). The stand's back tilt is not held. Same constants in
-// firmware physics.h.
-export const LIGHT_Q_DEG = 0.125;
-export const LIGHT_Q_HYST = 3;
-export const ANGLE_Q_DEG = 0.03125;
-export const ANGLE_Q_HYST = 8;
-export const QUANT_MEAN_S = 1;
-export const QUANT_ENV_S = 1;      // the envelope's relaxation toward the mean (its peaks over ~1 s)
-export const QUANT_SETTLE = 100;   // physics steps without a move before the walk to the mean (2 s)
-const F = Math.fround;
-/** Parity arithmetic (firmware physics.h, the same constants and order): atan of x >= 0 (Cephes atanf). */
-function pAtanPos(x: number): number {
-  let y = 0, t = x;
-  if (x > F(2.41421366)) { y = F(1.57079637); t = F(-1 / x); }
-  else if (x > F(0.414213568)) { y = F(0.785398185); t = F(F(x - 1) / F(x + 1)); }
-  const z = F(t * t);
-  let q = F(F(F(0.0805374458) * z) - F(0.138776854));
-  q = F(F(q * z) + F(0.199777111)); q = F(F(q * z) - F(0.333329499)); q = F(q * z);
-  return F(y + F(F(q * t) + t));
-}
-export function pAtan2(y: number, x: number): number {
-  const ax = Math.abs(x), ay = Math.abs(y);
-  if (ax === 0 && ay === 0) return 0;
-  let r = ax >= ay ? pAtanPos(F(ay / ax)) : F(F(1.57079637) - pAtanPos(F(ax / ay)));
-  if (x < 0) r = F(F(3.14159274) - r);
-  return y < 0 ? -r : r;
-}
-/** e^-x, x >= 0: (e^(-x / 16))^16, the inner one by its Taylor series to x^7 (firmware pExpNeg). */
-export function pExpNeg(x: number): number {
-  const t = F(x * 0.0625);
-  let e = F(F(F(-0.000198412701) * t) + F(0.00138888892));
-  e = F(F(e * t) - F(0.00833333377)); e = F(F(e * t) + F(0.0416666679)); e = F(F(e * t) - F(0.166666672));
-  e = F(F(e * t) + 0.5); e = F(F(e * t) - 1); e = F(F(e * t) + 1);
-  for (let k = 0; k < 4; k++) e = F(e * e);
-  return e;
-}
-/** One physics step of a held value (firmware physics.h quantHyst, float32): v = its spring, `env` = [mean, lo, hi] its
- *  running average and recent envelope (updated in place), `quiet` the steps since the hold last moved (QUANT_SETTLE + 1:
- *  settled), `held` the current value inside +-lim; returns [held, quiet]. */
-export function quantHyst(v: number, env: number[], quiet: number, held: number, q: number, h: number, lim: number, dt: number): [number, number] {
-  const k = Math.min(1, F(F(dt) / QUANT_MEAN_S)), ke = Math.min(1, F(F(dt) / QUANT_ENV_S));
-  const mean = env[0] = F(env[0] + F(F(v - env[0]) * k));
-  const hi = env[2] = Math.max(v, F(env[2] + F(F(mean - env[2]) * ke))), lo = env[1] = Math.min(v, F(env[1] + F(F(mean - env[1]) * ke)));
-  const u = F(v / q), i = F(held / q), m = F(mean / q), top = F(Math.max(0, F(lim)) / q);
-  let r = i, moved = true;
-  if (F(u - i) > h) r = Math.ceil(F(u - h));
-  else if (F(i - u) > h) r = Math.floor(F(u + h));
-  else if (v >= F(lim) && i < top) r = F(i + 1);     // the spring rests on its limit: walk onto it, a step at a time
-  else if (v <= -F(lim) && i > -top) r = F(i - 1);
-  else if (F(m - i) > 0.5 * h && u > i) r = F(i + 1);   // a slow change: toward the mean, a step at a time
-  else if (F(i - m) > 0.5 * h && u < i) r = F(i - 1);
-  else {
-    moved = false;
-    // settled, but the spring's envelope has left it (its mean drifted): settle again
-    if (quiet > QUANT_SETTLE && (i > F(hi / q) || i < F(lo / q))) quiet = QUANT_SETTLE;
-    if (quiet < QUANT_SETTLE) quiet++;
-    else if (quiet === QUANT_SETTLE && Math.abs(F(m - u)) <= 0.125) {   // quiet long enough, the spring passing its mean
-      // (the mean caught up): to the mean in eighth steps, then exactly on it, settled
-      if (F(m - i) > 0.125) r = F(i + 0.125);
-      else if (F(i - m) > 0.125) r = F(i - 0.125);
-      else { r = m; quiet = QUANT_SETTLE + 1; }
-    }
-  }
-  if (moved) quiet = 0;
-  return [F((r > top ? top : r < -top ? -top : r) * q), quiet];
-}
-/** The held light and angle back on their springs under the params p (the tube's, as stepTube takes them): the springs
- *  clamped to p's limits, held at them exactly, the means at them (firmware heldReseat). After a params change,
- *  before anything renders. */
-export function heldReseat(s: TubeState, p: Params): void {
-  const aMax = p.vertical ? ANGLE_VERTICAL_MAX_DEG : Math.min(F(p.angleMax), ANGLE_HARD_MAX_DEG);
-  s.angleRaw = Math.max(-aMax, Math.min(aMax, s.angleRaw)); s.lightRaw = Math.max(-LIGHT_MAX_DEG, Math.min(LIGHT_MAX_DEG, s.lightRaw));
-  s.angle = s.angleMean = s.angleLo = s.angleHi = s.angleRaw;   // on the springs
-  s.light = s.lightMean = s.lightLo = s.lightHi = s.lightRaw;
-  s.angleQuiet = s.lightQuiet = 0;   // and onto their means once they rest (a changed rest moves the spring on)
-}
 export const CAP_DYN_MAX_DESIGN_PX = 12;     // |cap| cap: dynamic meniscus bulge / hollow
 export const capDynMaxPx = (k: number): number => CAP_DYN_MAX_DESIGN_PX * k;
 export const PIN_RELAX_S = 3;         // a held contact line creeps back to the static shape (wrist micro-motion), s
@@ -209,17 +128,10 @@ export interface TubeState {
   retractFrom: number; // fillTarget when the wrap began
   fillPos: number;     // px offset of the edge relative to target (slosh), spring toward 0
   fillVel: number;
-  angle: number;       // deg, in-plane skew of the time edge (+ = bottom contact line leads); follows across-tilt. The home edge of a free slug leans the other way (render.ts edgeSkews). Held: angleRaw by quantHyst (ANGLE_Q_*)
+  angle: number;       // deg, in-plane skew of the time edge (+ = bottom contact line leads); follows across-tilt. The home edge of a free slug leans the other way (render.ts edgeSkews)
   angleVel: number;
-  angleRaw: number;    // deg, the spring's skew (angle is what the render reads)
-  angleMean: number;   // quantHyst's running mean of angleRaw
-  light: number;       // deg, highlight surface-normal angle in the tube cross-section (0 = centre row, + = toward the top edge). Held: lightRaw by quantHyst (LIGHT_Q_*)
+  light: number;       // deg, highlight surface-normal angle in the tube cross-section (0 = centre row, + = toward the top edge); spring toward lightRest()
   lightVel: number;
-  lightRaw: number;    // deg, the spring toward lightRest() (light is what the render reads)
-  lightMean: number;   // quantHyst's running mean of lightRaw
-  angleLo: number; angleHi: number; lightLo: number; lightHi: number;   // quantHyst's envelopes of the springs
-  angleQuiet: number;  // quantHyst's steps since the held angle last moved
-  lightQuiet: number;  // the same for the light
   agitation: number;   // 0..1, gyro energy with fast attack / slow decay: fizz speed, edge glow
   edgeLight: number;   // -1..1, slow along-tilt follower — brightens/dims the fill edge (render only)
   acrossTilt: number;  // -1..1, slow across-tilt follower — meniscus sag toward the low wall (render only)
@@ -291,7 +203,7 @@ export interface TubeState {
 }
 
 export function newTube(): TubeState {
-  return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, angleRaw: 0, angleMean: 0, light: 0, lightVel: 0, lightRaw: 0, lightMean: 0, angleLo: 0, angleHi: 0, lightLo: 0, lightHi: 0, angleQuiet: 0, lightQuiet: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
+  return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, light: 0, lightVel: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
     rearLpAlong: 0, rearLpAcross: 0, rearInit: false, rearSmAlong: 0, rearSmAcross: 0, rearAct: 0, rearLatch: false, rearQuiet: 0, rearSx: 0, rearSy: 0, rearX16: 0, rearY16: 0, rearX16w: 0, rearY16w: 0,
     cap: 0, capVel: 0, pinFree: 0, pinHome: 0, lineVFree: 0, lineVHome: 0, filmFree: 0, filmHome: 0,
     trace: new Uint16Array(TUBE_LENGTH_PX), traceWet: new Uint16Array(TUBE_LENGTH_PX), traceLo: TUBE_LENGTH_PX, traceHi: 0, xtPrev: 0, xhPrev: 0, traceInit: false,
@@ -377,14 +289,12 @@ export function contactLeads(p: Params, len: number, tilt: number, mmPerPx: numb
  *  that angle. Face up → centre row; roll toward the top edge → highlight climbs toward it.
  *  Blended with the fixed style angle `lightAngle` by `lightPhys`. */
 export function lightRest(along: number, across: number, p: Params): number {
-  // float32 step for step as physics.cpp (the light's held steps compare its spring: perf-cheap A)
-  const a = F(along), c = F(across);
-  const n = F(Math.sqrt(Math.max(0, F(F(1 - F(a * a)) - F(c * c)))));
-  const phys = F(F(F(pAtan2(c, n) * 180) / F(Math.PI)) / 2);
+  const n = Math.sqrt(Math.max(0, 1 - along * along - across * across));
+  const phys = (Math.atan2(across, n) * 180) / Math.PI / 2;
   // Vertical watch: held upright the cross-section sees almost no gravity and the angle is noise — fade to the
   // style angle as that component vanishes (full weight from 0.5 g).
-  const w = p.vertical ? Math.min(1, F(2 * F(Math.sqrt(F(F(c * c) + F(n * n)))))) : 1;
-  return F(F(p.lightAngle) + F(F(F(phys - F(p.lightAngle)) * F(p.lightPhys)) * w));
+  const w = p.vertical ? Math.min(1, 2 * Math.hypot(across, n)) : 1;
+  return p.lightAngle + (phys - p.lightAngle) * p.lightPhys * w;
 }
 
 function dz(v: number, d: number): number {
@@ -399,7 +309,7 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt: number, k:
 
   // Pose uses filtered gravity before the artistic gain/deadzone. Both tilt axes count.
   // A smooth band releases the slug without a mode boundary or a timed reading gesture.
-  const gain = F(p.inputGain) > 0 ? p.inputGain : 1;   // the firmware's float param (a tiny double is 0 there)
+  const gain = p.inputGain > 0 ? p.inputGain : 1;
   const poseAlong = inp.along / gain, poseAcross = inp.across / gain;
   const hold = Math.max(0, Math.min(30, p.playHold));
   s.playTimer = Math.max(0, Math.min(hold, s.playTimer) - dt);
@@ -559,35 +469,24 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt: number, k:
   // across component alone — the liquid lies on the low wall whichever end is down: turned over, the time edge
   // is the slug's hanging end and the level surface is its home edge, which the renderer leans the other way.
   // On its side (along ≈ 0) the lean sits at the cap, both ends on the low wall.
-  // The skew and light springs in float32, step for step as physics.cpp (their held steps: perf-cheap A).
-  const fd = F(dt), pa = F(F(inp.along) / F(gain)), pc = F(F(inp.across) / F(gain));
-  const dzF = (v: number, d: number): number => (Math.abs(v) < d ? 0 : F(v - (v > 0 ? d : -d)));
-  const fAlong = dzF(F(inp.along), F(p.deadzone)), fAcross = dzF(F(inp.across), F(p.deadzone));
-  const aMax = p.vertical ? ANGLE_VERTICAL_MAX_DEG : Math.min(F(p.angleMax), ANGLE_HARD_MAX_DEG);
+  const aMax = p.vertical ? ANGLE_VERTICAL_MAX_DEG : Math.min(p.angleMax, ANGLE_HARD_MAX_DEG);
   const angleRest = Math.max(-aMax, Math.min(aMax, p.vertical
-    ? F(F(F(Math.min(1, F(2 * F(Math.sqrt(F(F(pa * pa) + F(pc * pc)))))) * pAtan2(pc, Math.abs(pa))) * 180) / F(Math.PI))
-    : F(fAcross * F(p.angleTiltGain))));
-  const angleAcc = F(F(F(-F(p.angleK)) * F(s.angleRaw - angleRest)) - F(F(p.angleDamp) * s.angleVel));
-  s.angleVel = F(s.angleVel + F(angleAcc * fd));
-  s.angleRaw = F(s.angleRaw + F(s.angleVel * fd));
-  if (s.angleRaw > aMax) { s.angleRaw = aMax; s.angleVel = Math.min(0, s.angleVel); }
-  if (s.angleRaw < -aMax) { s.angleRaw = -aMax; s.angleVel = Math.max(0, s.angleVel); }
-  const ae = [s.angleMean, s.angleLo, s.angleHi];
-  [s.angle, s.angleQuiet] = quantHyst(s.angleRaw, ae, s.angleQuiet, s.angle, ANGLE_Q_DEG, ANGLE_Q_HYST, aMax, dt);   // what the render reads
-  [s.angleMean, s.angleLo, s.angleHi] = ae;
+    ? Math.min(1, 2 * Math.hypot(poseAlong, poseAcross)) * Math.atan2(poseAcross, Math.abs(poseAlong)) * 180 / Math.PI
+    : across * p.angleTiltGain));
+  const angleAcc = -p.angleK * (s.angle - angleRest) - p.angleDamp * s.angleVel;
+  s.angleVel += angleAcc * dt;
+  s.angle += s.angleVel * dt;
+  if (s.angle > aMax) { s.angle = aMax; s.angleVel = Math.min(0, s.angleVel); }
+  if (s.angle < -aMax) { s.angle = -aMax; s.angleVel = Math.max(0, s.angleVel); }
 
   // Light: a full-bore pinned column does not move under roll; roll moves only the light.
   // Spring toward the rest angle, kicked by roll rate (gyro about the tube axis).
-  const rest = lightRest(fAlong, fAcross, p);
-  const lightAcc = F(F(F(F(-F(p.acrossK)) * F(s.lightRaw - rest)) - F(F(p.acrossDamp) * s.lightVel))
-    + F(F(F(inp.gyroAlong) * F(p.acrossGyroGain)) * 10));
-  s.lightVel = F(s.lightVel + F(lightAcc * fd));
-  s.lightRaw = F(s.lightRaw + F(s.lightVel * fd));
-  if (s.lightRaw > LIGHT_MAX_DEG) { s.lightRaw = LIGHT_MAX_DEG; s.lightVel = Math.min(0, s.lightVel); }
-  if (s.lightRaw < -LIGHT_MAX_DEG) { s.lightRaw = -LIGHT_MAX_DEG; s.lightVel = Math.max(0, s.lightVel); }
-  const le = [s.lightMean, s.lightLo, s.lightHi];
-  [s.light, s.lightQuiet] = quantHyst(s.lightRaw, le, s.lightQuiet, s.light, LIGHT_Q_DEG, LIGHT_Q_HYST, LIGHT_MAX_DEG, dt);
-  [s.lightMean, s.lightLo, s.lightHi] = le;
+  const rest = lightRest(along, across, p);
+  const lightAcc = -p.acrossK * (s.light - rest) - p.acrossDamp * s.lightVel + inp.gyroAlong * p.acrossGyroGain * 10;
+  s.lightVel += lightAcc * dt;
+  s.light += s.lightVel * dt;
+  if (s.light > LIGHT_MAX_DEG) { s.light = LIGHT_MAX_DEG; s.lightVel = Math.min(0, s.lightVel); }
+  if (s.light < -LIGHT_MAX_DEG) { s.light = -LIGHT_MAX_DEG; s.lightVel = Math.max(0, s.lightVel); }
 
   // Agitation: fast attack on gyro energy, slow decay.
   const shake = Math.min(1, ((Math.abs(inp.gyroAcross) + Math.abs(inp.gyroAlong)) / 200) * p.shakeGain);
@@ -699,43 +598,38 @@ export class ImuFilter {
   private init = false;
   reset(): void { this.init = false; this.hpPrevIn = this.hpPrevOut = 0; this.lpGyroAcross = this.lpGyroAlong = 0; }
   step(raw: TiltInput, p: Params, dt = PHYS_DT): TiltInput {
-    // float32 step for step as physics.cpp ImuFilter::step: the springs whose held steps the render reads take these
-    // (perf-cheap A); expf / atan2f / sqrtf as Math's, rounded once.
-    const F = Math.fround, PI = F(Math.PI), fd = F(dt);
     // A tilt (gravity direction) can never exceed 1 g — anything beyond is linear acceleration.
     // Clip before filtering so a hard knock carries bounded energy into the springs.
-    const c12 = F(1.2), clip = (v: number): number => (v < -c12 ? -c12 : v > c12 ? c12 : v);
-    const iA = clip(F(raw.along)), iC = clip(F(raw.across)), iN = clip(F(raw.normal));
+    const inAlong = Math.max(-1.2, Math.min(1.2, raw.along));
+    const inAcross = Math.max(-1.2, Math.min(1.2, raw.across));
+    const inNormal = Math.max(-1.2, Math.min(1.2, raw.normal));
     if (!this.init) {
-      this.lpAlong = this.lpAlong2 = iA; this.lpAcross = this.lpAcross2 = iC; this.lpNormal = this.lpNormal2 = iN;
-      this.hpPrevIn = F(raw.gyroAcross); this.init = true;
+      this.lpAlong = this.lpAlong2 = inAlong; this.lpAcross = this.lpAcross2 = inAcross; this.lpNormal = this.lpNormal2 = inNormal;
+      this.hpPrevIn = raw.gyroAcross; this.init = true;
     }
-    const a = F(1 - pExpNeg(F(F(F(2 * PI) * F(p.accelLpHz)) * fd)));
-    this.lpAlong = F(this.lpAlong + F(F(iA - this.lpAlong) * a));
-    this.lpAcross = F(this.lpAcross + F(F(iC - this.lpAcross) * a));
-    this.lpAlong2 = F(this.lpAlong2 + F(F(this.lpAlong - this.lpAlong2) * a));
-    this.lpAcross2 = F(this.lpAcross2 + F(F(this.lpAcross - this.lpAcross2) * a));
-    this.lpNormal = F(this.lpNormal + F(F(iN - this.lpNormal) * a));
-    this.lpNormal2 = F(this.lpNormal2 + F(F(this.lpNormal - this.lpNormal2) * a));
+    const a = 1 - Math.exp(-2 * Math.PI * p.accelLpHz * dt);
+    this.lpAlong += (inAlong - this.lpAlong) * a;
+    this.lpAcross += (inAcross - this.lpAcross) * a;
+    this.lpAlong2 += (this.lpAlong - this.lpAlong2) * a;
+    this.lpAcross2 += (this.lpAcross - this.lpAcross2) * a;
+    this.lpNormal += (inNormal - this.lpNormal) * a;
+    this.lpNormal2 += (this.lpNormal - this.lpNormal2) * a;
     if (updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2)) this.poseValid = true;
     let g: number;
-    const gA = F(raw.gyroAcross);
-    if (F(p.gyroHpHz) <= 0) g = gA;   // the firmware's float param (a tiny double is 0 there)
+    if (p.gyroHpHz <= 0) g = raw.gyroAcross;
     else {
-      const rc = F(1 / F(F(2 * PI) * F(p.gyroHpHz))), k = F(rc / F(rc + fd));
-      g = F(k * F(F(this.hpPrevOut + gA) - this.hpPrevIn));
-      this.hpPrevIn = gA; this.hpPrevOut = g;
+      const rc = 1 / (2 * Math.PI * p.gyroHpHz), k = rc / (rc + dt);
+      g = k * (this.hpPrevOut + raw.gyroAcross - this.hpPrevIn);
+      this.hpPrevIn = raw.gyroAcross; this.hpPrevOut = g;
     }
-    const dzc = F(p.gyroDeadzone), mx = F(p.gyroMax);
     const cond = (v: number): number => {
-      v = Math.abs(v) < dzc ? 0 : F(v - (v > 0 ? dzc : -dzc));
-      return v < -mx ? -mx : v > mx ? mx : v;
+      v = Math.abs(v) < p.gyroDeadzone ? 0 : v - Math.sign(v) * p.gyroDeadzone;
+      return Math.max(-p.gyroMax, Math.min(p.gyroMax, v));
     };
-    const gl = F(1 - pExpNeg(F(F(F(2 * PI) * GYRO_LP_HZ) * fd)));
-    this.lpGyroAcross = F(this.lpGyroAcross + F(F(cond(g) - this.lpGyroAcross) * gl));
-    this.lpGyroAlong = F(this.lpGyroAlong + F(F(cond(F(raw.gyroAlong)) - this.lpGyroAlong) * gl));
-    const ig = F(p.inputGain);
-    return { along: F(this.lpAlong2 * ig), across: F(this.lpAcross2 * ig), gyroAlong: F(this.lpGyroAlong * ig), gyroAcross: F(this.lpGyroAcross * ig),
-      normal: F(this.lpNormal2 * ig) };
+    const gl = 1 - Math.exp(-2 * Math.PI * GYRO_LP_HZ * dt);
+    this.lpGyroAcross += (cond(g) - this.lpGyroAcross) * gl;
+    this.lpGyroAlong += (cond(raw.gyroAlong) - this.lpGyroAlong) * gl;
+    return { along: this.lpAlong2 * p.inputGain, across: this.lpAcross2 * p.inputGain, gyroAlong: this.lpGyroAlong * p.inputGain, gyroAcross: this.lpGyroAcross * p.inputGain,
+      normal: this.lpNormal2 * p.inputGain };
   }
 }
