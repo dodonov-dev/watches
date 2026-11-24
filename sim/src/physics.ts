@@ -82,21 +82,22 @@ export const fillSloshMaxPx = (k: number): number => FILL_SLOSH_MAX_DESIGN_PX * 
 export const ANGLE_HARD_MAX_DEG = 20; // |angle| cap (params.angleMax tightens it, never widens)
 export const ANGLE_VERTICAL_MAX_DEG = 45; // |angle| cap of a vertical watch, whose upper surface stays level against the tilted tube
 export const LIGHT_MAX_DEG = 85;      // |light| cap
-// What the render reads of the physics (perf-cheap A): the light angle, the edge skew and the stand's back tilt, each held
-// in whole steps of *_Q (a power of two: exact in float32 and double) by quantHyst: it follows the spring's value when that
-// leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step at a time on a slow tilt), and
-// comes back to within one step of the value's mean (a QUANT_MEAN_S running average) once it rests on one side (after a
-// motion, the band's lag goes). A still watch's sensor noise then neither rebuilds the palette nor redraws the edge's
-// tiles every frame. Steps: LIGHT_Q_DEG, any palette row moves at most 1 RGB565 LSB a step (STATUS.md, perf-cheap A);
-// ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest tube; BACK_TILT_Q_RAD, the lid's rows likewise. The bands span
-// about twice the board's noise at rest (STATUS). Same constants in firmware physics.h.
+// What the render reads of the physics (perf-cheap A): the light angle, the edge skew and the stand's back tilt, each
+// held in whole steps of *_Q (a power of two: exact in float32 and double) by quantHyst: it follows the spring's value
+// when that leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step at a time on a
+// slow tilt), and comes back to within a quarter of the band of the value's mean (a QUANT_MEAN_S running average) once
+// it rests on one side (after a motion; the mean's own noise stays well inside that quarter). A still watch's sensor
+// noise then neither rebuilds the palette nor redraws the edge's tiles every frame. Steps: LIGHT_Q_DEG, any palette row
+// moves at most 1 RGB565 LSB a step (STATUS.md, perf-cheap A); ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest
+// tube; BACK_TILT_Q_RAD, the lid's rows likewise. The bands span about twice the board's noise at rest (STATUS). Same
+// constants in firmware physics.h.
 export const LIGHT_Q_DEG = 0.125;
 export const LIGHT_Q_HYST = 3;
 export const ANGLE_Q_DEG = 0.03125;
 export const ANGLE_Q_HYST = 8;
-export const BACK_TILT_Q_RAD = 1 / 4096;
-export const BACK_TILT_Q_HYST = 16;
-export const QUANT_MEAN_S = 0.5;
+export const BACK_TILT_Q_RAD = 1 / 32768;
+export const BACK_TILT_Q_HYST = 128;
+export const QUANT_MEAN_S = 1;
 /** One physics step of a held value (firmware physics.h quantHyst): `mean` = its running average, updated and returned
  *  with the new held value (`held`: the current one, a multiple of q). */
 export function quantHyst(v: number, mean: number, held: number, q: number, h: number, dt: number): [number, number] {
@@ -104,8 +105,8 @@ export function quantHyst(v: number, mean: number, held: number, q: number, h: n
   const u = v / q, i = held / q, m = mean / q;
   if (u - i > h) return [Math.ceil(u - h) * q, mean];
   if (i - u > h) return [Math.floor(u + h) * q, mean];
-  if (m - i > 1 && u > i) return [held + q, mean];   // resting off the held step: back toward the mean, a step at a time
-  if (i - m > 1 && u < i) return [held - q, mean];
+  if (m - i > 0.25 * h && u > i) return [held + q, mean];   // resting off the mean: back toward it, a step at a time
+  if (i - m > 0.25 * h && u < i) return [held - q, mean];
   return [held, mean];
 }
 export const CAP_DYN_MAX_DESIGN_PX = 12;     // |cap| cap: dynamic meniscus bulge / hollow

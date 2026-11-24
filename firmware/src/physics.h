@@ -25,20 +25,21 @@
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
 // What the render reads of the physics (perf-cheap A): the light angle, the edge skew and the stand's back tilt, each
-// held in whole steps of *_Q (a power of two: the held value is exact in float32 and double) by quantHyst: it follows the
-// spring's value when that leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step at a
-// time on a slow tilt), and comes back to within one step of the value's mean (a QUANT_MEAN_S running average) once it
-// rests on one side (after a motion, the band's lag goes). A still watch's sensor noise then neither rebuilds the palette
-// nor redraws the edge's tiles every frame. Steps: LIGHT_Q_DEG, any palette row moves at most 1 RGB565 LSB a step
-// (STATUS.md, perf-cheap A); ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest tube; BACK_TILT_Q_RAD, the lid's
-// rows likewise. The bands span about twice the board's noise at rest (STATUS). See sim physics.ts.
+// held in whole steps of *_Q (a power of two: the held value is exact in float32 and double) by quantHyst: it follows
+// the spring's value when that leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step
+// at a time on a slow tilt), and comes back to within a quarter of the band of the value's mean (a QUANT_MEAN_S running
+// average) once it rests on one side (after a motion; the mean's own noise stays well inside that quarter). A still
+// watch's sensor noise then neither rebuilds the palette nor redraws the edge's tiles every frame. Steps: LIGHT_Q_DEG,
+// any palette row moves at most 1 RGB565 LSB a step (STATUS.md, perf-cheap A); ANGLE_Q_DEG, an edge row at most 1/16 px
+// at the tallest tube; BACK_TILT_Q_RAD, the lid's rows likewise. The bands span about twice the board's noise at rest
+// (STATUS). See sim physics.ts.
 #define LIGHT_Q_DEG 0.125f
 #define LIGHT_Q_HYST 3.0f
 #define ANGLE_Q_DEG 0.03125f
 #define ANGLE_Q_HYST 8.0f
-#define BACK_TILT_Q_RAD (1.0f / 4096)
-#define BACK_TILT_Q_HYST 16.0f
-#define QUANT_MEAN_S 0.5f
+#define BACK_TILT_Q_RAD (1.0f / 32768)
+#define BACK_TILT_Q_HYST 128.0f
+#define QUANT_MEAN_S 1.0f
 // One physics step of a held value: mean = its running average (updated here, dt), held = the current one (a multiple
 // of q), returned: the new held value. See sim quantHyst.
 inline float quantHyst(float v, float &mean, float held, float q, float h, float dt) {
@@ -46,8 +47,8 @@ inline float quantHyst(float v, float &mean, float held, float q, float h, float
   const float u = v / q, i = held / q, m = mean / q;
   if (u - i > h) return ceilf(u - h) * q;
   if (i - u > h) return floorf(u + h) * q;
-  if (m - i > 1 && u > i) return held + q;   // resting off the held step: back toward the mean, a step at a time
-  if (i - m > 1 && u < i) return held - q;
+  if (m - i > 0.25f * h && u > i) return held + q;   // resting off the mean: back toward it, a step at a time
+  if (i - m > 0.25f * h && u < i) return held - q;
   return held;
 }
 #define CAP_DYN_MAX_DESIGN_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
