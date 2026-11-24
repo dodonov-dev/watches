@@ -1,10 +1,10 @@
-// perf-cheap A evidence (host only): c++ -std=c++17 -O2 -ffp-contract=off -DBOARD_LCD316 <boardtag res flags 320w8-8>
-//   -I <esp stubs> -I firmware/src -I spec palstep.cpp firmware/src/physics.cpp; run: palstep STEP_DEG < presets as
+// perf-cheap A' evidence (host only): c++ -std=c++17 -O2 -ffp-contract=off -DBOARD_LCD316 <boardtag res flags 320w8-8>
+//   -I <esp stubs> -I firmware/src -I spec palstep.cpp firmware/src/physics.cpp; run: palstep 0.125 < presets as
 //   `N name` / `P k=v` / `R` blocks (DBG=1 lists the entries that moved more than 1 LSB).
-// Palette step proof: for every preset on stdin (P lines, R = run), each tube, every pair of adjacent quantised light
-// angles k*D, (k+1)*D over [-LIGHT_MAX_DEG, LIGHT_MAX_DEG]: the largest per-channel RGB565 change of every palette entry
-// the render takes (rows, bubbleIn, tubeBackRows, bubbleRimRows, band rows), outside the highlight band's own row
-// jump (hiTop moves by whole rows at its own thresholds, as without quantisation); and inside it, separately.
+// The colour bound of A' (render.cpp LIGHT_KEY_*): for every preset, each tube, every exact light L on a 1/64 deg grid over
+// +-LIGHT_MAX_DEG, the palette renderTube would build at L (87f19af's colours) against the one at each key it can hold for L
+// (a multiple of LIGHT_KEY_Q within LIGHT_KEY_HYST), both with L's highlight row: the largest per-channel RGB565 difference
+// of every palette entry the render takes (rows, bubbleIn, tubeBackRows, bubbleRimRows, band rows).
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,31 +45,35 @@ int main(int argc, char **argv) {
         st[i] = TubeState(); st[i].trace = traceBuf(i); st[i].traceWet = traceWetBuf(i); st[i].fillTarget = 0.5f;
         renderTube(i, st[i], p[i], gen, strip);
         Tube &t = tubeAt(i); const int H = t.H;
-        const int K = (int)(LIGHT_MAX_DEG / D);
-        for (int k = -K; k < K; k++) {
-          const float la = k * D, lb = (k + 1) * D;
-          ca = *t.palCache; cb = *t.palCache; ca.bandValid = cb.bandValid = false;
-          t.buildPalette(p[i], la, pa, ca); t.buildPalette(p[i], lb, pb, cb);
-          const Palette keep = t.pal;
-          t.pal = pa; t.buildBandRows(ca); t.pal = pb; t.buildBandRows(cb); t.pal = keep;
-          const int ha = t.highlightTop(p[i], la), hb = t.highlightTop(p[i], lb), hH = (int)p[i].highlightH;
-          for (int y = 0; y < H; y++) {
-            const bool hiRow = ha != hb && y >= (ha < hb ? ha : hb) && y < (ha > hb ? ha : hb) + hH;
-            const uint16_t A[7] = {pa.rows[y], pa.bubbleIn[y], pa.tubeBackRows[y], pa.bubbleRimRows[y], ca.bandInner[y], ca.bandLensMix[y], ca.bandRimC[y]};
-            const uint16_t B[7] = {pb.rows[y], pb.bubbleIn[y], pb.tubeBackRows[y], pb.bubbleRimRows[y], cb.bandInner[y], cb.bandLensMix[y], cb.bandRimC[y]};
-            for (int e = 0; e < 7; e++) for (int ch = 0; ch < 3; ch++) {
-              const int d = d565(A[e], B[e], ch);
-              int *w = hiRow ? worstHi : worst; if (d > w[ch]) w[ch] = d;
-              if (!hiRow && d > 1) { over++; if (getenv("DBG")) printf("  tube %d k %d light %g..%g row %d entry %d ch %d: %04x -> %04x\n", i, k, la, lb, y, e, ch, A[e], B[e]); }
+        // perf-cheap A': every exact light L on a 1/64 deg grid, its highlight row from L (highlightTop), against every key
+        // renderTube can hold for it (the multiples of LIGHT_KEY_Q within LIGHT_KEY_HYST of L): palette(L) vs palette(key)
+        const int K = (int)(LIGHT_MAX_DEG * 64);
+        for (int k = -K; k <= K; k++) {
+          const float L = k / 64.0f; const int hi = t.highlightTop(p[i], L);
+          ca = *t.palCache; ca.bandValid = false; t.buildPalette(p[i], L, hi, pa, ca);
+          { const Palette keep = t.pal; t.pal = pa; t.buildBandRows(ca); t.pal = keep; }
+          for (int j = (int)floorf((L - LIGHT_KEY_HYST) / D); j <= (int)ceilf((L + LIGHT_KEY_HYST) / D); j++) {
+            const float key = j * D;
+            if (fabsf(L - key) > LIGHT_KEY_HYST) continue;
+            cb = *t.palCache; cb.bandValid = false; t.buildPalette(p[i], key, hi, pb, cb);
+            { const Palette keep = t.pal; t.pal = pb; t.buildBandRows(cb); t.pal = keep; }
+            for (int y = 0; y < H; y++) {
+              const uint16_t A[7] = {pa.rows[y], pa.bubbleIn[y], pa.tubeBackRows[y], pa.bubbleRimRows[y], ca.bandInner[y], ca.bandLensMix[y], ca.bandRimC[y]};
+              const uint16_t B[7] = {pb.rows[y], pb.bubbleIn[y], pb.tubeBackRows[y], pb.bubbleRimRows[y], cb.bandInner[y], cb.bandLensMix[y], cb.bandRimC[y]};
+              for (int e = 0; e < 7; e++) for (int ch = 0; ch < 3; ch++) {
+                const int d = d565(A[e], B[e], ch);
+                if (d > worst[ch]) worst[ch] = d;
+                if (d > 1) { over++; if (getenv("DBG")) printf("  tube %d light %g key %g row %d entry %d ch %d: %04x -> %04x\n", i, L, key, y, e, ch, A[e], B[e]); }
+              }
             }
           }
         }
       }
       for (int ch = 0; ch < 3; ch++) if (worst[ch] > worstAll[ch]) worstAll[ch] = worst[ch];
-      printf("%-48s worst R/G/B %d/%d/%d LSB565 (entries > 1: %ld); highlight-jump rows %d/%d/%d\n", name, worst[0], worst[1], worst[2], over, worstHi[0], worstHi[1], worstHi[2]);
+      printf("%-48s worst R/G/B %d/%d/%d LSB565 (entries > 1: %ld)\n", name, worst[0], worst[1], worst[2], over); (void)worstHi;
       design = PRESET_DEFAULT;
     }
   }
-  printf("ALL worst R/G/B %d/%d/%d LSB565 per step of %g deg\n", worstAll[0], worstAll[1], worstAll[2], D);
+  printf("ALL worst R/G/B %d/%d/%d LSB565, palette at the exact light vs at any key of step %g deg it can hold\n", worstAll[0], worstAll[1], worstAll[2], D);
   return 0;
 }

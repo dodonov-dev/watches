@@ -112,15 +112,48 @@ function ambientAmt(p: Params): number {
 /** Top row of the highlight band for highlight angle `lightDeg` (TubeState.light):
  *  the cylinder surface point whose normal makes that angle with the screen normal. */
 export function highlightTop(p: Params, H: number, lightDeg: number): number {
-  const yc = (H - 1) / 2;
-  return Math.round(yc - yc * Math.sin((lightDeg * Math.PI) / 180) - (p.highlightH - 1) / 2);
+  // float32 step for step as render.cpp Tube::highlightTop (jround(yc - yc * sinf(L * (float)M_PI / 180) - (hH - 1) / 2)):
+  // the row is a decision, replayed bit for bit (Math.sin rounded once stands for sinf)
+  const F = Math.fround, yc = F((H - 1) / 2);
+  const v = F(F(yc - F(yc * F(Math.sin(F(F(F(lightDeg) * F(Math.PI)) / 180))))) - F(F(F(p.highlightH) - 1) / 2));
+  return Math.floor(F(v + 0.5));
+}
+
+/** perf-cheap A' (firmware render.cpp LIGHT_KEY_*): the palette's colours are made for the light in LIGHT_KEY_Q steps, re-keyed
+ *  only when the exact light leaves the key by LIGHT_KEY_HYST (0.6 step), per tube as render state; every decision the light
+ *  takes (the highlight row, highlightTop; blickY; the fizz's highlight row; the inset) stays on the exact light. Each step moves
+ *  a palette row by at most 1 RGB565 LSB (docs/perf-cheap/tools/palstep.cpp). float32 as the firmware. */
+export const LIGHT_KEY_Q = 0.125;
+export const LIGHT_KEY_HYST = 0.075;
+const lightKeys: (number | undefined)[] = [];
+/** Per tube: 'live' = the key follows the light (the firmware's rule); 'fixed' = a replayed key, authoritative for the frame;
+ *  'exact' = no key, the palette at the exact light (a replay of a dump from before A', no LKEY line). */
+const keyModes: ('live' | 'fixed' | 'exact')[] = [];
+/** Tube i's palette light for exact light `light` (firmware renderTube), updating its key; once per rendered sample. */
+export function lightKeyFor(i: number, light: number): number {
+  const F = Math.fround, L = F(light), k = lightKeys[i], mode = keyModes[i] ?? 'live';
+  if (mode === 'exact') return L;
+  if (mode === 'fixed' && k !== undefined) return k;
+  if (k === undefined || F(Math.abs(F(L - k))) > F(LIGHT_KEY_HYST)) lightKeys[i] = F(Math.floor(F(F(L / LIGHT_KEY_Q) + 0.5)) * LIGHT_KEY_Q);
+  return lightKeys[i]!;
+}
+/** Replay: tube i's key from the device's `x` dump (LKEY), authoritative for the frames rendered from it (`fixed`); NaN =
+ *  the device had none yet (the next render keys afresh, `live`); null = a dump without LKEY (pre-A' firmware): the palette
+ *  at the exact light (`exact`). */
+export function setLightKey(i: number, key: number | null): void {
+  if (key === null) { lightKeys[i] = undefined; keyModes[i] = 'exact'; }
+  else if (Number.isNaN(key)) { lightKeys[i] = undefined; keyModes[i] = 'live'; }
+  else { lightKeys[i] = Math.fround(key); keyModes[i] = 'fixed'; }
 }
 
 /** Step 0: build the per-row colour LUT. Firmware rebuilds it when the light moves.
  *  Shading blends (lightPhys) a stylised top light (bright at 1/3, dark at the bottom) with a
  *  Lambert cylinder lit from direction 2*light in the cross-section (world-up when physical).
  *  The highlight band sits at `light` in both. The acrylic rod over the panel supplies the real specular. */
-export function buildPalette(p: Params, lightDeg = 0): Palette {
+/** lightDeg: the light the colours are made for (renderFrame's lightKeyFor); hiTopIn: the highlight band's row, from the exact
+ *  light (default: from lightDeg). The light's only other consumers here are colours: the Lambert weight (body shading, the
+ *  glass weight) and what follows from it (rowL -> bubbleRimRows, rowK); the band's rows and its tent take hiTop. */
+export function buildPalette(p: Params, lightDeg = 0, hiTopIn?: number): Palette {
   const body = hexToRgb(p.liquid), hi = hexToRgb(p.liquidHi), lo = hexToRgb(p.liquidLo);
   const br = p.brightness * p.liquidBright;   // tube back stays on the panel dimmer alone
   const H = tubeLayout(p).H, yc = (H - 1) / 2;
@@ -151,7 +184,7 @@ export function buildPalette(p: Params, lightDeg = 0): Palette {
     w += p.glassReflect * Math.exp(-d * d);
     return Math.min(1, w);
   };
-  const hiTop = highlightTop(p, H, lightDeg);
+  const hiTop = hiTopIn ?? highlightTop(p, H, lightDeg);
   // Wall band (from the physical renderer's cylinder trace): rows whose ray misses the bore pass
   // through wall only and never reach the back (`dryT` 0), ramping up over a few rows inside; the
   // liquid is near index-matched to the wall, so the wet side still shows through there. The
@@ -3380,10 +3413,13 @@ function applyLens(y0: number, H: number, p: Params, smooth: boolean, map: Int16
  *  tubeParams). The seconds tube reads the minutes tube's scale (60 units: its ticks and digits). */
 export function renderFrame(tubes: readonly TubeState[], ps: readonly Params[], lensEffect = true, lensSmooth = false): void {
   fb.fill(0);
-  const lay = faceLayout(ps), pals: Palette[] = [];
+  const lay = faceLayout(ps), pals: Palette[] = [], keys: number[] = [], rows: number[] = [];
   tubes.forEach((t, i) => {
-    const j = tubes.findIndex((u, k) => k < i && ps[k] === ps[i] && u.light === t.light);   // equal params and light: one palette
-    pals.push(j >= 0 ? pals[j] : buildPalette(ps[i], t.light));
+    // perf-cheap A': the colours from tube i's stepped light, the highlight row from its exact light (firmware renderTube)
+    const key = lightKeyFor(i, t.light), hiTop = highlightTop(ps[i], tubeLayout(ps[i]).H, t.light);
+    keys.push(key); rows.push(hiTop);
+    const j = tubes.findIndex((_, k) => k < i && ps[k] === ps[i] && keys[k] === key && rows[k] === hiTop);   // equal params, key, row: one palette
+    pals.push(j >= 0 ? pals[j] : buildPalette(ps[i], key, hiTop));
     drawTube(i, tubeRows(lay, i).y, t, ps[i], pals[i], i === 0 ? 12 : 60, lensEffect, lensSmooth);
   });
 }

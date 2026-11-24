@@ -12,7 +12,9 @@ fo, fn = open(old, 'rb'), open(new, 'rb')
 ring = []; F = 0; diffPx = 0; mx = 0; big = 0; outs = []; omx = 0
 while True:
     bo, bn = fo.read(n * 2), fn.read(n * 2)
-    if len(bo) < n * 2 or len(bn) < n * 2: break
+    if len(bo) < n * 2 or len(bn) < n * 2:
+        assert len(bo) == 0 and len(bn) == 0, 'cmp.py: the two runs differ in length (or end in a partial frame)'
+        break
     EO, EN = ex(np.frombuffer(bo, '<u2')), ex(np.frombuffer(bn, '<u2'))
     d = np.abs(EO - EN).max(-1); diffPx += int((d > 0).sum()); mx = max(mx, int(d.max())); big += int((d > 12).sum())
     ring.append(EO); ring = ring[-50:]
@@ -20,6 +22,7 @@ while True:
         st = np.stack(ring); lo, hi = st.min(0), st.max(0)
         e = np.maximum(lo - EN, EN - hi).clip(0).max(-1); outs.append(int((e > 0).sum())); omx = max(omx, int(e.max()))
     F += 1
+assert F > 0, 'cmp.py: no frames'
 res = {'frames': F, 'diffPerFrame': diffPx / max(1, F), 'max': mx, 'over12': big, 'outPerFrame': float(np.mean(outs)) if outs else 0, 'outMax': omx}
 if '--json' in sys.argv: print(json.dumps(res))
 else:

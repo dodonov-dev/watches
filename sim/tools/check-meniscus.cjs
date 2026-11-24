@@ -41,7 +41,7 @@ function render(name, changes = {}, state = {}, preset = base, residue = false) 
   // residue: true = a fresh deposit on every column, [lo, hi] = on those panel columns only
   if (residue) { const [lo, hi] = residue === true ? [0, 536] : residue; s.trace.fill(0xff00, lo, hi); s.traceLo = lo; s.traceHi = hi; }
   R.fb.fill(0);
-  R.drawTube(0, 0, s, p, R.buildPalette(p, s.light), 12);
+  R.drawTube(0, 0, s, p, R.buildPalette(p, R.lightKeyFor(0, s.light), R.highlightTop(p, R.tubeLayout(p).H, s.light)), 12);   // the firmware's palette key (renderTube 0, scene by scene)
   const frame = R.fb.slice(0, 536 * R.tubeLayout(p).H);
   fs.writeFileSync(path.join(out, name + '.bin'), Buffer.from(frame.buffer));
   const params = Object.fromEntries(Object.entries(p).filter(([k, v]) => v !== DEFAULT_PARAMS[k]));

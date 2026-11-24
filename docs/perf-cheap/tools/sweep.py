@@ -18,12 +18,14 @@ def job(a, path, pose, tmp):
     for side, exe in (('old', a.old), ('new', a.new)):
         r = subprocess.run([exe, '-1', *map(str, POSES[pose]), str(a.frames), '0', '0', '0', '0', '0', '0'], input=plines.encode(),
                            env=dict(env, FRAMES_OUT=f'{base}.{side}'), stdout=subprocess.PIPE, check=True).stdout.decode()
-        outs[side] = [l for l in r.split('\n') if l.startswith('ROWS')][0]
+        outs[side] = [l for l in r.split('\n') if l.startswith('ROWS')][0]; outs[side + 'All'] = r
     rows = int(outs['new'].split()[1])
     c = json.loads(subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), 'cmp.py'), f'{base}.old', f'{base}.new', str(rows), '--json'],
                                   stdout=subprocess.PIPE, check=True).stdout)
     for side in ('old', 'new'): os.remove(f'{base}.{side}')
-    work = {side: outs[side].split('per frame:')[1].strip() for side in outs}
+    work = {side: outs[side].split('per frame:')[1].strip() for side in ('old', 'new')}
+    pb = [l for l in outs['newAll'].split('\n') if l.startswith('PALBUILDS')]
+    if pb: work['palBuildsNew'] = pb[0].split()[1:]
     return {'preset': os.path.relpath(path, ROOT), 'pose': pose, **c, 'work': work}
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('old'); ap.add_argument('new'); ap.add_argument('out')

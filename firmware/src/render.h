@@ -109,6 +109,11 @@ const uint32_t *render_profile_cycles(int idx);   // CPU cycles of the last fram
 // The edge shade's factor rebuilds of tube idx (buildShade, at a strength / shape / cover / position change): the last
 // and the largest since boot (us; 0 off the board), their count, and the boot-time ray table (us).
 void render_shade_build(int idx, uint32_t &last, uint32_t &max, uint32_t &n, uint32_t &rays);
+// perf-cheap A': tube idx's palette builds since boot; the light its colours are keyed on (NAN: none yet), and setting it
+// (a replay of the `x` dump's LKEY line; NAN = none)
+uint32_t render_palette_builds(int idx);
+float render_light_key(int idx);
+void render_set_light_key(int idx, float key);
 #ifdef TUBE_PROF
 // -DTUBE_PROF: drawTube stage cycles of one tube accumulated since the last reset (TU_* order in render.cpp; 240 MHz).
 const uint32_t *render_tube_profile(int idx);

@@ -6,7 +6,7 @@
 #include "physics.h"
 
 inline int formatTubeState(char *o, size_t n, const TubeState &t) {
-  return snprintf(o, n, " %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %d %d %d %.6f",
+  return snprintf(o, n, " %.6f %.6f %.6f %.9g %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f %d %d %d %d %.6f",   // light: %.9g, its float exactly (perf-cheap A': the highlight row and the palette key take it)
                   t.fillTarget, t.fillPos, t.angle, t.light, t.edgeLight, t.agitation,
                   t.acrossTilt, t.cap, t.filmFree, t.filmHome, t.slugPos, t.reading, t.pinFree, t.pinHome,
                   t.lineVFree, t.lineVHome, t.rearX16, t.rearY16, t.rearX16w, t.rearY16w,   // the rear parallax as rendered (1/16 px)

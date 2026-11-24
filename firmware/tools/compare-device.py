@@ -78,7 +78,16 @@ def parse_dump(dump, params):
         parts = tr[0].split()[1:] if tr else []
         if len(parts) == NT:
             for t in range(NT): tubes[t][key] = parts[t]
-    return W, H, TH, Y0, dev, {'params': params, **dict(zip(names, tubes))}
+    job = {'params': params, **dict(zip(names, tubes))}
+    # perf-cheap A': each tube's palette light after the dump's render (render-ref takes it as given; 'nan': none yet). A
+    # dump without the line (pre-A' firmware) asks render-ref for the palette at the exact light (lightKeys None).
+    lk = [l for l in lines if l.startswith('LKEY')]
+    job['lightKeys'] = None
+    if lk:
+        v = lk[0].split()[1:]
+        assert len(v) == NT, f'LKEY: {len(v)} keys for {NT} tubes'
+        job['lightKeys'] = [None if x.lower() == 'nan' else float(x) for x in v]
+    return W, H, TH, Y0, dev, job
 
 def render_ref(job, out, env, cache=None):
     """The job rendered by sim/tools/render-ref.ts in node for the board in env (LW_BOARD / LW_RES / LW_TUBES): the canvas

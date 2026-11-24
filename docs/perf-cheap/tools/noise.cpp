@@ -5,6 +5,7 @@
 // sigma: Gaussian accel noise (g) per axis, or -1 = replay NOISE_FILE (along / across / normal deviations a line, the
 // board's recorded `i` stream at rest: imu_rest_dev.txt). q*/h*: an extra quantHyst-like hold applied by the harness to
 // light (deg), angle (deg), backTilt (rad) before the render (0 = none: the build's own physics only), h in steps.
+// HAVE_PAL_BUILDS (a build with render_palette_builds, perf-cheap A'): palette builds a frame per tube (PALBUILDS line).
 // mode 0 (the only one): per frame changed pixels and frame-to-frame deltas of the SHOWN rows (the push-lens map applied,
 // panel byte order swapped to native RGB565), dirty tile pairs (the push's work), light changes. rate: an across ramp,
 // g/s. FRAMES_OUT=file writes every frame's shown rows, native RGB565 (cmp.py compares two builds' files). HOLD_EDGES / DUMP: experiments (slug, slosh, cap held; state).
@@ -65,9 +66,11 @@ int main(int argc, char **argv) {
   float lmin[2] = {1e9, 1e9}, lmax[2] = {-1e9, -1e9}, amin = 1e9, amax = -1e9, bmin = 1e9, bmax = -1e9;
   float prevLight[2] = {NAN, NAN};
   const int warm = 500;   // 10 s settle
+  uint32_t palAt[2] = {0, 0};   // palette builds when the measured frames start (HAVE_PAL_BUILDS: perf-cheap A')
   for (int k = 0; k < warm + frames; k++) {
     const float ramp = k >= warm ? rate * (k - warm) * PHYS_DT : 0;
     TiltInput raw = sigma < 0 ? TiltInput{A + dev[k % nDev][0], C + ramp + dev[k % nDev][1], 0, 0, N + dev[k % nDev][2]}
+                              : sigma == 0 ? TiltInput{A, C + ramp, 0, 0, N}   // no noise (review 3: was unit noise)
                               : TiltInput{A + nd(rng), C + ramp + nd(rng), 0, 0, N + nd(rng)};
     TiltInput in = f.step(raw, p[0]);
     for (int i = 0; i < 2; i++) {
@@ -87,6 +90,9 @@ int main(int argc, char **argv) {
       }
       if (getenv("DUMP") && k >= warm && k < warm + 5 && i == 1) printf("st fill %.6f slug %.6f vel %.6f cap %.6f pinF %.6f pinH %.6f lineVF %.6f reading %.6f edgeL %.6f acrossT %.6f film %.6f %.6f ag %.6f\n", st[i].fillPos, st[i].slugPos, st[i].slugVel, st[i].cap, st[i].pinFree, st[i].pinHome, st[i].lineVFree, st[i].reading, st[i].edgeLight, st[i].acrossTilt, st[i].filmFree, st[i].filmHome, st[i].agitation);
       q[i] = s;
+#ifdef HAVE_PAL_BUILDS
+      if (k == warm) palAt[i] = render_palette_builds(i);
+#endif
       uint16_t *buf = strip[i][k & 1];
       const int16_t *map = nullptr; renderTube(i, s, p[i], 2, buf, &map, lay.top(i));
       // the shown rows (the push applies the lens row map), in native RGB565 (the strip holds panel byte order)
@@ -120,6 +126,9 @@ int main(int argc, char **argv) {
   }
   if (mode == 0) { long big = 0, n = 0; for (int d = 1; d < 256; d++) { n += fHist[d]; if (d > 12) big += fHist[d]; }
     printf("frame to frame: %ld px changed, max %d/255, > 12/255: %ld, > 24/255:", n, fMax, big); long b24 = 0; for (int d = 25; d < 256; d++) b24 += fHist[d]; printf(" %ld\n", b24); }
+#ifdef HAVE_PAL_BUILDS
+  printf("PALBUILDS %.3f %.3f\n", (render_palette_builds(0) - palAt[0]) / (double)frameN, (render_palette_builds(1) - palAt[1]) / (double)frameN);
+#endif
   printf("ROWS %d | rendered light p2p %.4f/%.4f deg, rendered angle p2p %.4f deg, backTilt p2p %.5f rad | per frame: H px %.1f pairs %.1f lightCh %.3f dirty %.3f | M px %.1f pairs %.1f lightCh %.3f dirty %.3f\n",
          lay.rows(0) + lay.rows(1), lmax[0] - lmin[0], lmax[1] - lmin[1], amax - amin, bmax - bmin,
          sumPx[0] / frameN, sumPairs[0] / frameN, (double)lightCh[0] / frameN, (double)dirtyFrames[0] / frameN,

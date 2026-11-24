@@ -14,7 +14,7 @@
 // F lines). lockstep (a file of the firmware's lines): each step starts from the firmware's state, surfaces and strokes.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs'); declare const process: any; declare const Buffer: any; declare function require(m: string): any;
-import { renderFrame, fb, setSprite, stepFizz, fizzTestState, fizzTestLoad, fizzTestInputs } from '../src/render';
+import { renderFrame, fb, setSprite, setLightKey, stepFizz, fizzTestState, fizzTestLoad, fizzTestInputs } from '../src/render';
 import { newTube, poseBackTilt, type TubeState } from '../src/physics';
 import { tubeParams, migrateParams, DEFAULT_PARAMS, type Params } from '../src/params';
 import { TUBE_COUNT, TUBE_LENGTH_PX, SPRITE_CELL_H } from '@spec/layout';
@@ -48,6 +48,10 @@ const names = ['hours', 'minutes', 'seconds'].slice(0, TUBE_COUNT);
 if (names.some((k) => !job[k])) throw new Error(`render-ref: the job needs ${names.join(', ')} (LW_TUBES=${TUBE_COUNT})`);
 const tubes: TubeState[] = names.map((k) => ({ ...newTube(), ...job[k] }));   // device STATE carries only the drawn fields
 names.forEach((k, i) => trace(job[k].trace, job[k].traceWet, tubes[i]));
+// perf-cheap A': the device's palette light per tube (the `x` dump's LKEY line: authoritative for this frame; NaN = none yet);
+// a device dump without it (pre-A' firmware: job.lightKeys === null) renders the palette at the exact light
+if (Array.isArray(job.lightKeys)) job.lightKeys.forEach((v: number | null, i: number) => setLightKey(i, v === null ? NaN : v));
+else if (job.lightKeys === null) names.forEach((_, i) => setLightKey(i, null));
 if (job.fizzSteps) fizzJob(job.fizzSteps);
 else {
   renderFrame(tubes, tubeParams(job.params));   // each tube at its own px scale (LW_RES tube widths)

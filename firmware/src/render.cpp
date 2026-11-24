@@ -1014,13 +1014,19 @@ struct Tube;
 // ---------------------------------------------------------------------------------------------
 // palette
 // ---------------------------------------------------------------------------------------------
+// perf-cheap A': the palette's colour light in steps of LIGHT_KEY_Q (any palette row moves at most 1 RGB565 LSB a step:
+// docs/perf-cheap/tools/palstep.cpp), re-keyed when the exact light leaves the key by LIGHT_KEY_HYST (0.6 step). See sim.
+#define LIGHT_KEY_Q 0.125f
+#define LIGHT_KEY_HYST 0.075f
 struct Palette {
   uint16_t rows[TUBE_HEIGHT_MAX], bubbleIn[TUBE_HEIGHT_MAX], tubeBackRows[TUBE_HEIGHT_MAX];
   uint16_t bubbleRimRows[TUBE_HEIGHT_MAX];   // fizz ring colour per row, dimmed by the cylinder's light (scalar bubbleRim: spirit bubble, pinpoint)
   uint16_t body, tubeBack, bubbleRim;
   float rowK[TUBE_HEIGHT_MAX];   // luma weight per row for front brightening (sim step 3a)
   uint16_t dryT[TUBE_HEIGHT_MAX]; // 1/256: what an empty tube transmits of the back per row (0 inside the wall band); fades rear marks behind air
-  uint32_t gen = 0; int H = 0; float light = 0; bool valid = false;   // cache key (light is exact: hit while the tube is at rest)
+  // cache key: light = the light its colours were made for (renderTube's lightKey, perf-cheap A'), hiTop = the highlight
+  // band's row (from the exact light), gen, H
+  uint32_t gen = 0; int H = 0; float light = 0; int hiTop = 0; bool valid = false;
   uint32_t ver = 0;   // counts the builds (ShadePal's key)
 };
 // The base stages' colours of an edge-shaded tube (the shade folded in, RowCache shadeF): per drawn row the palette's
@@ -1576,7 +1582,7 @@ struct Tube {
   uint16_t *verifyRow = nullptr;  // PANEL_W, PSRAM, render_init
   Palette *verifyPal = nullptr;   // PSRAM, render_init
   float glassWRef(const Params &p, int y, int hiTop, float lam) const;
-  void buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const;
+  void buildPaletteRef(const Params &p, float lightDeg, int hiTop, Palette &pal) const;
 #endif
 #ifdef TICK_PROF
   mutable uint32_t tickProf[TP_N] = {};   // -DTICK_PROF: accumulated until render_tick_profile_reset
@@ -1693,9 +1699,12 @@ struct Tube {
 
   float glassW(const Params &p, int y, int hiTop, float lam, const PalCache &pc) const;
   int highlightTop(const Params &p, float lightDeg) const;
+  // perf-cheap A': the light the palette's colours are made for, lightKey = the exact light in LIGHT_KEY_Q steps, re-keyed only
+  // when the light leaves it by LIGHT_KEY_HYST (renderTube); lightKeyOk false: none yet
+  float lightKey = 0; bool lightKeyOk = false;
   void buildPalCache(const Params &p, uint32_t gen, PalCache &pc) const;
   void buildBandRows(PalCache &pc) const;
-  void buildPalette(const Params &p, float lightDeg, Palette &pal, const PalCache &pc) const;
+  void buildPalette(const Params &p, float lightDeg, int hiTop, Palette &pal, const PalCache &pc) const;
   ScaledGlyph *scaledGlyphs(int sheetIdx, int bw, int bh, float brightness, uint32_t tintHex, float tintAmt, float tone, int shadow, float shadowA, int shadowOff, float transK, bool rot, float floorC, uint16_t floorR);
   bool layoutLabels(int y0, const Params &p, uint32_t gen, int ticksN, const TubeState &st, float fill, Labels &lb);
   void spriteRowFacts(int y0, const Labels &lb, const Mark &mark, int r0, int r1) const;
@@ -1926,7 +1935,7 @@ float Tube::glassWRef(const Params &p, int y, int hiTop, float lam) const {
   w += p.glassReflect * expf(-d * d);
   return fmn(1, w);
 }
-void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const {
+void Tube::buildPaletteRef(const Params &p, float lightDeg, int hiTop, Palette &pal) const {
   RGB body = hexToRgb(p.liquid), hi = hexToRgb(p.liquidHi), lo = hexToRgb(p.liquidLo);
   RGB tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2), ghi = hexToRgb(p.glassHi);
   float br = p.brightness * p.liquidBright;
@@ -1934,7 +1943,6 @@ void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const 
   const RGB rimTint = scale(hexToRgb(p.rimTint), p.brightness);
   float bodyL = ambientBodyL(p), ambAmt = ambientAmt(p);
   float yc = (H - 1) / 2.0f, lightRad = 2 * lightDeg * (float)M_PI / 180;
-  int hiTop = highlightTop(p, lightDeg);
   const RGB rimC = hexToRgb(p.bubbleRim);
   const RGB rimLit = { fmn(255, rimC.r * br), fmn(255, rimC.g * br), fmn(255, rimC.b * br) };   // clipped lit rim (sim rimLit)
   float rowL[TUBE_HEIGHT_MAX];   // per-row body-shading luma (fixed-size local, sim rowL)
@@ -2010,8 +2018,11 @@ void Tube::buildPaletteRef(const Params &p, float lightDeg, Palette &pal) const 
   for (int y = 0; y < H; y++) pal.rowK[y] /= lmax;
 }
 #endif
-// Style top light blended (lightPhys) with a Lambert cylinder lit from 2*light (sim buildPalette).
-void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal, const PalCache &pc) const {
+// Style top light blended (lightPhys) with a Lambert cylinder lit from 2*light (sim buildPalette). lightDeg: the light the
+// colours are made for (renderTube's lightKey); hiTop: the highlight band's row, from the exact light (highlightTop). The
+// light's only other consumers here are colours: the Lambert weight lam (body shading, glassW's glass weight) and what
+// follows from it (rowL -> bubbleRimRows, rowK); the band's rows and its tent take hiTop.
+void Tube::buildPalette(const Params &p, float lightDeg, int hiTop, Palette &pal, const PalCache &pc) const {
   RGB body = hexToRgb(p.liquid), hi = hexToRgb(p.liquidHi), lo = hexToRgb(p.liquidLo);
   RGB tubeBack = hexToRgb(p.tubeBack), tubeBack2 = hexToRgb(p.tubeBack2), ghi = hexToRgb(p.glassHi);
   float br = p.brightness * p.liquidBright;
@@ -2019,7 +2030,6 @@ void Tube::buildPalette(const Params &p, float lightDeg, Palette &pal, const Pal
   const RGB rimTint = scale(hexToRgb(p.rimTint), p.brightness);
   float bodyL = ambientBodyL(p), ambAmt = ambientAmt(p);
   float yc = (H - 1) / 2.0f, lightRad = 2 * lightDeg * (float)M_PI / 180;
-  int hiTop = highlightTop(p, lightDeg);
   const RGB rimC = hexToRgb(p.bubbleRim);
   const RGB rimLit = { fmn(255, rimC.r * br), fmn(255, rimC.g * br), fmn(255, rimC.b * br) };   // clipped lit rim (sim rimLit)
   float rowL[TUBE_HEIGHT_MAX];   // per-row body-shading luma (fixed-size local, sim rowL)
@@ -7006,6 +7016,9 @@ TUBE_IRAM void __attribute__((noinline)) Tube::traceBlur(const uint16_t *trace, 
   traceBlockMax(traceA, a0, a1, tm.blkMax);
 }
 
+uint32_t render_palette_builds(int idx) { return tubeAt(idx).pal.ver; }
+float render_light_key(int idx) { const Tube &t = tubeAt(idx); return t.lightKeyOk ? t.lightKey : NAN; }
+void render_set_light_key(int idx, float key) { Tube &t = tubeAt(idx); t.lightKey = key; t.lightKeyOk = key == key; }
 // Safe to call for tubes on different lanes (hours and minutes / seconds) concurrently from different tasks: each touches
 // only tubeAt(idx), its lane's scratch and its own strip; params / state are read-only for the duration of the call.
 void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint16_t *strip, const int16_t **lensRows, int y0) {
@@ -7023,12 +7036,17 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
   t.lensRowsOut = lensRows; if (lensRows) *lensRows = nullptr;
   t.buildRowCache(p, gen);
   Palette &pal = t.pal;
-  if (!(pal.valid && pal.gen == gen && pal.H == t.H && pal.light == s.light)) {
+  // perf-cheap A': the colours from the light in LIGHT_KEY_Q steps with hysteresis (a still watch's sensor noise no longer
+  // rebuilds the palette every frame: each step moves a palette row by at most 1 RGB565 LSB, STATUS); every decision the
+  // light takes stays on the exact light (the highlight row here, highlightTop; blickY, the fizz's highlight row, the inset)
+  if (!t.lightKeyOk || fabsf(s.light - t.lightKey) > LIGHT_KEY_HYST) { t.lightKey = floorf(s.light / LIGHT_KEY_Q + 0.5f) * LIGHT_KEY_Q; t.lightKeyOk = true; }
+  const float lightKey = t.lightKey; const int hiTop = t.highlightTop(p, s.light);
+  if (!(pal.valid && pal.gen == gen && pal.H == t.H && pal.light == lightKey && pal.hiTop == hiTop)) {
     t.buildPalCache(p, gen, *t.palCache);
 #ifdef TUBE_PROF
     const uint32_t tp0 = esp_cpu_get_cycle_count();
 #endif
-    t.buildPalette(p, s.light, pal, *t.palCache);
+    t.buildPalette(p, lightKey, hiTop, pal, *t.palCache);
 #ifdef TUBE_PROF
     const uint32_t tp1 = esp_cpu_get_cycle_count(); t.tubeProf[TU_PALP] += tp1 - tp0;
 #endif
@@ -7038,7 +7056,7 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
 #endif
 #ifdef TUBE_VERIFY
     {
-      Palette &r = *t.verifyPal; t.buildPaletteRef(p, s.light, r); int bad = 0;
+      Palette &r = *t.verifyPal; t.buildPaletteRef(p, lightKey, hiTop, r); int bad = 0;
       for (int y = 0; y < t.H; y++)
         bad += (r.rows[y] != pal.rows[y]) + (r.bubbleIn[y] != pal.bubbleIn[y]) + (r.tubeBackRows[y] != pal.tubeBackRows[y])
                + (r.bubbleRimRows[y] != pal.bubbleRimRows[y]) + (memcmp(&r.rowK[y], &pal.rowK[y], 4) != 0) + (r.dryT[y] != pal.dryT[y]);
@@ -7046,7 +7064,7 @@ void renderTube(int idx, const TubeState &s, const Params &p, uint32_t gen, uint
       tubeVerify(TV_PAL, 6 * t.H + 3, bad);
     }
 #endif
-    pal.valid = true; pal.gen = gen; pal.H = t.H; pal.light = s.light; pal.ver++;
+    pal.valid = true; pal.gen = gen; pal.H = t.H; pal.light = lightKey; pal.hiTop = hiTop; pal.ver++;
   }
   if (t.rc.shadeOn && !(t.palS->valid && t.palS->palVer == pal.ver && t.palS->shadeVer == t.rc.shadeVer)) t.buildShadePal();
 #ifdef TUBE_PROF
