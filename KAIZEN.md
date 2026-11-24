@@ -1059,10 +1059,15 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   unrelated edits in render.cpp's translation unit.
 - The stand's back tilt is not held (review 1): holding it would need a quantity linear in the lid (lidEnd's
   1 / max(1, 2R tan tau) near the end glass); it would save ~6 dirty tile pairs a frame per tube at rest.
-- Host checks allocate with calloc (check_board_render, check_render_frames): uninitialised PSRAM reads stay hidden; a
-  0xa5-filled heap_caps_malloc stub would catch them (used once for perf-cheap B1 / B3).
+- Host checks allocate with calloc (check_board_render, check_render_frames): uninitialised PSRAM reads stay hidden. A
+  0xa5-filled stub changes what they read but cannot detect the read itself (review 2); valgrind / MSan on the host
+  harness would.
+- 9 mm tubes (H 121): one 1/32 deg skew step moves the end rows 0.065 px (just over 1/16).
 - Not done (brief B): hash only possibly-changed tiles (needs every stage's per-band inputs proven equal: palette, shade,
   edges / strokes, residue columns, mark plans, this and last frame's fizz lists, lens); ramp alpha from a phase table
   (edges are arbitrary floats per row, no exact phase key); tick / label plan memo (rear shifts, parallax floats, inkRow,
   planTicks' digitRows depth side effect: a wide key for O(ticks + glyphs) work); residue row constants (2 divisions, 2
   expand565 and 6 table loads a row); skipping frames with no input change (fizz on in the user's look: never idle).
+- perf-cheap board lying on its side (2026-11-24): the B builds push ~0.35 ms more a frame than 87f19af / A-only with the
+  IMU pinned or live (0.98-1.12 vs 0.58-0.71 ms) while the stand pose is unchanged (1.48 vs 1.51): unexplained (the strips
+  are byte-identical; the staggered push's overlap with the faster renders?).

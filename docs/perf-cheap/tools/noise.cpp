@@ -120,8 +120,8 @@ int main(int argc, char **argv) {
   }
   if (mode == 0) { long big = 0, n = 0; for (int d = 1; d < 256; d++) { n += fHist[d]; if (d > 12) big += fHist[d]; }
     printf("frame to frame: %ld px changed, max %d/255, > 12/255: %ld, > 24/255:", n, fMax, big); long b24 = 0; for (int d = 25; d < 256; d++) b24 += fHist[d]; printf(" %ld\n", b24); }
-  printf("light p2p %.4f/%.4f deg (raw), angle p2p %.4f deg, backTilt p2p %.5f rad | per frame: H px %.1f pairs %.1f lightCh %.3f dirty %.3f | M px %.1f pairs %.1f lightCh %.3f dirty %.3f\n",
-         lmax[0] - lmin[0], lmax[1] - lmin[1], amax - amin, bmax - bmin,
+  printf("ROWS %d | rendered light p2p %.4f/%.4f deg, rendered angle p2p %.4f deg, backTilt p2p %.5f rad | per frame: H px %.1f pairs %.1f lightCh %.3f dirty %.3f | M px %.1f pairs %.1f lightCh %.3f dirty %.3f\n",
+         lay.rows(0) + lay.rows(1), lmax[0] - lmin[0], lmax[1] - lmin[1], amax - amin, bmax - bmin,
          sumPx[0] / frameN, sumPairs[0] / frameN, (double)lightCh[0] / frameN, (double)dirtyFrames[0] / frameN,
          sumPx[1] / frameN, sumPairs[1] / frameN, (double)lightCh[1] / frameN, (double)dirtyFrames[1] / frameN);
   return 0;
