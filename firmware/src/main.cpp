@@ -125,7 +125,8 @@ static void paramsChanged() {
 #if TUBE_COUNT == 3
   if constexpr (EFF_S_OWN) boardParams(params, effSOwn, PX_SCALE_S, PX_SCALE_FIZZ);
 #endif
-  // heldReseat: a param may move a spring's rest or limit (lightAngle, angleMax, vertical): no stale held offset
+  // heldReseat (after the eff params): a param may move a spring's rest or limit or the rows (lightAngle, angleMax,
+  // vertical, tubeHeight): the held values sit inside the new limits before anything renders (a frame, `x`)
   heldReseatAll();
   paramsGen++;
 }
@@ -153,10 +154,10 @@ static TubeState tubeH, tubeM;
 #if TUBE_COUNT == 3
 static TubeState tubeS;   // seconds (148 B internal)
 static TubeState &tubeOf(int idx) { return idx == 0 ? tubeH : idx == 1 ? tubeM : tubeS; }
-static void heldReseatAll() { heldReseat(tubeH); heldReseat(tubeM); heldReseat(tubeS); }
+static void heldReseatAll() { heldReseat(tubeH, effH); heldReseat(tubeM, effM); heldReseat(tubeS, effS); }
 #else
 static TubeState &tubeOf(int idx) { return idx ? tubeM : tubeH; }
-static void heldReseatAll() { heldReseat(tubeH); heldReseat(tubeM); }
+static void heldReseatAll() { heldReseat(tubeH, effH); heldReseat(tubeM, effM); }
 #endif
 static GravityNorm gnorm;
 static ImuFilter imuFilter;

@@ -336,6 +336,7 @@ $('pull').onclick = async () => {
   try {
     Object.assign(params, await transport.getParams());
     legacyPick = '';
+    reseatHeld();   // the pulled params (material mode re-derives below and reseats again once accepted)
     if (matState.mode === 'material') { materialUi.adoptDesign(); materialUi.rederive(true); } // the device's design, re-derived
     panelUi.refresh(); syncView(); save(); $('serialst').textContent = 'pulled';
   }
@@ -377,15 +378,17 @@ $('settime').onclick = pushTime;
 // params panel
 const LAYOUT_KEYS: (keyof Params)[] = ['tubeHeight', 'hoursY', 'minutesY', 'tubeStack', 'tubeGap'];
 /** Params changed outside a single edit (derive, preset, import): panel, top bar, cuff, grid. */
+/** The held light / angle / highlight row back on their springs under the params now shown (firmware paramsChanged): a
+ *  param may move a rest, a limit or the rows; before the next draw (a paused sim draws them as they are). */
+function reseatHeld(): void { const ps = tubeParams(params); tubes.forEach((t, i) => heldReseat(t, ps[i])); }
 function paramsReplaced(): void {
-  tubes.forEach(heldReseat);   // a param may move a spring's rest or limit: no stale held light / angle (firmware paramsChanged)
+  reseatHeld();
   panelUi.refresh(); syncView();
 }
 /** One legacy key (`key`) or the whole struct (no key) was edited in the legacy panel / top bar. In
  *  material mode a design key goes into the design and re-derives; a whole-struct change (legacy preset,
  *  import, reset) contributes its design keys. Derived / fixed keys are locked there. */
 function paramEdited(key?: keyof Params): void {
-  tubes.forEach(heldReseat);   // as paramsReplaced
   if (!key) legacyPick = matState.mode === 'legacy' ? panelUi.presetId() : '';
   if (matState.mode === 'material') {
     if (!key) materialUi.adoptDesign();
@@ -394,6 +397,7 @@ function paramEdited(key?: keyof Params): void {
     materialUi.rederive(!key);
     return;
   }
+  reseatHeld();   // a legacy edit applies as is (material mode: onDerived, once the derive is accepted)
   save(); pushParam(key);
   if (!key) syncView();
   if (!key || LAYOUT_KEYS.includes(key)) { applyOverlay(ovlDom, overlay, layoutNow()); drawGrid(); }
