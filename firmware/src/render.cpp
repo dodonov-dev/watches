@@ -3391,6 +3391,9 @@ struct FizzLook {
   bool sane;                         // every class a real disc (masks can be built)
   float tintA[FIZZ_DEPTHS];
   uint16_t cRim[FIZZ_DEPTHS][TUBE_HEIGHT_MAX], cBlick[FIZZ_DEPTHS][TUBE_HEIGHT_MAX];   // rim per row; pinpoint by the centre row
+  // what tintA / cRim / cBlick were built from (planFizz): the palette build, the edge shade's (0: none), the rows and the
+  // params and colour they mix with; depthValid false = not built yet
+  uint32_t depthPalVer, depthShadeVer; int depthH; float depthKey[3]; uint16_t depthBlickC; bool depthValid, depthShaded;
   int16_t veilLo[TUBE_HEIGHT_MAX], veilHi[TUBE_HEIGHT_MAX];   // per row: DiscRow veilLo / veilHi (no band: never)
 };
 static_assert(sizeof(BubblePlan) == 64, "one cache line a bubble");
@@ -6702,6 +6705,13 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
   FizzLook &fl = *look;
   if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
   takeFizzMasks(fl, p);
+  // A depth level's colours: functions of the palette rows, the edge shade, the params below and blickC only (no bubble or
+  // fill state), so rebuilt when one of those changes, not every frame (perf-cheap B2).
+  const uint32_t shadeKey = shF ? rc.shadeVer : 0;
+  if (!(fl.depthValid && fl.depthPalVer == pal.ver && fl.depthShaded == (shF != nullptr) && fl.depthShadeVer == shadeKey && fl.depthH == H
+        && fl.depthKey[0] == p.fizzDepth && fl.depthKey[1] == p.liquidTransparency && fl.depthKey[2] == p.bubbleDark && fl.depthBlickC == ff.blickC)) {
+  fl.depthValid = true; fl.depthPalVer = pal.ver; fl.depthShaded = shF != nullptr; fl.depthShadeVer = shadeKey; fl.depthH = H;
+  fl.depthKey[0] = p.fizzDepth; fl.depthKey[1] = p.liquidTransparency; fl.depthKey[2] = p.bubbleDark; fl.depthBlickC = ff.blickC;
   for (int l = 0; l < FIZZ_DEPTHS; l++) {   // a depth level's colours: as planBubble / bubbleRows mixed them per bubble (sim cRimD / cBlickD)
     const float z = (l + 0.5f) * (1.0f / FIZZ_DEPTHS), depthK = 1 - p.fizzDepth * z * (1 - p.liquidTransparency);   // fizzZ's values
     const int depthT = depthK < 1 ? (int)(depthK * 256 + 0.5f) : 256;
@@ -6711,6 +6721,7 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
       if (shF) fl.cRim[l][iy] = shade565(fl.cRim[l][iy], shF[iy]);   // edge shade: the row's (the pinpoint per row where drawn)
       fl.cBlick[l][iy] = depthK < 1 ? blend565(pal.rows[iy], ff.blickC, depthK) : ff.blickC;
     }
+  }
   }
   for (int iy = 0; iy < H; iy++) {   // ix + 1 > sR  <=>  ix >= floor(sR); ix < sL  <=>  ix < ceil(sL); no band: never (|ix| < PANEL_W)
     float lo = ffloor(fizzSurf[iy]), hi = fceil(fizzSurfL[iy]);   // clamped to int16: the same answers for |ix| < PANEL_W
@@ -6832,7 +6843,7 @@ bool render_init(bool fast) {
     tb.look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
     if (tb.look) {
       FizzLook &fl = *tb.look;
-      fl.valid = fl.masks = false; fl.mask = nullptr;
+      fl.valid = fl.masks = fl.depthValid = false; fl.mask = nullptr;
     }
     ok = ok && tb.look;
     tb.foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB
