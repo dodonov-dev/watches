@@ -82,6 +82,32 @@ export const fillSloshMaxPx = (k: number): number => FILL_SLOSH_MAX_DESIGN_PX * 
 export const ANGLE_HARD_MAX_DEG = 20; // |angle| cap (params.angleMax tightens it, never widens)
 export const ANGLE_VERTICAL_MAX_DEG = 45; // |angle| cap of a vertical watch, whose upper surface stays level against the tilted tube
 export const LIGHT_MAX_DEG = 85;      // |light| cap
+// What the render reads of the physics (perf-cheap A): the light angle, the edge skew and the stand's back tilt, each held
+// in whole steps of *_Q (a power of two: exact in float32 and double) by quantHyst: it follows the spring's value when that
+// leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step at a time on a slow tilt), and
+// comes back to within one step of the value's mean (a QUANT_MEAN_S running average) once it rests on one side (after a
+// motion, the band's lag goes). A still watch's sensor noise then neither rebuilds the palette nor redraws the edge's
+// tiles every frame. Steps: LIGHT_Q_DEG, any palette row moves at most 1 RGB565 LSB a step (STATUS.md, perf-cheap A);
+// ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest tube; BACK_TILT_Q_RAD, the lid's rows likewise. The bands span
+// about twice the board's noise at rest (STATUS). Same constants in firmware physics.h.
+export const LIGHT_Q_DEG = 0.125;
+export const LIGHT_Q_HYST = 3;
+export const ANGLE_Q_DEG = 0.03125;
+export const ANGLE_Q_HYST = 8;
+export const BACK_TILT_Q_RAD = 1 / 4096;
+export const BACK_TILT_Q_HYST = 16;
+export const QUANT_MEAN_S = 0.5;
+/** One physics step of a held value (firmware physics.h quantHyst): `mean` = its running average, updated and returned
+ *  with the new held value (`held`: the current one, a multiple of q). */
+export function quantHyst(v: number, mean: number, held: number, q: number, h: number, dt: number): [number, number] {
+  mean += (v - mean) * Math.min(1, dt / QUANT_MEAN_S);
+  const u = v / q, i = held / q, m = mean / q;
+  if (u - i > h) return [Math.ceil(u - h) * q, mean];
+  if (i - u > h) return [Math.floor(u + h) * q, mean];
+  if (m - i > 1 && u > i) return [held + q, mean];   // resting off the held step: back toward the mean, a step at a time
+  if (i - m > 1 && u < i) return [held - q, mean];
+  return [held, mean];
+}
 export const CAP_DYN_MAX_DESIGN_PX = 12;     // |cap| cap: dynamic meniscus bulge / hollow
 export const capDynMaxPx = (k: number): number => CAP_DYN_MAX_DESIGN_PX * k;
 export const PIN_RELAX_S = 3;         // a held contact line creeps back to the static shape (wrist micro-motion), s
@@ -128,10 +154,14 @@ export interface TubeState {
   retractFrom: number; // fillTarget when the wrap began
   fillPos: number;     // px offset of the edge relative to target (slosh), spring toward 0
   fillVel: number;
-  angle: number;       // deg, in-plane skew of the time edge (+ = bottom contact line leads); follows across-tilt. The home edge of a free slug leans the other way (render.ts edgeSkews)
+  angle: number;       // deg, in-plane skew of the time edge (+ = bottom contact line leads); follows across-tilt. The home edge of a free slug leans the other way (render.ts edgeSkews). Held: angleRaw by quantHyst (ANGLE_Q_*)
   angleVel: number;
-  light: number;       // deg, highlight surface-normal angle in the tube cross-section (0 = centre row, + = toward the top edge); spring toward lightRest()
+  angleRaw: number;    // deg, the spring's skew (angle is what the render reads)
+  angleMean: number;   // quantHyst's running mean of angleRaw
+  light: number;       // deg, highlight surface-normal angle in the tube cross-section (0 = centre row, + = toward the top edge). Held: lightRaw by quantHyst (LIGHT_Q_*)
   lightVel: number;
+  lightRaw: number;    // deg, the spring toward lightRest() (light is what the render reads)
+  lightMean: number;   // quantHyst's running mean of lightRaw
   agitation: number;   // 0..1, gyro energy with fast attack / slow decay: fizz speed, edge glow
   edgeLight: number;   // -1..1, slow along-tilt follower — brightens/dims the fill edge (render only)
   acrossTilt: number;  // -1..1, slow across-tilt follower — meniscus sag toward the low wall (render only)
@@ -203,7 +233,7 @@ export interface TubeState {
 }
 
 export function newTube(): TubeState {
-  return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, light: 0, lightVel: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
+  return { fillTarget: 0, clockPrev: 0, retract: 1, retractFrom: 0, fillPos: 0, fillVel: 0, angle: 0, angleVel: 0, angleRaw: 0, angleMean: 0, light: 0, lightVel: 0, lightRaw: 0, lightMean: 0, agitation: 0, edgeLight: 0, acrossTilt: 0,
     rearLpAlong: 0, rearLpAcross: 0, rearInit: false, rearSmAlong: 0, rearSmAcross: 0, rearAct: 0, rearLatch: false, rearQuiet: 0, rearSx: 0, rearSy: 0, rearX16: 0, rearY16: 0, rearX16w: 0, rearY16w: 0,
     cap: 0, capVel: 0, pinFree: 0, pinHome: 0, lineVFree: 0, lineVHome: 0, filmFree: 0, filmHome: 0,
     trace: new Uint16Array(TUBE_LENGTH_PX), traceWet: new Uint16Array(TUBE_LENGTH_PX), traceLo: TUBE_LENGTH_PX, traceHi: 0, xtPrev: 0, xhPrev: 0, traceInit: false,
@@ -473,20 +503,22 @@ export function stepTube(s: TubeState, inp: TiltInput, p: Params, dt: number, k:
   const angleRest = Math.max(-aMax, Math.min(aMax, p.vertical
     ? Math.min(1, 2 * Math.hypot(poseAlong, poseAcross)) * Math.atan2(poseAcross, Math.abs(poseAlong)) * 180 / Math.PI
     : across * p.angleTiltGain));
-  const angleAcc = -p.angleK * (s.angle - angleRest) - p.angleDamp * s.angleVel;
+  const angleAcc = -p.angleK * (s.angleRaw - angleRest) - p.angleDamp * s.angleVel;
   s.angleVel += angleAcc * dt;
-  s.angle += s.angleVel * dt;
-  if (s.angle > aMax) { s.angle = aMax; s.angleVel = Math.min(0, s.angleVel); }
-  if (s.angle < -aMax) { s.angle = -aMax; s.angleVel = Math.max(0, s.angleVel); }
+  s.angleRaw += s.angleVel * dt;
+  if (s.angleRaw > aMax) { s.angleRaw = aMax; s.angleVel = Math.min(0, s.angleVel); }
+  if (s.angleRaw < -aMax) { s.angleRaw = -aMax; s.angleVel = Math.max(0, s.angleVel); }
+  [s.angle, s.angleMean] = quantHyst(s.angleRaw, s.angleMean, s.angle, ANGLE_Q_DEG, ANGLE_Q_HYST, dt);   // what the render reads
 
   // Light: a full-bore pinned column does not move under roll; roll moves only the light.
   // Spring toward the rest angle, kicked by roll rate (gyro about the tube axis).
   const rest = lightRest(along, across, p);
-  const lightAcc = -p.acrossK * (s.light - rest) - p.acrossDamp * s.lightVel + inp.gyroAlong * p.acrossGyroGain * 10;
+  const lightAcc = -p.acrossK * (s.lightRaw - rest) - p.acrossDamp * s.lightVel + inp.gyroAlong * p.acrossGyroGain * 10;
   s.lightVel += lightAcc * dt;
-  s.light += s.lightVel * dt;
-  if (s.light > LIGHT_MAX_DEG) { s.light = LIGHT_MAX_DEG; s.lightVel = Math.min(0, s.lightVel); }
-  if (s.light < -LIGHT_MAX_DEG) { s.light = -LIGHT_MAX_DEG; s.lightVel = Math.max(0, s.lightVel); }
+  s.lightRaw += s.lightVel * dt;
+  if (s.lightRaw > LIGHT_MAX_DEG) { s.lightRaw = LIGHT_MAX_DEG; s.lightVel = Math.min(0, s.lightVel); }
+  if (s.lightRaw < -LIGHT_MAX_DEG) { s.lightRaw = -LIGHT_MAX_DEG; s.lightVel = Math.max(0, s.lightVel); }
+  [s.light, s.lightMean] = quantHyst(s.lightRaw, s.lightMean, s.light, LIGHT_Q_DEG, LIGHT_Q_HYST, dt);
 
   // Agitation: fast attack on gyro energy, slow decay.
   const shake = Math.min(1, ((Math.abs(inp.gyroAcross) + Math.abs(inp.gyroAlong)) / 200) * p.shakeGain);
@@ -591,8 +623,10 @@ export class ImuFilter {
   readonly pose: Pose = { ...POSE_DEFAULT };
   /** A valid sample has set pose (before it POSE_DEFAULT, face up): the desk view's lid keeps τ 0 until then (firmware). */
   poseValid = false;
-  /** Desk view: the stand's back tilt τ of the pose, 0 before a valid sample (firmware ImuFilter::backTilt). */
-  backTilt(): number { return this.poseValid ? poseBackTilt(this.pose) : 0; }
+  /** poseBackTilt(pose) held by quantHyst (BACK_TILT_Q_*), updated with the pose; its running mean. */
+  private tiltHeld = 0; private tiltMean = 0;
+  /** Desk view: the stand's back tilt τ of the pose (held), 0 before a valid sample (firmware ImuFilter::backTilt). */
+  backTilt(): number { return this.poseValid ? this.tiltHeld : 0; }
   private hpPrevIn = 0; private hpPrevOut = 0;
   private lpGyroAcross = 0; private lpGyroAlong = 0;
   private init = false;
@@ -614,7 +648,12 @@ export class ImuFilter {
     this.lpAcross2 += (this.lpAcross - this.lpAcross2) * a;
     this.lpNormal += (inNormal - this.lpNormal) * a;
     this.lpNormal2 += (this.lpNormal - this.lpNormal2) * a;
-    if (updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2)) this.poseValid = true;
+    if (updatePose(this.pose, this.lpAlong2, this.lpAcross2, this.lpNormal2)) {
+      const t = poseBackTilt(this.pose);
+      if (!this.poseValid) this.tiltMean = t;   // the first valid pose: the mean starts there
+      [this.tiltHeld, this.tiltMean] = quantHyst(t, this.tiltMean, this.tiltHeld, BACK_TILT_Q_RAD, BACK_TILT_Q_HYST, dt);
+      this.poseValid = true;
+    }
     let g: number;
     if (p.gyroHpHz <= 0) g = raw.gyroAcross;
     else {

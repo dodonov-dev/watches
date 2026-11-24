@@ -24,6 +24,32 @@
 #define REAR_EASE_S 0.15f
 #define ANGLE_VERTICAL_MAX_DEG 45.0f   // vertical watch: the surface stays level against the tilted tube
 #define LIGHT_MAX_DEG 85.0f
+// What the render reads of the physics (perf-cheap A): the light angle, the edge skew and the stand's back tilt, each
+// held in whole steps of *_Q (a power of two: the held value is exact in float32 and double) by quantHyst: it follows the
+// spring's value when that leaves +-*_Q_HYST steps around it (motion: to the nearest step inside the band, one step at a
+// time on a slow tilt), and comes back to within one step of the value's mean (a QUANT_MEAN_S running average) once it
+// rests on one side (after a motion, the band's lag goes). A still watch's sensor noise then neither rebuilds the palette
+// nor redraws the edge's tiles every frame. Steps: LIGHT_Q_DEG, any palette row moves at most 1 RGB565 LSB a step
+// (STATUS.md, perf-cheap A); ANGLE_Q_DEG, an edge row at most 1/16 px at the tallest tube; BACK_TILT_Q_RAD, the lid's
+// rows likewise. The bands span about twice the board's noise at rest (STATUS). See sim physics.ts.
+#define LIGHT_Q_DEG 0.125f
+#define LIGHT_Q_HYST 3.0f
+#define ANGLE_Q_DEG 0.03125f
+#define ANGLE_Q_HYST 8.0f
+#define BACK_TILT_Q_RAD (1.0f / 4096)
+#define BACK_TILT_Q_HYST 16.0f
+#define QUANT_MEAN_S 0.5f
+// One physics step of a held value: mean = its running average (updated here, dt), held = the current one (a multiple
+// of q), returned: the new held value. See sim quantHyst.
+inline float quantHyst(float v, float &mean, float held, float q, float h, float dt) {
+  mean += (v - mean) * fminf(1, dt / QUANT_MEAN_S);
+  const float u = v / q, i = held / q, m = mean / q;
+  if (u - i > h) return ceilf(u - h) * q;
+  if (i - u > h) return floorf(u + h) * q;
+  if (m - i > 1 && u > i) return held + q;   // resting off the held step: back toward the mean, a step at a time
+  if (i - m > 1 && u < i) return held - q;
+  return held;
+}
 #define CAP_DYN_MAX_DESIGN_PX 12.0f      // |cap| cap: dynamic meniscus bulge / hollow
 #define CAP_DYN_MAX_PX_AT(k) (CAP_DYN_MAX_DESIGN_PX * (k))
 #define PIN_RELAX_S 3.0f          // a held contact line creeps back to the static shape (wrist micro-motion), s
@@ -62,7 +88,9 @@ struct TubeState {
   // fillTarget: 0..1 from time, as shown (followClock): clockPrev = the clock's fill at the previous call (wrap
   // detection), retract = 0..1 through a wrap's retract (1 = none running), retractFrom = fillTarget at the wrap
   float clockPrev = 0, retract = 1, retractFrom = 0;
+  // angle / light: what the render reads, held by quantHyst (ANGLE_Q_*, LIGHT_Q_*) from the springs' angleRaw / lightRaw
   float fillTarget = 0, fillPos = 0, fillVel = 0, angle = 0, angleVel = 0, light = 0, lightVel = 0, agitation = 0, edgeLight = 0, acrossTilt = 0;
+  float angleRaw = 0, lightRaw = 0, angleMean = 0, lightMean = 0;   // the springs; quantHyst's running means
   // rear (view-angle) parallax (sim TubeState): the tilt low-passed over rearParallaxSettle; the shift quantised once
   // here, 1/16 px, behind air (X16 / Y16) and behind liquid (w: / liquidIor), panel x / rows down. The render and the
   // `x` dump take these integers.
@@ -89,8 +117,8 @@ struct TubeState {
   float slugPos = 0, slugVel = 0, reading = 1;
   float playTimer = 0, playWindow = 0;
   float playAnchorAlong = 0, playAnchorAcross = 0, playDirAlong = 0, playDirAcross = 0;
-  // desk view (render only): the stand's back tilt tau, rad, from the pose (poseBackTilt; set per physics step by main,
-  // 0 = upright). The render's lid height follows it with params viewElevation. See sim TubeState.backTilt.
+  // desk view (render only): the stand's back tilt tau, rad, from the pose (ImuFilter::backTilt, held by quantHyst; set per
+  // physics step by main, 0 = upright). The render's lid height follows it with params viewElevation. See sim TubeState.backTilt.
   float backTilt = 0;
   // the flags together (no padding after each): rear gate latched, rear parallax primed, trace prev positions primed,
   // play anchor primed
@@ -162,9 +190,10 @@ struct ImuFilter {
   float lpAlong = 0, lpAcross = 0, lpAlong2 = 0, lpAcross2 = 0, hpPrevIn = 0, hpPrevOut = 0, lpGyroAcross = 0, lpGyroAlong = 0;
   float lpNormal = 0, lpNormal2 = 0;
   Pose pose = POSE_DEFAULT;
+  float tiltHeld = 0, tiltMean = 0;   // poseBackTilt(pose) held by quantHyst (BACK_TILT_Q_*), updated with the pose; its mean
   bool poseValid = false;   // a valid sample has set pose (before it: POSE_DEFAULT, face up; the lid's tau stays 0, backTilt())
   bool init = false;
-  float backTilt() const { return poseValid ? poseBackTilt(pose) : 0.0f; }   // desk view: the stand's back tilt, 0 before a valid sample
+  float backTilt() const { return poseValid ? tiltHeld : 0.0f; }   // desk view: the stand's back tilt (held), 0 before a valid sample
   void reset() { init = false; hpPrevIn = hpPrevOut = lpGyroAcross = lpGyroAlong = 0; }
   TiltInput step(const TiltInput &raw, const Params &p, float dt = PHYS_DT);
 };
