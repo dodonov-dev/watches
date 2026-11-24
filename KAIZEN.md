@@ -1045,3 +1045,22 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - fizzBodiesFor's geometry rebuild clears FIZZ_C_BURST (contact = 0): a popping bubble then settles as foam for its last <= 0.3 s.
 - check_fizz_steps: the board/host settle cost ratio (~250-500x on the drain) is only inferred from frame logs; a FIZZ_PROF placement counter on the board would pin it.
 - Drain start with ~150 live bubbles: one 77-142 ms frame (stranded-foam bursts in one step at retract 0.03-0.08); spreading the bursts over steps would hide it.
+
+## perf-cheap (2026-11-24)
+- IMU: QMI8658 at 500 Hz ODR, no LPF (CTRL5 0), read once per 20 ms step: the rest noise (~0.4 mg, 1 mg `i` resolution) is
+  the full 250 Hz band aliased. The chip's accel LPF or averaging the samples per step would cut it ~2-3x at no lag cost.
+- Vertical watch flat on its back: angleRest = min(1, 2|g_inplane|) atan2 of the in-plane noise: ~0.2 deg p2p of edge skew
+  from noise alone (now held by quantHyst; the rest pose itself is arbitrary there).
+- Lying on its side (along ~0.06 g), the vertical watch's free slug slides along at rest (reading 0): the minutes tube redraws
+  every frame for real motion, not noise (the board's pose during the 2026-11-24 benches).
+- check:presets (npm script) runs node_modules/.cache/check-presets/tools/check-presets.js but tsc emits sim/tools/...
+  there (the script imports outside sim/): fails on a fresh checkout; run the emitted path.
+- B1 changed GCC's inlining of tickPx / stepFizzTube (+256 B IRAM, no code of theirs touched): the IRAM budget moves with
+  unrelated edits in render.cpp's translation unit.
+- The highlight band (highlightTop) moves by whole rows at its light thresholds: a light held within 0.1 deg of its mean can
+  sit on the other side of one than the noisy spring mostly did (~76 px a frame outside the old 1-s envelope, side pose).
+- Not done (brief B): hash only possibly-changed tiles (needs every stage's per-band inputs proven equal: palette, shade,
+  edges / strokes, residue columns, mark plans, this and last frame's fizz lists, lens); ramp alpha from a phase table
+  (edges are arbitrary floats per row, no exact phase key); tick / label plan memo (rear shifts, parallax floats, inkRow,
+  planTicks' digitRows depth side effect: a wide key for O(ticks + glyphs) work); residue row constants (2 divisions, 2
+  expand565 and 6 table loads a row); skipping frames with no input change (fizz on in the user's look: never idle).
