@@ -5876,6 +5876,14 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
 #define TILE_BAND_END(rb0, rb1) ((void)0)
 #define TILE_BAND_SPARES(rb0, rb1) ((void)0)
 #endif
+  // The liquid body's solid span of row ry, [lo, hi): written at full body colour before its soft-edge ramps; in trace
+  // mode the partially covered pixels keep their underlay until the AA pass blends them.
+  auto solidSpan = [&](int ry, int &lo, int &hi) __attribute__((always_inline)) {
+    const float ex = edges[ry], exL = edgesL[ry];
+    const int x0 = capX0[ry], xi = (int)ffloor(ex), xiL = (int)ffloor(exL), xa = x0 > xiL + 1 ? x0 : xiL + 1;
+    lo = traceMode && softW > 0 ? (int)fmx(xa, fceil(exL + softW * 0.5f - 0.5f)) : xa;
+    hi = traceMode && softW > 0 ? (int)fmn(xi, ffloor(ex - softW * 0.5f - 0.5f) + 1) : xi;
+  };
 #ifndef TUBE_BAND_INLINE
   auto bandRows = [&](const int rb0, const int rb1) TUBE_IRAM {
 #else
@@ -5883,7 +5891,14 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
   const int rb1 = rb0 + TUBE_BAND < H ? rb0 + TUBE_BAND : H;
   TILE_BAND_START(rb0);
 #endif
-  for (int ry = rb0; ry < rb1; ry++) hspan(y0 + ry, 0, L, bBack[ry]);   // the tube back
+  // The tube back, but not under the liquid body's solid span (solidSpan): the body's hspan below rewrites those pixels and
+  // nothing between reads them (the residue and the nose backing work outside the edges' ramps), so they were dead stores.
+  for (int ry = rb0; ry < rb1; ry++) {
+    int sa = 0, sb = 0;
+    if (hasLiquid) { solidSpan(ry, sa, sb); if (sa < 0) sa = 0; if (sb > L) sb = L; }
+    if (sb > sa) { hspan(y0 + ry, 0, sa, bBack[ry]); hspan(y0 + ry, sb, L, bBack[ry]); }
+    else hspan(y0 + ry, 0, L, bBack[ry]);
+  }
   TU_MARK(TU_BACK);
   if (trRows) {
       const float hw = softW * 0.5f;
@@ -6024,10 +6039,7 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
     if (!hasLiquid) continue;
     int xi = (int)ffloor(ex); float frac = ex - xi;
     int xiL = (int)ffloor(exL); float fracL = exL - xiL;
-    int xa = x0 > xiL + 1 ? x0 : xiL + 1;
-    // Preserve the underlay in partially covered pixels until the AA pass blends them.
-    const int solidLo = traceMode && softW > 0 ? (int)fmx(xa, fceil(exL + softW * 0.5f - 0.5f)) : xa;
-    const int solidHi = traceMode && softW > 0 ? (int)fmn(xi, ffloor(ex - softW * 0.5f - 0.5f) + 1) : xi;
+    int solidLo, solidHi; solidSpan(ry, solidLo, solidHi);
     hspan(y0 + ry, solidLo, solidHi, bRows[ry]);
     if (p.edgeSoft > 0) {  // soft edge: a coverage ramp `w` px wide centred on the geometric edge.
       // The glow (if any) folds into the same per-pixel alpha min(1, cov + g), anchored to the
