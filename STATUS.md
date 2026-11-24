@@ -1,70 +1,58 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-24 (perf-cheap: held physics inputs, exact render memos; Astra reviews 1-2 addressed, board-checked)_
+_Last update: 2026-11-24 (perf-cheap: exact render memos B + palette key A'; the physics hold A dropped; board-checked)_
 
-## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af, after Astra reviews 1 and 2; board-checked
+## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af: B (exact render memos) + A' (palette key); board-checked
 
-- A, held physics inputs (ca2749a, 5c8baee, adbec27, 86a1a01): what the render reads of the light angle and the edge skew is
-  held by quantHyst (physics.h, mirrored in sim physics.ts). Motion: it follows the spring when that leaves +-3 / 8 steps of
-  1/8 / 1/32 deg (to the nearest grid step inside the band, a step at a time on a slow tilt; onto a limit a step a physics
-  step), and a slow change while the 1 s mean sits over half the band away. Rest: after 2 s without a move, once the spring
-  passes its mean, it walks to the mean in eighth steps and holds exactly that mean; it settles again (eighth steps) when the
-  spring's envelope (peaks relaxing toward the mean over 1 s) leaves it. So at rest one value, from inside the spring's own
-  recent range: the palette (keyed on the light) and the edge tiles stay, and discrete functions of the light / skew (the
-  highlight row, highlightTop; the edge rows' wet share) show what the noisy spring showed. Settled error: within the
-  spring's envelope; a drift inside it is not followed. heldReseat(s, p) on every params change (firmware paramsChanged with
-  the eff params, sim edits once accepted, sim pull, the A/B tube): springs clamped to the new limits, held at them, before
-  any render. The stand's back tilt is not held (review 1: the lid's end factor; holding it saved ~6 of 7380 tile pairs a frame).
-- Parity: every value a hold threshold sees is float32 in the sim (Math.fround, step for step) and uses the shared pAtan2 /
-  pExpNeg (+ - * / only, fp-contract off; 0 madd.s in the LCD physics object) instead of atan2f / expf: check_held 14 cases,
-  sim == firmware on every step of each (math 20000 inputs bit for bit; board rest noise stand / flat; slow tilt; swing; review
-  1's lightAngle 32 -> 32.0937652587890625 repro and 4 more settled cases; review 2's LCD atan2f pose; angleMax 6 -> 0;
-  vertical -> landscape; a slow tilt into the cap), sampled right after heldReseat too. Rest: whole-step moves 0, eighth-step
-  settle moves light / angle 12 / 27 (stand) and 10 / 50 (flat) in 50 s.
-- Step proof (docs/perf-cheap/tools/palstep.cpp): 77 presets + 3 looks, both tubes, every 1/8 deg pair over +-85 deg: rows,
-  bubbleIn, tubeBackRows, bubbleRimRows, bandInner, bandLensMix <= 1 RGB565 LSB per channel; bandRimC 2 G LSB on 2 entries
-  (cola, cola-big: a 1-LSB back-row step amplified by its mix; the same at 1/16 deg); the highlight band moves whole rows at its
-  own thresholds. Angle: <= 0.058 px a step at the 320w8-8 tallest tube's end rows (0.065 px at 9 mm, H 121).
-- Noise (board, `i` stream at rest, 40 s, ~0.4 mg; docs/perf-cheap/tools/imu_rest_dev.txt) through ImuFilter + stepTube on the
-  lid fixture: spring p2p light 0.26 deg (stand) / 0.04 (flat) / 0.37 (on its side); angle 0.08 / 0.21 deg.
-- Evidence vs 87f19af (noise.cpp: lcd316 tiles, the shown rows through the push-lens map, native RGB565, fizz off; cmp.py: same
-  input, same instant and against the old frames of the last second). Lid fixture, the board's noise, per frame px changed /
-  dirty pairs: stand hours 150 / 77 -> 7.7 / 6.1, minutes 180 / 81 -> 9.4 / 5.7 (the unheld back tilt); flat 1.0 / 0.8 -> 0;
-  same instant max 9/255, 0 px > 12/255 (stand, flat, side); outside the old's last-second range 0.03 / 0 / 0.50 px a frame.
-  Stock sweep (docs/perf-cheap/tools/sweep.py, sweep-86a1a01.jsonl: 76 presets with a highlight band x stand / flat /
-  review 2's cola pose (0, 0.0328, 0.99946) / side): outside the old's range 0.08 / 0.16 / 0.24 px a frame on average (worst
-  preset 0.6 / 0.9 / 1.1; sparse pixels up to 174/255), side 6.0 (worst 52, mercury-big: free slugs sliding, a motion case);
-  changed px a frame (both tubes) 706 -> 12 (stand), 638 -> 14 (flat), 120 -> 15 (cola pose). Same-instant maxima up to
-  231/255 are the old's own row flicker (cola at its pose: rows 24 / 25 on 166 / 134 frames; the new holds one).
+- Why not A (the physics-side hold of light / skew / back tilt, commits ca2749a..86a1a01, reverted in 338b7ee): a held
+  physics output feeds every hard threshold downstream (the highlight row, the edge rows' wet share, the lid's end factor),
+  and each fix moved the failure (Astra reviews 1-3: a held light on the wrong highlight row at rest, a settle latching
+  outside its envelope under vibration, an unstable shared exp at accelLpHz 600, a rejected material pull mutating state, a
+  cap / mean cycle rebuilding the palette). The physics is 87f19af's again (no diff in physics.h / .cpp / physics.ts).
+- A' (render.cpp aprime_patch.py, sim render.ts): the palette's colours are built for lightKey, the exact light in 1/8 deg
+  steps, per tube as render state, re-keyed only when the exact light leaves it by 0.075 deg (float32: fabsf(light - key) >
+  0.075f, key = floorf(light / 0.125f + 0.5f) * 0.125f); the palette is keyed on (lightKey, hiTop, gen, H). Every decision the
+  light takes stays on the exact light, as in 87f19af: the highlight band's row (highlightTop; buildPalette's band rows and its
+  tent take it), the surface blick's row, the fizz's highlight row, the inset. Colours only from the key: the Lambert weight lam
+  (body shading, glassW's lam term), rowL -> bubbleRimRows, rowK. Colour bound (docs/perf-cheap/tools/palstep.cpp: the palette
+  at every exact light, 1/64 deg over +-85 deg, against every key renderTube can hold for it, the same exact-light row on both
+  sides): the user's look <= 1 RGB565 LSB per channel; cola <= 2 green LSB (bandRimC, 2 entries): A' moves colours by <= 2 LSB.
+  Known bound (KAIZEN): a rear tick's contrast floor can flip on a 1-LSB backing step; not reached in the evidence runs.
+- Replay: the `x` dump prints the light with %.9g and an LKEY line (each tube's key after the dump's render); render-ref takes
+  the key as final for that frame; a dump without LKEY renders the palette at the exact light. The sim's highlightTop is
+  render.cpp's float32 expression (Math.sin rounded once for sinf: an ulp apart at an exact boundary is possible).
+- Evidence vs 87f19af (noise.cpp / cmp.py, the board's recorded rest noise, lcd316 tiles, the shown rows, fizz off; the user's
+  look = board-look-before.json): same-instant max 8 / 5 / 8 / 0 /255 and 0 px > 12/255 (user's look stand / flat, cola stand /
+  flat); outside the old's last-second range 19.3 px a frame (max 8/255, user's look at the stand: whole palette rows a key step
+  apart), else 0. Palette builds a frame per tube 1.0 -> 0.02 (user's look, stand), 1.0 -> 0 (the rest). Changed px a frame:
+  user's look stand hours 4.0 -> 5.6, minutes 7.2 -> 16.3 (a re-key changes whole rows by 1 LSB), flat 52.7 / 15.7 -> 7.6 / 7.1,
+  cola stand 26.9 / 8.1 -> 2.7 / 2.3. A' saves the palette builds on the render cores; the push still sees the edge noise.
 - B1 (7eb1585, 86a3b26, bc56999): no tube-back fill under the body's solid span; one solidSpan per band row, both ends
   clipped to [0, PANEL_W] (hspan's own clip; byte-identical for the finite extremes tried: edgeSoft 40000 / 70000, edgeGlow
-  50000, edgeSoft -5 on amoled191 strip and lcd316 strip / tiles; edgeSoft 3e9 hits a pre-existing float-to-int UB earlier, in
-  both revisions), the back through one noinline IRAM backRow, the band's spans in the Tube. B2 (19a5e33): fizz depth colours
-  keyed on pal.ver / shade build / H / fizzDepth / liquidTransparency / bubbleDark / blickC. B3 (2f898cf, 6f35940): wet share
-  kept while every row's (ceil lo, ceil hi) repeats; the key is written without reads on first use or a new H. Skipped
-  (KAIZEN): hash-only-changed tiles, ramp phase table, tick / label plan memo, residue row constants, idle-frame skip.
-- Host (HEAD): check_render_frames vs 87f19af (strip, --tiles, --big-fizz, --no-fizz) 13136 byte-identical; check_fizz_steps
-  vs 87f19af 80 / 80 (amoled191, lcd316 tiles: B only, both sides this physics); --sim --free 25 / 25 vertical;
-  check_board_render 320w8-8 (strip, --tiles, --tiles --push-lens), 240f, amoled191, 3 looks: every line as 87f19af (75 / 77,
-  cola / malt); check_held 14 / 14; check:meniscus 560 scenes, 14312 px, max 9/255 (as 87f19af); check:imu, check:presets,
-  check_mirrors (9 idiom drifts as before), sim tsc / build; test_compare_device.
-- Builds vs 87f19af: lcd316@320w8-8 IRAM +664 B (backRow 160, the band loop, GCC re-inlining tickPx / stepFizzTube ~256),
-  DRAM data +80 B (TubeState +36 B each: raw, mean, envelope, quiet of both holds), flash text +3304 B, bin +4080 B; PSRAM +460
-  B a tube allocated at boot (wet-share key 432 B, FizzLook key +28 B); Tube +16 B (tiled) / +32 B (strip) of band span
-  scratch; render worker stack free 844 -> 796 B (drawTube's TubeState copy).
-- Board (lcd316@320w8-8, the user's look, lying on its side: along -0.00 across 0.94 normal 0.35; one session, the same
-  pose; bench median fps / render ms / push ms):
+  50000, edgeSoft -5; edgeSoft 3e9 hits a pre-existing float-to-int UB earlier, in both revisions), the back through one
+  noinline IRAM backRow, the band's spans in the Tube. B2 (19a5e33): fizz depth colours keyed on pal.ver / shade build / H /
+  fizzDepth / liquidTransparency / bubbleDark / blickC. B3 (2f898cf, 6f35940): wet share kept while every row's (ceil lo,
+  ceil hi) repeats; the key written without reads on first use or a new H. Skipped (KAIZEN): hash-only-changed tiles, ramp
+  phase table, tick / label plan memo, residue row constants, idle-frame skip. Astra reviews 2-4: B1-B3 pass.
+- Host (HEAD): check_render_frames (strip, --tiles, also --big-fizz / --no-fizz) and check_fizz_steps (amoled191, lcd316
+  tiles) against 87f19af + aprime_patch.py: byte-identical (B exact); check_board_render 320w8-8: every line as 87f19af
+  (75 / 77, cola / malt); test_compare_device; sim tsc / build; check:imu.
+- Builds vs 87f19af, lcd316@320w8-8: IRAM +680 B (backRow 160, the band loop, GCC re-inlining tickPx / stepFizzTube), DRAM
+  bss +64 B (the band span scratch, the key), flash text +1108 B, bin +1808 B; PSRAM +460 B a tube at boot (the wet-share key
+  432 B, FizzLook key +28 B); render worker stack free 844 -> 828 B.
+- Board (lcd316@320w8-8, the user's look, lying on its side: along 0.07 across 0.98; one session, builds alternated 87f19af /
+  HEAD / 87f19af / HEAD; bench medians of 2 runs x 5 samples each, push = the median of the samples' push too):
 
-  | build | stand pose pinned | live IMU (2 runs) | inputGain 0 (2 runs) | motion (tilt.py swing, 40 s mean) |
-  |---|---|---|---|---|
-  | 87f19af | 51.6 / 18.82 / 1.51 | 44.3, 44.4 / 21.18, 21.16 / 0.66, 0.71 | 49.5, 49.2 / 18.94, 19.05 / 0.63, 0.65 | 45.7 / 21.23 / 2.80 |
-  | A only (87f19af + A's physics) | 51.6 / 18.74 / 1.46 | 46.0, 46.0 / 20.37, 20.37 / 0.58, 0.66 | 49.9, 49.9 / 18.77, 18.79 / 0.63 | 47.0 / 20.63 / 2.74 |
-  | 5406ace (A + B) | 53.9 / 17.96 / 1.48 | 45.2, 46.6 / 20.55, 20.05 / 1.12, 1.08 | 48.6, 48.5 / 19.23, 19.29 / 1.05, 1.06 | 48.0 / 20.17 / 2.73 |
-  | 86a1a01 (A review 2) | 53.3 / 18.18 / 1.48 | 44.2, 46.7 / 21.12, 19.98 / 0.99, 0.98 | 49.0, 48.8 / 19.10, 19.17 / 0.99, 0.90 | not run |
+  | | stand pose pinned | live IMU | inputGain 0 |
+  |---|---|---|---|
+  | 87f19af, 1st / 2nd | 51.6 fps, 18.79 ms, push 1.50 / 51.6, 18.79, 1.50 | 41.7, 22.48, 1.74 / 41.5, 22.55, 1.94 | 46.8, 20.10, 1.05 / 47.3, 19.86, 1.01 |
+  | HEAD, 1st / 2nd | 53.4, 18.15, 1.44 / 53.1, 18.24, 1.45 | 44.1, 21.23, 1.62 / 44.0, 21.25, 1.71 | 49.0, 19.11, 1.00 / 49.2, 19.04, 1.00 |
 
-  Live minus pinned render: 87f19af +2.2 ms, A only +1.6 ms (the rest of it: the minutes slug sliding in this pose); the stand
-  pose gains 2.3 fps from B. The B builds push ~0.35 ms more in this pose than 87f19af (KAIZEN). compare-device on 86a1a01:
-  17 px off, 0 > 12/255. The board is left on 86a1a01 with the user's look (`p?` = board-look-before.json).
+  HEAD gains about 1.6 fps at the stand pose, 2.5 fps live and 2 fps with the IMU pinned; live minus pinned render 2.4-2.7 ms
+  -> 2.1-2.2 ms (the rest: this pose's sliding minutes slug and the edge noise). With medians the side-pose push of the B builds
+  is no higher than 87f19af's (0.995-1.00 vs 1.01-1.05 ms pinned): the earlier +0.35 ms was the last-window value, not a
+  median (review 3). compare-device on HEAD: 21 px off, 0 > 12/255. The board is left on HEAD (elf 8423fe49) with the user's
+  look (`p?` = board-look-before.json).
 
 ## Tilted fizz / desk view, 2026-11-23, branch `tilted_rise` 2267723, board-checked (lcd316@320w8-8)
 

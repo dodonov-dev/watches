@@ -1057,8 +1057,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   there (the script imports outside sim/): fails on a fresh checkout; run the emitted path.
 - B1 changed GCC's inlining of tickPx / stepFizzTube (+256 B IRAM, no code of theirs touched): the IRAM budget moves with
   unrelated edits in render.cpp's translation unit.
-- The stand's back tilt is not held (review 1): holding it would need a quantity linear in the lid (lidEnd's
-  1 / max(1, 2R tan tau) near the end glass); it would save ~6 dirty tile pairs a frame per tube at rest.
+- perf-cheap A (holding the physics' light / skew / back tilt, reverted in 338b7ee): any held physics output feeds hard
+  thresholds downstream (highlight row, wet share, the lid's end factor); reviews 1-3 found a new failure each round. A' keys
+  only the palette's colours instead. The edge skew still shimmers with the IMU noise at rest (a few edge tiles a frame).
 - Host checks allocate with calloc (check_board_render, check_render_frames): uninitialised PSRAM reads stay hidden. A
   0xa5-filled stub changes what they read but cannot detect the read itself (review 2); valgrind / MSan on the host
   harness would.
@@ -1068,6 +1069,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   (edges are arbitrary floats per row, no exact phase key); tick / label plan memo (rear shifts, parallax floats, inkRow,
   planTicks' digitRows depth side effect: a wide key for O(ticks + glyphs) work); residue row constants (2 divisions, 2
   expand565 and 6 table loads a row); skipping frames with no input change (fizz on in the user's look: never idle).
-- perf-cheap board lying on its side (2026-11-24): the B builds push ~0.35 ms more a frame than 87f19af / A-only with the
-  IMU pinned or live (0.98-1.12 vs 0.58-0.71 ms) while the stand pose is unchanged (1.48 vs 1.51): unexplained (the strips
-  are byte-identical; the staggered push's overlap with the faster renders?).
+- perf-cheap A' (review 4): a rear tick's contrast floor picks lighter / darker from the quantised backing colour, so a
+  1-LSB body-row step (a held palette key) can flip a tick grey <-> black. Not reached on the user's look or cola at stand
+  / flat with the board's noise (same-instant max 8/255, 0 px > 12/255 against 87f19af); a known bound.
+- Pre-existing (review 4): the hard-edge glow table (effectTable) keys on pv = 0 when the edge shade is off, so with
+  edgeSoft 0, 0 < edgeGlow <= 16 and edgeLight / agitation constant it can keep the previous highlight row's colours across
+  a palette rebuild; its key needs pal.ver on the unshaded path too.
+- The sim builds its palette every animation frame, also when paused or when the key and row repeat (review 4-sim): a
+  per-tube palette cache keyed on (params, key, row) would save it.
