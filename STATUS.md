@@ -1,6 +1,32 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-25 (edge-ends: edgeShadeEnd, darker very edges by the rod's side-view magnification; board-checked)_
+_Last update: 2026-11-25 (fizz-light: fizzPhys, each bubble lit where it is; host-checked, not on the board yet)_
+
+## Fizz light (2026-11-25), branch `fizz-light` on edge-ends 41121d2: fizzPhys; host-checked, NOT flashed
+
+- Params v36: `fizzPhys` 0..1 (default 0, UI "· fizz physical light", after fizzBlick; a gas key). 0 = the explicit look,
+  the old path byte for byte. > 0: each bubble's ring, core shift, pinpoint and tint follow the light it gets where it
+  is, blended with the explicit values. Model: docs/fizz-light/model.md (Astra's physics check: astra-model.md).
+  - Ring = total internal reflection: it mirrors what is beside and behind the bubble (four probes over that cone), each
+    probe's light carried through the liquid (liquidTransparency -> absorption) from the bore wall, the open surface or an
+    end. So in a dark liquid rings glow near the surface and the walls and fade in the depth; in a clear one little changes.
+  - Pinpoint = the key light's Fresnel reflection (key = world-up from the pose along the tube, the palette's light across):
+    on the upper side of every bubble on the stand, weak face-on, gone where the ink is in the way.
+  - Desk-view lid: foam under it is seen from above through the surface (short view path): clear rings with glints.
+  - A ring brighter than the liquid thickens toward the light, a darker one (the pale look's shade crescents) away from
+    it; under fizzPhys the ring thins but never opens (core shift <= 0.6 px).
+- Sim: sim/src/fizzLight.ts + render.ts step 5. Firmware: firmware/src/fizz_light.h, render.cpp planFizz / planBubbleLit
+  (flash, not IRAM); the pose comes from the last fizz step (FizzLook fizzUp). Pictures (sim, old | new, the rod's stretch
+  applied): docs/fizz-light/ink-lid-0-0.5-1.png, ink-tilted-0-1.png, pale-0-1.png.
+- NVS: v35 blobs (732 B) migrate to v36 (fizzPhys 0); boot line `params: restored from nvs (v35 -> v36: fizzPhys 0)`.
+- Checks: check_fizz_light (new: table and tone exact, frames 2e-7, fizzLit bit for bit on the sim's frames, 100000
+  bubbles; ASan / UBSan clean); check_render_frames vs df7a94c default / --big-fizz / --tiles 13136 strips byte-identical;
+  check_fizz_steps --reference amoled191 and lcd316@320w8-8 tiles 80 of 80, fizzPhys 1 / 0.5 strip = tiles 80 of 80;
+  --sim lockstep 27 of 27, --free 25 of 25 vertical; test_params_nvs all ok; sim build, check:presets, check:materials
+  1145 / 0, check:imu.
+- Cost: per bubble 4 roots, 2-3 divisions, 6 table lerps (host 32 ns vs 2.6 ns for the explicit set-up), nothing per
+  pixel; lcd316@320w8-8 build IRAM +28 B, DRAM 0, flash +7.6 KB; PSRAM + ~1.2 KB a tube. Board fps not measured yet.
+- Open: flash + bench (FIZZ_PROF planBubble share, fps at fizzPhys 0 / 1) and the look check with the user.
 
 ## Edge shade ends (2026-11-25), branch `edge-ends` on perf-cheap 5ef545f: edgeShadeEnd + width; board-checked (lcd316@320w8-8)
 
