@@ -77,6 +77,14 @@ static inline double shadePitch() {
   const float pxmm = PX_PER_MM;
   return (double)PANEL_H / R / (double)pxmm;
 }
+// The edge end (edgeShadeEnd e; render.cpp buildShade, sim render.ts ROD_END_W / rodEndFactor, the same table and
+// operations): extra darkness at the tube's very edge, falling off inward by the rod's side-view magnification. Weight
+// w_m of the panel row m rows in from the tube's outermost one (m = 0: the outermost), per row parity [span % 2]; rows
+// from ROD_END_ROWS in: 0. A row's code factor F (the profile's, before the canvas averaging and the lens) becomes
+// F (1 - e w_m). Placeholder, all 0 (byte-identical to no edge end) until docs/edge-shade-ends/astra-model3.md.
+#define ROD_END_ROWS 16
+static const double ROD_END_W[2][ROD_END_ROWS] = {};
+static inline double rodEndFactor(double F, double e, int par, int m) { return m < ROD_END_ROWS ? F * (1 - e * ROD_END_W[par][m]) : F; }
 // The tube's rays (RodRays), panel rows `pitch` mm apart.
 static inline void rodRays(double R, double g, double n, double pitch, RodRays &r) {
   double d0, t0; rodRay(0, R, g, n, d0, t0);

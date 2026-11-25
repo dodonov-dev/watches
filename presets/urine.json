@@ -1,5 +1,5 @@
 {
-  "v": 33,
+  "v": 34,
   "tubeHeight": 46,
   "hoursY": 12,
   "minutesY": 185,
@@ -31,6 +31,7 @@
   "edgeShade": 0,
   "edgeShadeShape": 1.5,
   "edgeShadeFold": 0.4,
+  "edgeShadeEnd": 0,
   "bubbleRim": "#322606",
   "highlightH": 17,
   "highlightBright": 0.35,

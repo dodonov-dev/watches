@@ -3183,6 +3183,13 @@ export function rodGammaInv(a: number): number {
   return (lo + hi) / 2;
 }
 const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: (RodRayTable | undefined)[] = [];
+/** The edge end (edgeShadeEnd e; firmware rod.h ROD_END_W / rodEndFactor, the same table and operations): weight w_m of
+ *  the panel row m rows in from the tube's outermost one (m = 0: the outermost), per row parity [span % 2]; rows from
+ *  ROD_END_ROWS in: 0. A row's code factor F becomes F (1 − e w_m). Placeholder, all 0 (byte-identical to no edge end)
+ *  until docs/edge-shade-ends/astra-model3.md. */
+const ROD_END_ROWS = 16;
+const ROD_END_W: [Float64Array, Float64Array] = [new Float64Array(ROD_END_ROWS), new Float64Array(ROD_END_ROWS)];
+function rodEndFactor(F: number, e: number, par: number, m: number): number { return m < ROD_END_ROWS ? F * (1 - e * ROD_END_W[par][m]) : F; }
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. The perceptual profile (docs/edge-shade-session/astra-model.md section 3; firmware render.cpp
  *  buildShade, the same double operations in the same order, fixed steps): target lightness along the apparent offset x
@@ -3192,16 +3199,19 @@ const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: (RodRayTabl
  *  nowhere), each group's least-squares linear factor Σ τ·Y_t / Σ τ² → code factor F = clip(a^(1/2.2), 1 − s, 1), a
  *  row no ray reaches the plateau's (an empty plateau 1 − s). Canvas row y covers the panel's rows [bs(y), bs(y +
  *  1)) (the LCD's nearest-neighbour upscale; one each at 320 and on the AMOLED): their mean F, T = 256 − round(256 F).
- *  One cache entry per tube (faces mix tube heights). */
+ *  The edge end (edgeShadeEnd e, rodEndFactor) multiplies each panel row's F by its weight first (row j's G, the rows
+ *  of the pooled plateau each their own); on with e alone too (F 1 there). One cache entry per tube (faces mix tube
+ *  heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
   const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade)));
   const fo0 = f(p.edgeShadeFold), fold = fo0 !== fo0 ? f(0.4) : Math.max(0, Math.min(1, fo0));
   const sh0 = f(p.edgeShadeShape), sh = sh0 !== sh0 ? f(1.5) : Math.max(f(0.5), Math.min(3, sh0)), q2 = Math.floor(f(f(sh * 2) + 0.5));
-  const key = `${y0}:${H}:${k}:${fold}:${q2}`, hit = edgeShadeCache[idx];
+  const e0 = f(p.edgeShadeEnd), e = e0 > 0 ? Math.min(1, e0) : 0;   // (a NaN or a missing key: 0)
+  const key = `${y0}:${H}:${k}:${fold}:${q2}:${e}`, hit = edgeShadeCache[idx];
   if (hit && hit.key === key) return hit.rows;
   let rows: Uint16Array | null = null;
-  if (k > 0) {
+  if (k > 0 || e > 0) {
     const Rr = TUBE_ROD_MM[idx] / 2, [sF, sT] = rodFolds[idx] ??= rodFold(Rr, ROD_GAP_MM, ROD_N);
     const R = BOARD === 'lcd316' ? LCD_PANEL_H : PANEL_H, bs = (y: number): number => Math.floor((y * R + PANEL_H - 1) / PANEL_H);
     const pitch = PANEL_H / R / PX_PER_MM, ry = rodRayTables[idx] ??= rodRays(Rr, ROD_GAP_MM, ROD_N, pitch);
@@ -3222,11 +3232,13 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
     };
     F[plateau] = solve(plateau, 1 - s);
     for (let j = 0; j < plateau; j++) F[j] = solve(j, F[plateau]);
+    const G = new Float64Array(groups);
+    for (let j = 0; j < groups; j++) G[j] = rodEndFactor(F[j < plateau ? j : plateau], e, span % 2, groups - 1 - j);
     rows = new Uint16Array(H);
     for (let y = 0; y < H; y++) {
       const p0 = bs(y0 + y), p1 = bs(y0 + y + 1);
       let sum = 0;
-      for (let q = p0; q < p1; q++) { const j = Math.floor(Math.abs(q + 0.5 - c) - o + 0.5); sum += F[j < plateau ? j : plateau]; }
+      for (let q = p0; q < p1; q++) sum += G[Math.floor(Math.abs(q + 0.5 - c) - o + 0.5)];   // (< groups)
       rows[y] = 256 - Math.floor(256 * (sum / (p1 - p0)) + 0.5);
     }
   }

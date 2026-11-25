@@ -29,6 +29,7 @@ export interface Params {
   lensCurve: number;     // -3..3 profile; negative reverses the distortion direction
   edgeShade: number;     // 0..1 darkening toward the tube's long edges in the shown rows (after the lens), hue kept: colour × (1 − edgeShade) at full depth; 0 = off
   edgeShadeFold: number; // 0..1 how much of the rod's fold-back zone (past the fold, toward total internal reflection) is covered at full depth
+  edgeShadeEnd: number;  // 0..1 extra darkness at the very edge (outermost panel row), falling off inward by the rod's side-view magnification (render.ts edgeShadeRows); 0 = off
   edgeShadeShape: number; // 0.5..3 in steps of 0.5: shape q of the perceptual profile (render.ts edgeShadeRows): target lightness falls as (x / x_e)^q along the apparent offset; 1 = evenly, > 1 keeps the shoulder lighter
   bubbleRim: string;
   // --- layout (px) ---
@@ -205,7 +206,7 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 33;
+export const PARAMS_VERSION = 34;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
@@ -240,6 +241,7 @@ export const DEFAULT_PARAMS: Params = {
   edgeShade: 0,
   edgeShadeShape: 1.5,
   edgeShadeFold: 0.4,
+  edgeShadeEnd: 0,
   bubbleRim: '#b0c7a9',
   highlightH: 11,
   highlightBright: 1,
@@ -1651,6 +1653,7 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   if (from < 31) r.edgeShadeFold = DEFAULT_PARAMS.edgeShadeFold;   // the plateau past the fold, at its default cover
   if (from < 32) r.edgeShadeShape = DEFAULT_PARAMS.edgeShadeShape;   // the perceptual profile's shape; edgeShadeFrom / To (v30) and edgeShadePow (v32) go
   if (from < 33) r.viewElevation = DEFAULT_PARAMS.viewElevation;   // the desk-view lid, off
+  if (from < 34) r.edgeShadeEnd = DEFAULT_PARAMS.edgeShadeEnd;   // the edge end darkness, off
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1682,6 +1685,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   edgeShade: { help: 'Darkens everything drawn in the tube toward both long edges, hue kept (colour × (1 − edge shade) at full depth): the rod magnifies the pixel rows there, so their stripes and rainbow show less. Applied to the rows the panel shows (after the lens). 0 = off.', group: 'Glass', label: 'edge shade', min: 0, max: 1, step: 0.01 },
   edgeShadeShape: { help: 'Edge shade profile: the target lightness through the rod falls from the centre (L* 100 − 12 × edge shade, a slight trim) to the edge (L* 100 × (1 − edge shade)) as (x / x_e)^shape along the apparent offset x, x_e where the fold cover\'s row is seen; converted per panel row through the rod\'s Fresnel transfer and the panel\'s gamma 2.2 (docs/edge-shade-session/astra-model.md). 1: lightness falls evenly; higher keeps the shoulder lighter and the centre flatter. Steps of 0.5.', group: 'Glass', label: '· shade shape', min: 0.5, max: 3, step: 0.5 },
   edgeShadeFold: { help: 'Edge shade: how much of the rod\'s fold-back zone is held at full depth. Past its fold the rod shows rows from further in again, up to total internal reflection at the edge; full depth starts at the row seen at this share of that zone (0: at the fold itself; higher: wider, until the fold-back reaches through the centre and the whole tube is at full depth). The profile reaches full depth with a finite slope there, not a perfectly smooth join.', group: 'Glass', label: '· fold cover', min: 0, max: 1, step: 0.01 },
+  edgeShadeEnd: { help: 'Darkness at the very edge; falls off quickly by the rod\'s side-view magnification. Multiplies the edge shade\'s row factors from the outermost panel row inward (the rows the rod magnifies most seen from the side darkest), before the lens; inward of the grey band nothing changes. 0 = off.', group: 'Glass', label: '· edge end', min: 0, max: 1, step: 0.01 },
   brightness: { help: 'Global panel dimmer (emulates cmd 0x51).', group: 'Colour', label: 'brightness (panel)', min: 0.1, max: 1, step: 0.01 },
   liquidBright: { help: 'Per-layer trim on top of brightness: liquid body, highlight, shade, bubble, fizz.', group: 'Colour', label: '· liquid trim', min: 0, max: 2, step: 0.01 },
   tickBright: { help: 'Per-layer trim on top of brightness: tick ladder only.', group: 'Colour', label: '· ticks trim', min: 0, max: 2, step: 0.01 },

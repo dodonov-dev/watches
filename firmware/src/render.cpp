@@ -1548,10 +1548,12 @@ struct MarkPlan;   // step 9, after the mark kernels
 // per panel row of half the tube is at most TUBE_HEIGHT_MAX + 1.
 #define ROD_GROUPS (TUBE_HEIGHT_MAX + 2)
 struct RodCache {
-  int y0 = -1, H = 0; float k = -1, fold = -1; int q2 = 0;   // the key: position, rows, strength, fold cover, shape x 2
+  int y0 = -1, H = 0; float k = -1, fold = -1; int q2 = 0;   // the key: position, rows, strength, fold cover, shape x 2,
+  float end = -1;                                             // edge end
   int plateau = 0;                                            // groups [0, plateau] solved, rows from `plateau` on pooled
   float num[ROD_GROUPS], den[ROD_GROUPS];                     // per group: sum tau Y_t, sum tau^2 (rodSums)
   double F[ROD_GROUPS];                                       // per group: the code factor
+  double G[ROD_GROUPS];                                       // per panel row j < groups: F with the edge end (rod.h rodEndFactor)
   float cutFold = -1; double dP = 0, sE = 0;                  // the fold cover's row and its inner ray, for cutFold
 };
 // The last factor rebuild per tube (us, board only), the largest since boot, rebuilds since boot; the rays at boot (us).
@@ -5348,7 +5350,9 @@ static double rodGammaInv(double a) {
 // tau^2, its code factor F = clip(a^(1/2.2), 1 - s, 1); a row no ray reaches the plateau's (an empty plateau 1 - s:
 // a tube shorter than one row past the cut). Rays off the drawn tube and past TIR count nowhere. A canvas row covers the panel's
 // rows [bs(y), bs(y + 1)) (display_lcd316.cpp bStart; one each at 320 and on the AMOLED): its factor the mean of
-// theirs, T = 256 - round(256 F). Again with the row cache (gen) and when the tube moves; ~ROD_RAYS ray steps a tube.
+// theirs, T = 256 - round(256 F). The edge end (edgeShadeEnd e, rod.h rodEndFactor) multiplies each panel row's F by
+// its weight first (row j's G, the rows of the pooled plateau each their own); on with e alone too (F 1 there). Again
+// with the row cache (gen) and when the tube moves; ~ROD_RAYS ray steps a tube.
 void Tube::buildShade(const Params &p) {
   rc.shadeY0 = baseY;
 #ifdef BOARD_LCD316
@@ -5361,11 +5365,12 @@ void Tube::buildShade(const Params &p) {
   const float fold = !(p.edgeShadeFold == p.edgeShadeFold) ? 0.4f : p.edgeShadeFold < 0 ? 0.0f : p.edgeShadeFold > 1 ? 1.0f : p.edgeShadeFold;
   const float sh = !(p.edgeShadeShape == p.edgeShadeShape) ? 1.5f : p.edgeShadeShape < 0.5f ? 0.5f : p.edgeShadeShape > 3 ? 3.0f : p.edgeShadeShape;
   const int q2 = (int)floorf(sh * 2 + 0.5f);   // half steps (clamped before the cast); a stored NaN: 1.5
+  const float e = p.edgeShadeEnd > 0 ? p.edgeShadeEnd < 1 ? p.edgeShadeEnd : 1.0f : 0.0f;   // (a NaN: 0)
   const int p0t = bs(baseY), p1t = bs(baseY + H), span = p1t - p0t;
   const double c = (p0t + p1t) / 2.0, pitch = shadePitch(), o = span % 2 == 0 ? 0.5 : 0.0;
-  rc.shadeOn = k > 0;
+  rc.shadeOn = k > 0 || e > 0;
   RodCache &rd = *rod;
-  if (rc.shadeOn && !(rd.y0 == baseY && rd.H == H && rd.k == k && rd.fold == fold && rd.q2 == q2)) {
+  if (rc.shadeOn && !(rd.y0 == baseY && rd.H == H && rd.k == k && rd.fold == fold && rd.q2 == q2 && rd.end == e)) {
     const int64_t t0 = SHADE_NOW();
     const double s = k;
     if (rd.cutFold != fold) {   // (a strength or shape drag keeps them)
@@ -5387,8 +5392,9 @@ void Tube::buildShade(const Params &p) {
     };
     rd.F[plateau] = solve(plateau, 1 - s);
     for (int j = 0; j < plateau; j++) rd.F[j] = solve(j, rd.F[plateau]);
+    for (int j = 0; j < groups; j++) rd.G[j] = rodEndFactor(rd.F[j < plateau ? j : plateau], e, span % 2, groups - 1 - j);
     rd.plateau = plateau;
-    rd.y0 = baseY; rd.H = H; rd.k = k; rd.fold = fold; rd.q2 = q2;
+    rd.y0 = baseY; rd.H = H; rd.k = k; rd.fold = fold; rd.q2 = q2; rd.end = e;
     const uint32_t us = (uint32_t)(SHADE_NOW() - t0);
     shadeBuildUs[idx] = us; if (us > shadeBuildMaxUs[idx]) shadeBuildMaxUs[idx] = us; shadeBuilds[idx]++;
   }
@@ -5398,8 +5404,8 @@ void Tube::buildShade(const Params &p) {
       const int p0 = bs(baseY + y), p1 = bs(baseY + y + 1);
       double sum = 0;
       for (int q = p0; q < p1; q++) {
-        const int j = (int)floor(fabs(q + 0.5 - c) - o + 0.5);
-        sum += rd.F[j < rd.plateau ? j : rd.plateau];
+        const int j = (int)floor(fabs(q + 0.5 - c) - o + 0.5);   // < groups
+        sum += rd.G[j];
       }
       T = 256 - (int)floor(256 * (sum / (p1 - p0)) + 0.5);
     }
@@ -6845,8 +6851,8 @@ bool render_init(bool fast) {
     ok = ok && tb.body;
     tb.palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
     tb.palS = (ShadePal *)heap_caps_malloc(sizeof(ShadePal), MALLOC_CAP_SPIRAM);   // ~1.7 KB
-    tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~1.7 KB
-    if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; tb.rod->k = -1; tb.rod->cutFold = -1; }
+    tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~2.6 KB
+    if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; tb.rod->k = -1; tb.rod->end = -1; tb.rod->cutFold = -1; }
     tb.rodR = TUBE_ROD_MM(i) / 2; rodFold(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodST);
 #ifdef ROD_RAYS_GEN
     // the build's tables (flash): the generator's rod and pitch must be this build's, else the face does not start

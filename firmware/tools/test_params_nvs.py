@@ -3,9 +3,10 @@
 Preferences store, on the host (no board): python3 firmware/tools/test_params_nvs.py
 
 Old blobs are written by programs built with the old schemas' own params_gen.h (git: v31 at 2439440^, v32 at
-ed46e32^): PRESET_DEFAULT with fizzCount 237 and a few fields set on both sides of v33's viewElevation. A v32 / v31 blob
-must load as v33 with every field of the old schema equal by name (v 33; v31: edgeShadePow -> edgeShadeShape 1.5),
-viewElevation 0, and be saved at once under the v33 CRC; the next boot restores it as is. A truncated blob, a failed
+ed46e32^, v33 at 5ef545f): PRESET_DEFAULT with fizzCount 237 and a few fields set on both sides of v33's viewElevation
+and v34's edgeShadeEnd. A v33 / v32 / v31 blob must load as v34 with every field of the old schema equal by name (v 34;
+v31: edgeShadePow -> edgeShadeShape 1.5), edgeShadeEnd 0 (v32 / v31: viewElevation 0 too), and be saved at once under
+the v34 CRC; the next boot restores it as is. A truncated blob, a failed
 read and an unknown schema leave the defaults and NVS untouched (a dropped blob: one line with the schema, CRC and
 bytes found and expected); a failed blob write keeps the old blob and CRC; a
 failed CRC write keeps the old CRC. Exit 1 on a failure.
@@ -14,9 +15,10 @@ import os, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LEGACY = {'v31': ('2439440^', 0x6bb6cdaf), 'v32': ('ed46e32^', 0xcd2763c1)}   # commit of the schema's params_gen.h, its CRC
+LEGACY = {'v31': ('2439440^', 0x6bb6cdaf), 'v32': ('ed46e32^', 0xcd2763c1), 'v33': ('5ef545f', 0x970ee607)}   # commit of the schema's params_gen.h, its CRC
 SET = {'fizzCount': '237', 'glassWall': '4.5', 'vertical': '1', 'highlightH': '7.25', 'ambientLight': '0.123'}
-SET_V = {'v31': {'edgeShadePow': '2.5'}, 'v32': {'edgeShadeShape': '2.5'}}
+SET_V = {'v31': {'edgeShadePow': '2.5'}, 'v32': {'edgeShadeShape': '2.5'}, 'v33': {'edgeShadeShape': '2.5', 'edgeShadeFold': '0.7', 'viewElevation': '12'}}
+SIZE = {'v31': 720, 'v32': 720, 'v33': 724}
 
 SETPARAM = r'''
 static bool setParam(Params &p, const char *name, const char *val) {   // main.cpp setParam
@@ -134,7 +136,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='watches-nvs-') as tmp:
         tmp = Path(tmp)
         cxx(LOADER, ROOT / 'firmware/src', tmp / 'load')
-        cur = 0x970ee607
+        cur = 0x44a578ad
         blobs = {}
         for tag, (rev, crc) in LEGACY.items():
             d = tmp / tag / 'gen'; d.mkdir(parents=True)
@@ -142,7 +144,7 @@ def main():
             cxx(WRITER, tmp / tag, tmp / tag / 'w')
             w = parse(subprocess.run([str(tmp / tag / 'w'), str(tmp / f'{tag}.bin'), *(f'{k}={v}' for k, v in {**SET, **SET_V[tag]}.items())],
                                      stdout=subprocess.PIPE, text=True, check=True).stdout)
-            check(w['SIZE'] == '720' and int(w['CRC'], 16) == crc, f'{tag} schema ({rev}): {w["SIZE"]} B, CRC {w["CRC"]}')
+            check(w['SIZE'] == str(SIZE[tag]) and int(w['CRC'], 16) == crc, f'{tag} schema ({rev}): {w["SIZE"]} B, CRC {w["CRC"]}')
             blobs[tag] = w
 
         def load(crc, blob, flags='-', trunc=None):
@@ -154,27 +156,35 @@ def main():
             new = r['F']
             renamed = {'edgeShadePow': 'edgeShadeShape'} if tag == 'v31' else {}
             expect = {renamed.get(n, n): h for n, h in old.items()}
-            expect['v'] = (33).to_bytes(4, 'little').hex(); expect['viewElevation'] = '00000000'
+            expect['v'] = (34).to_bytes(4, 'little').hex(); expect['edgeShadeEnd'] = '00000000'
+            if tag != 'v33': expect['viewElevation'] = '00000000'
             if tag == 'v31': expect['edgeShadeShape'] = bytes.fromhex('0000c03f').hex()   # 1.5f
             bad = [n for n in sorted(set(expect) | set(new)) if expect.get(n) != new.get(n)]
-            check(r['RET'] == '1' and not bad, f'{tag} blob (720 B) -> v33: {len(new)} fields, fizzCount {f32(new["fizzCount"]):g}, '
-                  f'viewElevation {f32(new["viewElevation"]):g}, edgeShadeShape {f32(new["edgeShadeShape"]):g}, v {int.from_bytes(bytes.fromhex(new["v"]), "little")}'
+            check(r['RET'] == '1' and not bad, f'{tag} blob ({SIZE[tag]} B) -> v34: {len(new)} fields, fizzCount {f32(new["fizzCount"]):g}, '
+                  f'viewElevation {f32(new["viewElevation"]):g}, edgeShadeFold {f32(new["edgeShadeFold"]):g}, edgeShadeEnd {f32(new["edgeShadeEnd"]):g}, edgeShadeShape {f32(new["edgeShadeShape"]):g}, v {int.from_bytes(bytes.fromhex(new["v"]), "little")}'
                   + (f'; differ: {bad[:8]}' if bad else ''))
             check(f32(new['fizzCount']) == 237 and f32(new['ambientLight']) == f32(old['ambientLight']) and f32(new['highlightH']) == 7.25,
-                  f'{tag}: fizzCount 237, highlightH 7.25, ambientLight 0.123 (past viewElevation) kept')
-            check(r['STORE'] == f'{cur:08x} 724 params', f'{tag}: saved at once as v33 ({r["STORE"]}); log {r["LOG"][:1]}')
-            check(r['RET2'] == '1' and r['SAME2'] == '1' and 'params: restored from nvs' in r['LOG'], f'{tag}: the next boot restores the v33 blob as is')
+                  f'{tag}: fizzCount 237, highlightH 7.25, ambientLight 0.123 (past viewElevation / edgeShadeEnd) kept')
+            check(r['STORE'] == f'{cur:08x} 728 params', f'{tag}: saved at once as v34 ({r["STORE"]}); log {r["LOG"][:1]}')
+            check(r['RET2'] == '1' and r['SAME2'] == '1' and 'params: restored from nvs' in r['LOG'], f'{tag}: the next boot restores the v34 blob as is')
 
         DROP = 'params: nvs blob dropped: schema'
-        WANT = f'expected v33 (crc {cur:08x}, 724 B) or v32 / v31 (720 B); defaults, replaced on the next save'
+        WANT = f'expected v34 (crc {cur:08x}, 728 B), v33 (724 B) or v32 / v31 (720 B); defaults, replaced on the next save'
         v32 = str(tmp / 'v32.bin'); v32crc = LEGACY['v32'][1]; v32hex = open(v32, 'rb').read().hex()
         r = load(v32crc, v32, trunc=716)
         check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == f'{v32crc:08x} 716 other' and r['BLOB'] == v32hex[:716 * 2],
               f'truncated v32 blob (716 B): defaults, NVS kept ({r["STORE"]}); log {r["LOG"][:1]}')
         check(r['LOG'][:1] == [f'{DROP} v32 (crc {v32crc:08x}, 716 B), {WANT}'], 'truncated v32 blob: the drop line names schema, crc, bytes, expected')
         r = load(cur, v32)
-        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['LOG'][:1] == [f'{DROP} v33 (crc {cur:08x}, 720 B), {WANT}'],
+        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['LOG'][:1] == [f'{DROP} v34 (crc {cur:08x}, 720 B), {WANT}'],
+              f'v34 CRC on a 720 B blob: defaults; log {r["LOG"][:1]}')
+        v33crc = LEGACY['v33'][1]
+        r = load(v33crc, v32)
+        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['LOG'][:1] == [f'{DROP} v33 (crc {v33crc:08x}, 720 B), {WANT}'],
               f'v33 CRC on a 720 B blob: defaults; log {r["LOG"][:1]}')
+        r = load(v33crc, str(tmp / 'v33.bin'), trunc=720)
+        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == f'{v33crc:08x} 720 other',
+              f'truncated v33 blob (720 B): defaults, NVS kept; log {r["LOG"][:1]}')
         r = load(v32crc, v32, 'read')
         check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == f'{v32crc:08x} 720 other' and r['BLOB'] == v32hex,
               f'v32 blob, read fails: defaults, NVS kept; log {r["LOG"][:1]}')
@@ -182,7 +192,7 @@ def main():
         check(r['RET'] == '1' and r['DEFAULTS'] == '0' and r['STORE'] == f'{v32crc:08x} 720 other' and r['BLOB'] == v32hex
               and any('not saved (blob write)' in l for l in r['LOG']), f'v32 blob, blob write fails: migrated in RAM, old blob and CRC kept; log {r["LOG"][:1]}')
         r = load(v32crc, v32, 'crc')
-        check(r['RET'] == '1' and r['STORE'] == f'{v32crc:08x} 724 params' and any('not saved (crc write)' in l for l in r['LOG']),
+        check(r['RET'] == '1' and r['STORE'] == f'{v32crc:08x} 728 params' and any('not saved (crc write)' in l for l in r['LOG']),
               f'v32 blob, CRC write fails: the old CRC kept ({r["STORE"]}), error logged')
         r = load(0x12345678, v32)
         check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == '12345678 720 other' and r['BLOB'] == v32hex
