@@ -1,0 +1,69 @@
+DESK HOUSING smooth / pebble  (track A2, the user's pick D of concept round 1: Fable's section loft concept/ovaltilt-sketch concepts.pebble, PEB_P 2.7, PEB_N 2.8, PEB_BW 33.0, PEB_BZ 18.0; front leaning back 15 deg, bowed across the width as the oval's, flat inside; dome, no flat top)
+assembly     order 'battery-after': board + rods (no battery) in as v1 (back, up, forward); then the battery up behind the seated board, held BAT_HOLD further back, and forward onto the board (0.5); then the right-angle plug / adapter from below, then the lid
+[m] measured on the finished solids (OCC distances, sections, faces, edges) or on their exact B-spline surfaces; [d] derived from the parameters
+outer        [m] 66.00 x 58.16 x 109.97 (W x D x H, shell + lid; y 1.84..60.00); shell 106.97 tall + lid 3.0; the apex closed by a flat 0.03 below the sketch's 110 [d]
+  form       [d] B-spline loft through 147 horizontal sections of 192 points (no point moves more than 0.4 from one to the next; [m] the surface between them stays within 0.013 of the sections, checked once at build time of this code); the outline [d] leaves the sketch's by at most 0.28 (z -0.75, plan direction 46 deg): over the slots the oval's front curve on a cylinder along the lean, the bow faded in from the rim, the rim's plan exponent +0.1 (fading out over 3), a lower hull where the front blend dents (0.008)
+  overhang   [m] outside at most 44.75 deg from vertical (at (0.0, 55.8, 0.0): the underside starts at 45 deg at the rim); inside 44.78 (at (-15.3, 42.0, 97.8)); the flat inner face 15; sampled on the B-spline surfaces (480 x 1000 points each)
+  underside  [d] Fable's R7.5: its first 45 deg (2.2 high) are the lid's edge, then a 0.8 straight land, then the shell from the rim outwards at <= 45 deg; [m] the round meets the desk face at 2.4 deg (0 = tangent); foot (desk face) 48.58 x 42.28
+front        [d] curved outside (the oval's curve over |x| <= 17, blended into the sketch's bow by 20), flat inside at t 4.55 (the oval's rule); [m] straight along the lean over the slots: the face's t at x 0, 6.18, 10.23, 14.28, 15.9, 16.6 varies by at most 0.0014 over s 25.00..91.85 (no crown); the bow fades out above / below
+  inner face [m] one flat face, x -15.94..15.94, s 3.20..104.23; on 31 sections from 0.5 below the glass to 0.5 above it at least +-15.92 wide (glass 31.2 + 0.3 each side: +-15.90); front wall along t at the glass edge (x 15.6) 3.22; [d] it begins on the centre line at z 1.95 (below, the chin's 3 mm wall bulges into the cavity)
+cavity       [d] the shell's ball erosion (radius 3.02, a true 3D inward offset, open at the rim), computed on the sections' support functions (720 plan directions, z every 0.05), behind the flat inner face; narrowed from the ceiling down so no wall overhangs more than 44 deg (the tent under the dome; it takes at most 0.06, at z 98.70); lofted through 103 sections of 192 points
+  ceiling    [m] flat ceiling face 28.38 x 14.95 at z 99.5 (bridge 14.95, in Y; the lowest 0.5 step with a flat at most 15 across); top wall 7.47 over it
+board        [d] PCB bottom s 17.10 along the face (adapter's lowest point 1.0 above the rim), AA centre s 58.43; battery s 18.10..86.10, t 14.15..24.15 (taped low: 1.0 above the adapter); glass t 5.05..8.95, s 18.23..94.82; [m] battery to the adapter 1.00, to the lid 11.23
+slots        [d] E adapted to the curved wall (as the oval's): straight 8.1 x 66.85 land 0.6 deep at the flat inner face, then 45 deg on the long sides out to the curved face, straight ends; x +-10.23, s 25.00..91.85 (world z 24.15..88.72 on the face line); 0.40 inside the lit area per end
+  land       [m] on 23 sections along each slot: 8.100..8.100 wide, 0.60 deep at the shallowest (along t, from the inner face; 0.01 steps), both sides, both slots; then 45 deg out to the face. Print test 2026-11-19: the knife edge (0 land) of the 8.2 slots printed 9.0 wide; rod in the slot [m] 0.075 (tape 0.05), 0.058 (tape 0.25) to the shell at the land's inner edge (closest); [d] in X there 0.075, 0.058
+  openings   [m] on the face (the edges where the bevels meet it, straight along s within 0.0015): left x -16.6227..-2.2354 (14.39 wide), right x 2.2354..16.6227; bridge between them 4.471 (v1 wants 4.0)
+  left  slot [m] front wall (along t, s 58.43): inner edge (x -6.18) 4.46, centre (x -10.23) 4.16, outer edge (x -14.28) 3.53
+             [m face, d rod] the half-round rod against the curved face, over its width: recessed everywhere; closest 0.587 behind it at x -10.68 (tape 0.05); 0.387 behind it at x -10.68 (tape 0.25)
+  right slot [m] front wall (along t, s 58.43): inner edge (x +6.18) 4.46, centre (x +10.23) 4.16, outer edge (x +14.28) 3.53
+             [m face, d rod] the half-round rod against the curved face, over its width: recessed everywhere; closest 0.587 behind it at x +10.68 (tape 0.05); 0.387 behind it at x +10.68 (tape 0.25)
+rods         [d] 8.0 x 4.0 x 66.65, crown 3.55..3.75 in front of the flat inner face; in the slot 0.05 per side, 0.10 per end
+insertion    board + rods: up along the face at 5.60 further back (tilt15 / oval: 4.00; here the rods must pass the chin's inner rim edge, which the 3 mm wall under the curved chin puts at t 6.18, 1.63 behind the flat face's plane, at x -10.73, z 0.00: [d] 5.35 needed to touch, + 0.25 clearance, 0.1 steps), then forward
+  up move    [m] clearance on the whole sweep (0.2 overshoot included): rods to the shell 0.16, plugs 3.68, buttons 4.95, glass 3.04, board 3.65 (its top to the ceiling / dome included)
+  forward    [m] rods in the slots 0.06; the rods are 0.20 shorter than the slots, so they must line up within +-0.10: 0.11 off, a rod cuts 0.23 mm3
+  battery    [m] up 0.5 behind its seat, then forward: clearance to the shell 4.71 up, 4.79 forward; to the board / plugs 0.60 on the way up
+  adapter    [m] plugged in along the face from below after the board: free; sweep to the board 0.00, glass 1.12, battery 1.00, shell 1.25; seated, nearest shell surface 2.50 (front wall's inner face)
+  lid move   [m] straight up, free (swept as the prism of its land's outline); lid to the adapter 1.05, to the battery 11.23
+magnets      [m] 4 x D2.0 x 1.0 in holes D2.1 x 1.2 (as the oval's): axes 2.3 inside the rim's outline along its normal at -60 / 45 deg, each in a boss D3.7 x 3.0 inside the rim; wall round the hole (rim section / lid section at z -1.2): (19.78, 8.43) 0.80 / 0.77, (-19.78, 8.43) 0.80 / 0.77, (21.86, 47.93) 0.80 / 0.77, (-21.86, 47.93) 0.80 / 0.77; bosses 3.04 from the nearest sweep (glass up)
+USB          built: cable notch 5.6 wide x 6.0 high (round top) through the back wall at x 0, open at the rim, the lid closes it (as tilt15); [m] 18.22 to the rear magnet holes
+  (a)        [d] straight plug (25 long, 6.5 thick) in the adapter's socket: its lower face meets the lid after 4.98 along the axis: does not fit
+  (b)        right-angle plug in the board's port (head = the adapter's box, 12 x 7 x 21, cable out of its far end): [m] lowest edge 1.05 above the lid; [d] far end 23.5 in front of the cavity's back (x 0, at the cable exit's height z 4.43)
+  cable      [m] modelled as a D5 rod: from the head's far end along the plug axis (7.3) down to the lid, bent there (no radius), then on the lid (0.05 above) straight back through the notch: clear of the shell (notch / back wall 0.30), the battery 5.24, the board 14.22, the glass 19.44. NOT VERIFIED: the real plug's head, strain relief and bend radius
+logo         [d] front chin, centred on x 0 under the tubes: 12 x 7.57 letters (Fable: 14 runs onto the chin's curve), as high as the pocket may go (its top 0.2 below the glass at s 18.23): letters s 9.46..17.03 along the face (world z 12.13.. above the desk on the face line); glow-through: one pocket from inside, 14.00 x 9.57 R1 at its flat floor (letters + 1 all round), floor at t 1.19, s 8.46..18.03, its two sides sloped 45 deg out to the inner face; [m] skin 1.00 at its thinnest, 1.19 on the centre line (the bow and, below s 10, the chin); stencils: out-smooth/logo-stencils-pebble.*
+  LED room   [m] behind the letters, inside the rods' path (|x| < 6.23), between the inner face (t 4.55) and the adapter (t 7.05): a 11.86 x 2.20 x 7.57 box is clear of the shell, the hardware and every sweep (nearest: adapter up 0.30); the adapter's nearest shell surface 2.50 (front wall's inner face). Beside the adapter (|x| > 6.5) at the letters' height: 10.25 cm3 free of the shell, hardware and sweeps
+  wall       [m] pocket to the rim face 6.84
+  pocket     [m] its sides slope 45 deg out from the floor to the mouth on the inner face, 20.72 x 9.57 ([d] 20.72 x 9.57, 3.36 behind the floor), top and bottom straight; the mouth lies inside the wall's flat inner face; thinnest material from the pocket to the outside 1.00 (the floor's skin); [m] from all the material the pocket removes (555.1 mm3, run-on included; exactly what its cutters should take, floor one face of the designed outline): to the rim 6.99, to the glass 0.54, to a magnet hole 10.69, to a slot 6.97; clear of every seated body, the lid and every sweep
+  stencil    [m] its outline (1.90 thick, sides sloped as the pocket's) goes in along the pocket's axis from 15 inside onto the floor without touching the shell; seated, 0.07 to the pocket's walls (the least: normal to the sloped sides)
+test strip   [m] teststrip.*: the shell in front of t 12 (body frame) from the rim to s 99.85 (8.0 above the slots), logo pocket and front bosses included, no magnet holes; 61.56 x 35.59 x 96.44, 15.65 cm3; stands on its rim as the shell prints: footprint 172 mm2 within x -26.96..26.96, y 2.90..12.42; no overlap with the seated hardware
+min wall     [m] between the cavity's surfaces and the outer surface (exact, OCC; before slots, logo, magnets, USB; rim face excluded): 3.010 at (-1.8, 2.9, 0.0), rim zone
+  by region  [m, sampled] rim zone 3.01, dome 3.01, front 3.02, sides 3.02, back 3.02 (points of the cavity's surfaces to points of the outer, 480 x 1000 each); the flat inner face 3.07 at its thinnest (where the bow meets it)
+  minimum    [m] 3.01; by design thinner: slot land 0.6 deep, logo skin 1.00, magnet meat 0.77
+print        shell standing on its rim (opening down), no supports (check the layer preview): outside at most 44.8 deg, inside at most 44.8 deg (tent), [m] flat bridge 14.95; the front's inner face 15 deg; slot ends bridge 8.1.. the opening, the slots' sides a 0.6 land at the inner face (no knife edge); logo pocket: its top a bridge 14.0..20.7 wide, its sides sloped 45 deg; the notch round-topped; bosses on the bed side; no bottom break (the rim's outer edge is 135 deg: the shell starts outwards at 45). Lid: flat, rim face down (the round on top). The dome's last mm: contour steps at 0.08 layers (adaptive layers or sanding)
+slicer       suggested: ironing on top surfaces (user, for the next print: the flat tops came out patchy); X1E, 0.4 nozzle, PLA, no supports
+volumes cm3  [m] shell 51.0, lid 7.5  (73 g at 1.24 g/cm3; adaptive integration: the default rule reads the shell 0.3 % low)
+tipping      [m+d] mass 158 g (print + board 30 g + battery 55 g, both assumed); centre of mass y 32.1, 48.2 above the desk; foot y 8.21..50.49 (on the centre line), x +-24.29
+  push       horizontal at the top (110.0 above the desk) that tips it: backwards 26 gf, forwards 34 gf, sideways 35 gf; tips over when tilted 20.9 deg back / 26.3 deg forward / 26.7 deg sideways (Fable's estimate: ~156 g, 21.4 back / 25 forward)
+files        [m] each STEP re-imported, each STL re-read:
+  shell            STEP 1 solid(s), 46 faces, volume -0.0001 %, 6538 kB; STL closed, 215660 triangles, volume +0.008 %, 10530 kB
+  lid              STEP 1 solid(s), 12 faces, volume +0.0000 %, 471 kB; STL closed, 36976 triangles, volume -0.010 %, 1806 kB
+  teststrip        STEP 1 solid(s), 33 faces, volume +0.0005 %, 8798 kB; STL closed, 64076 triangles, volume +0.033 %, 3129 kB
+  assembly         STEP 13 solid(s), 128 faces, volume -0.0001 %, 7216 kB
+open items (need the real parts):
+  - rods on the forward move: they must line up with the slots within +-0.10 along the face (0.11 off cuts 0.23 mm3 per rod); they travel up 5.60 behind their seat (not 4.0)
+  - magnets: glue them into the bosses, do not press
+  - the slot openings on the curved face, the rods under it, the chin logo's skin: judge on the test strip
+  - cable: the right-angle plug's head and the bend on the lid are not modelled beyond a D5 rod; check with the real plug
+  - board and battery masses, the port's position in the board stack, the adapter's real shape (all assumed, as in v1)
+
+clearances along the insertion path, mm, measured on the swept solids (0.00 = it ends seated there):
+  body                up   forward
+  glass              3.04      0.50
+  board              3.65      3.01
+  rod-l              0.25      0.06
+  rod-r              0.16      0.06
+  button-boot        4.95      3.49
+  button-rst         4.95      3.49
+  button-slide       4.95      3.47
+  plug-j5            3.68      2.17
+  plug-i2c           3.68      1.91
+  battery            4.71      4.79   (its own moves, 0.5 behind its seat)

@@ -76,10 +76,10 @@ def run(variant):
     rods = [m for m in dummies if m[1] == "lightcyan"]
     render(out, "detail-slot-end", shell + rods, ["slot-top", "slot-bottom", "front"], size=700, height=700,
            focus=[focus["slot_top"], focus["slot_bottom"], focus["slot_top"]], half=10, smooth=False)
-    if "logo_normal" in focus:                         # oval: look at the logo along its normal; mid-height section from above
-        nx, ny, _ = focus["logo_normal"]
-        VIEWS["logo-outside"] = ((nx, ny, 0.0), (0, 0, 1))
-        VIEWS["logo-inside"] = ((-nx, -ny, 0.0), (0, 0, 1))
+    if "logo_normal" in focus:                         # oval, pebble: look at the logo along its normal; mid-height section from above
+        nx, ny, nz = focus["logo_normal"]            # the pebble's front leans back: its normal points a little up
+        VIEWS["logo-outside"] = ((nx, ny, nz), (0, 0, 1))
+        VIEWS["logo-inside"] = ((-nx, -ny, -nz), (0, 0, 1))
         lw = [(pv.read(str(out / "section-l-shell.stl")), "tan")]
         render(out, "detail-logo", lw, ["logo-outside", "logo-inside"], size=700, height=600, focus=focus["logo"], half=9, smooth=False)
     else:

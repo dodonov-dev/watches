@@ -935,3 +935,21 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Oval pocket is 3.36 deep, stencils 1.9: the stencil sits 1.46 inside the mouth; an oval-specific thicker stencil would fill it.
 - (`to-print/oval-teststrip.stl` refreshed by the parent.)
 - tilt15 side pocket's mouth (30) is longer than the inner side flat (~24): it runs into both cavity corner rounds (short straight notches, 2.88 wall by the R5). A smaller side logo would keep it in the flat.
+- Desk A2: a 15° printed shoe under the existing oval print would show the leaning look and tipping in hand within an hour, before CAD (Fable).
+- Desk A2: steel lid / low ballast (roly-poly's steel shot) would give the leaning shells stone-like heft and ~5° more tipping margin.
+- Desk A2 pebble: a lip over the rods' outer sides against moiré (the other chat's moiré work) — user unsure, parked; the round lip (A) could grow into it.
+- `images/schleiferbock-logo/r.sh` hardcodes another session's scratchpad path for its temp HTML; use `mktemp`.
+- `logo-stencils-pebble.txt` says the pebble stencil is "1.60" thick; it is 1.6036 (pocket depth less 0.1). A plate rebuilt from 1.60 misses the E+H one; `schleiferbock_stencils.py` reads it from the STEP.
+- Schleiferbock SVGs: the ear bar is ~0.1 mm at its root at 13 mm logo width (the stencil script strokes it to 0.30); widen it in the SVG/generator instead.
+
+## 2026-11-24 pebble C relief (F5 / F9 / W)
+- F5/F9 (tangent-plane envelope, relief.facets): on the near-cylindrical flanks, the far tilted planes undercut the near ones. A k-nearest cut-off makes cracks, and a distance penalty makes scalloped, scaly edges and vertical strips. F was later rebuilt on W's construction with lifted vertices. That leaves small rounded humps where the chords dip under the -0.1 clamp (F9 ~7% of vertices, on the dome). A larger vertex-lift floor, at least the full chord sag, would remove them but raise the median depth.
+- pebble-C-shell.stl has zero-area triangles at the top (x ±2.27, z ~107) and 0.01 mm² slivers at the back cable notch's ceiling (z 6). They are harmless, but they need area filters in overhang checks.
+- relief_c.py caches the refined base in concept/ovaltilt-sketch/out-coupon/relief-c-base.npz (~24 MB, untracked). A run still spends ~4–8 min on the convex-hull depth test. Cache the depth too, or use a cheaper outer test.
+
+## 2026-11-24 pebble C natural relief (N1 / N2 / N3, relief_natural.py)
+- A raised quartz vein (0.2 proud, oblique round the body) would be a strong pebble cue for N2; not tried.
+- The lifted skin dips to 0 over the logo pocket (wide 8 mm dish) to keep its 1.3 skin for the glow. If the dish shows on the print, lift the pocket floor in CAD instead.
+- N1's ripples (0.02–0.05) may read as FDM ringing; `rip=(0, 0)` in VARIANTS turns them off.
+- Depth budget caps scar width: at 0.7 total relief a scar wider than ~9 mm on the R30 flanks is no longer concave. Bigger scars need a deeper budget or a thicker wall.
+- relief_natural.py caches the hull depth (out-coupon/relief-c-natural-depth.npy): a build takes ~3 s. relief_c.py could read the same cache.

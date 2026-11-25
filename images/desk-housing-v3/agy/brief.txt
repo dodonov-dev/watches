@@ -1,0 +1,14 @@
+You are an industrial designer. Design concepts for a small desk clock shell. Work only in this folder.
+
+Look at these reference images first:
+- desk-housing-v3/ref/shells-photo.jpg: three real 3D-printed shells. LEFT = the "oval" (the owner's favourite LOOK: soft oval plan like a bar of soap, curved front, flat top with a soft rounded edge, round calm forms). RIGHT = "tilt15" (front leans back 15 degrees: the EASIEST TO READ when sitting at a desk looking down at it, but boxier). Ignore the middle one.
+- desk-housing-v3/ref/oval-views.png, desk-housing-v3/ref/tilt15-views.png: CAD views with true proportions.
+- desk-housing-v3/ref/oval-closeup.jpg: the slots and rods up close.
+
+GOAL: a new shell that catches BOTH properties: (1) the oval's look: oval sections, round soft forms, no boxy corners; (2) a face leaning back about 15 degrees so a seated viewer whose eye is above the clock sees the face square-on. It does not have to be a plain merge of the two; surprise me, but keep it buildable as ONE 3D-printed plastic shell (plus a flat bottom lid), about 50-65 mm wide, 100-115 mm tall, 35-60 mm deep.
+
+FIXED HARDWARE (the same in every concept): a flat display behind a flat face area of at least 36 x 75 mm; on it two clear half-round acrylic rods, 8 mm wide, 67 mm long, 20.5 mm apart centre to centre, parallel, running along the lean. Each rod lies in a channel whose long sides slope 45 degrees and whose short ends are straight walls, so the tube seems to run into the body; NO tube end caps, no domed glass ends. Through each rod you see a picture of a glass tube with blue liquid, a cream empty part and a black scale (left: hours 1-11, right: minutes 5-55). Behind the display: a board and a battery, about 26 mm of depth perpendicular to the face. A small glowing "EH" logo somewhere (front below the tubes, or a side if the body is wider at the base).
+
+Make 3 different concepts, ONE image each, no re-renders. Each image: a photorealistic product shot on a light desk, matte warm off-white plastic, three-quarter view from the front-left seen from a seated person's eye (looking down about 30 degrees), with a small inset or second view showing the pure side profile so the lean is clear. Save them as desk-housing-v3/agy/neon-1-<name>.png, neon-2-<name>.png, neon-3-<name>.png. Then write desk-housing-v3/agy/neon-notes.md: per concept 3-4 lines (name, idea, side profile, how it gets the 15 degrees, what is risky).
+
+IMPORTANT: do not run any shell commands (they are blocked here). Use only your image generation tool, your file viewing tool and your file writing tool. If your image tool saves elsewhere, write the image to the requested path with your file tools.

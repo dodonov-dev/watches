@@ -65,3 +65,75 @@ Hardware fits in all three printed shells (photos `images/cable_photos/`); the o
    `~/_PROJECTS/pigeon_drop/tools/codex-run.sh <run-dir> -m gpt-6.2-astra -e high -C <repo> -- "<brief>"`.
    Last round it found four checks too weak to catch their own faults: ask it to try fault injection.
 5. **Print** in Bambu Studio (the user's projects are in `cad/desk/to-print/*.3mf`); a quick 0.12 test first.
+
+## Concept round 1 (2026-11-20)
+Pictures in `images/desk-housing-v3/` (`sheet-codex.jpg`; `agy/` Neon; `fable/` true-scale SVG sheets + `fable-concepts.md`;
+`profiles-true-scale.png` from `cad/desk/concept/oval_tilt_profiles.py`). Prompts: `cad/desk/concept/prompts/oval-tilt-*.txt`
+(`codex-render.sh` now takes `CODEX_MODEL=gpt-6.1-sol|gpt-6.2-astra`).
+- **User's pick: the leaning pebble** (`4-pebble-astra.png`). At true size (Fable, `fable/pebble-true.*`, renders
+  `5-pebble-true-{astra,sol}.png`): 60 W × 58 D × 110 H, egg outline widest at z 30, front straight 15° over the slots,
+  back one convex curve, underside R7.5 to a 43 × 42 foot (first 45° in the lid), dome with a 45° tent inside; est. tips
+  21° back / 25° fwd; logo 12 on the chin (14 does not fit), USB rim notch at the back.
+- **User: the front stays bowed across the width like the oval** (curved outside, flat inside; 4.55 / 3.0 at the glass
+  edge). Along the length at most ~0.5 crown over the slots (Fable), else the openings barrel and the rods sink.
+- Ruled out by numbers: leaning bottle (tips ~6-9° back), sliced oval (flat face, D top). Alternatives kept: Fable's
+  "leaning stones" (oval slab propped by a small stone, 24° back) and "soft cairn" (#13 at true size, 64 wide).
+- Generic: board + battery are ~85 of ~150 g, so CoM sits ~30 behind the face's toe, ~49 up in every shell: the foot
+  must reach ~51 behind the toe to tip as late as tilt15.
+- **Decisions (user, 2026-11-20):** the astra "calm stone" form (Fable's `pebble-true` as drawn, not the sol teardrop);
+  logo on the front chin, 12 mm; front straight along the lean over the slots (no crown), curving away only above and
+  below them. Next: 3D clay massing at true geometry, then CAD as a new `smooth.py` variant.
+- **Clay at true geometry** (`cad/desk/concept/ovaltilt-sketch/clay_pebble.py`, Fable's section loft as a mesh; views
+  `images/desk-housing-v3/clay-pebble-{hero,ortho}.png`): Fable's model switched the bow on/off at the face's ends and
+  below a half-width 17.5, leaving creases at z ~12 and ~98; now faded (`BOW_FADE`, smoothstep). A: Fable's outline
+  (`PEB_P` 2.9, `PEB_N` 2.8): battery 5.0, board 3.7, plugs 2.5, roof 1.6 beyond a 3 wall. B "more egg" (2.5 / 2.5):
+  3.5 / 1.9 / 2.1 / roof 0.2 (tight at the top). Both 60 × 58 × 110, ~152 g, tip ~21.5° back / 25° fwd.
+- **User: "closer to A + wider + wider at the base".** New knobs `PEB_BW` / `PEB_BZ` (belly half-width / height).
+  C: 64 wide, belly z 22 (P 2.9) — battery 5.5, board 4.6, plugs 4.3, roof 1.75; D: 66 wide, belly z 18, P 2.7 —
+  5.4 / 4.2 / 5.3 / 1.6. Both ~155 g, tip ~21.3° back (depth unchanged: widening helps sideways only), foot 47-49 × 42.
+  Sheets `images/desk-housing-v3/clay-pebble-wide-{hero,ortho}.png`.
+- **User picked D (2026-11-20):** `PEB_P 2.7, PEB_N 2.8, PEB_BW 33, PEB_BZ 18` → 66 W × 58 D × 110 H. Next: CAD.
+- **CAD started (2026-11-20), paused for a reboot:** a `pebble` variant in `cad/desk/smooth.py` (PebbleModel, outputs
+  `cad/desk/out-smooth/pebble/`). Resume from `cad/desk/out-smooth/pebble/WIP.md`. After the CAD: Astra review
+  (user: yes), critical issues only, with fault injection. Uncommitted: everything since 4d9e16e (`git status`).
+- **WIP print (user, 2026-11-21; unchecked preview STLs, PLA Matte, 0.08 HQ):** "extremely nice", reads as cast /
+  alabaster / ceramic, not plastic. Notes: (1) a **trench** (recessed line) across the face at the slots' top, worst
+  right of the right slot: avoid it; where a seam is unavoidable make it a **proud scar** (sandable), never a groove;
+  (2) **front too thick**: the rods protrude less than wanted; (3) the **45° bevels and the bridge "nose"** between the
+  slots look too geometric on the pebble.
+  - (1) is probably the slicer, not the geometry: the roly-poly session found the same line on the layer where the
+    openings' tops close (outer wall slowed to 10 mm/s "overhang wall" there vs 60 elsewhere; PLA Basic profile with
+    Matte loaded), test plate `watches-rolypoly/cad/desk/to-print/_6_closure_ring_test.3mf` printing (2026-11-21; replaces the first closure-ring STL, which tested the wrong thing).
+  - (2) user: wall 3.0 at the slot centres (inner face forward, outer bow kept; rods ~0.6 proud). (3) user: soft
+    edges, picture first (`images/desk-housing-v3/slot-edges-*.png`), then CAD.
+- **User picked A (2026-11-21):** wall 3.0 at the slot centres (inner face forward to 3.39 on the centre line, outer bow
+  kept; 2.05 over the glass edge by design), 0.6 land, then a round lip (radius = depth left, per side) vertical at the
+  land and tangent to the face; no 45° bevels, no nose (bridge flat 7.1 with round shoulders); rods 0.65 proud.
+  Pictures `images/desk-housing-v3/slot-edges-{section,clay}.png`, script `concept/ovaltilt-sketch/slot_edges.py`.
+- **Logo rectangle still faintly visible from outside** on the WIP print (photo in chat 2026-11-21): soften it.
+
+**A print feedback (2026-11-23)** (`to-print/pebble-A-*.stl`): turned out well. (1) Slot top ends print ragged: they are perpendicular to the face = ~75° ceilings when printed standing; fix: lean the top end so it is ≤45° (outer opening ~1.7–2 above the inner). (2) Tiny "horns" at the openings' outer top corners, where the round lips meet the straight ends (visible in the CAD render too; not in the WIP); fix: lips wrap round the corners. (3) Logo rectangle still visible; user: drop the stencil (it shrinks the logo), thicker skin is fine, subtle glow wanted. Proposal: letter-shaped pocket from inside, 45° flanks, no stencil. (4) The WIP's rough "worked stone / wood" look (less clinical) was the preview's coarse tessellation (31.8k vs 229k triangles); user wants some relief/stone pattern back (plus harsh sanding). (5) Without the WIP's 45° nose the tubes read too far apart (bridge flat 7.04 vs 4.47). (6) FYI: openings slightly longer, rods held less by friction; not an issue (rods get cut to length). Pictures for 1/2/4/5 in progress: `images/desk-housing-v3/slot-ends-nose-*.png`, `relief-*.png`.
+- User answers (2026-11-23): keep the stencil concept (complex logos, easy swap); the logo shrank because the pocket's top/bottom were tapered: straighten them, skin 1.3, logo as large as fits. Slots: rounded nose (N1) at tube c-c 18 (firmware moves its columns, one parameter), lips round the corners (no horns), A' sloped ends (support-free; tree supports from inside the open shell also work). Relief: open (pictures `relief-{hero,ortho}.png`; recommendation: the WIP's facet look reproduced on purpose, as a mesh pass). CAD round B started.
+
+## Round B in Bambu, and round C (2026-11-24)
+- **Round B built:** `to-print/pebble-B-*`; the slots were cut on the mesh with manifold3d. In Bambu the user saw three problems:
+  - The openings were not symmetric: a wide crown on the inner side, a narrow lip on the outer side.
+  - The top ends were not flat.
+  - A line ran down the nose, and some horns were partly back.
+- **The ends must be flat.** They have to be full-depth walls square to the tubes, because the tubes butt against them. The A' sloped ends were a misread: the user had asked for supports. The top end prints as a ~75° ceiling with tree supports from inside.
+- **User answers:**
+  - flat full-depth ends with a ~0.5 face round; the side lips fade into it near the ends, with no horns;
+  - symmetric lips, 2.5 each side; tubes c-c 18 (bridge on the face ~4.9);
+  - variant sections and clay renders first, before any modelling.
+- **User, later on 2026-11-24:** all C variants (symmetric 2.5 lips with fading ends) were rejected.
+  - **Round C now:** round A's openings exactly as printed (round lips, flat square ends, tree supports at the top ends).
+  - **Changes from A:** tubes at c-c 18; horns fixed locally at the corners; B's logo kept.
+  - **Next:** after the user's review, two relief versions of C get built for printing.
+- **Horns:** no geometric fix. The relief runs up to the openings and is expected to hide them, as on the WIP.
+- **Reliefs on the C shell:** F5, F9 and W. W is close to the WIP's coarse-tessellation look, but with clean openings and facets that follow the form.
+- **Checks cut to four:** manifold mesh, overhangs outside the supported top end walls, seated rod and adapter clearances, logo skin.
+- **Print of plate _10 (2026-11-25): W and N1 "knapped" (Fable's natural relief) plus E+H stencils, all came out very nice.**
+  - **Supports:** the inner-tree trick works: tree(manual) from the build plate only, enforcers over the slot top end walls, 10° branch angle so the trees can't escape out of the front opening, xy distance 0.7.
+  - **Lid:** printed unflipped and came out badly, worst at the holes. It must print inner face down. `make_plate.py` now flips lids; `_11` is the lid reprint.
+  - **F5/F9 (triangle facets):** rejected as too geometric.
+  - **N2/N3:** not printed; the STLs are left uncommitted and can be regenerated with `relief_natural.py`.

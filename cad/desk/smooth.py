@@ -164,8 +164,28 @@ def flared_block(pl, w, h, r, depth, k, dy=0.0):
     return b
 
 
-def section_segments(shape, z, bbox=None, step=0.05):
-    """Section of a solid by the plane z: its boundary as 2D segments (N, 4)."""
+def _edge_points(e, step):
+    """Points along an edge about `step` apart, evaluated in C++ (GCPnts_UniformAbscissa): fast on long B-spline edges."""
+    from OCP.GCPnts import GCPnts_UniformAbscissa
+    c = BRepAdaptor_Curve(e.wrapped)
+    n = max(2, int(e.length / step) + 1)
+    ua = GCPnts_UniformAbscissa(c, float(e.length / (n - 1)), -1.0)     # the abscissa overload (an int is taken as one too)
+    if ua.IsDone() and ua.NbPoints() >= n - 1:
+        us = [ua.Parameter(i) for i in range(1, ua.NbPoints() + 1)]
+        if us[0] > c.FirstParameter() + 1e-12:
+            us.insert(0, c.FirstParameter())
+        if us[-1] < c.LastParameter() - 1e-12:      # it may stop short of the end: the last segment would be missing
+            us.append(c.LastParameter())
+        pts = [c.Value(u) for u in us]
+    else:                                    # (short or closed edges it refuses): evenly in the parameter, twice as dense
+        u0, u1 = c.FirstParameter(), c.LastParameter()
+        pts = [c.Value(u0 + (u1 - u0) * i / (2 * n - 1)) for i in range(2 * n)]
+    return np.array([[p.X(), p.Y()] for p in pts])
+
+
+def section_segments(shape, z, bbox=None, step=0.05, fast=False):
+    """Section of a solid by the plane z: its boundary as 2D segments (N, 4). fast: edges sampled in C++ and skipped
+    when they miss bbox (the pebble's long B-spline sections; build123d's position_at takes ~10 ms a point there)."""
     sec = BRepAlgoAPI_Section(shape.wrapped, gp_Pln(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1)))
     sec.Build()
     edges = Compound(sec.Shape()).edges()
@@ -175,8 +195,15 @@ def section_segments(shape, z, bbox=None, step=0.05):
         check(len(edges) > 0, f"no section at z {z}")
     segs = []
     for e in edges:
-        n = max(2, int(e.length / step) + 1)
-        p = np.array([[q.X, q.Y] for q in (e.position_at(i / (n - 1)) for i in range(n))])
+        if fast:
+            if bbox is not None:
+                eb = e.bounding_box()
+                if eb.max.X < bbox[0] or eb.min.X > bbox[1] or eb.max.Y < bbox[2] or eb.min.Y > bbox[3]:
+                    continue
+            p = _edge_points(e, step)
+        else:
+            n = max(2, int(e.length / step) + 1)
+            p = np.array([[q.X, q.Y] for q in (e.position_at(i / (n - 1)) for i in range(n))])
         s = np.hstack([p[:-1], p[1:]])
         if bbox is not None:
             x0, x1, y0, y1 = bbox
@@ -270,6 +297,31 @@ class Model:
     def front_out_y(self, x, z):
         """World y of the outer front surface at (x, z), on its flat part (the oval overrides it)."""
         return self.y_front(z)
+
+    def front_out_t(self, x, s):
+        """Body frame: t of the outer front surface at (x, s) (untilted shells: world y at z = s; the pebble overrides it)."""
+        check(not self.tilt, "front_out_t: a tilted shell must override it")
+        return self.front_out_y(x, s)
+
+    def logo_floor_t(self, pw, ph, zc):
+        """The outer front's largest t over a front pocket's floor (pw x ph, centred on x 0, s zc)."""
+        return max(self.front_out_t(x, z) for x in np.linspace(-pw / 2, pw / 2, 81) for z in (zc - ph / 2, zc, zc + ph / 2))
+
+    def front_logo_wz(self):
+        """The small front logo: letters' width and centre along the face (s; world z on the untilted shells)."""
+        return FRONT_LOGO_W, (FRONT_LOGO_RIM + self.GLASS_S0 - FRONT_LOGO_GLASS) / 2
+
+    insert_shift = INSERT_SHIFT                # board + rods: how far behind their seat they travel up
+    tube_cc = hw.TUBE_CC                       # the rods' / tubes' centre distance (the pebble: its own)
+    logo_skin = LOGO_SKIN                      # glow-through pocket: skin left over its floor
+    logo_recess = True                         # front logo: a flat recess on the inside where the front is thicker than an inlay
+
+    def lid_sweep(self, drop):
+        """The lid's move straight up (world Z): the prism of the lid blank's largest outline (its bottom, before the break)
+        from far below up to the rim; it contains the real lid, toe included, at every height of the move."""
+        bot = [f for f in self.lid_env().faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6]
+        check(len(bot) == 1, "lid blank bottom face")
+        return Pos(0, 0, -drop) * extrude(Face(bot[0].outer_wire()).moved(Pos(0, 0, LID_T)), drop)
 
     def y_front(self, z, t=0.0):
         """World y of the plane t (parallel to the front) at height z."""
@@ -428,17 +480,16 @@ class Model:
         plane: on the floor, z into the cavity, y = world +Z."""
         if "pocket" in self._cache:
             return self._cache["pocket"]
-        if self.cfg["LOGO_MODE"] == "front":
-            w = FRONT_LOGO_W
+        if self.cfg["LOGO_MODE"] == "front":           # body frame (t, s) = world (y, z) on the untilted shells
+            w, zc = self.front_logo_wz()
             h = hw.LETTERS_ASPECT * w
-            zc = (FRONT_LOGO_RIM + self.GLASS_S0 - FRONT_LOGO_GLASS) / 2
             pw, ph = w + 2 * STENCIL_MARGIN, h + 2 * STENCIL_MARGIN
             # the oval's face curves back towards the sides: its skin is thicker on the centre line
-            floor = LOGO_SKIN + max(self.front_out_y(x, z) for x in np.linspace(-pw / 2, pw / 2, 81)
-                                    for z in (zc - ph / 2, zc, zc + ph / 2))
-            pl = Plane(origin=(0, floor, zc), x_dir=(-1, 0, 0), z_dir=(0, 1, 0))
+            floor = self.logo_skin + self.logo_floor_t(pw, ph, zc)
+            oy, oz = self.to_world(floor, zc)
+            pl = Plane(origin=(0, oy, oz), x_dir=(-1, 0, 0), z_dir=(0, self.c, -self.sn))
             depth = self.FRONT - floor
-            wall_box = box(-60, 60, -10, self.FRONT, -5, 60)
+            wall_box = self.wt(box(-60, 60, -10, self.FRONT, -5, 60))
             ctr = 0.0
         else:
             L = self.logo_layout()
@@ -492,10 +543,8 @@ class Model:
         all round, leaves FRONT_LOGO_T on the centre line."""
         if "flogo" in self._cache:
             return self._cache["flogo"]
-        w = FRONT_LOGO_W
+        w, zc = self.front_logo_wz()
         h = hw.LETTERS_ASPECT * w
-        zlo, zhi = FRONT_LOGO_RIM, self.GLASS_S0 - FRONT_LOGO_GLASS
-        zc = (zlo + zhi) / 2
         pl = Plane(origin=(0, -3.0, zc), x_dir=(1, 0, 0), z_dir=(0, -1, 0))     # seen from the front: x right, z up
         cut, floor, pocket = None, None, None
         if LOGO_STYLE == "stencil":
@@ -504,13 +553,14 @@ class Model:
             P = self.pocket()
             cut, floor, pocket = P["cut"], P["floor"], (P["pw"], P["ph"])
         else:
+            check(not self.tilt, "front logo: cut-through letters are built for an untilted front only")
             for poly in hw.letters_mm(w):
                 e = extrude(pl * Polygon(*[(u, v) for u, v in poly], align=None), self.FRONT + 5.0, dir=(0, 1, 0))
                 cut = e if cut is None else cut + e
         recess = None
-        if self.FRONT > FRONT_LOGO_T + 1e-6:
+        if self.FRONT > FRONT_LOGO_T + 1e-6 and self.logo_recess:
             m_ = FRONT_LOGO_RECESS
-            recess = box(-w / 2 - m_, w / 2 + m_, FRONT_LOGO_T, self.FRONT + 1.0, zc - h / 2 - m_, zc + h / 2 + m_)
+            recess = self.wt(box(-w / 2 - m_, w / 2 + m_, FRONT_LOGO_T, self.FRONT + 1.0, zc - h / 2 - m_, zc + h / 2 + m_))
         res = dict(w=w, h=h, zc=zc, z=(zc - h / 2, zc + h / 2), cut=cut, recess=recess, floor=floor, pocket=pocket,
                    inner_y=FRONT_LOGO_T if recess is not None else self.FRONT)
         self._cache["flogo"] = res
@@ -545,7 +595,7 @@ class Model:
         s = s - self.cavity()
         if level != "body":
             for sx in (-1, 1):
-                s = s - self.slot_cutter(sx * hw.TUBE_CC / 2)
+                s = s - self.slot_cutter(sx * self.tube_cc / 2)
             s = s - self.usb_cutter()
         if level == "full":
             for c in self.logo_cutters():
@@ -608,7 +658,7 @@ class Model:
     def moving_bodies(self):
         m = [Body(self, "glass", (-hw.GLASS_W / 2, hw.GLASS_W / 2, self.GLASS_T0, self.GLASS_T1, self.GLASS_S0, self.GLASS_S0 + hw.GLASS_H)),
              Body(self, "board", (-hw.PCB_W / 2, hw.PCB_W / 2, self.GLASS_T1, self.BOARD_T1, self.PCB_S0, self.PCB_S1)),
-             Rod(self, "rod-l", -hw.TUBE_CC / 2), Rod(self, "rod-r", hw.TUBE_CC / 2)]
+             Rod(self, "rod-l", -self.tube_cc / 2), Rod(self, "rod-r", self.tube_cc / 2)]
         for n, z in hw.BTN_Z.items():
             m.append(Body(self, f"button-{n}", (hw.BTN_SIDE * hw.PCB_W / 2, hw.BTN_SIDE * (hw.PCB_W / 2 + hw.BTN_PROUD),
                                                 self.GLASS_T1, self.GLASS_T1 + hw.BTN_DEPTH,
@@ -662,7 +712,7 @@ def bat_sweeps(m, order, drop=200.0):
     bat = [b for b in m.moving_bodies() if b.name == "battery"][0]
     if order == "battery-after":
         return [("bat-up", bat.solid(dt=BAT_HOLD, es0=drop, es1=Z_STOP)), ("bat-fwd", bat.solid(et=BAT_HOLD))], BAT_SPARE_AFTER
-    dt = INSERT_SHIFT if order == "v1" else 0.0
+    dt = m.insert_shift if order == "v1" else 0.0
     return [("up", bat.solid(dt=dt, es0=drop, es1=Z_STOP))], SPARE_MIN
 
 
@@ -790,11 +840,12 @@ def slot_land_measure(m, shell):
     flat face, behind the inner face: the land's inner edge is where it comes closest)."""
     s = shell.rotate(Axis.X, m.tilt) if m.tilt else shell
     ys = m.FRONT - LAND_DY / 2 - LAND_DY * np.arange(int(1.5 / LAND_DY))
-    res = {sx: dict(x=sx * hw.TUBE_CC / 2, w=[], depth=[]) for sx in (-1, 1)}
+    res = {sx: dict(x=sx * m.tube_cc / 2, w=[], depth=[]) for sx in (-1, 1)}
     for zs in np.linspace(m.SLOT_S[0] + 0.3, m.SLOT_S[1] - 0.3, SLOT_SECTIONS):
-        seg = section_segments(s, float(zs), bbox=(-hw.TUBE_CC / 2 - 9, hw.TUBE_CC / 2 + 9, -2, m.FRONT + 0.5), step=0.02)
+        seg = section_segments(s, float(zs), bbox=(-m.tube_cc / 2 - 9, m.tube_cc / 2 + 9, -2, m.FRONT + 0.5), step=0.02,
+                               fast=getattr(m, "fast_sections", False))
         for sx in (-1, 1):
-            x0 = sx * hw.TUBE_CC / 2
+            x0 = sx * m.tube_cc / 2
             walls = []
             for y in ys:                                 # crossings of the line at depth y with the section
                 x1, y1, x2, y2 = seg.T
@@ -806,11 +857,11 @@ def slot_land_measure(m, shell):
             walls = np.array(walls)
             res[sx]["w"].append(walls[0, 1] - walls[0, 0])
             for j in (0, 1):
-                off = np.abs(walls[:, j] - walls[0, j]) > 0.002
+                off = np.abs(walls[:, j] - walls[0, j]) > getattr(m, "land_tol", 0.002)
                 n = int(np.argmax(off)) if off.any() else len(ys)
                 res[sx]["depth"].append(n * LAND_DY)
     out = [dict(x=r["x"], w=min(r["w"]), w_max=max(r["w"]), depth=min(r["depth"]), n=len(r["w"])) for r in res.values()]
-    clr = {t: min(gap(Rod(m, "rod", sx * hw.TUBE_CC / 2, t).solid(), shell) for sx in (-1, 1)) for t in hw.TAPE}
+    clr = {t: min(gap(Rod(m, "rod", sx * m.tube_cc / 2, t).solid(), shell) for sx in (-1, 1)) for t in hw.TAPE}
     r = hw.ROD_W / 2
     clr_d = {t: SLOT_W / 2 - math.sqrt(r * r - (m.GLASS_T0 - t - m.FRONT) ** 2) for t in hw.TAPE}
     return out, clr, clr_d
@@ -846,33 +897,93 @@ def logo_skin_measure(shell):
 STL_DEFLECTION, STL_ANGLE = 0.01, 0.1   # absolute chordal deflection (mm) and angular deflection (rad) of the STL meshes
 STL_VOL_TOL = 0.003                      # mesh volume vs the solid's, relative
 STEP_VOL_TOL = 1e-4                      # re-imported STEP volume vs the solid's, relative
+STEP_VOL_TOL_MESH = 5e-4                 # ... both measured on fine meshes (the pebble: vol_props precise; two 0.002 meshes of the
+                                         # same surfaces, parameterised differently, differ by up to ~2e-4)
 
 
-def write_stl(shape, path):
-    """STL with an absolute deflection (build123d's export_stl meshes with a relative one)."""
+VOL_MESH = (0.003, 0.03)                 # vol_props precise: deflection (mm), angle (rad)
+VOL_MESH_K = (1.0, 0.8, 0.6)             # ... retried this much finer when a mesh comes out open
+VOL_MESH_LOG = []
+_VOL_CACHE = {}
+
+
+def vol_props(shape, precise=False, read_back=False):
+    """Volume and centre of mass. precise: from a fine triangulation (VOL_MESH, closed: checked; finer than the STLs', so
+    comparing the two catches a bad tessellation). On the pebble's trimmed B-spline faces OCC's integration misreads: the default rule by 0.3 %,
+    the adaptive one by up to 0.5 % (the lid with its magnet holes: 7499 against 7535 meshed and from the sections)."""
+    if not precise:
+        return shape.volume, shape.center(CenterOf.MASS)
+    key = (hash(shape.wrapped), read_back)
+    if key in _VOL_CACHE:
+        return _VOL_CACHE[key]
+    import tempfile, pyvista as pv
+    from build123d import import_step
     from OCP.BRepMesh import BRepMesh_IncrementalMesh
     from OCP.StlAPI import StlAPI_Writer
-    BRepMesh_IncrementalMesh(shape.wrapped, STL_DEFLECTION, False, STL_ANGLE, True).Perform()
+    with tempfile.TemporaryDirectory() as td:          # meshed as read back from STEP: the in-memory pebble shell
+        g = pathlib.Path(td) / "v.step"                # meshes with open edges, its read-back (ShapeFix on import) not
+        if read_back:                                  # already read back from STEP: a second round trip of the pebble's
+            back = shape                               # test strip meshes with 20 open edges, the first with none
+        else:
+            export_step(shape, str(g))
+            back = import_step(str(g))
+        tried = []
+        for k in VOL_MESH_K:                           # BRepMesh leaves a few open edges now and then: mesh again a bit
+            from OCP.BRepTools import BRepTools        # finer; every retry is recorded (VOL_MESH_LOG, the report)
+            BRepTools.Clean_s(back.wrapped)
+            BRepMesh_IncrementalMesh(back.wrapped, VOL_MESH[0] * k, False, VOL_MESH[1] * k, True).Perform()
+            f = pathlib.Path(td) / "v.stl"
+            w = StlAPI_Writer()
+            w.ASCIIMode = False
+            check(w.Write(back.wrapped, str(f)), "volume mesh not written")
+            mesh = pv.read(str(f)).clean()
+            tried.append((k, mesh.n_open_edges))
+            if mesh.n_open_edges == 0:
+                break
+    if len(tried) > 1:
+        VOL_MESH_LOG.append(tried)
+    check(mesh.n_open_edges == 0, f"volume mesh: open edges at every density tried {tried}")
+    tri = mesh.faces.reshape(-1, 4)[:, 1:]
+    v0, v1, v2 = (mesh.points[tri[:, i]].astype(float) for i in range(3))
+    v6 = np.einsum("ij,ij->i", v0, np.cross(v1, v2))
+    V = v6.sum() / 6
+    c = (v6[:, None] * (v0 + v1 + v2)).sum(0) / (24 * V)
+    check(V > 0, "volume mesh inside out")
+    _VOL_CACHE[key] = (V, Vector(*c))
+    return _VOL_CACHE[key]
+
+
+def write_stl(shape, path, fresh=False, fine=False):
+    """STL with an absolute deflection (build123d's export_stl meshes with a relative one). fresh: drop any triangulation
+    the shape already carries first (the pebble's shell, meshed coarser on the way, came out with 981 open edges)."""
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.StlAPI import StlAPI_Writer
+    if fresh:
+        from OCP.BRepTools import BRepTools
+        BRepTools.Clean_s(shape.wrapped)
+    d, a = (STL_DEFLECTION / 2, STL_ANGLE / 2) if fine else (STL_DEFLECTION, STL_ANGLE)
+    BRepMesh_IncrementalMesh(shape.wrapped, d, False, a, True).Perform()
     w = StlAPI_Writer()
     w.ASCIIMode = False
     check(w.Write(shape.wrapped, str(path)), f"STL not written: {path}")
 
 
-def check_stl(shape, path, bodies=1):
+def check_stl(shape, path, bodies=1, precise=False):
     """The written mesh: closed, `bodies` connected pieces, volume within STL_VOL_TOL of the solid's. Returns its info."""
     import pyvista as pv
     mesh = pv.read(str(path)).clean()
     n_open = mesh.n_open_edges
     n_bodies = int(mesh.connectivity().point_data["RegionId"].max()) + 1
     vol = abs(mesh.volume)
-    err = vol / shape.volume - 1
+    v_solid = vol_props(shape, precise)[0]
+    err = vol / v_solid - 1
     check(n_open == 0, f"{path.name}: {n_open} open edges")
     check(n_bodies == bodies, f"{path.name}: {n_bodies} separate bodies, expected {bodies}")
-    check(abs(err) <= STL_VOL_TOL, f"{path.name}: mesh volume {vol:.1f} vs solid {shape.volume:.1f} ({err * 100:+.2f} %)")
+    check(abs(err) <= STL_VOL_TOL, f"{path.name}: mesh volume {vol:.1f} vs solid {v_solid:.1f} ({err * 100:+.2f} %)")
     return dict(kb=path.stat().st_size / 1024, tris=mesh.n_cells, err=err)
 
 
-def write_step(shape, path):
+def write_step(shape, path, precise=False):
     """STEP, re-imported: the same number of solids, each valid and closed, the same total volume (STEP_VOL_TOL)."""
     from build123d import import_step
     from OCP.BRepCheck import BRepCheck_Analyzer
@@ -884,17 +995,25 @@ def write_step(shape, path):
                     f"{len(shape.faces())} written)")
     for sol in back.solids():
         check(BRepCheck_Analyzer(sol.wrapped).IsValid() and all(BRep_Tool.IsClosed_s(sh.wrapped) for sh in sol.shells()), f"{path.name}: an invalid or open solid")
-    v0, v1 = sum(x.volume for x in shape.solids()), sum(x.volume for x in back.solids())
-    check(abs(v1 / v0 - 1) <= STEP_VOL_TOL, f"{path.name}: volume {v1:.2f} back, {v0:.2f} written")
+    v0, v1 = sum(vol_props(x, precise)[0] for x in shape.solids()), sum(vol_props(x, precise, True)[0] for x in back.solids())
+    tol = STEP_VOL_TOL_MESH if precise else STEP_VOL_TOL
+    check(abs(v1 / v0 - 1) <= tol, f"{path.name}: volume {v1:.2f} back, {v0:.2f} written")
     return dict(solids=n1, faces=len(back.faces()), err=v1 / v0 - 1, kb=path.stat().st_size / 1024)
 
 
-def export_part(shape, out, name, report, bodies=1):
+def export_part(shape, out, name, report, bodies=1, precise=False):
     """A printed part: STEP + STL, both checked; their numbers go into `report`."""
     shape.label = name
-    st = write_step(shape, out / f"{name}.step")
-    write_stl(shape, out / f"{name}.stl")
-    report[name] = (st, check_stl(shape, out / f"{name}.stl", bodies))
+    st = write_step(shape, out / f"{name}.step", precise)
+    if precise:                  # the pebble: mesh the STEP as read back (checked above): meshing the in-memory shell left
+        from build123d import import_step          # 981 open edges along its B-spline intersection edges, the
+        back = import_step(str(out / f"{name}.step"))   # read-back (ShapeFix on import) none
+        check(len(back.solids()) == 1 or len(back.solids()) == len(shape.solids()), f"{name}: STEP read back")
+        write_stl(back, out / f"{name}.stl", fresh=True, fine=True)   # 0.01 / 0.1 rad meshed the pebble's shell with
+                                                                        # a fold: +0.7 % volume, closed; 0.005 / 0.05: +0.03 %
+    else:
+        write_stl(shape, out / f"{name}.stl")
+    report[name] = (st, check_stl(shape, out / f"{name}.stl", bodies, precise))
 
 
 
@@ -918,7 +1037,7 @@ def check_paths(m, shell_core, lid, moving, adapter, order):
     drop = 2 * m.H
     gaps = {}
     rods_after = order == "rods-after"
-    shift = 0.0 if rods_after else INSERT_SHIFT
+    shift = 0.0 if rods_after else m.insert_shift
     first = [b for b in moving if not (rods_after and isinstance(b, Rod)) and not (order == "battery-after" and b.name == "battery")]
     for b in first:
         moves = [("up", b.solid(dt=shift, es0=drop, es1=Z_STOP))]
@@ -951,11 +1070,8 @@ def check_paths(m, shell_core, lid, moving, adapter, order):
         v = volume_common(sweep, o)
         check(v < EPS_V, f"{m.name}: adapter move runs into the {on} ({v:.2f} mm3)")
         gaps[("adapter", on)] = gap(sweep, o)
-    # the lid, straight up (world Z). Its sweep: the prism of the lid blank's largest outline (its bottom, before the
-    # break) from far below up to the rim; it contains the real lid, toe included, at every height of the move
-    bot = [f for f in m.lid_env().faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6]
-    check(len(bot) == 1, "lid blank bottom face")
-    lsweep = Pos(0, 0, -drop) * extrude(Face(bot[0].outer_wire()).moved(Pos(0, 0, LID_T)), drop)
+    # the lid, straight up (world Z), swept as the prism of its largest outline (m.lid_sweep)
+    lsweep = m.lid_sweep(drop)
     check(volume_common(lid, lsweep) >= lid.volume - 1e-3, "lid sweep does not contain the lid")
     for on, o in [("shell", shell_core), ("adapter", adapter.solid())] + seated:
         v = volume_common(lsweep, o)
@@ -1020,7 +1136,7 @@ def all_sweeps(m, order, drop=None):
     drop = drop or 2 * m.H
     moving = m.moving_bodies()
     rods_after = order == "rods-after"
-    shift = 0.0 if rods_after else INSERT_SHIFT
+    shift = 0.0 if rods_after else m.insert_shift
     first = [b for b in moving if not (rods_after and isinstance(b, Rod)) and not (order == "battery-after" and b.name == "battery")]
     sw = [(f"{b.name} up", b.solid(dt=shift, es0=drop, es1=Z_STOP)) for b in first]
     if not rods_after:
@@ -1030,9 +1146,11 @@ def all_sweeps(m, order, drop=None):
     return sw + [("adapter up", m.adapter().solid(es0=drop))]
 
 
-def front_logo_check(m, shell, lid, order):
+def front_logo_check(m, shell, lid, order, skin_only=False):
     """Checks and numbers for the front logo: limits, the voids against every body and sweep, LED room measured against
-    the shell as well as the hardware. Returns a dict for the report."""
+    the shell as well as the hardware. Returns a dict for the report. On a tilted front (pebble) the logo's numbers are
+    in the body frame: y -> t, z -> s (bf() turns a world solid into it)."""
+    bf = lambda sh_: sh_.rotate(Axis.X, m.tilt) if m.tilt else sh_
     fl = m.front_logo()
     w, h, (z0, z1) = fl["w"], fl["h"], fl["z"]
     strip = hw.STRIP_PER_MM * w
@@ -1040,9 +1158,9 @@ def front_logo_check(m, shell, lid, order):
     check(z0 >= FRONT_LOGO_RIM - 1e-6 and z1 <= m.GLASS_S0 - FRONT_LOGO_GLASS + 1e-6, "front logo outside its band")
     check(z1 < m.SLOT_S[0] - 1.0, "front logo reaches the slots")
     void = fl["cut"] if fl["recess"] is None else fl["cut"] + fl["recess"]
-    void = void & box(-60, 60, -10, m.FRONT, -5, 60)       # what it removes: the front wall only (the cutters reach past it)
+    void = void & m.wt(box(-60, 60, -10, m.FRONT, -5, 60))     # what it removes: the front wall only (the cutters reach past it)
     if fl["recess"] is not None:
-        rb = fl["recess"].bounding_box()
+        rb = bf(fl["recess"]).bounding_box()
         check(rb.max.Z <= m.GLASS_S0 - 0.2, f"recess top {rb.max.Z:.2f} reaches the glass ({m.GLASS_S0:.2f})")
         check(rb.min.Z >= 1.0, f"recess bottom {rb.min.Z:.2f} reaches the rim")
     skin = (math.nan, math.nan)
@@ -1051,17 +1169,20 @@ def front_logo_check(m, shell, lid, order):
         check(fl["zc"] + ph / 2 <= m.GLASS_S0 - 0.2, f"logo pocket top {fl['zc'] + ph / 2:.2f} reaches the glass ({m.GLASS_S0:.2f})")
         check(fl["zc"] - ph / 2 >= BOTTOM_BREAK + 1.0, f"logo pocket bottom {fl['zc'] - ph / 2:.2f} too close to the rim")
         check(pw / 2 <= getattr(m, "W", W) / 2 - R_EDGE - 1.0, "logo pocket reaches the R5 edges")
-        floor_f = [f for f in shell.faces() if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().Y) - 1) < 1e-6
+        sh_b = bf(shell)
+        floor_f = [f for f in sh_b.faces() if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().Y) - 1) < 1e-6
                    and abs(f.center().Y - fl["floor"]) < 1e-6]
         check(len(floor_f) == 1, f"logo pocket floor: {len(floor_f)} faces")
         fb = floor_f[0].bounding_box()
-        outer = [f for f in shell.faces() if f.bounding_box().min.Y < fl["floor"] - 1e-3     # faces reaching in front of the floor
+        outer = [f for f in sh_b.faces() if f.bounding_box().min.Y < fl["floor"] - 1e-3     # faces reaching in front of the floor
                  and f.bounding_box().max.X > fb.min.X and f.bounding_box().min.X < fb.max.X
                  and f.bounding_box().max.Z > fb.min.Z and f.bounding_box().min.Z < fb.max.Z]
         d_min = dist_shapes(Compound(outer), floor_f[0])[0]
-        d_ctr = fl["floor"] - m.front_out_y(0.0, fl["zc"])
-        check(abs(d_min - LOGO_SKIN) < 0.01, f"logo skin measured {d_min:.3f}, want {LOGO_SKIN}")
+        d_ctr = fl["floor"] - m.front_out_t(0.0, fl["zc"])
+        check(abs(d_min - m.logo_skin) < 0.01, f"logo skin measured {d_min:.3f}, want {m.logo_skin}")
         skin = (d_min, d_ctr)
+    if skin_only:                                # (pebble round C: the skin alone)
+        return dict(w=w, h=h, z=(z0, z1), skin=skin, zc=fl["zc"], floor=fl["floor"], pocket=fl["pocket"])
     seated = [(b.name, b.solid()) for b in m.moving_bodies()] + [("adapter", m.adapter().solid()), ("lid", lid)]
     sweeps = all_sweeps(m, order)
     for n, o in seated + sweeps:
@@ -1069,9 +1190,10 @@ def front_logo_check(m, shell, lid, order):
         check(v < EPS_V, f"front logo cut / recess overlaps the {n} ({v:.2f} mm3)")
     # LED room A: right behind the letters, between the inner face and the adapter, inside the rods' path
     ad = m.adapter().solid()
-    ad_y0 = min(v.Y for v in ad.vertices())
-    xa = min(w / 2, ROD_SWEEP_X - 0.3)
-    zoneA = box(-xa, xa, fl["inner_y"], ad_y0 - 0.3, z0, z1)
+    ad_y0 = min(v.Y for v in bf(ad).vertices())
+    rsx = m.tube_cc / 2 - hw.ROD_W / 2                  # the rods sweep up past the front wall from here outwards
+    xa = min(w / 2, rsx - 0.3)
+    zoneA = m.wt(box(-xa, xa, fl["inner_y"], ad_y0 - 0.3, z0, z1))
     vA = [(n, volume_common(zoneA, o)) for n, o in [("shell", shell)] + seated + sweeps]
     bad = [(n, v) for n, v in vA if v > EPS_V]
     check(not bad, f"LED room behind the logo overlaps: {bad}")
@@ -1079,7 +1201,7 @@ def front_logo_check(m, shell, lid, order):
     # free room beside the adapter at the letters' height: the cavity minus every body and sweep, |x| > adapter + 0.5
     beside = None
     for sx in (-1, 1):
-        b_ = box(sx * (hw.ADAPTER_W / 2 + 0.5), sx * 40, -10, 60, z0, z1) & m.cavity()
+        b_ = m.wt(box(sx * (hw.ADAPTER_W / 2 + 0.5), sx * 40, -10, 60, z0, z1)) & m.cavity()
         for n, o in seated + sweeps:
             if n != "lid":
                 b_ = b_ - o
@@ -1090,7 +1212,7 @@ def front_logo_check(m, shell, lid, order):
     d_ad.Perform()
     q = d_ad.PointOnShape2(1)
     rim_gap = min(gap(fl["cut"], f) for f in shell.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6 and abs(f.center().Z) < 1e-6)
-    return dict(w=w, h=h, z=(z0, z1), strip=strip, recess=fl["recess"], inner_y=fl["inner_y"], ad_y0=ad_y0, skin=skin,
+    return dict(w=w, h=h, z=(z0, z1), strip=strip, recess=fl["recess"], inner_y=fl["inner_y"], ad_y0=ad_y0, skin=skin, rsx=rsx,
                 pocket=fl["pocket"], floor=fl["floor"], zc=fl["zc"],
                 zoneA=(2 * xa, ad_y0 - 0.3 - fl["inner_y"], z1 - z0), gA=gA, beside_vol=beside.volume, beside_bb=bb_,
                 ad_near=(d_ad.Value(), face_name(shell, (q.X(), q.Y(), q.Z()))), rim_gap=rim_gap)
@@ -1133,7 +1255,7 @@ def pocket_check(m, shell, lid, order, mag_xy):
           f"logo pocket floor: {len(floor_f)} face(s), " + ", ".join(f"{f.area:.3f} mm2 with {len(f.inner_wires())} holes" for f in floor_f) +
           f"; designed one of {a_want:.3f} without holes")
     skin_any, p_any = dist_shapes(outer, Compound(removed.faces()))
-    check(skin_any >= LOGO_SKIN - 0.01, f"logo pocket: {skin_any:.3f} of material to the outside at {p_any}")
+    check(skin_any >= m.logo_skin - 0.01, f"logo pocket: {skin_any:.3f} of material to the outside at {p_any}")
     # the straight run-on into the cavity thins nothing beyond what the mouth itself leaves (tilt15: the mouth's front end
     # meets the R5 corner's offset), and stays out of the front wall
     mouth_f = [f for f in void.faces() if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().dot(zd)) - 1) < 1e-6
@@ -1160,7 +1282,9 @@ def pocket_check(m, shell, lid, order, mag_xy):
     check(len(flanks) == 2, f"logo pocket: {len(flanks)} sloped side faces")
     u = [(Vector(*v) - o).dot(xd) for f in flanks for v in f.vertices()]
     lev = [(Vector(*v) - o).dot(zd) for f in flanks for v in f.vertices()]
-    zs = sorted(f.center().Z for f in shell.faces() if f.geom_type == GeomType.PLANE and abs(abs(f.normal_at().Z) - 1) < 1e-6 and near_void(f))
+    yd = pl.y_dir                                        # world +Z on the upright fronts and the sides, up the face on the pebble
+    zs = sorted((f.center() - o).dot(yd) for f in shell.faces() if f.geom_type == GeomType.PLANE
+                and abs(abs(f.normal_at().dot(yd)) - 1) < 1e-6 and near_void(f))
     check(len(zs) == 2, f"logo pocket: {len(zs)} top / bottom faces")
     mouth = (max(u) - min(u), zs[1] - zs[0])
     check(abs(mouth[0] - P["mouth"][0]) < 0.01 and abs(mouth[1] - P["mouth"][1]) < 0.01 and abs(max(lev) - min(lev) - d) < 0.01,
@@ -1172,9 +1296,10 @@ def pocket_check(m, shell, lid, order, mag_xy):
     if m.cfg["LOGO_MODE"] == "front":
         check(in_flat, "logo pocket mouth runs out of the front's flat inner face")
     # the stencil, seated on the floor and on its way in
-    st = stencil_block(pl, P["pw"], P["ph"])
-    sw_, sh_ = P["pw"] - 2 * STENCIL_CLR + 2 * k * STENCIL_T, P["ph"] - STENCIL_CLR - STENCIL_CLR_TOP
-    top = pl.offset(STENCIL_T) * Pos(0, (STENCIL_CLR - STENCIL_CLR_TOP) / 2) * RectangleRounded(sw_, sh_, STENCIL_R - STENCIL_CLR)
+    st_t = P.get("st_t", STENCIL_T)                       # the stencil's thickness (the pebble's: what its pocket leaves)
+    st = stencil_block(pl, P["pw"], P["ph"], st_t)
+    sw_, sh_ = P["pw"] - 2 * STENCIL_CLR + 2 * k * st_t, P["ph"] - STENCIL_CLR - STENCIL_CLR_TOP
+    top = pl.offset(st_t) * Pos(0, (STENCIL_CLR - STENCIL_CLR_TOP) / 2) * RectangleRounded(sw_, sh_, STENCIL_R - STENCIL_CLR)
     sweep = st + extrude(top, STENCIL_SWEEP)
     v = volume_common(sweep, shell)
     check(v < EPS_V, f"logo stencil: its way into the pocket cuts {v:.3f} mm3 out of the shell")
@@ -1191,7 +1316,7 @@ def pocket_check(m, shell, lid, order, mag_xy):
     glass = [o_ for n, o_ in seated if n == "glass"][0]
     holes_m = [Pos(x, y, 0) * Cylinder((hw.MAG_D + hw.MAG_CLR_D) / 2, hw.MAG_H + hw.MAG_CLR_H, align=(Align.CENTER, Align.CENTER, Align.MIN))
                for x, y in mag_xy]
-    slot_voids = [m.slot_cutter(sx * hw.TUBE_CC / 2) & m.shell("body") for sx in (-1, 1)]     # what the slots take out
+    slot_voids = [m.slot_cutter(sx * m.tube_cc / 2) & m.shell("body") for sx in (-1, 1)]     # what the slots take out
     g = dict(glass=gap(removed, glass), rim=removed.bounding_box().min.Z, magnets=min(gap(removed, h_) for h_ in holes_m),
              slots=min(gap(removed, sv) for sv in slot_voids), removed=removed.volume)
     check(g["rim"] >= BOTTOM_BREAK + 1.0 - 1e-6 and g["magnets"] >= 1.0 and g["slots"] >= 1.0,
@@ -1769,12 +1894,12 @@ class OvalModel(Model):
         return l
 
 
-def meat_at(spots, shell_body, lid_blank):
+def meat_at(spots, shell_body, lid_blank, fast=False):
     """Wall round each magnet hole, measured on the rim section (z 0+, with the bottom break and the bosses) and on the
     lid's section at the hole's depth: [(shell meat, lid meat)]."""
     r_hole = (hw.MAG_D + hw.MAG_CLR_D) / 2
     z_lid = -(hw.MAG_H + hw.MAG_CLR_H)
-    s_all, l_all = section_segments(shell_body, 1e-3, step=0.1), section_segments(lid_blank, z_lid, step=0.1)
+    s_all, l_all = section_segments(shell_body, 1e-3, step=0.1, fast=fast), section_segments(lid_blank, z_lid, step=0.1, fast=fast)
     p = np.array(spots)
     ins_s, ins_l = inside(p, s_all), inside(p, l_all)
     ds, dl = seg_dist(p, s_all), seg_dist(p, l_all)
@@ -2070,6 +2195,1284 @@ def build_oval(order=ORDER):
     return m
 
 
+# ---- pebble ("leaning pebble", track A2: the oval's look on the tilt15's 15 deg front) --------------------------------
+# The user's pick D of concept round 1 (docs/desk-housing-oval-tilt-handoff.md, "Concept round 1"): Fable's section loft
+# from concept/ovaltilt-sketch (concepts.pebble with PEB_P 2.7, PEB_N 2.8, PEB_BW 33, PEB_BZ 18): 66 W x 58 D x 110 H with
+# the lid, front leaning back 15 deg, one convex back, an egg-shaped front outline widest 18 above the desk, a dome. The
+# sketch has the desk at z 0 and the rim at its LID 3: here everything sits 3 lower; x and y are the same (y 0 where the
+# face line meets the rim plane), so the body frame is Model's with TILT 15. Changes to the sketch's sections (measured
+# against it in the report):
+#   (1) over the slots (OVAL_Z) and |x| <= 17 the front is the oval's curve (W 56, D 36, n 2.8; 4.55 on the centre line,
+#       3.0 where the 3 mm offset meets the flat inner face at the glass edge + 0.3) on a cylinder along the lean: no crown;
+#       blended into the sketch's bow by |x| 20 (where that leaves the front chain concave by a few um, its lower hull);
+#   (2) the bow fades in from the rim (the sketch: from 1 mm below it), so the lid carries none and its land is a prism;
+#   (3) the plan exponent is RIM_DN higher at the rim, fading out over RIM_ZC: the plan's diagonals start at <= 45 deg
+#       (sketch: 46.6 deg in the first 0.1 mm);
+#   (4) the apex is closed by a flat TOP_CAP below the top.
+# Outer surface and cavity are B-spline surfaces through dense horizontal sections (bspline_loft). The cavity is the
+# shell's ball erosion (a true 3D inward offset of ERODE_R, computed on the convex sections' support functions), cut by the
+# flat inner front face (t = FRONT, as the oval's), narrowed from the top down so its walls never overhang more than
+# TENT_DEG (the tent under the dome), and closed by a flat ceiling (a bridge) at the lowest 0.5 step where that is at most
+# BRIDGE_MAX deep. Magnets in bosses inside the rim as the oval's; USB through a rim notch at the back as the tilt15's.
+PEBBLE = dict(P=2.7, N=2.8, BW=33.0, BZ=18.0,          # the user's pick D (2026-11-20): the sketch's knobs
+              H=107.0,                                  # apex above the rim (110 with the lid)
+              RIM_DN=0.1, RIM_ZC=3.0,                   # (3)
+              OVAL_X=(17.0, 20.0),                      # (1): the oval's curve to |x| 17, blended into the sketch's by 20 ...
+              OVAL_Z=(10.0, 14.0, 92.0, 95.0),          # ... with weight 0 -> 1 -> 1 -> 0 at these heights (slots: z 24..89;
+                                                        # the glass's flat inner face z 16..91 must be as the oval's)
+              K=48, STEP=0.4, TOP_CAP=0.03,             # points per plan quadrant; no point moves more than STEP between two
+                                                        # sections of the loft
+              ERODE_R=WALL_MIN + 0.02, DZ=0.05, M=720,  # cavity: erosion radius (+0.02: the lofts stray up to ~0.01 from
+                                                        # their sections; 0.005 measured 2.994), z grid, plan directions
+              TENT_DEG=43.0, BRIDGE_MAX=15.0, ZF_FROM=90.0,   # tent: 44 lofted to 45.02 under the dome
+              CAV_N=192, CAV_LOW=-1.0,                  # cavity sections: points, lowest (below the rim, for the cut)
+              MAG_DEPTH=2.3, MAG_PHI=(-60.0, 45.0), BOSS_R=1.85, BOSS_H=3.0,   # as the oval's
+              LOGO_W=12.0, LOGO_W_MAX=14.0,             # A: 12; B: the largest that fits, up to 14 (front_logo_wz)
+              STENCIL_MIN_T=1.2,                        # B: the stencil at least this thick (the 1.3 skin leaves less room)
+              SEAT_D=2.0, LOGO_SEAT_D=3.5,              # the glass seat / logo seat reach this far behind the flat inner face
+                                                        # (not 3.0: the pocket's run-on ends there, coincident faces)
+              SEAT_TOP_DEG=60.0,                        # the glass seat's top end from the face's normal: 45 from vertical printed
+              SEAT_WALL_MIN=1.9,                        # the seat's wall, at least (named exception to WALL_MIN)
+              LIP_SHORT_DEG=3.0, LIP_ARC_N=400,         # slots C = A: the round lip ends this short of tangency, run out along its
+                                                        # tangent (it crosses the face at that angle); chords per lip arc
+              MESH_DEFL=0.005, MESH_ANG=0.05,           # the OCC shell's mesh before the slots are cut (chord error <= 0.02)
+              CUT_THROUGH=1.0,                          # slot cutter mesh: how far behind the inner face it cuts through
+              STRIP_T=12.0)                             # test strip: the shell in front of t 12
+
+
+def _ss(g):
+    return 0.0 if g <= 0 else 1.0 if g >= 1 else g * g * (3 - 2 * g)
+
+
+def _lower_hull(q):
+    """q: a front chain (x, y) of a section; replace y by its lower convex hull as a function of x. Returns the change."""
+    o = np.argsort(q[:, 0], kind="stable")
+    x, y = q[o, 0], q[o, 1]
+    hx, hy = [], []
+    for xi, yi in zip(x, y):
+        while len(hx) >= 2 and (hx[-1] - hx[-2]) * (yi - hy[-2]) - (hy[-1] - hy[-2]) * (xi - hx[-2]) <= 0:
+            hx.pop()
+            hy.pop()
+        hx.append(xi)
+        hy.append(yi)
+    yn = np.interp(x, hx, hy)
+    d = float(np.max(np.abs(yn - y)))
+    q[o, 1] = yn
+    return d
+
+
+def pebble_sketch():
+    """The concept sketch's modules (geo, concepts) with the user's pick D set."""
+    d = HERE / "concept" / "ovaltilt-sketch"
+    if str(d) not in sys.path:
+        sys.path.append(str(d))
+    import geo, concepts
+    check(pathlib.Path(geo.__file__).parent == d and pathlib.Path(concepts.__file__).parent == d,
+          f"sketch modules from elsewhere: {geo.__file__}, {concepts.__file__}")
+    concepts.PEB_P, concepts.PEB_N, concepts.PEB_BW, concepts.PEB_BZ = PEBBLE["P"], PEBBLE["N"], PEBBLE["BW"], PEBBLE["BZ"]
+    return geo, concepts
+
+
+class PebbleShape:
+    """The pebble's outer surface as horizontal sections; z above the rim (the lid below 0)."""
+
+    def __init__(self):
+        geo, concepts = pebble_sketch()
+        bodies, yt, _ = concepts.pebble()
+        check(len(bodies) == 1 and yt == 0.0, "sketch: one pebble body with the face line at y 0")
+        self.geo, self.cn, self.b = geo, concepts, bodies[0]
+        self.ref = concepts.pebble()[0][0]                 # untouched, for the comparison
+        self.H = self.b.z1 - geo.LID
+        check(abs(self.H - PEBBLE["H"]) < 1e-9 and abs(self.b.z0) < 1e-9 and abs(geo.LID - LID_T) < 1e-9,
+              f"sketch: apex {self.H}, desk {self.b.z0}, lid {geo.LID}")
+        self.corr = 0.0                                    # largest change by the lower hull (1)
+
+    def n_at(self, z):
+        return PEBBLE["N"] + PEBBLE["RIM_DN"] * min(1.0, max(0.0, 1 - z / PEBBLE["RIM_ZC"])) ** 2
+
+    def section(self, z, k=PEBBLE["K"]):
+        """(4k, 2) points, counter-clockwise from the front apex (x 0): Fable's Body.section with the changes (1)-(3)."""
+        g, b = self.geo, self.b
+        zk = z + g.LID
+        n = self.n_at(z)
+        b.n = b.nb = n                                     # the sketch's nfront() falls back on b.n
+        yf, yb, xl, xr = b.yf(zk), b.yb(zk), b.xl(zk), b.xr(zk)
+        check(yb - yf > 0.2 and xr - xl > 0.2, f"pebble: no section at z {z}")
+        yc = yf + b.cfrac * (yb - yf)
+        xb = float(np.clip(b.xback(zk), xl + 0.1, xr - 0.1))
+        th = np.linspace(0, np.pi / 2, k + 1)
+        c, sn = np.cos(th), np.sin(th)
+        # (2) the bow fades in from the rim to the face's start and out above it as the sketch's
+        gb = min((zk - g.LID) / (b.face[0] - g.LID), (b.face[1] + g.BOW_FADE - zk) / g.BOW_FADE)
+        w = _ss(gb) * _ss((yc - yf - g.BOW_H - 0.3) / 6.0)
+        nr = n + w * _ss((xr - 17.5) / 6.0) * (b.nfront(xr, yc - yf) - n) if w else n
+        nl = n + w * _ss((-xl - 17.5) / 6.0) * (b.nfront(-xl, yc - yf) - n) if w else n
+        q1 = np.c_[xr * sn ** (2 / nr), yc - (yc - yf) * c ** (2 / nr)]
+        q2 = np.c_[xb + (xr - xb) * c ** (2 / n), yc + (yb - yc) * sn ** (2 / n)]
+        q3 = np.c_[xb + (xl - xb) * sn ** (2 / n), yc + (yb - yc) * c ** (2 / n)]
+        q4 = np.c_[xl * c ** (2 / nl), yc - (yc - yf) * sn ** (2 / nl)]
+        wz = _ss(gb)                                       # B: the oval's curve fades with the bow itself (no second blend:
+                                                           # the A geometry's OVAL_Z fades left 0.02..0.035 dents)
+        if wz > 0:                                         # (1)
+            x2 = min(PEBBLE["OVAL_X"][1], xr - 3.0)       # near the dome the section narrows: blend inside it
+            x1 = min(PEBBLE["OVAL_X"][0], x2 - 2.5)
+            for q in (q1, q4):
+                ax = np.abs(q[:, 0])
+                wx = np.array([1 - _ss((v - x1) / (x2 - x1)) for v in ax])
+                k_ = wx > 0
+                q[k_, 1] += wz * wx[k_] * (yf + PEBBLE_BOW_K * oval_front_y(q[k_, 0]) / math.cos(math.radians(15)) - q[k_, 1])
+                self.corr = max(self.corr, _lower_hull(q))
+        return np.vstack([q1[:-1], q2[:-1], q3[:-1], q4[:-1]])
+
+    def sketch_section(self, z, k=PEBBLE["K"]):
+        return self.ref.section(z + self.geo.LID, k)
+
+    def levels(self, z0, z1, step=PEBBLE["STEP"], dz_max=2.0):
+        """Heights from z0 to z1 such that no section point moves more than `step` from one to the next."""
+        zl, P0 = [z0], self.section(z0)
+        z = z0
+        while z < z1 - 1e-12:
+            d = dz_max
+            while True:
+                zn = min(z + d, z1)
+                P1 = self.section(zn)
+                if np.linalg.norm(P1 - P0, axis=1).max() <= step or d < 1e-4:
+                    break
+                d /= 1.5
+            zl.append(zn)
+            z, P0 = zn, P1
+        return zl
+
+
+def convex_ccw(P, what):
+    """A section must be convex and counter-clockwise (the erosion and the support functions rely on it)."""
+    d = np.diff(np.r_[P, P[:1]], axis=0)
+    L = np.hypot(d[:, 0], d[:, 1])
+    check(L.min() > 1e-9, f"{what}: repeated points")
+    t = d / L[:, None]
+    cr = t[:, 0] * np.roll(t[:, 1], -1) - t[:, 1] * np.roll(t[:, 0], -1)
+    check(cr.min() > -1e-9, f"{what}: not convex (turn {cr.min():.2e})")
+
+
+# B-spline lofts through horizontal sections: u periodic (the sections' points, one parameter set for all), v through
+# the sections' poles (one parameter set for all); planar caps at both ends; sewn into a solid
+def _interp(P, params, periodic):
+    from OCP.OCP.collections import HArray1_gp_Pnt, HArray1_double
+    from OCP.GeomAPI import GeomAPI_Interpolate
+    a = HArray1_gp_Pnt(1, len(P))
+    for i, p in enumerate(P):
+        a.SetValue(i + 1, gp_Pnt(*map(float, p)))
+    pr = HArray1_double(1, len(params))
+    for i, v in enumerate(params):
+        pr.SetValue(i + 1, float(v))
+    it = GeomAPI_Interpolate(a, pr, periodic, 1e-9)
+    it.Perform()
+    check(it.IsDone(), "spline interpolation failed")
+    return it.Curve()
+
+
+def _poles(c):
+    return np.array([[c.Pole(i).X(), c.Pole(i).Y(), c.Pole(i).Z()] for i in range(1, c.NbPoles() + 1)])
+
+
+def _knots(c):
+    return [c.Knot(i) for i in range(1, c.NbKnots() + 1)], [c.Multiplicity(i) for i in range(1, c.NbKnots() + 1)]
+
+
+def bspline_loft(secs, zs):
+    """secs: (N, 2) arrays with corresponding points (counter-clockwise), at heights zs (rising). Returns the solid and its
+    lateral B-spline surface."""
+    from OCP.OCP.collections import Array2_gp_Pnt, Array1_double, Array1_int
+    from OCP.Geom import Geom_BSplineSurface, Geom_Plane
+    from OCP.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakeEdge, BRepBuilderAPI_MakeWire,
+                                    BRepBuilderAPI_Sewing, BRepBuilderAPI_MakeSolid)
+    from OCP.TopoDS import TopoDS
+    from OCP.ShapeFix import ShapeFix_Solid
+    from build123d import Solid
+    S = np.array(secs)
+    K, N, _ = S.shape
+    check(K >= 4 and np.all(np.diff(zs) > 0), "loft: sections")
+    d = np.hypot(*np.diff(np.concatenate([S, S[:, :1]], 1), axis=1).transpose(2, 0, 1))
+    cu = np.concatenate([np.zeros((K, 1)), np.cumsum(d, 1)], 1)
+    u = (cu / cu[:, -1:]).mean(0)                                   # N + 1 values, 0 .. 1 (periodic)
+    curves = [_interp(np.c_[S[k], np.full(N, zs[k])], u, True) for k in range(K)]
+    uk, um = _knots(curves[0])
+    check(all(np.allclose(_knots(c_)[0], uk) and _knots(c_)[1] == um for c_ in curves), "loft: section knots differ")
+    Q = np.array([_poles(c_) for c_ in curves])
+    dv = np.linalg.norm(np.diff(S, axis=0), axis=2).mean(1)
+    check(dv.min() > 1e-6, "loft: two sections coincide")
+    v = np.r_[0, np.cumsum(dv)]
+    v /= v[-1]
+    cols = [_interp(Q[:, j], v, False) for j in range(Q.shape[1])]
+    vk, vm = _knots(cols[0])
+    R_ = np.array([_poles(c_) for c_ in cols])
+    P2 = Array2_gp_Pnt(1, R_.shape[0], 1, R_.shape[1])
+    for i in range(R_.shape[0]):
+        for j in range(R_.shape[1]):
+            P2.SetValue(i + 1, j + 1, gp_Pnt(*R_[i, j]))
+
+    def arr(vals, T):
+        a = T(1, len(vals))
+        for i, x in enumerate(vals):
+            a.SetValue(i + 1, x)
+        return a
+    srf = Geom_BSplineSurface(P2, arr(uk, Array1_double), arr(vk, Array1_double), arr(um, Array1_int), arr(vm, Array1_int),
+                              3, 3, True, False)
+    sew = BRepBuilderAPI_Sewing(1e-6)
+    sew.Add(BRepBuilderAPI_MakeFace(srf, 1e-7).Face())
+    for vv, z in ((0.0, zs[0]), (1.0, zs[-1])):
+        w = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(srf.VIso(vv)).Edge()).Wire()
+        sew.Add(BRepBuilderAPI_MakeFace(Geom_Plane(gp_Pnt(0, 0, float(z)), gp_Dir(0, 0, 1)), w, True).Face())
+    sew.Perform()
+    so = BRepBuilderAPI_MakeSolid(TopoDS.Shell(sew.SewedShape())).Solid()
+    fx = ShapeFix_Solid(so)
+    fx.Perform()
+    sol = Solid(fx.Solid())
+    bb = sol.bounding_box()
+    check(sol.is_valid and sol.volume > 0 and len(sol.faces()) == 3 and bb.min.Z > zs[0] - 1e-3 and bb.max.Z < zs[-1] + 1e-3
+          and np.abs(S).max() + 1.0 > max(abs(bb.min.X), abs(bb.max.X), abs(bb.min.Y), abs(bb.max.Y)), "loft: not a valid closed solid")
+    return sol, srf
+
+
+def surface_samples(srf, nu=720, nv=1200):
+    """Points and unit normals (pointing away from the sections' centres) on a loft's lateral surface: (nv, nu, 6)."""
+    from OCP.gp import gp_Vec
+    p, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    u0, u1, v0, v1 = srf.Bounds()
+    out = np.zeros((nv, nu, 6))
+    for i, vv in enumerate(np.linspace(v0, v1, nv)):
+        for j, uu in enumerate(np.linspace(u0, u1, nu, endpoint=False)):
+            srf.D1(uu, vv, p, du, dv)
+            out[i, j, :3] = (p.X(), p.Y(), p.Z())
+            out[i, j, 3:] = np.cross((du.X(), du.Y(), du.Z()), (dv.X(), dv.Y(), dv.Z()))
+        n = out[i, :, 3:]
+        n /= np.linalg.norm(n, axis=1)[:, None]
+        c = out[i, :, :2].mean(0)
+        if (((out[i, :, :2] - c) * n[:, :2]).sum(1)).mean() < 0:
+            out[i, :, 3:] = -n
+    return out
+
+
+def _dirs(M):
+    ph = 2 * np.pi * np.arange(M) / M
+    return np.c_[np.cos(ph), np.sin(ph)]
+
+
+def _hrep_poly(g, U, guess=None):
+    """Counter-clockwise vertices of {p : p . U_j <= g_j}; None if empty."""
+    from scipy.spatial import HalfspaceIntersection, ConvexHull
+    from scipy.optimize import linprog
+    ip = guess if guess is not None and (U @ guess - g).max() < -1e-3 else None
+    if ip is None:
+        r = linprog(np.r_[0, 0, -1], A_ub=np.c_[U, np.ones(len(U))], b_ub=g, bounds=[(None, None)] * 2 + [(0, None)])
+        if not r.success or r.x[2] < 1e-3:
+            return None
+        ip = r.x[:2]
+    V = HalfspaceIntersection(np.c_[U, -g], ip).intersections
+    return V[ConvexHull(V).vertices]
+
+
+def _resample(P, n):
+    """A convex counter-clockwise polygon, n points evenly along it from where it crosses x 0 at the front."""
+    Q = np.r_[P, P[:1]]
+    i = [j for j in range(len(P)) if Q[j, 0] < 0 <= Q[j + 1, 0] and Q[j, 1] + Q[j + 1, 1] < 2 * P[:, 1].mean()]
+    check(len(i) == 1, "resample: front crossing of x 0")
+    j = i[0]
+    a, b = Q[j], Q[j + 1]
+    s0 = np.array([0.0, a[1] + (b[1] - a[1]) * (0 - a[0]) / (b[0] - a[0])])
+    R_ = np.r_[[s0], np.roll(P, -(j + 1), axis=0), [s0]]
+    L = np.r_[0, np.cumsum(np.hypot(*np.diff(R_, axis=0).T))]
+    t = np.linspace(0, L[-1], n, endpoint=False)
+    return np.c_[np.interp(t, L, R_[:, 0]), np.interp(t, L, R_[:, 1])]
+
+
+def pebble_cavity(m):
+    """The cavity's sections for the loft (see the block comment) and what they imply: the flat ceiling's height and size,
+    how much the tent takes, the board's up-move shift that clears the chin. Measured afterwards on the solids."""
+    P_, shape = PEBBLE, m.shape
+    DZ, R, M = P_["DZ"], P_["ERODE_R"], P_["M"]
+    U = _dirs(M)
+    check(M % 4 == 0 and abs(U[3 * M // 4, 1] + 1) < 1e-12, "plan directions: -y must be one of them")
+    J = int(math.ceil(shape.H / DZ - 1e-9))            # outer sections at j DZ, j = 0 .. J - 1 (below the apex)
+    HO = np.empty((J, M))
+    for j in range(J):
+        S = shape.section(j * DZ, 150)
+        convex_ccw(S, f"outer section at z {j * DZ:.2f}")
+        HO[j] = (S @ U.T).max(0)                       # chords lie inside the curve: the erosion errs on the safe side
+    mR = int(R / DZ + 1e-9)
+    ms = np.arange(-mR, mR + 1)
+    rho = np.sqrt(np.maximum(R * R - (ms * DZ) ** 2, 0.0))
+    j0, jtop = int(round(P_["CAV_LOW"] / DZ)), int((shape.H - R) / DZ) - 1
+    jo = np.arange(j0, jtop + 1)
+    zo = jo * DZ
+    G = np.full((len(jo), M), np.inf)                  # the ball (radius R) inside the shell (z >= 0: open at the rim)
+    for m_, r_ in zip(ms, rho):
+        jj = jo + m_
+        ok = jj >= 0
+        G[ok] = np.minimum(G[ok], HO[jj[ok]] - r_)
+    yplane = lambda z: (m.FRONT + z * m.sn) / m.c      # the flat inner face in the plan at z (y >= this)
+
+    def with_plane(g, z):
+        g = g.copy()
+        g[3 * M // 4] = min(g[3 * M // 4], -yplane(z))
+        return g
+    # the flat ceiling: the lowest 0.5 step whose section (behind the flat face) is at most BRIDGE_MAX across
+    zf, top = None, None
+    for zf_ in np.arange(P_["ZF_FROM"], zo[-1], 0.5):
+        Pt = _hrep_poly(with_plane(G[int(round((zf_ - zo[0]) / DZ))], zf_), U)
+        dims = (np.ptp(Pt[:, 0]), np.ptp(Pt[:, 1]))
+        if min(dims) <= P_["BRIDGE_MAX"]:
+            zf, top = float(zf_), dims
+            break
+    check(zf is not None, "pebble: no ceiling height with a short enough bridge")
+    i_f = int(round((zf - zo[0]) / DZ))
+    rate = math.tan(math.radians(P_["TENT_DEG"])) * DZ
+    raw, prev, guess, cut = {}, None, None, (0.0, None)
+    for i in range(i_f, -1, -1):
+        g = G[i] if prev is None else np.minimum(G[i], prev + rate)
+        P = _hrep_poly(g, U, guess)
+        check(P is not None, f"pebble cavity empty at z {zo[i]:.2f}")
+        h = (P @ U.T).max(0)
+        if prev is not None and (prev + rate < G[i] - 1e-9).any():
+            he = (_hrep_poly(G[i], U, guess) @ U.T).max(0)
+            if (he - h).max() > cut[0]:
+                cut = (float((he - h).max()), float(zo[i]))
+        raw[i], prev, guess = P, h, P.mean(0)
+    # the chin: rods on their up move (thickest tape, furthest forward) against the cavity's front, flat face included
+    r = hw.ROD_W / 2
+    need = (-math.inf, None)
+    for i in range(int(round(-zo[0] / DZ)), int(round((15.0 - zo[0]) / DZ))):
+        z = zo[i]
+        P = _hrep_poly(with_plane(G[i], z), U)
+        fr = P[P[:, 1] < P[:, 1].mean()]
+        fr = fr[np.argsort(fr[:, 0])]
+        for sx in (-1, 1):
+            xs = sx * m.tube_cc / 2 + np.linspace(-r, r, 81)
+            tc = np.interp(xs, fr[:, 0], fr[:, 1]) * m.c - z * m.sn
+            tr = m.GLASS_T0 - hw.TAPE[1] - np.sqrt(np.maximum(r * r - (xs - sx * m.tube_cc / 2) ** 2, 0))
+            k = int(np.argmax(tc - tr))
+            if tc[k] - tr[k] > need[0]:
+                need = (float(tc[k] - tr[k]), (float(xs[k]), float(z), float(tc[k])))
+    shift = max(INSERT_SHIFT, math.ceil((need[0] + INSERT_CLR) * 10 - 1e-6) / 10)
+    # where the flat inner face begins on the centre line (the eroded front passes behind it)
+    flat0 = None
+    for i in range(int(round(-zo[0] / DZ)), i_f):
+        P = _hrep_poly(G[i], U)
+        fr = P[P[:, 1] < P[:, 1].mean()]
+        fr = fr[np.argsort(fr[:, 0])]
+        if np.interp(0.0, fr[:, 0], fr[:, 1]) <= yplane(zo[i]):
+            flat0 = float(zo[i])
+            break
+    # loft levels: from CAV_LOW to the ceiling, no resampled point moving more than STEP between two
+    res = {}
+
+    def rs(i):
+        if i not in res:
+            res[i] = _resample(raw[i], P_["CAV_N"])
+        return res[i]
+    i0 = int(round(-zo[0] / DZ))                       # the rim: a level of its own (the cavity's narrowest, a waist)
+    levels, i = list(range(0, i0, int(round(0.25 / DZ)))) + [i0], i0
+    while i < i_f:
+        nxt = i + 1
+        dz_max = 0.25 if zo[i] < 4.0 else 2.0             # the rim: a waist, then the flare (2.996 with 1 mm steps)
+        for k in range(i + 1, min(i_f, i + int(round(dz_max / DZ))) + 1):
+            if np.linalg.norm(rs(k) - rs(i), axis=1).max() > P_["STEP"]:
+                break
+            nxt = k
+        levels.append(nxt)
+        i = nxt
+    return dict(zs=[float(zo[i]) for i in levels], secs=[rs(i) for i in levels], zf=zf, top=top, tent_cut=cut,
+                need=need, shift=shift, flat0=flat0, raw=raw, zo=zo, U=U, G=G)
+
+
+# Front "A" (user, 2026-11-21, after the WIP print: front too thick, rods sat 0.4..0.6 under the face; 45 deg bevels and
+# the bridge's nose too geometric): the outer face keeps the oval's curve; the flat inner face comes forward to WALL_MIN
+# at the A slot centres (3.39 on the centre line, the oval's rule gave 4.55; kept in round B). Round B (2026-11-23): tubes
+# c-c 18, slots from concept/ovaltilt-sketch/slot_ends.py N1; round C (2026-11-24): A's openings again, re-solved for
+# c-c 18, flat ends (PebbleModel.lip / slot_surface / slot_cutter_mesh). Over the
+# glass the inner face stays flat out to the glass + 0.3 (the glass seat, PebbleModel.seat()): the wall there thins to
+# ~2.0 at the glass's edge, a named exception like the land, measured and reported.
+PEBBLE_BOW_K = 1.0
+PEBBLE_FRONT = math.ceil((WALL_MIN + oval_front_y(hw.TUBE_CC / 2)) * 1000 - 1e-6) / 1000
+
+
+VARIANTS["pebble"] = dict(TILT=15.0, ADAPTER_FLOOR=1.0, TOTAL_MIN=0.0, LOGO_W=PEBBLE["LOGO_W"], LOGO_MODE="front", LOGO_ZC=None,
+                          USB="notch", BAT_LOW=True, FRONT=PEBBLE_FRONT)
+
+
+class PebbleModel(Model):
+    """Model's body frame (TILT 15) and hardware stack (as tilt15: ADAPTER_FLOOR 1, battery low, the oval's 4.55 front)."""
+    logo_recess = False                         # the stencil pocket holds the inlay recess entirely: none
+    tube_cc = 18.0                              # B (user, 2026-11-23): tubes 18 apart (the firmware moves its columns)
+    logo_skin = 1.3                             # B: hides the pocket's outline (a subtler glow, user)
+    fast_sections = True                        # section_segments sampled in C++ (long B-spline section edges)
+
+    def __init__(self):
+        super().__init__("pebble", 58.0)
+        self.shape = PebbleShape()
+        self.H = PEBBLE["H"]
+        self._cache = {}
+        self.CAV = pebble_cavity(self)
+        self.insert_shift = self.CAV["shift"]
+        bb = self.shell_env().bounding_box()
+        self.W, self.D = bb.size.X, bb.max.Y
+
+    # ---- outer form ----
+    def shell_env(self):
+        if "env" not in self._cache:
+            zl = self.shape.levels(0.0, self.H - PEBBLE["TOP_CAP"])
+            secs = [self.shape.section(z) for z in zl]
+            for z, S in zip(zl, secs):
+                convex_ccw(S, f"outer section at z {z:.3f}")
+            self._cache["env"], self._cache["env_srf"] = bspline_loft(secs, zl)
+            self._cache["env_levels"] = zl
+        return self._cache["env"]
+
+    def lid_env(self):
+        """The lid: the underside's round (its first 45 deg, Fable's R7.5) lofted from the foot up to the land, then the
+        land straight up to the rim (its sections are equal)."""
+        if "lid_env" not in self._cache:
+            z_land = -LID_T + self.shape.cn.RU * (1 - math.cos(math.radians(45)))
+            check(np.abs(self.shape.section(z_land) - self.shape.section(0.0)).max() < 1e-9, "pebble: the lid's land is not a prism")
+            zl = self.shape.levels(-LID_T, z_land)
+            arc, self._cache["lid_srf"] = bspline_loft([self.shape.section(z) for z in zl], zl)
+            top = [f for f in arc.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z > 1 - 1e-6]
+            check(len(top) == 1, "pebble lid: top of the round")
+            lid = (arc + extrude(top[0], -z_land)).clean()
+            check(lid.is_valid and len(lid.solids()) == 1 and abs(lid.bounding_box().max.Z) < 1e-6, "pebble lid invalid")
+            self._cache["lid_env"], self._cache["z_land"], self._cache["lid_levels"] = lid, z_land, zl
+        return self._cache["lid_env"]
+
+    def lid_blank(self):
+        return self.lid_env()                    # its edge is the round: no break
+
+    def lid_sweep(self, drop):
+        """The lid straight up: the prism of its largest outline (the land) from far below to the rim."""
+        top = [f for f in self.lid_env().faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z > 1 - 1e-6 and abs(f.center().Z) < 1e-6]
+        check(len(top) == 1, "pebble lid: top face")
+        return Pos(0, 0, -drop) * extrude(Face(top[0].outer_wire()), drop)
+
+    def front_out_t(self, x, s):
+        """Body frame: t of the outer front surface at (x, s): the line along t there meets the envelope's B-spline
+        surface (exact; plane sections of the envelope come back incomplete at some heights)."""
+        from OCP.GeomAPI import GeomAPI_IntCS
+        from OCP.Geom import Geom_Line
+        from OCP.gp import gp_Lin
+        self.shell_env()
+        y0, z0 = self.to_world(-5.0, s)
+        it = GeomAPI_IntCS(Geom_Line(gp_Lin(gp_Pnt(float(x), y0, z0), gp_Dir(0, self.c, -self.sn))), self._cache["env_srf"])
+        check(it.IsDone() and it.NbPoints() > 0, f"pebble: no front at x {x:.2f}, s {s:.2f}")
+        ts = [self.to_body(it.Point(i).Y(), it.Point(i).Z())[0] for i in range(1, it.NbPoints() + 1)]
+        return min(ts)
+
+    def logo_floor_t(self, pw, ph, zc):
+        """The floor (less logo_skin) so that the outer front's nearest point to the floor's real outline (R STENCIL_R
+        corners), in 3D, is logo_skin away: over the outline and logo_skin round it, outer points (x, g, s) at an in-plane
+        distance dp from the outline need the floor at g + sqrt(skin^2 - dp^2) or deeper (the front curves and tilts
+        towards the floor beyond the outline's edge). A 0.25 grid, refined at 0.02 round the five worst points."""
+        key = ("logo_floor", round(pw, 6), round(ph, 6), round(zc, 6))
+        if key in self._cache:
+            return self._cache[key]
+        from scipy.interpolate import RectBivariateSpline
+        r, sk = STENCIL_R, self.logo_skin
+        def dp(x, s_):
+            qx, qs = np.abs(x) - (pw / 2 - r), np.abs(s_ - zc) - (ph / 2 - r)
+            return np.maximum(np.hypot(np.maximum(qx, 0.0), np.maximum(qs, 0.0)) - r, 0.0)
+        # the front sampled exactly every 0.5 (IntCS is slow), bicubic in between; the worst point then exactly
+        gx = np.arange(-pw / 2 - sk - 0.5, pw / 2 + sk + 0.5 + 1e-9, 0.5)
+        gs = np.arange(zc - ph / 2 - sk - 0.5, zc + ph / 2 + sk + 0.5 + 1e-9, 0.5)
+        G = RectBivariateSpline(gx, gs, np.array([[self.front_out_t(x, s_) for s_ in gs] for x in gx]))
+        X, S_ = np.meshgrid(np.arange(-pw / 2 - sk, pw / 2 + sk + 1e-9, 0.01), np.arange(zc - ph / 2 - sk, zc + ph / 2 + sk + 1e-9, 0.01))
+        D = dp(X, S_)
+        N = np.where(D < sk, G.ev(X, S_) + np.sqrt(np.clip(sk * sk - D * D, 0, None)), -np.inf)
+        i = np.unravel_index(np.argmax(N), N.shape)
+        xb, sb = float(X[i]), float(S_[i])
+        best = -math.inf
+        for x in np.arange(xb - 0.05, xb + 0.05 + 1e-9, 0.01):
+            for s_ in np.arange(sb - 0.05, sb + 0.05 + 1e-9, 0.01):
+                d_ = float(dp(x, s_))
+                if d_ < sk:
+                    best = max(best, self.front_out_t(x, s_) + math.sqrt(sk * sk - d_ * d_))
+        check(abs(best - float(N[i])) < 2e-3, f"pebble logo floor: the front's interpolation is off by {best - float(N[i]):.4f}")
+        self._cache[key] = best - sk
+        return self._cache[key]
+
+    def front_logo_wz(self):
+        """B (user, 2026-11-23): the largest letters (0.5 steps, <= LOGO_W_MAX) whose pocket fits between FRONT_LOGO_RIM
+        above the rim and 0.2 below the glass (top-aligned there, mostly on the straight face) with a stencil at least
+        STENCIL_MIN_T thick in front of LOGO_SKIN (the pebble's 1.3)."""
+        if "logo_wz" not in self._cache:
+            for w in np.arange(PEBBLE["LOGO_W_MAX"], 5.9, -0.5):
+                h = hw.LETTERS_ASPECT * w
+                pw, ph = w + 2 * STENCIL_MARGIN, h + 2 * STENCIL_MARGIN
+                zc = self.GLASS_S0 - 0.2 - ph / 2
+                if zc - h / 2 < FRONT_LOGO_RIM or hw.STRIP_PER_MM * w < FRONT_LOGO_STRIP_MIN:
+                    continue
+                st_t = self.FRONT - (self.logo_skin + self.logo_floor_t(pw, ph, zc)) - STENCIL_BACK
+                if st_t >= PEBBLE["STENCIL_MIN_T"]:
+                    self._cache["logo_wz"] = (float(w), zc)
+                    break
+            check("logo_wz" in self._cache, "pebble: no logo fits")
+        return self._cache["logo_wz"]
+
+    land_tol = 3e-5                             # the lips leave the land tangentially: 0.002 would read ~0.7 deep
+
+    def pocket(self):
+        """Model's glow-through pocket (flanks LOGO_FLARE_DEG at the sides, top and bottom straight), behind the pebble's
+        thicker skin; its stencil as thick as the pocket leaves (STENCIL_BACK inside the mouth)."""
+        P = Model.pocket(self)
+        if "st_t" not in P:
+            P["st_t"] = self.FRONT - P["floor"] - STENCIL_BACK
+            check(P["st_t"] >= PEBBLE["STENCIL_MIN_T"] - 1e-9, f"pebble stencil only {P['st_t']:.2f} thick")
+            P["mouth_x"], P["mouth_s"] = P["mouth"][0] / 2, (P["zc"] - P["ph"] / 2, P["zc"] + P["ph"] / 2)
+        return P
+
+    # ---- slots "C" (user, 2026-11-24): A's openings as printed, re-solved for c-c 18; flat ends; no horn fix (the relief
+    # is to hide the horns, as on the WIP) ----
+    def lip(self, xc, sg):
+        """Round A's lip on side sg of the slot at xc (sg = +1: its +x side), body frame: an arc that starts vertical at the
+        land's top (t = L) and turns until it would meet the bowed face tangentially, its radius solved for that side.
+        Returns (r, phi*)."""
+        L = self.FRONT - self.RIM
+        half = SLOT_W / 2
+        F = lambda u: PEBBLE_BOW_K * float(oval_front_y(xc + sg * u))
+        dF = lambda u: (F(u + 1e-6) - F(u - 1e-6)) / 2e-6
+        r, ph = 2.0, math.pi / 2
+        for _ in range(500):
+            u = half + r * (1 - math.cos(ph))
+            ph = math.pi / 2 + math.atan(dF(u))
+            r_new = (L - F(u)) / math.sin(ph)
+            if abs(r_new - r) < 1e-12:
+                break
+            r = 0.5 * (r + r_new)
+        u = half + r * (1 - math.cos(ph))
+        check(abs(L - r * math.sin(ph) - F(u)) < 1e-9 and abs(-1 / math.tan(ph) - dF(u)) < 1e-6 and r > 0.3,
+              f"lip at x {xc:+.2f}, side {sg:+d}: no tangent arc (r {r:.3f})")
+        return r, ph
+
+    def slot_params(self):
+        """The slots' design numbers: centres, land, A's lips per side (inner: towards x 0), each ended LIP_SHORT_DEG
+        short of tangency and run out along its tangent; their widths on the face; ends flat (ae 0)."""
+        if "slotp" not in self._cache:
+            f = lambda x: PEBBLE_BOW_K * oval_front_y(np.asarray(x, float))
+            xc, half = self.tube_cc / 2, SLOT_W / 2
+            L, T = self.FRONT - self.RIM, self.FRONT
+            lips = {}
+            for side, sg in (("in", -1), ("out", 1)):
+                r, ph = self.lip(xc, sg)
+                pe = ph - math.radians(PEBBLE["LIP_SHORT_DEG"])
+                dxe = r * (1 - math.cos(pe))
+                # where the run-out crosses the face: its width on the face
+                g = lambda d: (L - r * math.sin(pe) - (d - dxe) / math.tan(pe)) - float(f(xc + sg * (half + d)))
+                lo, hi = dxe, dxe + 2.0
+                check(g(lo) > 0 > g(hi), f"lip {side}: its run-out does not cross the face")
+                for _ in range(100):
+                    mid = 0.5 * (lo + hi); lo, hi = (mid, hi) if g(mid) > 0 else (lo, mid)
+                lips[side] = dict(r=r, ph=ph, pe=pe, dxe=dxe, w=0.5 * (lo + hi))
+            self._cache["slotp"] = dict(f=f, xc=xc, half=half, L=L, T=T, lips=lips, a_in=lips["in"]["w"],
+                                        a_out=lips["out"]["w"], ae=0.0)
+        return self._cache["slotp"]
+
+    def slot_surface(self, x, s, half=None, only=None):
+        """The material's surface t over (x, s), body frame (A's lips, flat ends); through the slots: FRONT."""
+        P = self.slot_params()
+        f, L, T = P["f"], P["L"], P["T"]
+        S0, S1 = self.SLOT_S
+        x, s = np.broadcast_arrays(np.asarray(x, float), np.asarray(s, float))
+        fx = f(x)
+        u = np.abs(x) - P["xc"]                             # both slots from |x|: mirror-exact
+        dx = np.abs(u) - P["half"]
+        lip = np.full_like(fx, -np.inf)
+        for side, sgn in (("in", u < 0), ("out", u >= 0)):
+            q = P["lips"][side]
+            d = np.clip(dx, 0, None)
+            with np.errstate(invalid="ignore"):
+                arc = L - q["r"] * np.sin(np.arccos(np.clip(1 - d / q["r"], -1, 1)))
+            run = (L - q["r"] * math.sin(q["pe"])) - (d - q["dxe"]) / math.tan(q["pe"])
+            lip = np.where(sgn, np.where(d <= q["dxe"], arc, run), lip)
+        ins = (s > S0) & (s < S1)
+        p = np.where(ins, np.where(dx < 0, T, lip), -np.inf)
+        return np.maximum(p, fx)
+
+    def slot_cutter(self, x):
+        """OCC proxy of a slot's cut (its bounding box: the through-slot and lips) for distance checks only (the logo
+        pocket to the slots); the shell's slots are cut on the mesh (slot_cutter_mesh, manifold3d)."""
+        P = self.slot_params()
+        sx = 1 if x > 0 else -1
+        S0, S1 = self.SLOT_S
+        x0, x1 = sx * P["xc"] - sx * (P["half"] + P["a_in"]), sx * P["xc"] + sx * (P["half"] + P["a_out"])
+        return self.wt(box(min(x0, x1), max(x0, x1), -1, P["T"] + 1, S0, S1))
+
+    def slot_cutter_mesh(self):
+        """Both slots as one closed mesh (world frame; manifold3d): round A's cutter profile (body frame (x, t): the
+        through-slot from CUT_THROUGH behind the inner face to the land's top, each lip's arc in LIP_ARC_N chords, its
+        tangent run-out 1.5 long, then 4 in front of the face) extruded exactly S0..S1 (flat ends, true planes); the right
+        slot's, mirrored for the left one."""
+        if "slotmesh" in self._cache:
+            return self._cache["slotmesh"]
+        import manifold3d as m3
+        P = self.slot_params()
+        xc, half, L, T = P["xc"], P["half"], P["L"], P["T"]
+        S0, S1 = self.SLOT_S
+        side = {}
+        for nm, sg in (("in", -1), ("out", 1)):
+            q = P["lips"][nm]
+            th = np.linspace(0.0, q["pe"], PEBBLE["LIP_ARC_N"] + 1)
+            arc = np.c_[xc + sg * (half + q["r"] * (1 - np.cos(th))), L - q["r"] * np.sin(th)]
+            d = np.array([sg * math.sin(q["pe"]), -math.cos(q["pe"])])
+            P2 = arc[-1] + 1.5 * d
+            check(P2[1] < float(P["f"](P2[0])) - 0.01, f"slot lip {nm}: its run-out stays behind the face")
+            side[nm] = np.r_[arc, [P2, [P2[0], -4.0]]]
+        top = T + PEBBLE["CUT_THROUGH"]
+        poly = np.r_[[[xc - half, top]], side["in"], side["out"][::-1], [[xc + half, top]]]
+        area = 0.5 * np.sum(poly[:, 0] * np.roll(poly[:, 1], -1) - np.roll(poly[:, 0], -1) * poly[:, 1])
+        if area < 0:
+            poly = poly[::-1]
+        cs = m3.CrossSection([poly.tolist()])
+        check(cs.num_contour() == 1 and abs(cs.area() - abs(area)) < 1e-6 * abs(area), f"slot cutter profile: {cs.num_contour()} contours, area {cs.area():.6f} vs {abs(area):.6f}")
+        R = m3.Manifold.extrude(cs, S1 - S0)              # (x, t, s - S0)
+        Mx = [[1, 0, 0, 0], [0, self.c, self.sn, S0 * self.sn], [0, -self.sn, self.c, S0 * self.c]]
+        R = R.transform(Mx)
+        M = R + R.mirror((1, 0, 0))
+        check(M.status() == m3.Error.NoError and not M.is_empty() and len(M.decompose()) == 2, f"slot cutter mesh: {M.status()}")
+        self._cache["slotmesh"] = M
+        self._cache["slotmesh_n"] = len(poly)
+        return M
+
+    def seat(self):
+        """The flat inner face where the cavity's 3 mm offset lies behind it (body frame, added to the cavity): over the
+        glass, |x| <= glass + 0.3, from 0.5 below it to GLASS_SEAT above it, SEAT_D deep, its top end rising SEAT_TOP_DEG
+        from the face's normal (a ceiling at 45 deg from vertical when printed); under the glass round the logo pocket's
+        mouth (+ 0.5), LOGO_SEAT_D deep."""
+        if "seat" not in self._cache:
+            F, gx = self.FRONT, hw.GLASS_W / 2 + 0.3
+            s_a, s_b = self.GLASS_S0 - 0.5, self.GLASS_TOP + GLASS_SEAT
+            d = PEBBLE["SEAT_D"]
+            k = math.tan(math.radians(PEBBLE["SEAT_TOP_DEG"]))
+            prof = Polygon((F, s_a), (F + d, s_a), (F + d, s_b + d * k), (F, s_b), align=None)   # (t, s)
+            glass = extrude(Plane.YZ * prof, gx, both=True)
+            P = self.pocket()
+            mx, (s_m0, s_m1) = P["mouth_x"], P["mouth_s"]
+            logo = box(-mx - 0.5, mx + 0.5, F, F + PEBBLE["LOGO_SEAT_D"], s_m0 - 0.5, s_a + 0.01)
+            seat = (glass + logo).clean()
+            check(seat.is_valid and len(seat.solids()) == 1, "pebble seat invalid")
+            self._cache["seat"] = self.wt(seat)
+            self._cache["seat_dims"] = dict(gx=gx, s=(s_a, s_b), lx=mx + 0.5, ls=s_m0 - 0.5)
+        return self._cache["seat"]
+
+    # ---- cavity ----
+    def cavity(self, seat=True):
+        """The 3 mm offset behind the flat inner face (seat False: what WALL_MIN is measured on), plus the seat."""
+        if "cav0" not in self._cache:
+            loft, self._cache["cav_srf"] = bspline_loft(self.CAV["secs"], self.CAV["zs"])
+            cav = loft & self.wt(box(-100, 100, self.FRONT, self.FRONT + 300, -100, 300))
+            check(cav.is_valid and len(cav.solids()) == 1, "pebble cavity invalid")
+            self._cache["cav0"] = cav
+        if not seat:
+            return self._cache["cav0"]
+        if "cav" not in self._cache:
+            cav = (self._cache["cav0"] + self.seat()).clean()
+            check(cav.is_valid and len(cav.solids()) == 1, "pebble cavity + seat invalid")
+            self._cache["cav"] = cav
+        return self._cache["cav"]
+
+    # ---- magnets, USB ----
+    def magnet_spots(self):
+        """[(x, y)] of the four magnet axes (as the oval's): MAG_DEPTH inside the rim's outline along its normal at MAG_PHI."""
+        P = self.shape.section(0.0, 150)
+        d = np.roll(P, -1, axis=0) - np.roll(P, 1, axis=0)
+        nrm = np.c_[d[:, 1], -d[:, 0]]
+        nrm /= np.linalg.norm(nrm, axis=1)[:, None]
+        a = np.degrees(np.arctan2(nrm[:, 1], nrm[:, 0]))
+        out = []
+        for phi in PEBBLE["MAG_PHI"]:
+            for sx in (1, -1):
+                ph = phi if sx > 0 else 180 - phi
+                i = int(np.argmin(np.abs((a - ph + 180) % 360 - 180)))
+                out.append((round(float(P[i, 0] - PEBBLE["MAG_DEPTH"] * nrm[i, 0]), 3),
+                            round(float(P[i, 1] - PEBBLE["MAG_DEPTH"] * nrm[i, 1]), 3)))
+        return out
+
+    def bosses(self):
+        b = None
+        for x, y in self.magnet_spots():
+            c = Pos(x, y, 0) * Cylinder(PEBBLE["BOSS_R"], PEBBLE["BOSS_H"], align=(Align.CENTER, Align.CENTER, Align.MIN))
+            b = c if b is None else b + c
+        return b & self.shell_env()
+
+    def usb_cutter(self):
+        """Cable notch (tilt15's): NOTCH_W x NOTCH_H, round-topped, through the back wall at x 0, open at the rim."""
+        r = NOTCH_W / 2
+        zc = NOTCH_H - r
+        y0 = self.CAV["raw"][int(round(-self.CAV["zo"][0] / PEBBLE["DZ"]))][:, 1].max() - 2.0    # inside the rim's back
+        y1 = self.D + 2.0
+        n = box(-r, r, y0, y1, -1, zc)
+        return n + Pos(0, y0, zc) * Cylinder(r, y1 - y0, rotation=(-90, 0, 0), align=(Align.CENTER, Align.CENTER, Align.MIN))
+
+    def shell(self, level="full", magnets=None):
+        key = ("shell", level)
+        if key in self._cache:
+            return self._cache[key]
+        s = self.shell_env() - self.cavity()
+        s = s + self.bosses()
+        if level != "body":                     # (the slots: on the mesh, slot_cutter_mesh)
+            s = s - self.usb_cutter()
+        if level in ("full", "strip"):
+            for c in self.logo_cutters():
+                s = s - c
+        if level == "full":
+            for x, y in self.magnet_spots():
+                s = s - Pos(x, y, 0) * Cylinder((hw.MAG_D + hw.MAG_CLR_D) / 2, hw.MAG_H + hw.MAG_CLR_H,
+                                                align=(Align.CENTER, Align.CENTER, Align.MIN))
+        self._cache[key] = s
+        return s
+
+    def lid(self, magnets=None):
+        l = self.lid_blank()
+        for x, y in self.magnet_spots():
+            l = l - Pos(x, y, 0) * Cylinder((hw.MAG_D + hw.MAG_CLR_D) / 2, hw.MAG_H + hw.MAG_CLR_H,
+                                            align=(Align.CENTER, Align.CENTER, Align.MAX))
+        return l
+
+
+PEB_STRAIGHT_TOL = 0.01                # the face over the slots: straight along the lean within this (t, both ways)
+PEB_OVERHANG_MAX = 45.0                # deg from vertical, outside and inside (bridges apart)
+
+
+def pebble_overhangs(m, nu=480, nv=1000):
+    """The outer surface and the cavity's sampled (B-spline surfaces, exact points and normals): the steepest overhang
+    (deg from vertical, where the surface faces down) and where; the cavity only where it is the shell's surface (above the
+    rim, below the flat ceiling, behind the flat inner face)."""
+    A = surface_samples(m._cache["env_srf"], nu, nv).reshape(-1, 6)
+    k = int(np.argmin(A[:, 5]))
+    out = (math.degrees(math.asin(max(-A[k, 5], 0.0))), A[k, :3])
+    C = surface_samples(m._cache["cav_srf"], nu, nv).reshape(-1, 6)
+    t = C[:, 1] * m.c - C[:, 2] * m.sn
+    C = C[(C[:, 2] > 0.0) & (C[:, 2] < m.CAV["zf"] - 1e-6) & (t > m.FRONT + 1e-6)]
+    k = int(np.argmax(C[:, 5]))                        # the cavity's normal points into the shell: the shell faces down
+    inn = (math.degrees(math.asin(max(C[k, 5], 0.0))), C[k, :3])
+    return out, inn, A
+
+
+def pebble_region(m, p):
+    x, y, z = p
+    t = y * m.c - z * m.sn
+    return ("rim zone" if z < 3.0 else "dome" if z > 85.0 else "front" if t < m.FRONT + 3.0 else
+            "back" if y > 40.0 and abs(x) < 20.0 else "sides")
+
+
+PEB_FULL_CHECKS = False                # round B (user): only land, overhangs, clearances, logo skin, insertion path and closed
+                                       # bodies; True adds the walls (exact and sampled), the seat's wall, the outline against the
+                                       # sketch, the face's straightness and the flat inner face's span (true by construction)
+
+
+def occ_to_manifold(shape, defl=0.005, ang=0.05):
+    """An OCC solid as a manifold3d Manifold: meshed as read back from STEP (the in-memory pebble shell meshes with open
+    edges), deflection `defl` (absolute) / `ang`; vertices merged."""
+    import tempfile, pyvista as pv, manifold3d as m3
+    from build123d import import_step
+    from OCP.BRepMesh import BRepMesh_IncrementalMesh
+    from OCP.StlAPI import StlAPI_Writer
+    with tempfile.TemporaryDirectory() as td:
+        g = pathlib.Path(td) / "m.step"
+        export_step(shape, str(g))
+        back = import_step(str(g))
+        BRepMesh_IncrementalMesh(back.wrapped, defl, False, ang, True).Perform()
+        fs = pathlib.Path(td) / "m.stl"
+        w = StlAPI_Writer()
+        w.ASCIIMode = False
+        check(w.Write(back.wrapped, str(fs)), "mesh not written")
+        mesh = pv.read(str(fs)).clean()
+    check(mesh.n_open_edges == 0, f"OCC mesh: {mesh.n_open_edges} open edges")
+    F = mesh.faces.reshape(-1, 4)[:, 1:]
+    M = m3.Manifold(m3.Mesh64(vert_properties=np.ascontiguousarray(mesh.points, np.float64), tri_verts=np.ascontiguousarray(F, np.uint64)))
+    check(M.status() == m3.Error.NoError and not M.is_empty(), f"OCC mesh to manifold: {M.status()}")
+    return M
+
+
+def manifold_arrays(M):
+    m = M.to_mesh64()
+    return np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts, np.int64)
+
+
+def write_manifold_stl(M, path):
+    import pyvista as pv
+    V, F = manifold_arrays(M)
+    pv.PolyData(V, np.c_[np.full(len(F), 3), F].ravel()).save(str(path), binary=True)
+
+
+def mesh_quality(M, path=None):
+    """The final mesh: pieces, open / non-manifold edges (pyvista, on the written STL or the arrays), degenerate slivers
+    (triangles under 1e-6 mm2 or with an inscribed radius under 1e-4)."""
+    import pyvista as pv
+    V, F = manifold_arrays(M)
+    pd = pv.PolyData(V, np.c_[np.full(len(F), 3), F].ravel()).clean()
+    nm = pd.extract_feature_edges(boundary_edges=False, feature_edges=False, manifold_edges=False, non_manifold_edges=True).n_cells
+    a, b, c_ = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    area = 0.5 * np.linalg.norm(np.cross(b - a, c_ - a), axis=1)
+    per = np.linalg.norm(b - a, axis=1) + np.linalg.norm(c_ - b, axis=1) + np.linalg.norm(a - c_, axis=1)
+    rin = 2 * area / np.maximum(per, 1e-12)
+    return dict(pieces=len(M.decompose()), open=pd.n_open_edges, nonman=nm, tris=len(F), tiny=int((area < 1e-6).sum()),
+                slivers=int((rin < 1e-4).sum()), min_rin=float(rin.min()), vol=M.volume())
+
+
+def mesh_check_paths(m, shell_M, lid, moving, adapter, order):
+    """check_paths with the shell as a mesh (manifold3d): every sweep of the assembly order against the shell (overlap
+    volume, min_gap), the body-to-body parts as check_paths (OCC)."""
+    drop = 2 * m.H
+    gaps = {}
+    toM = lambda s_: occ_to_manifold(s_, 0.01, 0.1)
+
+    def vs_shell(sw, what):
+        Ms = toM(sw)
+        v = (Ms ^ shell_M).volume()
+        check(v < EPS_V, f"{m.name}: {what} cuts {v:.3f} mm3 out of the shell")
+        return Ms.min_gap(shell_M, 10.0)
+    shift = m.insert_shift
+    first = [b for b in moving if not (order == "battery-after" and b.name == "battery")]
+    for b in first:
+        gaps[("up", b.name)] = vs_shell(b.solid(dt=shift, es0=drop, es1=Z_STOP), f"insertion, up move: {b.name}")
+        gaps[("forward", b.name)] = vs_shell(b.solid(et=shift), f"insertion, forward move: {b.name}")
+    seated = [(b.name, b.solid()) for b in moving]
+    board_seated = [(n, x) for n, x in seated if n != "battery"]
+    for move, sw in bat_sweeps(m, order, drop)[0]:
+        for on, o in board_seated:
+            v = volume_common(sw, o)
+            check(v < EPS_V, f"{m.name}: battery, {move}: runs into the {on} ({v:.2f} mm3)")
+        gaps[(move, "battery")] = vs_shell(sw, f"battery, {move}")
+        gaps[(move, "battery-board")] = min(gap(sw, o) for n, o in board_seated if n in ("board", "plug-j5", "plug-i2c"))
+    sweep = adapter.solid(es0=drop)
+    gaps[("adapter", "shell")] = vs_shell(sweep, "adapter move")
+    for on, o in seated:
+        v = volume_common(sweep, o)
+        check(v < EPS_V, f"{m.name}: adapter move runs into the {on} ({v:.2f} mm3)")
+        gaps[("adapter", on)] = gap(sweep, o)
+    lsweep = m.lid_sweep(drop)
+    check(volume_common(lid, lsweep) >= lid.volume - 1e-3, "lid sweep does not contain the lid")
+    gaps[("lid", "shell")] = vs_shell(lsweep, "lid move")
+    for on, o in [("adapter", adapter.solid())] + seated:
+        v = volume_common(lsweep, o)
+        check(v < EPS_V, f"{m.name}: lid move runs into the {on} ({v:.2f} mm3)")
+        gaps[("lid", on)] = gap(lid, o)
+    for n, o in seated + [("adapter", adapter.solid()), ("lid", lid)]:
+        Mo = toM(o)
+        v = (Mo ^ shell_M).volume()
+        check(v < EPS_V, f"assembled: the shell and the {n} overlap by {v:.3f} mm3")
+        gaps[("seated", n)] = Mo.min_gap(shell_M, 10.0)
+    return gaps
+
+
+def mesh_land(m, shell_M, cutter_M):
+    """The lands, body frame. The design's depth (slot_surface at the land's edge). On the final mesh: the walls' spacing
+    at the inner face and
+    how far each wall runs straight (vertices within 3e-4 of the plane): manifold drops the land's top vertex, since the
+    lip starts vertical, tangent to the land, so the final wall runs on to the lip's first node."""
+    out = {}
+    for tag, M_ in (("final", shell_M),):
+        V, F = manifold_arrays(M_)
+        t = V[:, 1] * m.c - V[:, 2] * m.sn
+        s = V[:, 1] * m.sn + V[:, 2] * m.c
+        S0, S1 = m.SLOT_S
+        body = (s >= S0) & (s <= S1) & (t <= m.FRONT + 1e-6)
+        for sx in (-1, 1):
+            for sg in (-1, 1):
+                e = sx * m.tube_cc / 2 + sg * SLOT_W / 2
+                k = body & (np.abs(V[:, 0] - e) < 3e-4)
+                check(k.sum() >= 2, f"mesh land ({tag}): no wall at x {e:+.3f}")
+                atT = k & (np.abs(t - m.FRONT) < 1e-4)
+                out[(tag, sx, sg)] = (float(np.median(V[atT, 0])) if atT.any() else math.nan, float(m.FRONT - t[k].min()))
+    widths = [out[("final", sx, 1)][0] - out[("final", sx, -1)][0] for sx in (-1, 1)]
+    smid = sum(m.SLOT_S) / 2                                 # the design (manifold drops the node: see above)
+    design = [m.FRONT - m.slot_params()["L"]] * 4             # the lips start at the land's top, L (slot_surface's limit there)
+    reach = [out[("final", sx, sg)][1] for sx in (-1, 1) for sg in (-1, 1)]
+    return min(widths), max(widths), min(design), max(design), min(reach), max(reach)
+
+
+def mesh_slot_overhang(m, shell_M):
+    """On the final mesh, the triangles of the slots' region (lips, lands, ends; body frame, in front of the inner face,
+    within the cut's bounding box): the steepest overhang printed standing (deg from vertical) and where, apart from the
+    named exception: the top end walls (the plane s = S1, facing down the slot: 75 deg ceilings, on tree supports, as in
+    A; it includes the lips' crescents in that plane). Returns (rest, where), (the exception's steepest, its extent
+    x range (both slots), t range, its area)."""
+    P = m.slot_params()
+    V, F = manifold_arrays(shell_M)
+    a, b, c_ = V[F[:, 0]], V[F[:, 1]], V[F[:, 2]]
+    cr = np.cross(b - a, c_ - a)
+    ar = np.linalg.norm(cr, axis=1) / 2
+    n = cr / np.maximum(2 * ar, 1e-15)[:, None]
+    cen = (a + b + c_) / 3
+    t = cen[:, 1] * m.c - cen[:, 2] * m.sn
+    s = cen[:, 1] * m.sn + cen[:, 2] * m.c
+    ns = n[:, 1] * m.sn + n[:, 2] * m.c
+    S0, S1 = m.SLOT_S
+    reg = (np.abs(cen[:, 0]) < P["xc"] + P["half"] + P["a_out"] + 0.5) & (s > S0 - 0.5) & (s < S1 + 0.5) & (t < m.FRONT - 1e-3)
+    ov = np.degrees(np.arcsin(np.clip(-n[:, 2], 0, 1)))
+    exc = reg & (np.abs(s - S1) < 1e-3) & (ns < -1 + 1e-6)
+    rest = np.where(reg & ~exc)[0]
+    i = rest[np.argmax(ov[rest])]
+    k = np.where(exc)[0]
+    check(len(k) > 0, "pebble: no top end wall found on the mesh")
+    xe = np.abs(V[F[k]].reshape(-1, 3)[:, 0])
+    te = (V[F[k]].reshape(-1, 3)[:, 1] * m.c - V[F[k]].reshape(-1, 3)[:, 2] * m.sn)
+    return ((float(ov[i]), (round(float(cen[i, 0]), 2), round(float(s[i]), 2))),
+            (float(ov[k].max()), (float(xe.min()), float(xe.max())), (float(te.min()), float(te.max())), float(ar[k].sum())))
+
+
+def mesh_front_wall(m, shell_M):
+    """The front wall's thickness along t on the final mesh, round the slots: from points of the flat inner face (a grid,
+    not in the slots or within 0.05 of a land), the first hit outwards (-t). Returns the minimum and where."""
+    P = m.slot_params()
+    S0, S1 = m.SLOT_S
+    best = (math.inf, None)
+    dvec = np.array([0.0, -m.c, m.sn])                      # -t in world
+    for s_ in np.linspace(S0 - P["ae"], S1 + P["ae"], 40):
+        for x in np.linspace(-(P["xc"] + P["half"] + P["a_out"]), P["xc"] + P["half"] + P["a_out"], 81):
+            dx = abs(abs(x) - P["xc"]) - P["half"]
+            if dx < 0.05 and S0 - 0.05 <= s_ <= S1 + 0.05:
+                continue
+            o = np.array([x, *m.to_world(m.FRONT - 1e-4, s_)])
+            hits = shell_M.ray_cast(tuple(o), tuple(o + 8 * dvec))
+            if not hits:
+                continue
+            d = min(h.distance for h in hits) * 8            # (distance: the fraction of the ray)
+            if d < best[0]:
+                best = (d, (round(x, 2), round(s_, 2)))
+    return best
+
+
+
+def build_pebble(order=ORDER):
+    """Rounds B, C: the shell is built in OCC without the slots (shell-noslots.step), meshed finely and cut with the slots'
+    mesh (manifold3d). Round C (user, 2026-11-24): four checks only: the final shell mesh closed and in one piece,
+    overhangs <= 45 outside the named exception (the top end walls), seated clearances (the rods in the slots; the
+    adapter's up-move past the chin), the logo's thinnest skin. The rest (land, insertion sweeps, front-wall ray casts,
+    STEP / STL read-back, slivers, magnets, cable, tipping) behind PEB_FULL_CHECKS."""
+    import manifold3d as m3
+    name = "pebble"
+    out = OUT_ROOT / name
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"[{name}] sections, cavity ...", flush=True)
+    m = PebbleModel()
+    CV, SP = m.CAV, m.slot_params()
+    print(f"[{name}] W {m.W:.2f} H {m.H} front {m.FRONT}, c-c {m.tube_cc}, ceiling z {CV['zf']}, up-move shift {m.insert_shift}; "
+          f"building ...", flush=True)
+    spots = m.magnet_spots()
+    if PEB_FULL_CHECKS:
+        meats = meat_at(spots, m.shell("body"), m.lid_blank(), fast=True)
+    shell_core = m.shell("core")                           # OCC, no slots
+    shell = m.shell("full")
+    lid = m.lid()
+    moving = m.moving_bodies()
+    adapter = m.adapter()
+    ad = adapter.solid()
+    for n, p in (("shell (before the slots)", shell), ("lid", lid)):
+        check(p.is_valid and len(p.solids()) == 1, f"{name}: {n} is not a single valid solid")
+    if PEB_FULL_CHECKS:
+        for (x, y), (ms, ml) in zip(spots, meats):
+            check(min(ms, ml) >= MAG_MEAT_FRONT_MIN - 1e-6, f"pebble: magnet at ({x:.2f}, {y:.2f}): {ms:.2f} in the rim, {ml:.2f} in the lid")
+
+    # ---- the slots, on the mesh ----
+    print(f"[{name}] slots (mesh) ...", flush=True)
+    cutter = m.slot_cutter_mesh()
+    MESH_D, MESH_A = PEBBLE["MESH_DEFL"], PEBBLE["MESH_ANG"]
+    shell_M = occ_to_manifold(shell, MESH_D, MESH_A) - cutter
+    core_M = occ_to_manifold(shell_core, MESH_D, MESH_A) - cutter
+    for n_, M_ in (("shell", shell_M), ("core", core_M)):
+        check(M_.status() == m3.Error.NoError and not M_.is_empty() and len(M_.decompose()) == 1,
+              f"pebble {n_} after the slots: {M_.status()}, {len(M_.decompose())} pieces")
+    Q = mesh_quality(shell_M)
+    check(Q["open"] == 0 and Q["nonman"] == 0 and Q["pieces"] == 1, f"pebble shell mesh: {Q}")
+
+    # ---- land, rods in the slots (final mesh) ----
+    check(SLOT_W - hw.ROD_W >= ROD_PLAY_MIN - 1e-9 and SLOT_L - ROD_L >= 0.1, "rod clearance in the slot")
+    if PEB_FULL_CHECKS:
+        lw0, lw1, ld, ld1, lr0, lr1 = mesh_land(m, core_M, cutter)
+        check(abs(lw0 - SLOT_W) < 1e-3 and abs(lw1 - SLOT_W) < 1e-3 and abs(ld - m.RIM) < LAND_DY + 1e-6 and abs(ld1 - m.RIM) < LAND_DY + 1e-6
+              and m.RIM - LAND_DY <= lr0 and lr1 <= m.RIM + 0.05,
+              f"pebble land on the mesh: {lw0:.4f}..{lw1:.4f} wide, {ld:.3f}..{ld1:.3f} deep (design), the final wall straight for {lr0:.3f}..{lr1:.3f}")
+
+    rod_clr = {}
+    for t in hw.TAPE:
+        g_ = []
+        for sx in (-1, 1):
+            Mr = occ_to_manifold(Rod(m, "rod", sx * m.tube_cc / 2, t).solid(), 0.01, 0.1)
+            v = (Mr ^ core_M).volume()
+            check(v < EPS_V, f"a rod (tape {t}) runs into its slot ({v:.3f} mm3)")
+            g_.append(Mr.min_gap(core_M, 5.0))
+        rod_clr[t] = min(g_)
+    smid = sum(m.SLOT_S) / 2
+    xs = np.linspace(-24, 24, 48001)
+    Pm = m.slot_surface(xs, smid)
+    fx = SP["f"](xs)
+    rr = xs[(xs > 0) & (Pm - fx > 1e-3)]
+    opening, gap_open = rr.max() - rr.min(), 2 * rr.min()
+    shallow = xs[(np.abs(xs) < SP["xc"]) & (Pm - fx < 0.3)]
+    nose_reads = 2 * np.abs(shallow).max() if len(shallow) else 0.0
+    mat1 = m.FRONT - float(m.slot_surface(SP["xc"] - SP["half"] - 1.0, smid))
+    proud = {t: float(SP["f"](SP["xc"])) - (m.GLASS_T0 - t - hw.ROD_W / 2) for t in hw.TAPE}
+
+    # ---- overhangs: outside, the cavity (B-splines), the slots (final mesh) ----
+    print(f"[{name}] overhangs, walls ...", flush=True)
+    (ov_out, ov_out_p), (ov_in, ov_in_p), OS = pebble_overhangs(m)
+    (ov_slot, ov_slot_p), (ov_top, top_x, top_t, top_a) = mesh_slot_overhang(m, shell_M)
+    check(abs(ov_top - (90 - m.tilt)) < 0.1, f"pebble: the top end walls {ov_top:.2f} deg from vertical, want {90 - m.tilt}")
+    check(ov_out <= PEB_OVERHANG_MAX and ov_in <= PEB_OVERHANG_MAX and ov_slot <= PEB_OVERHANG_MAX,
+          f"pebble: overhang {ov_out:.2f} deg outside at {ov_out_p.round(2)}, {ov_in:.2f} inside at {ov_in_p.round(2)}, "
+          f"{ov_slot:.2f} at the slots at (x, s) {ov_slot_p}")
+    zf = CV["zf"]
+    flats = [f for f in shell_core.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6 and abs(f.center().Z - zf) < 1e-3]
+    check(len(flats) == 1, f"flat ceiling: {len(flats)}")
+    fb = flats[0].bounding_box()
+    bridge = min(fb.size.X, fb.size.Y)
+    check(bridge <= PEBBLE["BRIDGE_MAX"] + 1e-3, f"ceiling bridge {bridge:.2f}")
+    if PEB_FULL_CHECKS:
+        fw_min, fw_p = mesh_front_wall(m, shell_M)
+        check(fw_min >= m.RIM - 0.01, f"pebble: the front wall round the slots {fw_min:.3f} thick at (x, s) {fw_p}")
+        wtxt = (f"[m, mesh] the front wall round the slots, along t from the inner face, at its thinnest {fw_min:.2f} at (x, s) {fw_p} "
+                f"(the land: {m.RIM} by design); [d] 1 mm out from a land {mat1:.2f}; elsewhere unchanged since A (3.01 measured, the "
+                f"seat over the glass's edge 1.90; not re-measured: PEB_FULL_CHECKS off)")
+
+    if PEB_FULL_CHECKS:
+        # ---- USB: rim notch, the cable to it ----
+        usb_cut = m.usb_cutter()
+        check(gap(usb_cut, lid) < 1e-6, "notch does not reach the lid")
+        sy, sz = m.to_world(m.AD_T[1], m.SOCKET_S)
+        rc = CABLE_D / 2
+        lam = (sz - rc - 0.05) / m.sn
+        pb = (sy + lam * m.c, sz - lam * m.sn)
+        from build123d import Sphere
+        cable = (Pos(0, sy, sz) * Cylinder(rc, lam, rotation=(-90 - m.tilt, 0, 0), align=(Align.CENTER, Align.CENTER, Align.MIN))
+                 + Pos(0, *pb) * Sphere(rc)
+                 + Pos(0, pb[0], pb[1]) * Cylinder(rc, m.D + 5 - pb[0], rotation=(-90, 0, 0), align=(Align.CENTER, Align.CENTER, Align.MIN)))
+        cab = {}
+        for on, o in [("shell", shell), ("lid", lid)] + [(b.name, b.solid()) for b in moving]:
+            v = volume_common(cable, o)
+            check(v < EPS_V, f"pebble: the cable runs into the {on} ({v:.2f} mm3)")
+            cab[on] = gap(cable, o)
+
+    # ---- clearances, insertion path (final mesh) ----
+    if PEB_FULL_CHECKS:
+        print(f"[{name}] path checks (mesh) ...", flush=True)
+        gaps = mesh_check_paths(m, core_M, lid, moving, adapter, order)
+        final = [("lid", lid), ("adapter", ad)] + [(b.name, b.solid()) for b in moving]
+        check_static(final)
+        bat_solid = [b for b in moving if b.name == "battery"][0].solid()
+        ad_bat, bat_lid = gap(ad, bat_solid), gap(bat_solid, lid)
+        check(ad_bat >= BAT_ADAPTER_MIN - 1e-6 and bat_lid >= BAT_ADAPTER_MIN - 1e-6, f"battery: {ad_bat:.2f} to the adapter, {bat_lid:.2f} to the lid")
+        rod = [b for b in moving if isinstance(b, Rod)][0]
+        misalign = (occ_to_manifold(rod.solid(et=m.insert_shift, es0=-ROD_MISALIGN, es1=ROD_MISALIGN), 0.01, 0.1) ^ core_M).volume()
+        sweeps = all_sweeps(m, order)
+        boss_gap = min((gap(m.bosses(), sw), n) for n, sw in sweeps)
+        check(boss_gap[0] > 0.2, f"magnet bosses {boss_gap[0]:.2f} from the {boss_gap[1]}")
+    else:                                       # the adapter's up-move past the chin only
+        print(f"[{name}] adapter's up-move (mesh) ...", flush=True)
+        Ms = occ_to_manifold(adapter.solid(es0=2 * m.H), 0.01, 0.1)
+        v = (Ms ^ core_M).volume()
+        check(v < EPS_V, f"{name}: the adapter's up-move cuts {v:.3f} mm3 out of the shell")
+        gaps = {("adapter", "shell"): Ms.min_gap(core_M, 10.0)}
+    # ---- logo (skin; on the OCC shell: the slots do not reach it) ----
+    print(f"[{name}] logo ...", flush=True)
+    FL = front_logo_check(m, shell, lid, order, skin_only=not PEB_FULL_CHECKS)
+    if PEB_FULL_CHECKS:
+        PK = pocket_check(m, shell, lid, order, spots)
+    P_ = m.pocket()
+
+    # ---- test strip ----
+    zs1 = m.SLOT_S[1] + OVAL_STRIP_ABOVE
+    strip = m.shell("strip") & m.wt(box(-60, 60, -10, PEBBLE["STRIP_T"], -10, zs1))
+    check(strip.is_valid and len(strip.solids()) == 1, "test strip is not one valid solid")
+    strip_M = occ_to_manifold(strip, MESH_D, MESH_A) - cutter
+    QS = mesh_quality(strip_M)
+    check(QS["open"] == 0 and QS["nonman"] == 0 and QS["pieces"] == 1, f"pebble test strip mesh: {QS}")
+
+    # ---- tipping (the shell's mass from the final mesh) ----
+    if PEB_FULL_CHECKS:
+        lb = lid.bounding_box()
+        V_, F_ = manifold_arrays(shell_M)
+        a_, b_, c__ = V_[F_[:, 0]], V_[F_[:, 1]], V_[F_[:, 2]]
+        v6 = np.einsum("ij,ij->i", a_, np.cross(b_, c__))
+        shell_v, shell_c = v6.sum() / 6, (v6[:, None] * (a_ + b_ + c__)).sum(0) / (4 * v6.sum())
+        lid_v, lid_c = vol_props(lid, True)
+        parts_m = [(shell_v / 1000 * DENSITY, Vector(*shell_c)), (lid_v / 1000 * DENSITY, lid_c),
+                   (BOARD_G, Vector(0, *m.to_world((m.GLASS_T0 + m.BOARD_T1) / 2, m.PCB_S0 + hw.PCB_H / 2))),
+                   (BATTERY_G, Vector(0, *m.to_world(sum(m.BAT_T) / 2, m.BAT_S0 + hw.BAT_H / 2)))]
+        mass = sum(g for g, _ in parts_m)
+        cm = sum((p * g for g, p in parts_m), Vector(0, 0, 0)) * (1 / mass)
+        foot = [f for f in lid.faces() if f.geom_type == GeomType.PLANE and f.normal_at().Z < -1 + 1e-6][0].bounding_box()
+        z_cm = cm.Z + LID_T
+        ang_b, ang_f = math.degrees(math.atan2(foot.max.Y - cm.Y, z_cm)), math.degrees(math.atan2(cm.Y - foot.min.Y, z_cm))
+        bbM = shell_M.bounding_box()
+    bbM = shell_M.bounding_box()
+    # ---- exports ----
+    print(f"[{name}] exports ...", flush=True)
+    for f in list(out.glob("*.stl")) + list(out.glob("*.step")):
+        f.unlink()
+    files = {}
+    if PEB_FULL_CHECKS:
+        export_part(lid, out, "lid", files, precise=True)
+        st_shell = write_step(shell, out / "shell-noslots.step", precise=True)
+    else:                                       # no read-back checks (round C)
+        export_step(lid, str(out / "lid.step"))
+        write_stl(lid, out / "lid.stl", fresh=True, fine=True)
+        export_step(shell, str(out / "shell-noslots.step"))
+    write_manifold_stl(shell_M, out / "shell.stl")
+    write_manifold_stl(strip_M, out / "teststrip.stl")
+    if PEB_FULL_CHECKS:
+        mesh_files = {}
+        for n_, M_ in (("shell", shell_M), ("teststrip", strip_M)):
+            import pyvista as pv
+            me = pv.read(str(out / f"{n_}.stl")).clean()
+            err = abs(me.volume) / M_.volume() - 1
+            check(me.n_open_edges == 0 and abs(err) < 1e-4, f"{n_}.stl: {me.n_open_edges} open edges, volume {err * 100:+.3f} %")
+            mesh_files[n_] = (me.n_cells, err, (out / f"{n_}.stl").stat().st_size / 1024)
+
+    final = [("lid", lid), ("adapter", ad)] + [(b.name, b.solid()) for b in moving]
+    for n, s_ in final:
+        if n not in ("lid",):
+            write_stl(s_, out / f"dummy-{n}.stl")
+    if PEB_FULL_CHECKS:
+        stc, SS = make_stencils(FL["w"], STENCIL_STRIPS["front"], t=P_["st_t"])
+        base = OUT_ROOT / "logo-stencils-pebble"
+        st_ = write_step(stc, base.with_suffix(".step"))
+        write_stl(stc, base.with_suffix(".stl"))
+        ms_ = check_stl(stc, base.with_suffix(".stl"), bodies=len(stc.solids()))
+        files["stencils"] = (st_, ms_)
+        base.with_suffix(".txt").write_text(
+            f"LOGO STENCILS, pebble C (= B): letters {SS['w']:g} x {SS['h']:.2f}; pocket {SS['pocket'][0]:.2f} x {SS['pocket'][1]:.2f} "
+            f"R{STENCIL_R:g} behind the {m.logo_skin} skin, sides {LOGO_FLARE_DEG:g} deg, top and bottom straight; stencil "
+            f"{SS['t']:.2f} thick (the pocket {P_['depth']:.2f} deep less {STENCIL_BACK}); strips " +
+            ", ".join(f"{x:.2f}" for x in SS["strips"]) + "\n")
+
+    z_aa = m.to_world(0, m.AA_SC)[1]
+    write_manifold_stl(shell_M.trim_by_plane((-1, 0, 0), -m.tube_cc / 2), out / "section-x-shell.stl")
+    write_manifold_stl(shell_M.trim_by_plane((0, 0, -1), -z_aa), out / "section-z-shell.stl")
+    for tag_, cutter_ in (("x", box(m.tube_cc / 2, 300, -300, 300, -300, 300)), ("z", box(-300, 300, -300, 300, z_aa, 300))):
+        for n, s_ in final:
+            cs = s_ - cutter_
+            if cs.volume > 0.01:
+                write_stl(cs, out / f"section-{tag_}-{n}.stl")
+    lw = m3.Manifold.cube((32, 12, 30)).translate((-16, -6, -1))
+    write_manifold_stl(shell_M ^ lw.rotate((-m.tilt, 0, 0)), out / "section-l-shell.stl")
+    import json
+    fw = lambda x, s_: [x, *m.to_world(float(SP["f"](x)), s_)]
+    (out / "focus.json").write_text(json.dumps({"slot_top": fw(m.tube_cc / 2, m.SLOT_S[1]), "slot_bottom": fw(m.tube_cc / 2, m.SLOT_S[0]),
+                                                "H": m.H, "D": m.D, "logo": fw(0.0, FL["zc"]), "logo_normal": [0.0, -m.c, m.sn],
+                                                "zmid": z_aa, "tilt": m.tilt}))
+
+    if PEB_FULL_CHECKS:
+        # ---- report ----
+        def worst(move, only):
+            c_ = [(g, n) for (mv, n), g in gaps.items() if mv == move and n.startswith(only)]
+            return f"{min(c_)[0]:.2f}" if c_ else "n/a"
+        LP = SP["lips"]
+        xo = (SP["xc"] - SP["half"] - SP["a_in"], SP["xc"] + SP["half"] + SP["a_out"])
+        xw_ = np.linspace(SP["xc"] - SP["half"], SP["xc"] + SP["half"], 401)
+        endw = (float((m.FRONT - SP["f"](xw_)).min()), float(m.FRONT - SP["f"](SP["xc"])))
+        horn = max(float(m.slot_surface(SP["xc"] + sg * (SP["half"] + 1e-6), sum(m.SLOT_S) / 2) - SP["f"](SP["xc"] + sg * (SP["half"] + 1e-6)))
+                   for sg in (-1, 1))
+        R = [f"DESK HOUSING smooth / pebble, round C (user, 2026-11-24: A's openings as printed, re-solved for tubes c-c {m.tube_cc}; flat "
+             f"ends; no horn fix: the relief is to hide them; logo and the rest as B, skin {m.logo_skin}); round A: report-A.txt, "
+             f"baseline 4.55: report-baseline-front4.55.txt",
+             "[m] measured on the finished solids / meshes or their exact B-spline surfaces; [d] derived. Checks: land, overhangs, "
+             "clearances, logo skin, insertion path, closed bodies (PEB_FULL_CHECKS off: the cavity walls, outline, straightness not "
+             "re-measured)",
+             "SLOTS ON THE MESH: the shell is built in OCC without the slots, meshed (deflection "
+             f"{MESH_D} mm, {MESH_A} rad) and cut with the slots' mesh in manifold3d (as in B). "
+             "shell-noslots.step has NO slots; shell.stl / teststrip.stl are the cut meshes",
+             f"frame        world (x, y, z) = shell.stl's; body frame x = x, t = y cos{m.tilt:g} - z sin{m.tilt:g} (inwards from the face), "
+             f"s = y sin{m.tilt:g} + z cos{m.tilt:g} (up the face); the face t = f(x) (the oval's bow, f(0) = 0), the flat inner face "
+             f"t {m.FRONT:.3f}; slots s {m.SLOT_S[0]:.2f}..{m.SLOT_S[1]:.2f}, x +-({SP['xc'] - SP['half']:.2f}..{SP['xc'] + SP['half']:.2f}); "
+             f"openings on the face x +-({xo[0]:.2f}..{xo[1]:.2f})",
+             f"outer        [m] {bbM[3] - bbM[0]:.2f} x {bbM[4] - bbM[1]:.2f} x {bbM[5] - bbM[2] + LID_T:.2f} (with the lid); the front's bow: "
+             f"the oval's curve, fading with the sketch's own bow (A's 0.02..0.035 dents at z ~11 / ~92: <= 0.002); flat inner face "
+             f"at t {m.FRONT:.3f}",
+             f"slots        [d] round A's rule at c-c {m.tube_cc} (x +-{SP['xc']}): {SLOT_W} x {SLOT_L:.2f} through, s "
+             f"{m.SLOT_S[0]:.2f}..{m.SLOT_S[1]:.2f}; {m.RIM} land; round lips, an arc vertical at the land, its radius solved for each "
+             f"side (inner r {LP['in']['r']:.3f}, outer r {LP['out']['r']:.3f}), ended {PEBBLE['LIP_SHORT_DEG']:g} deg short of "
+             f"tangency and run out along its tangent: on the face inner {SP['a_in']:.2f}, outer {SP['a_out']:.2f} wide; the "
+             f"openings {opening:.2f} wide, {gap_open:.2f} apart (the bridge on the face); ends flat, square to the face, from the "
+             f"inner face out to the face: {endw[1]:.2f} deep on the slot's axis, {endw[0]:.2f} at its outer edge (the tubes butt "
+             f"against them); the horns as in A: where each lip stops at the end, the end plane leaves the lip's crescent, up to "
+             f"{horn:.2f} deep at the land. Cutter: A's profile ({m._cache['slotmesh_n']} nodes, {PEBBLE['LIP_ARC_N']} chords per arc) "
+             f"extruded exactly S0..S1 (manifold3d), the right slot's mirrored. Simplified: nothing",
+             f"  land       [m, mesh] the lands' walls {lw0:.4f}..{lw1:.4f} apart at the inner face; {ld:.3f}..{ld1:.3f} deep by design; "
+             f"on the final mesh each wall runs straight {lr0:.3f}..{lr1:.3f} from the inner face (to the lip's first node: "
+             f"the lip starts vertical, tangent to the land, and manifold drops the land's top vertex); rods in "
+             f"the slots [m, mesh] clear: " + ", ".join(f"{v:.3f} (tape {t})" for t, v in rod_clr.items()),
+             f"  nose       [d] gap between the openings on the face {gap_open:.2f}; reads ~{nose_reads:.1f} wide (< 0.3 below the face); "
+             f"rods' crown {proud[hw.TAPE[0]]:.2f}..{proud[hw.TAPE[1]]:.2f} proud of the face",
+             f"overhangs    [m] outside {ov_out:.2f}, cavity {ov_in:.2f} (B-splines); slots (final mesh: lips, lands, the bottom ends) "
+             f"{ov_slot:.2f} at (x, s) {ov_slot_p} deg from vertical printed standing; named exception: the top end walls (the plane "
+             f"s {m.SLOT_S[1]:.2f}, the lips' crescents included) {ov_top:.2f} deg, |x| {top_x[0]:.2f}..{top_x[1]:.2f}, t "
+             f"{top_t[0]:.2f}..{top_t[1]:.2f}, {top_a:.1f} mm2 both: tree supports from inside, as in A; ceiling bridge {bridge:.2f}",
+             f"walls        {wtxt}",
+             f"insertion    board + rods up at {m.insert_shift:.2f} behind their seat (the chin's inner rim edge, [d] {CV['need'][0]:.2f} to "
+             f"touch + {INSERT_CLR}), then forward; [m, mesh] up: rods {worst('up', 'rod')}, glass {worst('up', 'glass')}, board "
+             f"{worst('up', 'board')}, plugs {worst('up', 'plug')}, buttons {worst('up', 'button')}; forward: rods in the slots "
+             f"{worst('forward', 'rod')} ({ROD_MISALIGN} off along the face cuts {misalign:.2f} mm3)",
+             f"  battery    [m, mesh] up {gaps[('bat-up', 'battery')]:.2f}, forward {gaps[('bat-fwd', 'battery')]:.2f}; to the board / plugs "
+             f"{gaps[('bat-up', 'battery-board')]:.2f}; to the adapter {ad_bat:.2f}, to the lid {bat_lid:.2f}",
+             f"  adapter    [m, mesh] its sweep to the shell {gaps[('adapter', 'shell')]:.2f} (A: 0.08), seated {gaps[('seated', 'adapter')]:.2f}; "
+             f"to the board {gaps[('adapter', 'board')]:.2f}; lid move: shell {gaps[('lid', 'shell')]:.2f}, adapter {gaps[('lid', 'adapter')]:.2f}; "
+             f"bosses {boss_gap[0]:.2f} from the nearest sweep; cable to the notch: shell {cab['shell']:.2f}, battery {cab['battery']:.2f}",
+             f"logo         [d] {FL['w']:g} x {FL['h']:.2f} letters (the largest <= {PEBBLE['LOGO_W_MAX']:g} that leaves a {PEBBLE['STENCIL_MIN_T']} "
+             f"stencil), s {FL['z'][0]:.2f}..{FL['z'][1]:.2f}; pocket {P_['pw']:.2f} x {P_['ph']:.2f} R{STENCIL_R:g} (sides {LOGO_FLARE_DEG:g} deg, "
+             f"top and bottom straight, the top a short bridge), floor at t {P_['floor']:.3f} (set from the front's nearest point in 3D "
+             f"over and round its outline), {P_['depth']:.2f} deep; [m] skin "
+             f"{FL['skin'][0]:.3f} at its thinnest, {FL['skin'][1]:.3f} at the pocket's centre; stencil {P_['st_t']:.2f} thick, "
+             f"{PK['st_gap']:.2f} to the pocket's walls seated, in along its axis without touching; pocket to the glass {PK['glass']:.2f}, "
+             f"to the slots' cut (bounding box) {PK['slots']:.2f}, the rim {PK['rim']:.2f}",
+             f"magnets      [m] wall round the holes (rim / lid) " + ", ".join(f"{ms:.2f} / {ml:.2f}" for ms, ml in meats),
+             f"mesh         [m] shell: {Q['pieces']} piece, {Q['open']} open / {Q['nonman']} non-manifold edges, {Q['tris']} triangles, "
+             f"{Q['tiny']} under 1e-6 mm2, {Q['slivers']} slivers (inscribed radius < 1e-4; least {Q['min_rin']:.2e}); test strip "
+             f"{QS['pieces']} piece, {QS['open']} / {QS['nonman']}, {QS['slivers']} slivers",
+             f"volumes      [m] shell {shell_v / 1000:.1f}, lid {lid_v / 1000:.1f} cm3 ({(shell_v + lid_v) / 1000 * DENSITY:.0f} g); with "
+             f"board + battery {mass:.0f} g, tips at {ang_b:.1f} back / {ang_f:.1f} forward"]
+        R += file_lines(files)
+        R.append(f"  shell-noslots STEP 1 solid, {st_shell['faces']} faces (no slots), {st_shell['kb']:.0f} kB")
+        for n_, (nt, err, kb) in mesh_files.items():
+            R.append(f"  {n_:<16} STL (cut mesh) closed, {nt} triangles, volume vs the manifold {err * 100:+.4f} %, {kb:.0f} kB")
+        R += ["", "clearances along the insertion path, mm, on the final mesh (0.00 = it ends seated there):", "  body                up   forward"]
+        for b in moving:
+            if ("up", b.name) in gaps:
+                R.append(f"  {b.name:<16} {gaps[('up', b.name)]:6.2f} {gaps.get(('forward', b.name), math.nan):9.2f}")
+            elif ("bat-up", b.name) in gaps:
+                R.append(f"  {b.name:<16} {gaps[('bat-up', b.name)]:6.2f} {gaps[('bat-fwd', b.name)]:9.2f}   (its own moves)")
+    else:
+        LP = SP["lips"]
+        xo = (SP["xc"] - SP["half"] - SP["a_in"], SP["xc"] + SP["half"] + SP["a_out"])
+        xw_ = np.linspace(SP["xc"] - SP["half"], SP["xc"] + SP["half"], 401)
+        endw = (float((m.FRONT - SP["f"](xw_)).min()), float(m.FRONT - SP["f"](SP["xc"])))
+        horn = max(float(m.slot_surface(SP["xc"] + sg * (SP["half"] + 1e-6), sum(m.SLOT_S) / 2) - SP["f"](SP["xc"] + sg * (SP["half"] + 1e-6)))
+                   for sg in (-1, 1))
+        R = [f"DESK HOUSING smooth / pebble, round C (user, 2026-11-24): A's openings as printed, re-solved for tubes c-c {m.tube_cc}; "
+             f"flat ends; no horn fix (the relief is to hide them); logo and the rest as B",
+             "[m] measured on the final mesh / exact surfaces, [d] design. Checks (round C, user: four only): the shell mesh closed, "
+             "overhangs outside the supported top end walls, seated clearances (rods, the adapter's up-move), the logo's thinnest skin",
+             f"frame        shell.stl's world (x, y, z); body frame x = x, t = y cos{m.tilt:g} - z sin{m.tilt:g} (inwards from the face), "
+             f"s = y sin{m.tilt:g} + z cos{m.tilt:g} (up the face); the face t = f(x) (the oval's bow), the flat inner face t {m.FRONT:.3f}",
+             f"slots        [d] {SLOT_W} x {SLOT_L:.2f} through at x +-{SP['xc']} (c-c {m.tube_cc}), s {m.SLOT_S[0]:.2f}..{m.SLOT_S[1]:.2f}, "
+             f"{m.RIM} land; A's round lips (arc r {LP['in']['r']:.2f} inner, {LP['out']['r']:.2f} outer, {PEBBLE['LIP_SHORT_DEG']:g} deg short of "
+             f"tangency, then its tangent): on the face {SP['a_in']:.2f} inner, {SP['a_out']:.2f} outer; openings x +-({xo[0]:.2f}..{xo[1]:.2f}), "
+             f"{opening:.2f} wide, bridge on the face {gap_open:.2f}; rods' crown {proud[hw.TAPE[0]]:.2f}..{proud[hw.TAPE[1]]:.2f} proud of the face; "
+             f"ends flat, square to the face, full depth: {endw[1]:.2f} on the slot's axis, {endw[0]:.2f} at its outer edge; horns as A "
+             f"(the lips' crescents in the end planes, up to {horn:.2f} deep at the land). Cut on the mesh (manifold3d): A's profile "
+             f"extruded S0..S1, mirrored; shell-noslots.step has NO slots",
+             f"mesh         [m] shell.stl {Q['pieces']} piece, {Q['open']} open / {Q['nonman']} non-manifold edges, {Q['tris']} triangles",
+             f"overhangs    [m] outside {ov_out:.2f}, cavity {ov_in:.2f}, slots {ov_slot:.2f} at (x, s) {ov_slot_p} (limit {PEB_OVERHANG_MAX:g}); "
+             f"supported (named exception): the top end walls, the plane s {m.SLOT_S[1]:.2f}, {ov_top:.1f} deg, |x| {top_x[0]:.2f}..{top_x[1]:.2f}, "
+             f"t {top_t[0]:.2f}..{top_t[1]:.2f} ({top_a:.1f} mm2 both): tree supports from inside, as in A; ceiling bridge {bridge:.2f}",
+             f"clearances   [m] seated rods in the slots " + ", ".join(f"{v:.3f} (tape {t})" for t, v in rod_clr.items()) +
+             f"; the adapter's up-move past the chin {gaps[('adapter', 'shell')]:.3f}",
+             f"logo         [d] {FL['w']:g} x {FL['h']:.2f} letters, pocket floor t {P_['floor']:.3f}; [m] skin {FL['skin'][0]:.3f} at its "
+             f"thinnest, {FL['skin'][1]:.3f} at the pocket's centre; stencil {P_['st_t']:.2f} (as B: logo-stencils-pebble.*)",
+             f"files        out-smooth/pebble: shell.stl, teststrip.stl (cut meshes), lid.step / .stl, shell-noslots.step, sections, dummies"]
+    text = "\n".join(R)
+    (out / "report.txt").write_text(text + "\n")
+    print(text, flush=True)
+    return m
+
+
 def build_inlays():
     """The shared inlays of the small front logo (upright, oval)."""
     inl = make_front_inlays()
@@ -2128,7 +3531,7 @@ def stencil_apertures(st, w, s, t):
     return [a for a, _, _ in want]
 
 
-def make_stencils(w, strips):
+def make_stencils(w, strips, t=None):
     """Logo stencils for the glow-through pocket: stencil_block (the pocket's floor outline less the clearances, its two
     vertical sides sloped as the pocket's: printed flat they widen upwards, a LOGO_FLARE_DEG overhang), the letters as
     straight holes, STENCIL_T thick; mirrored so the face that meets the skin lies on the bed. One per strip width in
@@ -2138,7 +3541,7 @@ def make_stencils(w, strips):
     s0 = hw.STRIP_PER_MM * w
     pw, ph = w + 2 * STENCIL_MARGIN, h + 2 * STENCIL_MARGIN
     sw, sh = pw - 2 * STENCIL_CLR, ph - STENCIL_CLR - STENCIL_CLR_TOP
-    t = STENCIL_T
+    t = STENCIL_T if t is None else t
     k = math.tan(math.radians(LOGO_FLARE_DEG))
     out, rows, areas = [], [], []
     for i, s in enumerate(strips):
@@ -2162,7 +3565,7 @@ def make_stencils(w, strips):
 
 
 def build_stencils():
-    """Stencils for the small front logo (upright, oval) and the tilt15's side logo."""
+    """Stencils for the small front logo (upright, oval) and the tilt15's side logo (the pebble's: build_pebble)."""
     for tag, w, kind, who in (("small", FRONT_LOGO_W, "front", "the front logo of upright and oval"),
                               ("tilt15", VARIANTS["tilt15"]["LOGO_W"], "side", "the tilt15's side logo")):
         c, S = make_stencils(w, STENCIL_STRIPS[kind])
@@ -2199,11 +3602,11 @@ if __name__ == "__main__":
         elif a == "--rods-after":
             order = "rods-after"
     check(order in ORDERS, f"unknown order {order}; one of {', '.join(ORDERS)}")
-    names = args or list(VARIANTS)
+    names = args or [n for n in VARIANTS if n != "pebble"]     # pebble: WIP, only on request (smooth.py pebble)
     for n in names:
         if n in ("inlays", "stencils"):
             continue
-        build_oval(order) if n == "oval" else build(n, order)
+        build_oval(order) if n == "oval" else build_pebble(order) if n == "pebble" else build(n, order)
     if LOGO_STYLE == "stencil":
         build_stencils()
     elif "inlays" in names or any(VARIANTS[n]["LOGO_MODE"] == "front" for n in names if n in VARIANTS):
