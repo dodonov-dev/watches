@@ -100,6 +100,7 @@ export interface Params {
   fizzFoamLife: number;   // s, mean time a bubble sits parked under the surface before it pops (0 = never parks, the old respawn)
   fizzDepth: number;      // 0..1 how much a bubble deeper in the bore fades toward the liquid (scaled by 1 − liquidTransparency)
   fizzBlick: number;      // 0..1 specular pinpoint on bubbles ≥ 2.5 px radius, on the lit side
+  fizzPhys: number;       // 0..1 how much each bubble's shade, pinpoint and rim follow the light it gets where it is (surface, walls, front glass, lid) instead of the explicit fizzShadeOff / fizzBlick / fizzDepth look; 0 = the explicit look everywhere (as before)
   fizzSource: number;     // 0 scattered (born anywhere in the liquid), 1 spring (born at one point, like an aquarium airstone)
   fizzSourceX: number;    // 0..1 spring position along the liquid column (0 = home end, 1 = surface)
   fizzSourceY: number;    // 0..1 spring position across the bore (0 = top wall, 1 = bottom wall)
@@ -207,7 +208,7 @@ export interface Params {
   ambientLight: number;  // 0..1: liquid colours brighter than the diffuse body desaturate toward neutral — reflections of white room light instead of the liquid glowing in its own colour
 }
 
-export const PARAMS_VERSION = 35;
+export const PARAMS_VERSION = 36;
 
 export const DEFAULT_PARAMS: Params = {
   v: PARAMS_VERSION,
@@ -299,6 +300,7 @@ export const DEFAULT_PARAMS: Params = {
   fizzFoamLife: 6,
   fizzDepth: 0.7,
   fizzBlick: 0.6,
+  fizzPhys: 0,
   fizzSource: 0,
   fizzSourceX: 0.2,
   fizzSourceY: 1,
@@ -952,7 +954,7 @@ const PRESET_TIDE: Partial<Params> = {
  *  swaps between them. A model sets every GAS_KEYS key (unset ones take DEFAULT_PARAMS). */
 export const GAS_KEYS = [
   'fizz', 'fizzCount', 'fizzSize', 'fizzSizeVar', 'fizzShadeOff', 'fizzSpeed', 'fizzDriftGain', 'fizzAcrossGain',
-  'fizzFlatRise', 'fizzSquash', 'fizzEdgeRise', 'fizzFoamLife', 'fizzDepth', 'fizzBlick',
+  'fizzFlatRise', 'fizzSquash', 'fizzEdgeRise', 'fizzFoamLife', 'fizzDepth', 'fizzBlick', 'fizzPhys',
   'fizzSource', 'fizzSourceX', 'fizzSourceY', 'fizzSourceSpread', 'fizzSourceRate',
 ] as const satisfies readonly (keyof Params)[];
 export type GasKey = (typeof GAS_KEYS)[number];
@@ -1657,6 +1659,7 @@ export function migrateParams(o: Record<string, unknown>): Partial<Params> {
   if (from < 33) r.viewElevation = DEFAULT_PARAMS.viewElevation;   // the desk-view lid, off
   if (from < 34) r.edgeShadeEnd = DEFAULT_PARAMS.edgeShadeEnd;   // the edge end darkness, off
   if (from < 35) r.edgeShadeEndWidth = DEFAULT_PARAMS.edgeShadeEndWidth;   // its fade over the whole grey band
+  if (from < 36) r.fizzPhys = DEFAULT_PARAMS.fizzPhys;   // the bubbles' physical light, off (the explicit look)
   for (const k of Object.keys(r)) if (!(k in DEFAULT_PARAMS)) delete r[k];
   r.v = PARAMS_VERSION;
   return r as Partial<Params>;
@@ -1758,6 +1761,7 @@ export const PARAM_META: Record<string, { group: string; label?: string; help?: 
   fizzFoamLife: { help: 'Bubbles reaching the surface park under it (following the meniscus, sliding to its corners and packing into a foam ring) and pop after this many seconds on average (each ±50 %). Shaking pops them faster; tilting the surface down releases them. A spring\'s bubbles also stay on the glass they rise into for about this long (see fizz source). 0 = respawn at the far end as before.', group: 'Bubble', label: 'foam life s', min: 0, max: 30, step: 0.5 },
   fizzDepth: { help: 'Each bubble sits at a random depth in the bore; a deeper one is seen through more liquid and fades toward it by this much (at the back wall). Scaled by 1 − liquidTransparency: an opaque liquid shows only the front bubbles, a clear one shows all alike. 0 = every bubble at full strength.', group: 'Bubble', label: 'fizz depth fade', min: 0, max: 1, step: 0.05 },
   fizzBlick: { help: 'Specular pinpoint on the lit side of bubbles of 2.5 px radius and up: neutral white room light (dimmed by brightness only), placed where the lit rim meets the dark core. 0 = none.', group: 'Bubble', label: 'fizz blick', min: 0, max: 1, step: 0.05 },
+  fizzPhys: { help: 'How much each bubble is lit where it is: its rim brightens near the open surface, the lit wall and the front glass and dims in the depth of a dark liquid, the bright side of its ring and its pinpoint turn toward the light it actually gets (world-up), and foam under the desk-view lid is seen clear from above. 0 = the explicit look everywhere (fizzShadeOff / fizzBlick / fizzDepth as set).', group: 'Bubble', label: '· fizz physical light', min: 0, max: 1, step: 0.01 },
   fizzSource: { help: 'Where bubbles are born. Scattered: anywhere in the liquid, recycled at the side the flow comes from. Spring: every bubble is born at one point, so they rise as a stream, like an aquarium airstone or an underwater spring. The spring is fixed in the tube and works at any tilt while the liquid covers it, at a steady rate (spring rate): a tilt that shortens the path of the bubbles shows fewer of them rather than a faster stream. With foam life > 0 the glass holds the gas the stream carries into it: at the bore wall the bubbles slide along the glass (one arriving onto another joins it) and let go after about foam life s, so the stream bends along the wall instead of ending there; at a closed end they gather as foam. When a free slug slides off the spring, new bubbles are born scattered instead, and once the liquid is back over it the spring takes its births back over about 3 s. Bubbles already rising keep their paths.', group: 'Bubble', label: 'fizz source', min: 0, max: 1, step: 1, options: ['scattered', 'spring'] },
   fizzSourceX: { help: 'Spring: position along the liquid column as it sits at home, 0 = home end, 1 = the surface (a fraction of the liquid, so it stays submerged as the column changes; a free slug sliding away leaves it behind).', group: 'Bubble', label: '· spring along', min: 0, max: 1, step: 0.01 },
   fizzSourceY: { help: 'Spring: position across the bore, 0 = top wall, 1 = bottom wall (the whole bubble stays inside).', group: 'Bubble', label: '· spring across', min: 0, max: 1, step: 0.01 },

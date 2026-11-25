@@ -1,5 +1,5 @@
 {
-  "v": 35,
+  "v": 36,
   "tubeHeight": 72,
   "hoursY": 11,
   "minutesY": 144,
@@ -88,6 +88,7 @@
   "fizzFoamLife": 4,
   "fizzDepth": 0.7,
   "fizzBlick": 0.6,
+  "fizzPhys": 0,
   "fizzSource": 0,
   "fizzSourceX": 0.2,
   "fizzSourceY": 1,

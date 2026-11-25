@@ -94,6 +94,7 @@ struct Params {
   float fizzFoamLife;
   float fizzDepth;
   float fizzBlick;
+  float fizzPhys;
   float fizzSource;
   float fizzSourceX;
   float fizzSourceY;
@@ -192,8 +193,8 @@ struct Params {
   float ambientLight;
 };
 
-#define PARAMS_NUM_FIELDS 186
-#define PARAMS_SCHEMA_CRC 0xa97f1010u  // field names+types; guards the NVS blob
+#define PARAMS_NUM_FIELDS 187
+#define PARAMS_SCHEMA_CRC 0x76872393u  // field names+types; guards the NVS blob
 
 // Field table for serial/GATT/JSON access: name, type code (i/f/b/c), byte offset, px = a design-px
 // dimension scaled to the board's canvas: 1 by the tube's px scale, 2 by it and rounded, 3 by the liquid's
@@ -290,6 +291,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
   {"fizzFoamLife", 'f', (uint16_t)offsetof(Params, fizzFoamLife), 0},
   {"fizzDepth", 'f', (uint16_t)offsetof(Params, fizzDepth), 0},
   {"fizzBlick", 'f', (uint16_t)offsetof(Params, fizzBlick), 0},
+  {"fizzPhys", 'f', (uint16_t)offsetof(Params, fizzPhys), 0},
   {"fizzSource", 'f', (uint16_t)offsetof(Params, fizzSource), 0},
   {"fizzSourceX", 'f', (uint16_t)offsetof(Params, fizzSourceX), 0},
   {"fizzSourceY", 'f', (uint16_t)offsetof(Params, fizzSourceY), 0},
@@ -390,7 +392,7 @@ static const ParamField PARAM_FIELDS[PARAMS_NUM_FIELDS] = {
 
 // from presets/1.json
 static const Params PRESET_1 = {
-  35, // v
+  36, // v
   72.0f, // tubeHeight
   0.0f, // hoursY
   168.0f, // minutesY
@@ -480,6 +482,7 @@ static const Params PRESET_1 = {
   6.0f, // fizzFoamLife
   0.7f, // fizzDepth
   0.6f, // fizzBlick
+  0.0f, // fizzPhys
   0.0f, // fizzSource
   0.2f, // fizzSourceX
   1.0f, // fizzSourceY
