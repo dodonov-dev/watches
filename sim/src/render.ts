@@ -7,6 +7,7 @@ import {
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H, TUBE_ROD_MM, ROD_GAP_MM, ROD_N,
 } from '@spec/layout';
 import type { Params } from './params';
+import { FIZZ_LIGHTS, FIZZ_RING_KEEP, fizzLightFrame, fizzLit, fizzTone, newFizzLit } from './fizzLight';
 import { BACK_TILT_MAX_DEG, boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
@@ -1193,6 +1194,10 @@ const fizzStrokeL: Float32Array[] = Array.from({ length: TUBE_COUNT }, () => new
 /** Per tube, desk view: the frame's lid slope T (0 = off), τ (clamped back tilt) and δ = e − τ, published by drawTube with
  *  the strokes (firmware Tube::fizzLidT / fizzLidTau / fizzLidDelta): the time edge's endpoint rule under the lid. */
 const fizzLidT: number[] = Array(TUBE_COUNT).fill(0), fizzLidTau: number[] = Array(TUBE_COUNT).fill(0), fizzLidDelta: number[] = Array(TUBE_COUNT).fill(0);
+/** Per tube: the pose's up (tube frame: x toward the tube's top, y across, z toward the viewer) as the fizz was last stepped
+ *  (stepFizzTube; face up before the first step): the key light of fizzPhys (firmware Tube::fizzUp). */
+const fizzUp: Float32Array[] = Array.from({ length: TUBE_COUNT }, () => Float32Array.of(0, 0, 1));
+const fizzLitO = newFizzLit();   // drawTube's per-bubble scratch
 const lastParams: (Params | null)[] = Array(TUBE_COUNT).fill(null);   // each tube's params at its last vertical step / ensureFizz
 const foamCand: Uint8Array[] = Array.from({ length: TUBE_COUNT }, () => new Uint8Array(FIZZ_POOL));   // touchesFoamV's candidates
 /** Tube i's stepped fizz state, read by the shared stepped-state jobs (tools/render-ref.ts, check_fizz_steps.py --sim). */
@@ -1563,6 +1568,7 @@ export function stepFizz(ps: readonly Params[], dt: number, along: number, acros
  *  deadzone) tilt the landscape kernel reads; pose: the gain-free buoyancy direction (ImuFilter.pose), all the vertical
  *  watch's kernel reads. */
 export function stepFizzTube(i: number, p: Params, dt: number, along: number, across: number, agitation: number, pose: Readonly<Pose>): void {
+  fizzUp[i][0] = pose.x; fizzUp[i][1] = pose.y; fizzUp[i][2] = pose.z;   // fizzPhys: the render's key light
   if (p.vertical) { lastParams[i] = p; stepFizzVertical(i, p, dt, pose, agitation); return; }   // the pose alone: no along / across
   if (mirrored(p)) along = -along; // fizz lives in the mirrored liquid frame (see drawTube)
   const speed = p.fizzSpeed * (1 + 3 * agitation);
@@ -2978,6 +2984,13 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     };
     const vb = p.vertical && bodyH[idx] === H, bodyV = fizzBody[idx], R32 = boreR32(p);   // the bodies describe these rows
     const lidRule = fizzLidFor(idx, p);   // this frame's lid (the render-time endpoint clamp)
+    // fizzPhys > 0: each bubble lit where it is (fizzLight.ts; docs/fizz-light/model.md). The key light: world-up along the
+    // tube (the pose the fizz was stepped with, liquid frame), the palette's light in the cross-section. 0: the explicit look.
+    const phys = Math.max(0, Math.min(1, p.fizzPhys)), physT = Math.round(phys * 256);
+    const rimLit = blend565T(0, pal.bubbleRim, 205);   // the lit rim, 0.8 of the scalar rim so the pinpoint reads above it
+    const lit = phys > 0 ? fizzLightFrame(p.liquidTransparency, R32, mir ? -fizzUp[idx][0] : fizzUp[idx][0], s.light, lidV, lidTau, lidDelta,
+      fizzExposed[idx], fizzTone(rimLit, pal.rows[H >> 1])) : null;
+    const yc32 = F((H - 1) / 2);
     // Vertical (tilted-fizz point 7): back to front without a sort, two passes over the pool: the back half (tint levels
     // FIZZ_DEPTHS / 2 and deeper, physical z <= 0) first, then the front half, slot order within each. Landscape: one pass.
     for (let pass = p.vertical ? 0 : 1; pass < 2; pass++)
@@ -3009,25 +3022,52 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       // Seen through liquid in proportion to its depth: the liquid in front tints a deeper bubble toward the
       // body colour (a colour mix, so the disc stays an opaque store as before: rear marks are behind the bubble).
       const depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency);
-      const tintA = p.bubbleDark * depthK;   // interior: a dark tint over the liquid as-is (the bubble is see-through), fading with depth
-      const cBlickD = depthK < 1 ? blend565(pal.rows[fy], blickC, depthK) : blickC;   // the pinpoint sinks with the bubble
+      let tintA = p.bubbleDark * depthK;   // interior: a dark tint over the liquid as-is (the bubble is see-through), fading with depth
+      let cBlickD = depthK < 1 ? blend565(pal.rows[fy], blickC, depthK) : blickC;   // the pinpoint sinks with the bubble
       // Ring 1 px thick at its thinnest (core radius r − 1); the core shifts away from the light by fizzShadeOff·r,
       // clamped so its centre stays in the disc: the ring thickens on the lit side, may open on the shaded side.
       const m = fizzMag(mag, H, f.y, r), ry = r / m, off = Math.min(r * p.fizzShadeOff, r - 1);
       // Light direction in unsquashed disc space (liquid frame): x fixed toward screen-left, y toward the highlight row.
       const ly = Math.max(-1, Math.min(1, (yHi - f.y) / (H / 2))), nrm = 1 / Math.sqrt(lxS * lxS + ly * ly);
       const dirX = lxSign * lxS * nrm, dirY = ly * nrm;
-      const offX = -dirX * off, offY = -dirY * off;   // dark core shifted away from the light
+      let offX = -dirX * off, offY = -dirY * off;   // dark core shifted away from the light
       // Specular pinpoint on the lit side (r >= 2.5, fizzBlick > 0): scalar rim colour mixed into the pixel before its one blend.
       // Vertical (tilted-fizz point 7): its weight fades toward the back, fizzBlick (1 - zc)^2 (full on the front glass,
       // a quarter at mid-bore, none on the back glass).
-      const blickK = p.vertical ? F(p.fizzBlick * F(F(1 - zc) * F(1 - zc))) : p.fizzBlick;
-      const blick = r >= 2.5 && blickK > 0, bk = 0.4 * (r - 1), bX = dirX * bk, bY = dirY * bk, rb = Math.max(0.6, r / 4);
+      let blickK = p.vertical ? F(p.fizzBlick * F(F(1 - zc) * F(1 - zc))) : p.fizzBlick;
+      const bk = 0.4 * (r - 1), rb = Math.max(0.6, r / 4);
+      let bX = dirX * bk, bY = dirY * bk;
+      // fizzPhys: the bubble's own light (fizzLit) at its place in the bore (vertical: its body; else its row and depth
+      // level), blended with the explicit values above by fizzPhys: the ring's mix weight K (one of FIZZ_LIGHTS levels)
+      // toward the lit rim, the core's shift along the ring's thick side, the pinpoint where the bubble mirrors the key,
+      // weighted by the key's path in and the view path out (white: the weight carries the depth), the tint by the view
+      // path, gone in foam at an open surface.
+      let KT = -1;
+      if (lit) {
+        let yb: number, zb: number;
+        if (vb) { yb = bodyV[2 * slot]; zb = bodyV[2 * slot + 1]; }
+        else {
+          const a = Math.max(0, F(R32 - r)); yb = clamp32(F(f.y - yc32), -a, a);
+          const zm = F(Math.sqrt(Math.max(0, F(F(a * a) - F(yb * yb))))); zb = clamp32(F(a * F(1 - F(2 * f.z))), -zm, zm);
+        }
+        fizzLit(lit, fx, yb, zb, r, surf[fy], surfL[fy], lidV ? strokeR[fy] : 0, fizzLitO);
+        const K = F(depthK + F(F(fizzLitO.K - depthK) * phys));
+        KT = Math.round(Math.trunc(F(F(K * (FIZZ_LIGHTS - 1)) + 0.5)) * 256 / (FIZZ_LIGHTS - 1));
+        const offP = Math.min(off, FIZZ_RING_KEEP);   // the ring thins, never opens
+        offX = F(offX + F(F(F(-offP * fizzLitO.cx) - offX) * phys)); offY = F(offY + F(F(F(-offP * fizzLitO.cy) - offY) * phys));
+        bX = F(bX + F(F(F(r * lit.hx) - bX) * phys)); bY = F(bY + F(F(F(r * lit.hy) - bY) * phys));
+        const bk0 = F(blickK * depthK);
+        blickK = F(bk0 + F(F(F(p.fizzBlick * fizzLitO.wl) - bk0) * phys));
+        tintA = F(tintA + F(F(F(F(p.bubbleDark * fizzLitO.tv) * fizzLitO.sk) - tintA) * phys));
+        cBlickD = blickC;
+      }
+      const blick = r >= 2.5 && blickK > 0;
       for (let iy = Math.floor(f.y - ry - 1); iy <= Math.ceil(f.y + ry); iy++) {
         if (iy < 0 || iy >= H) continue;
         const wallT = pal.dryT[iy] * (vPop ? popA : pop);   // bubbles live in the bore: invisible where the ray only sees the wall band
         if (wallT <= 0) continue;
-        const cRimD = shadeRow(depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy], iy);
+        const cRimD = shadeRow(KT >= 0 ? blend565T(pal.rows[iy], blend565T(pal.bubbleRimRows[iy], rimLit, physT), KT)
+          : depthK < 1 ? blend565(pal.rows[iy], pal.bubbleRimRows[iy], depthK) : pal.bubbleRimRows[iy], iy);
         const cBlickR = shadeRow(cBlickD, iy);   // the centre row's pinpoint in this row's shade
         for (let ix = Math.floor(fx - r - 1); ix <= Math.ceil(fx + r); ix++) {
           const dx = ix + 0.5 - fx, dy = (iy + 0.5 - f.y) * m;
