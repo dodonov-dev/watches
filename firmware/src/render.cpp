@@ -5402,6 +5402,12 @@ void Tube::buildShade(const Params &p) {
       int b = 0;
       while (b < top && floor(256 * rd.G[top - b - 1] + 0.5) == K0) b++;
       const double e2 = (double)e * (double)e;
+#ifndef ROD_RAYS_GEN
+      if (ends->c[0][0] == ROD_END_UNCOUNTED) {   // first use of the rod's boot-allocated table (shared by its tubes)
+        RodEnd &c = *const_cast<RodEnd *>(ends);
+        rodEndCounts(rodR, ROD_GAP_MM, ROD_N, shadePitch(), c);
+      }
+#endif
       const int nw = rodEndWeights(ends->c[span % 2], groups, b, rd.w);
       for (int r = 0; r < nw; r++) rd.G[top - r] = rd.G[top - r] * (1 - e2 * rd.w[r]);
     }
@@ -6879,11 +6885,11 @@ bool render_init(bool fast) {
         tb.rays = r;
       }
     }
-    // its edge end counts (2 x ROD_GROUPS x 4 B PSRAM), counted by the first tube with the rod (host tools; on the board
-    // only the AB face, which has no generated tables: ~16 M soft-double samples, slow)
+    // its edge end counts (2 x ROD_GROUPS x 4 B PSRAM, shared per rod), counted on the first rebuild with edgeShadeEnd > 0
+    // (buildShade; host tools, and on the board only the AB face, which has no generated tables: ~16 M soft-double samples)
     for (int k = 0; k < i && !tb.ends; k++) if (tubeAt(k).rodR == tb.rodR) tb.ends = tubeAt(k).ends;
     if (!tb.ends) {
-      if (RodEnd *c = (RodEnd *)heap_caps_malloc(sizeof(RodEnd), MALLOC_CAP_SPIRAM)) { rodEndCounts(tb.rodR, ROD_GAP_MM, ROD_N, shadePitch(), *c); tb.ends = c; }
+      if (RodEnd *c = (RodEnd *)heap_caps_malloc(sizeof(RodEnd), MALLOC_CAP_SPIRAM)) { c->c[0][0] = ROD_END_UNCOUNTED; tb.ends = c; }
     }
 #endif
     ok = ok && tb.rod && tb.rays && tb.ends;

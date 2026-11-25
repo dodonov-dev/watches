@@ -8,8 +8,9 @@ and v34's edgeShadeEnd. A v33 / v32 / v31 blob must load as v34 with every field
 v31: edgeShadePow -> edgeShadeShape 1.5), edgeShadeEnd 0 (v32 / v31: viewElevation 0 too), and be saved at once under
 the v34 CRC; the next boot restores it as is. A truncated blob, a failed
 read and an unknown schema leave the defaults and NVS untouched (a dropped blob: one line with the schema, CRC and
-bytes found and expected); a failed blob write keeps the old blob and CRC; a
-failed CRC write keeps the old CRC. Exit 1 on a failure.
+bytes found and expected); a failed blob write keeps the old blob and CRC (the next boot migrates again); a failed CRC
+write (or power lost after the blob) leaves the v34 blob under the old CRC: the next boot restores the migrated look and
+relabels the CRC. Exit 1 on a failure.
 """
 import os, subprocess, sys, tempfile
 from pathlib import Path
@@ -108,6 +109,7 @@ int main(int argc, char **argv) {
   Params q = PRESET_DEFAULT;   // the next boot
   printf("RET2 %d\n", (int)paramsNvsLoad(s, q, out));
   printf("SAME2 %d\n", !memcmp(&p, &q, sizeof p));
+  printf("STORE2 %08x %zu\n", s.hasCrc ? s.crc : 0, s.blob.size());
   return 0;
 }
 '''
@@ -191,9 +193,15 @@ def main():
         r = load(v32crc, v32, 'blob')
         check(r['RET'] == '1' and r['DEFAULTS'] == '0' and r['STORE'] == f'{v32crc:08x} 720 other' and r['BLOB'] == v32hex
               and any('not saved (blob write)' in l for l in r['LOG']), f'v32 blob, blob write fails: migrated in RAM, old blob and CRC kept; log {r["LOG"][:1]}')
-        r = load(v32crc, v32, 'crc')
-        check(r['RET'] == '1' and r['STORE'] == f'{v32crc:08x} 728 params' and any('not saved (crc write)' in l for l in r['LOG']),
-              f'v32 blob, CRC write fails: the old CRC kept ({r["STORE"]}), error logged')
+        for tag in ('v32', 'v33'):
+            ocrc = LEGACY[tag][1]; r = load(ocrc, str(tmp / f'{tag}.bin'), 'crc')
+            check(r['RET'] == '1' and r['STORE'] == f'{ocrc:08x} 728 params' and any('not saved (crc write)' in l for l in r['LOG'])
+                  and r['RET2'] == '1' and r['SAME2'] == '1' and r['STORE2'] == f'{cur:08x} 728'
+                  and any('interrupted v34 save: crc relabelled' in l for l in r['LOG']),
+                  f'{tag} blob, CRC write fails (the v34 blob under the {tag} CRC): the next boot restores the migrated look and relabels ({r["STORE2"]})')
+        r = load(v32crc, v32, 'blob')
+        check(r['RET2'] == '1' and r['SAME2'] == '1' and r['STORE2'] == f'{cur:08x} 728',
+              f'v32 blob, blob write fails: the next boot migrates again ({r["STORE2"]})')
         r = load(0x12345678, v32)
         check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == '12345678 720 other' and r['BLOB'] == v32hex
               and r['LOG'][:1] == [f'{DROP} unknown (crc 12345678, 720 B), {WANT}'], f'unknown schema: defaults, NVS kept; log {r["LOG"][:1]}')

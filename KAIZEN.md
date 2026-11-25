@@ -1081,7 +1081,8 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   drawTube, the lens / rod maps are pinned): the LCD build fuses highlightTop's yc - yc * sinf(...) into msub.s while the
   host checks build -ffp-contract=off (review 5: H 72, highlightH 11, light 34.28989 deg: row 10 on the board, 11 on the host).
   Pre-existing; the `x` dump's HITOP line covers replay. A whole-file pin (or -ffp-contract=off for the LCD) would close it.
-- edge-ends: the AB_COMPARE face has no generated tables, so it counts the edge end's 15 x 2^20 samples at init in soft
-  double on the board (est. minutes of boot, untried). Reusing the primary build's ROD_GEN_END when (R, pitch) match would fix it.
+- edge-ends: the AB_COMPARE face has no generated tables, so it counts the edge end's 15 x 2^20 samples in soft double on
+  the board on its first rebuild with edgeShadeEnd > 0 (est. minutes, a stalled frame; untried). Reusing the primary
+  build's ROD_GEN_END when (R, pitch) match would avoid it.
 - edge-ends 2026-11-25: after the lcd316 app flash (flash.sh -> flash-win.sh, /dev/ttyACM0), the board stayed silent (no
   reply to `v`) until `esptool chip-id` reset it. Then it booted normally. flash-win.sh could finish with that reset.

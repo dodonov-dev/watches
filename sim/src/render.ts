@@ -7,6 +7,7 @@ import {
   FIZZ_POOL, GLYPH_EM_W, GLYPH_EM_H, SPRITE_CELL_H, PX_PER_MM, BOARD, LCD_PANEL_H, TUBE_ROD_MM, ROD_GAP_MM, ROD_N,
 } from '@spec/layout';
 import type { Params } from './params';
+import { ROD_END_GEN, ROD_END_GEN_GROUPS } from './rodEndGen';
 import { BACK_TILT_MAX_DEG, boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
@@ -3186,7 +3187,9 @@ const rodFolds: ([number, number] | undefined)[] = [], rodRayTables: (RodRayTabl
 /** The edge end (edgeShadeEnd; firmware rod.h RodEnd / rodEndCounts / rodEndWeights, the same double operations in
  *  the same order: square roots and divisions only, the tilts' sines and cosines as the same literals, so the counts
  *  agree bit for bit): per row parity and panel row group j from the centre, the projected samples landing there over
- *  15 side views 45..80 deg (docs/edge-shade-ends/astra-model3.md section 4), groups past ROD_GROUPS dropped. */
+ *  15 side views 45..80 deg (docs/edge-shade-ends/astra-model3.md section 4), groups past ROD_GROUPS dropped, the odd
+ *  parity's group 0 twice. The sim's rods come generated (rodEndGen.ts, tools/gen_rod_rays.py --sim: the firmware's
+ *  operations); another rod is counted here on first use (~150 ms). One table per rod geometry, shared by its tubes. */
 const ROD_GROUPS = TUBE_HEIGHT_MAX + 2, ROD_END_SAMPLES = 1 << 20;
 const ROD_END_SIN = [0.7071067811865475, 0.7372773368101241, 0.766044443118978, 0.7933533402912352,
   0.8191520442889918, 0.8433914458128857, 0.8660254037844386, 0.8870108331782217, 0.9063077870366499, 0.9238795325112867,
@@ -3212,7 +3215,21 @@ export function rodEndCounts(R0: number, g: number, n: number, pitch0: number): 
       if (j1 < ROD_GROUPS) c1[j1]++;
     }
   }
+  c1[0] *= 2;
   return [c0, c1];
+}
+const rodEndByRod = new Map<string, [Uint32Array, Uint32Array]>();
+function rodEndTable(R: number, g: number, n: number, pitch: number): [Uint32Array, Uint32Array] {
+  const kr = Math.floor(R * 1e6 + 0.5), kp = Math.floor(pitch * 1e6 + 0.5), key = `${kr}:${kp}:${g}:${n}`;
+  let t = rodEndByRod.get(key);
+  if (t) return t;
+  const gen = g === 0.87 && n === 1.49 && ROD_GROUPS <= ROD_END_GEN_GROUPS ? ROD_END_GEN.find((e) => e[0] === kr && e[1] === kp) : undefined;
+  if (gen) {
+    t = [new Uint32Array(ROD_GROUPS), new Uint32Array(ROD_GROUPS)];
+    for (let q = 0; q < 2; q++) { const run = q ? gen[3] : gen[2]; for (let i = 1; i < run.length && run[0] + i - 1 < ROD_GROUPS; i++) t[q][run[0] + i - 1] = run[i]; }
+  } else t = rodEndCounts(R, g, n, pitch);
+  rodEndByRod.set(key, t);
+  return t;
 }
 /** The edge end's weights w[0 .. returned) edge first (firmware rod.h rodEndWeights): u_0 = 1, u_r = min(9/16 u_{r−1},
  *  C[r] / C[0]); b ≥ 1: z = clamp((b − r) / min(2, b), 0, 1), w_r = u_r z² (3 − 2 z), rows from b on 0; b 0: w_0 = 1. */
@@ -3227,7 +3244,6 @@ function rodEndWeights(C: Uint32Array, groups: number, b: number, w: Float64Arra
   }
   return b;
 }
-const rodEndTables: ([Uint32Array, Uint32Array] | undefined)[] = [];
 /** Edge shade: per shown row (after the lens, so the rows the panel shows) the blend toward black in 1/256, 0 = row
  *  untouched; null = off. The perceptual profile (docs/edge-shade-session/astra-model.md section 3; firmware render.cpp
  *  buildShade, the same double operations in the same order, fixed steps): target lightness along the apparent offset x
@@ -3244,7 +3260,7 @@ const rodEndTables: ([Uint32Array, Uint32Array] | undefined)[] = [];
  *  mix tube heights). */
 const edgeShadeCache: ({ key: string; rows: Uint16Array | null } | undefined)[] = [];
 export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Uint16Array | null {
-  const f = Math.fround, k = Math.max(0, Math.min(1, f(p.edgeShade)));
+  const f = Math.fround, k0 = f(p.edgeShade), k = k0 > 0 ? k0 < 1 ? k0 : 1 : 0;   // (a NaN: 0, firmware buildShade)
   const fo0 = f(p.edgeShadeFold), fold = fo0 !== fo0 ? f(0.4) : Math.max(0, Math.min(1, fo0));
   const sh0 = f(p.edgeShadeShape), sh = sh0 !== sh0 ? f(1.5) : Math.max(f(0.5), Math.min(3, sh0)), q2 = Math.floor(f(f(sh * 2) + 0.5));
   const e0 = f(p.edgeShadeEnd), e = e0 > 0 ? Math.min(1, e0) : 0;   // (a NaN or a missing key: 0)
@@ -3279,7 +3295,7 @@ export function edgeShadeRows(idx: number, y0: number, H: number, p: Params): Ui
       let b = 0;
       while (b < top && Math.floor(256 * G[top - b - 1] + 0.5) === K0) b++;
       const e2 = e * e, w = new Float64Array(groups);
-      const nw = rodEndWeights((rodEndTables[idx] ??= rodEndCounts(Rr, ROD_GAP_MM, ROD_N, pitch))[span % 2], groups, b, w);
+      const nw = rodEndWeights(rodEndTable(Rr, ROD_GAP_MM, ROD_N, pitch)[span % 2], groups, b, w);
       for (let r = 0; r < nw; r++) G[top - r] = G[top - r] * (1 - e2 * w[r]);
     }
     rows = new Uint16Array(H);

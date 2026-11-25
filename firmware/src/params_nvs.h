@@ -55,16 +55,25 @@ template <class Store, class Log> bool paramsNvsSave(Store &prefs, const Params 
 
 // Boot: params from NVS when the blob is whole and its schema known (this one, or v33 / v32 / v31 migrated and saved at
 // once: the next edit would otherwise overwrite the old look with the defaults). Read into a copy (sizeof(Params) of the
-// boot stack): a short read or an unknown schema leaves params as they are and NVS untouched.
+// boot stack): a short read or an unknown schema leaves params as they are and NVS untouched. A migration's save
+// interrupted between the blob and its label (power lost, a failed CRC write) leaves a v34 blob under the old CRC: whole
+// (sizeof(Params): no older layout has that size) and v 34, it is this schema's, loaded and relabelled at once.
 template <class Store, class Log> bool paramsNvsLoad(Store &prefs, Params &params, Log &out) {
   const uint32_t crc = prefs.getUInt("crc", 0);
   const size_t len = prefs.getBytesLength("cur");
   Params tmp; uint8_t *const b = (uint8_t *)&tmp;
-  if (crc == PARAMS_SCHEMA_CRC && len == sizeof(Params)) {
+  const bool v31 = crc == PARAMS_SCHEMA_CRC_V31, v32 = crc == PARAMS_SCHEMA_CRC_V32, v33 = crc == PARAMS_SCHEMA_CRC_V33;
+  if ((crc == PARAMS_SCHEMA_CRC || v31 || v32 || v33) && len == sizeof(Params)) {
     if (prefs.getBytes("cur", b, sizeof(Params)) != sizeof(Params)) { out.println("error params: nvs blob unreadable, defaults (nvs kept)"); return false; }
+    if (crc != PARAMS_SCHEMA_CRC) {
+      if (tmp.v != 34) { out.println("params: nvs blob dropped: a v34-sized blob under an old schema's crc, not v 34; defaults, replaced on the next save"); return false; }
+      params = tmp;
+      if (prefs.putUInt("crc", PARAMS_SCHEMA_CRC) != 4) out.println("error params: interrupted v34 save: crc not relabelled (crc write)");
+      else out.println("params: restored from nvs (an interrupted v34 save: crc relabelled)");
+      return true;
+    }
     params = tmp; out.println("params: restored from nvs"); return true;
   }
-  const bool v31 = crc == PARAMS_SCHEMA_CRC_V31, v32 = crc == PARAMS_SCHEMA_CRC_V32, v33 = crc == PARAMS_SCHEMA_CRC_V33;
   const size_t want = v33 ? PARAMS_V33_SIZE : PARAMS_V32_SIZE;
   if (!(v31 || v32 || v33) || len != want) {
     if (crc || len) {   // dropped: one line, what was found against what this firmware reads (224 B of the boot stack)

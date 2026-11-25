@@ -85,8 +85,9 @@ static inline double shadePitch() {
 // h = theta + a - asin(sin a / n), v = n sin h, B = x / (n cos h), d = B - g v / sqrt(1 - v^2); only the exposed
 // semicircle |theta + a| <= pi/2, cos h > 0, |v| < 1, |B| <= R. The angles enter by their sines and cosines (sqrt and
 // the addition theorems; the 15 tilts' as decimal literals, the same doubles in C and JS), so the counts need no
-// library call; radius and pitch canonicalised to 1e-6 mm first. Groups past ROD_GROUPS are dropped. Immutable: one per
-// distinct rod, generated into flash (tools/gen_rod_rays.py) or counted once at init.
+// library call; radius and pitch canonicalised to 1e-6 mm first. Groups past the table's are dropped; the odd parity's
+// central group 0 counts twice (its own mirror). Immutable: one per distinct rod, generated into flash
+// (tools/gen_rod_rays.py; the sim's copy sim/src/rodEndGen.ts) or counted into the boot-allocated table on first use.
 #define ROD_GROUPS (TUBE_HEIGHT_MAX + 2)   // a group per panel row of half the largest tube (render.cpp RodCache)
 #define ROD_END_TILTS 15
 #define ROD_END_SAMPLES (1 << 20)
@@ -98,9 +99,9 @@ static const double ROD_END_COS[ROD_END_TILTS] = {0.7071067811865476, 0.67559020
   0.5735764363510462, 0.5372996083468239, 0.5000000000000001, 0.46174861323503386, 0.42261826174069944, 0.38268343236508984,
   0.3420201433256688, 0.30070579950427306, 0.25881904510252074, 0.2164396139381029, 0.17364817766693041};
 static inline double rodCanon(double v) { return floor(v * 1e6 + 0.5) / 1e6; }
-static inline void rodEndCounts(double R0, double g, double n, double pitch0, RodEnd &out) {
+static inline void rodEndCounts(double R0, double g, double n, double pitch0, uint32_t *c0, uint32_t *c1, int groups) {
   const double R = rodCanon(R0), pitch = rodCanon(pitch0);
-  for (int q = 0; q < 2; q++) for (int j = 0; j < ROD_GROUPS; j++) out.c[q][j] = 0;
+  for (int j = 0; j < groups; j++) c0[j] = c1[j] = 0;
   for (int k = 0; k < ROD_END_TILTS; k++) {
     const double sT = ROD_END_SIN[k], cT = ROD_END_COS[k];
     for (int i = 0; i < ROD_END_SAMPLES; i++) {
@@ -112,11 +113,14 @@ static inline void rodEndCounts(double R0, double g, double n, double pitch0, Ro
       const double B = x / (n * ch);
       if (!(fabs(B) <= R)) continue;
       const double u = fabs(B - g * v / sqrt(1 - v * v)) / pitch, j0 = floor(u), j1 = floor(u + 0.5);
-      if (j0 < ROD_GROUPS) out.c[0][(int)j0]++;
-      if (j1 < ROD_GROUPS) out.c[1][(int)j1]++;
+      if (j0 < groups) c0[(int)j0]++;
+      if (j1 < groups) c1[(int)j1]++;
     }
   }
+  if (groups > 0) c1[0] *= 2;
 }
+static inline void rodEndCounts(double R, double g, double n, double pitch, RodEnd &out) { rodEndCounts(R, g, n, pitch, out.c[0], out.c[1], ROD_GROUPS); }
+#define ROD_END_UNCOUNTED UINT32_MAX   // c[0][0] of a boot-allocated table not counted yet (a count stays below 15 x 2^20)
 // The weight w_r of the physical row r rows in from the tube's outermost (r = 0) of a span with `groups` groups, its
 // counts C (one parity), edge-first C[r] = C(groups - 1 - r), and b the last row of the run from the edge whose
 // rounded old code equals the edge's: u_0 = 1, u_r = min(9/16 u_{r-1}, C[r] / C[0]) (C[0] 0: 9/16 u_{r-1}); b >= 1:
