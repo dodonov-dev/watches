@@ -7,7 +7,7 @@
 #include "tiles.h"
 #include "rod.h"
 #ifdef ROD_RAYS_GEN
-#include "rod_rays_gen.h"   // ROD_GEN / ROD_GEN_END / ROD_GEN_R / ROD_GEN_OF / ROD_GEN_PITCH: tools/gen_rod_rays.py (pre-build), const = flash
+#include "rod_rays_gen.h"   // ROD_GEN / ROD_GEN_R / ROD_GEN_OF / ROD_GEN_PITCH: tools/gen_rod_rays.py (pre-build), const = flash
 static_assert(sizeof(ROD_GEN_OF) / sizeof(ROD_GEN_OF[0]) == TUBE_COUNT, "rod_rays_gen.h: generated for another tube count");
 #endif
 #if defined(BOARD_LCD316) && defined(__XTENSA__)
@@ -1545,15 +1545,15 @@ struct MarkPlan;   // step 9, after the mark kernels
 // PSRAM; immutable either way, shared by the tubes of one rod). Per strength / shape / fold cover / tube position the rays are summed per row group in
 // single precision (rodSums, the FPU) and each group's code factor solved (RodCache F, rows from `plateau` on one pooled
 // group). Sized for the largest tube: a canvas row covers at most two panel rows (RENDER_H >= 240), so a group
-// per panel row of half the tube is at most TUBE_HEIGHT_MAX + 1 (rod.h ROD_GROUPS).
+// per panel row of half the tube is at most TUBE_HEIGHT_MAX + 1.
+#define ROD_GROUPS (TUBE_HEIGHT_MAX + 2)
 struct RodCache {
   int y0 = -1, H = 0; float k = -1, fold = -1; int q2 = 0;   // the key: position, rows, strength, fold cover, shape x 2,
-  float end = -1;                                             // edge end
+  float end = -1, endW = -1;                                  // edge end, its width
   int plateau = 0;                                            // groups [0, plateau] solved, rows from `plateau` on pooled
   float num[ROD_GROUPS], den[ROD_GROUPS];                     // per group: sum tau Y_t, sum tau^2 (rodSums)
   double F[ROD_GROUPS];                                       // per group: the code factor
   double G[ROD_GROUPS];                                       // per panel row j < groups: F with the edge end
-  double w[ROD_GROUPS];                                       // the edge end's weights, edge first (rod.h rodEndWeights)
   float cutFold = -1; double dP = 0, sE = 0;                  // the fold cover's row and its inner ray, for cutFold
 };
 // The last factor rebuild per tube (us, board only), the largest since boot, rebuilds since boot; the rays at boot (us).
@@ -1743,7 +1743,6 @@ struct Tube {
   double rodR = 0, rodSF = 0, rodST = 0;   // the edge shade's rod: radius mm (TUBE_ROD_MM / 2), its fold and TIR onset (rodFold), render_init
   struct RodCache *rod = nullptr;          // its row factors (buildShade), PSRAM, render_init
   const RodRays *rays = nullptr;           // its rod's rays (rod.h): generated into flash, or shared PSRAM (render_init)
-  const RodEnd *ends = nullptr;            // its rod's edge end counts (rod.h): the same
   void buildShadePal();
   void applyLens(const Params &p);
   void shadeRowTo(uint16_t *d, const uint16_t *s, int t);
@@ -5341,6 +5340,26 @@ static double rodGammaInv(double a) {
   }
   return (lo + hi) / 2;
 }
+// The edge end's lightness (sim render.ts rodLightness / rodLightnessInv, the same operations): CIE L* of the code factor
+// F on the gamma 2.2 panel, Y = F^2.2 (Y^5 = F^11) and Y^(1/3) by fixed 32-step bisections; and the code factor of a
+// lightness L (Y exact, then rodGammaInv).
+static double rodLightness(double F) {
+  if (!(F > 0)) return 0;
+  if (F >= 1) return 100;
+  const double F2 = F * F, F4 = F2 * F2, F11 = F4 * F4 * F2 * F;
+  double lo = 0, hi = 1;
+  for (int i = 0; i < 32; i++) { const double m = (lo + hi) / 2, m2 = m * m; if (m2 * m2 * m < F11) lo = m; else hi = m; }
+  const double Y = (lo + hi) / 2;
+  if (!(Y > 216.0 / 24389)) return Y * (24389.0 / 27);
+  lo = 0; hi = 1;
+  for (int i = 0; i < 32; i++) { const double m = (lo + hi) / 2; if (m * m * m < Y) lo = m; else hi = m; }
+  return 116 * ((lo + hi) / 2) - 16;
+}
+static double rodLightnessInv(double L) {
+  if (!(L > 8)) return rodGammaInv(L * 27 / 24389);
+  const double t = (L + 16) / 116;
+  return rodGammaInv(t * t * t);
+}
 // Edge shade factors (sim edgeShadeRows) for the tube at canvas rows [baseY, baseY + H): the perceptual profile of
 // docs/edge-shade-session/astra-model.md section 3, the same operations in the same order on both sides (doubles; the
 // ray sums in single precision, rodSums), fixed steps.
@@ -5351,11 +5370,12 @@ static double rodGammaInv(double a) {
 // tau^2, its code factor F = clip(a^(1/2.2), 1 - s, 1); a row no ray reaches the plateau's (an empty plateau 1 - s:
 // a tube shorter than one row past the cut). Rays off the drawn tube and past TIR count nowhere. A canvas row covers the panel's
 // rows [bs(y), bs(y + 1)) (display_lcd316.cpp bStart; one each at 320 and on the AMOLED): its factor the mean of
-// theirs, T = 256 - round(256 F). The edge end (edgeShadeEnd e, docs/edge-shade-ends/astra-model3.md section 2) first:
-// each panel row r rows in from the outermost (its own group, also inside the pooled plateau) F_r = F0_r (1 - e^2 w_r),
-// w_r (rod.h rodEndWeights) from the rod's counts of the span's parity, joined to zero at b, the last row of the run
-// from the edge whose rounded F0 equals the edge's; e 0: F0 as is. Shading on with either strength (F0 1 at edgeShade
-// 0). Again with the row cache (gen) and when the tube moves; ~ROD_RAYS ray steps a tube.
+// theirs, T = 256 - round(256 F). The edge end first (edgeShadeEnd e, edgeShadeEndWidth w), on each panel row r rows in
+// from the outermost (its own group, also inside the pooled plateau), in L*: b the last row of the run from the edge
+// whose rounded F0 equals the edge's (the old grey band), W = max(w (b + 1), 1) rows, D = (1 - min(r / W, 1))^2, target
+// L*_r = L*(F0_r) - (L*(F0_r) - L*(F0_0) (1 - 0.75 e)) D, F_r = min(F(L*_r), F0_r) (rodLightness); rows from W on and
+// e 0: F0 as is. Shading on with either strength (F0 1 at edgeShade 0). Again with the row cache (gen) and when the
+// tube moves; ~ROD_RAYS ray steps a tube.
 void Tube::buildShade(const Params &p) {
   rc.shadeY0 = baseY;
 #ifdef BOARD_LCD316
@@ -5369,11 +5389,12 @@ void Tube::buildShade(const Params &p) {
   const float sh = !(p.edgeShadeShape == p.edgeShadeShape) ? 1.5f : p.edgeShadeShape < 0.5f ? 0.5f : p.edgeShadeShape > 3 ? 3.0f : p.edgeShadeShape;
   const int q2 = (int)floorf(sh * 2 + 0.5f);   // half steps (clamped before the cast); a stored NaN: 1.5
   const float e = p.edgeShadeEnd > 0 ? p.edgeShadeEnd < 1 ? p.edgeShadeEnd : 1.0f : 0.0f;   // (a NaN: 0)
+  const float ew = !(p.edgeShadeEndWidth == p.edgeShadeEndWidth) ? 1.0f : p.edgeShadeEndWidth < 0.05f ? 0.05f : p.edgeShadeEndWidth > 1 ? 1.0f : p.edgeShadeEndWidth;
   const int p0t = bs(baseY), p1t = bs(baseY + H), span = p1t - p0t;
   const double c = (p0t + p1t) / 2.0, pitch = shadePitch(), o = span % 2 == 0 ? 0.5 : 0.0;
   rc.shadeOn = k > 0 || e > 0;
   RodCache &rd = *rod;
-  if (rc.shadeOn && !(rd.y0 == baseY && rd.H == H && rd.k == k && rd.fold == fold && rd.q2 == q2 && rd.end == e)) {
+  if (rc.shadeOn && !(rd.y0 == baseY && rd.H == H && rd.k == k && rd.fold == fold && rd.q2 == q2 && rd.end == e && rd.endW == ew)) {
     const int64_t t0 = SHADE_NOW();
     const double s = k;
     if (rd.cutFold != fold) {   // (a strength or shape drag keeps them)
@@ -5401,18 +5422,16 @@ void Tube::buildShade(const Params &p) {
       const double K0 = floor(256 * rd.G[top] + 0.5);
       int b = 0;
       while (b < top && floor(256 * rd.G[top - b - 1] + 0.5) == K0) b++;
-      const double e2 = (double)e * (double)e;
-#ifndef ROD_RAYS_GEN
-      if (ends->c[0][0] == ROD_END_UNCOUNTED) {   // first use of the rod's boot-allocated table (shared by its tubes)
-        RodEnd &c = *const_cast<RodEnd *>(ends);
-        rodEndCounts(rodR, ROD_GAP_MM, ROD_N, shadePitch(), c);
+      double W = (double)ew * (b + 1); if (W < 1) W = 1;
+      const double Le = rodLightness(rd.G[top]) * (1 - 0.75 * (double)e);   // never black: e 1 = a quarter of the band's L*
+      for (int r = 0; r <= top && r < W; r++) {
+        const double u = 1 - r / W, D = u * u, F0 = rd.G[top - r], L0 = rodLightness(F0);
+        const double F = rodLightnessInv(L0 - (L0 - Le) * D);
+        if (F < F0) rd.G[top - r] = F;
       }
-#endif
-      const int nw = rodEndWeights(ends->c[span % 2], groups, b, rd.w);
-      for (int r = 0; r < nw; r++) rd.G[top - r] = rd.G[top - r] * (1 - e2 * rd.w[r]);
     }
     rd.plateau = plateau;
-    rd.y0 = baseY; rd.H = H; rd.k = k; rd.fold = fold; rd.q2 = q2; rd.end = e;
+    rd.y0 = baseY; rd.H = H; rd.k = k; rd.fold = fold; rd.q2 = q2; rd.end = e; rd.endW = ew;
     const uint32_t us = (uint32_t)(SHADE_NOW() - t0);
     shadeBuildUs[idx] = us; if (us > shadeBuildMaxUs[idx]) shadeBuildMaxUs[idx] = us; shadeBuilds[idx]++;
   }
@@ -6869,13 +6888,12 @@ bool render_init(bool fast) {
     ok = ok && tb.body;
     tb.palCache = (PalCache *)heap_caps_malloc(sizeof(PalCache), MALLOC_CAP_SPIRAM);
     tb.palS = (ShadePal *)heap_caps_malloc(sizeof(ShadePal), MALLOC_CAP_SPIRAM);   // ~1.7 KB
-    tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~2.6 KB
-    if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; tb.rod->k = -1; tb.rod->end = -1; tb.rod->cutFold = -1; }
+    tb.rod = (RodCache *)heap_caps_malloc(sizeof(RodCache), MALLOC_CAP_SPIRAM);   // ~2.4 KB
+    if (tb.rod) { tb.rod->y0 = -1; tb.rod->H = 0; tb.rod->k = -1; tb.rod->end = tb.rod->endW = -1; tb.rod->cutFold = -1; }
     tb.rodR = TUBE_ROD_MM(i) / 2; rodFold(tb.rodR, ROD_GAP_MM, ROD_N, tb.rodSF, tb.rodST);
 #ifdef ROD_RAYS_GEN
     // the build's tables (flash): the generator's rod and pitch must be this build's, else the face does not start
     tb.rays = ROD_GEN_R[ROD_GEN_OF[i]] == tb.rodR && ROD_GEN_PITCH == shadePitch() ? &ROD_GEN[ROD_GEN_OF[i]] : nullptr;
-    tb.ends = tb.rays ? &ROD_GEN_END[ROD_GEN_OF[i]] : nullptr;
 #else
     // one immutable table per distinct rod (128 KB PSRAM, ROD_RAYS x 16 B), built by the first tube with it
     for (int k = 0; k < i && !tb.rays; k++) if (tubeAt(k).rodR == tb.rodR) tb.rays = tubeAt(k).rays;
@@ -6885,14 +6903,8 @@ bool render_init(bool fast) {
         tb.rays = r;
       }
     }
-    // its edge end counts (2 x ROD_GROUPS x 4 B PSRAM, shared per rod), counted on the first rebuild with edgeShadeEnd > 0
-    // (buildShade; host tools, and on the board only the AB face, which has no generated tables: ~16 M soft-double samples)
-    for (int k = 0; k < i && !tb.ends; k++) if (tubeAt(k).rodR == tb.rodR) tb.ends = tubeAt(k).ends;
-    if (!tb.ends) {
-      if (RodEnd *c = (RodEnd *)heap_caps_malloc(sizeof(RodEnd), MALLOC_CAP_SPIRAM)) { c->c[0][0] = ROD_END_UNCOUNTED; tb.ends = c; }
-    }
 #endif
-    ok = ok && tb.rod && tb.rays && tb.ends;
+    ok = ok && tb.rod && tb.rays;
     if (tb.palS) tb.palS->valid = false;
     ok = ok && tb.palS;
     {   // step 9; bubble plans one 64-B cache line each: aligned by hand (never freed)

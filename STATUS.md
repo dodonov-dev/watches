@@ -2,28 +2,27 @@
 
 _Last update: 2026-11-25 (edge-ends: edgeShadeEnd, darker very edges by the rod's side-view magnification; board-checked)_
 
-## Edge shade ends (2026-11-25), branch `edge-ends` on perf-cheap 5ef545f: edgeShadeEnd; board-checked (lcd316@320w8-8)
+## Edge shade ends (2026-11-25), branch `edge-ends` on perf-cheap 5ef545f: edgeShadeEnd + width; board-checked (lcd316@320w8-8)
 
-- Params v34: `edgeShadeEnd` 0..1 (default 0, UI "· edge end" after the fold cover). Darkness at the tube's very edge,
-  falling off quickly by the rod's side-view magnification (docs/edge-shade-ends/astra-model3.md sections 2 / 4). Per
-  physical row r from the outermost: F_r = F0_r (1 - e^2 w_r), F0 the existing profile's unrounded factor (1 at
-  edgeShade 0; shading is on with either strength), applied before the bs() averaging and the lens path; e 0 = today.
-- Weights: u_0 = 1, u_r = min(9/16 u_{r-1}, C[r] / C[0]), joined to zero by a smoothstep over min(2, b) rows before b
-  (the last row of the edge run whose rounded F0 equals the edge's; b 0: the edge row alone). C: per row parity, the
-  projected samples landing in each physical row over 15 side views 45..80 deg, N = 2^20 (rod.h rodEndCounts, sim
-  render.ts the same: sqrt and the addition theorems instead of asin, the tilts' sin / cos as shared literals, so the
-  counts agree bit for bit; reproduces Astra's C_j exactly: even 41011 / 20616 / 9002 / 2386 / 54, odd 128455 / 29136 /
-  14103 / 5143 / 684). Board: generated into flash by tools/gen_rod_rays.py (ROD_GEN_END); host tools / the AB face count at
-  init (0.1 s on the host).
-- H 72, 0.4 / 3 / 0.4, retained K rows 0..5 (rows 6..35 unchanged: 154 x 8, then 164 .. 242): e 0.5 115, 134, 145, 151,
-  154, 154; e 0.8 55, 104, 132, 148, 153, 154; e 1 0, 76, 120, 145, 153, 154 (the spec's table, pinned in check_shade_rows).
-- NVS: v33 blobs (724 B) migrate to v34 (edgeShadeEnd 0); the v32 / v31 chain is kept. The board migrated the user's look by
-  itself ("params: restored from nvs (v33 -> v34: edgeShadeEnd 0)"): p? diff against docs/edge-shade-ends/
-  board-look-before.json = v 33 -> 34, edgeShadeEnd 0 only; then edgeShadeEnd 0.8 set (saved), all else the user's.
-- Checks: check_shade_rows lcd316@320w8-8 7531 looks (1584 with the edge end), 1208972 rows, 0 differ, all pins ok
-  (amoled191 0 differ too); check_render_frames vs 5ef545f 13136 strips byte-identical (e 0); test_params_nvs all ok;
-  sim tsc / build, check:presets 31 ok. Board: bench --fix-pose --runs 2, render 17.20 ms, stage edgeShadeEnd=0.8 +0.02
-  ms (-0.01..0.04: no per-frame cost); compare-device at e 0.8: 19 px mismatched, 0 > 12/255.
+- Params v35: `edgeShadeEnd` 0..1 (default 0, UI "· edge end"), `edgeShadeEndWidth` 0.05..1 (default 1, "· edge end
+  width"), after the fold cover. A perceptual fade in L*, never black, per physical row r from the outermost (before the
+  bs() averaging and the lens): b the old grey band's last row (the edge run of equal rounded F0), W = max(width (b + 1),
+  1), D = (1 - min(r / W, 1))^2, L*_end = L*(F0_0) (1 - 0.75 e), L*_r = L*_old - (L*_old - L*_end) D, F_r = min(F(L*_r),
+  F0_r) (render.cpp / render.ts rodLightness: gamma 2.2 and cube root by fixed bisections, bit-identical); e 0 = today.
+  Shading on with either strength.
+- History: the side-view magnification weights (astra-model3, 0d0b835 / d313348) read as a black outline on the board
+  (the user: "just shrinking the tube"), and a black edge row likewise; replaced by this fade, the count tables dropped.
+- H 72, 0.4 / 3 / 0.4 (b 13), width 1, K rows 0..13 (14..35 unchanged: 164 .. 242):
+  e 0.5: 94 102 109 116 122 128 133 138 142 146 148 151 152 153 (L* 39.6 .. 63.5);
+  e 0.8: 63 74 85 95 105 114 122 129 135 141 145 149 152 153 (L* 25.5 .. 63.5);
+  e 1:   44 57 70 82 93 104 114 123 131 138 143 148 151 153 (L* 15.9 .. 63.5); e 0: 154 x 14 (L* 63.9).
+  e 0.8 at width 0.5: 63 85 105 122 135 145 152, then 154; width 0.2: 63 114 145, then 154.
+- NVS: v34 / v33 / v32 / v31 blobs migrate to v35 (edgeShadeEndWidth 1; older: edgeShadeEnd 0, viewElevation 0); a
+  migration's save cut between blob and CRC (a v35 blob, v 35, under an old CRC) loads and is relabelled.
+- Checks: check_shade_rows lcd316@320w8-8 10701 looks, 1717916 rows, 0 differ, all pins ok; check_render_frames vs 5ef545f
+  13136 strips byte-identical (e 0); test_params_nvs all ok; sim build (bundle 308 kB, as before the count tables).
+- Board: v34 -> v35 migrated by itself ("v34 -> v35: edgeShadeEndWidth 1"), p? unchanged otherwise (the user's own
+  edgeShadeFold 0.29 / edgeShadeEnd 0 kept); then edgeShadeEnd 0.8, width 1 set; compare-device 4 px, 0 > 12/255.
 
 ## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af: B (exact render memos) + A' (palette key); board-checked
 

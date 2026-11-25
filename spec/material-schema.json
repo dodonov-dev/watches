@@ -374,6 +374,7 @@
       "edgeShadeShape",
       "edgeShadeFold",
       "edgeShadeEnd",
+      "edgeShadeEndWidth",
       "meniscusLens",
       "topLens",
       "topParallax",
