@@ -88,10 +88,12 @@ export function fizzLightFrame(transparency: number, R: number, upX: number, lig
     fk: F(Math.min(1, fr / F_REF)), hx: F(lx * hk * hc), hy: F(ly * hk * hc),
     openR: (exposed & 1) !== 0, openL: (exposed & 2) !== 0, lid, kLid: F(kLid), tone: F(Math.max(-1, Math.min(1, tone))) };
 }
-/** The ring's tone from its lit colour and the liquid behind it (RGB565): (Y_rim - Y_liquid) / 32 in 8-bit luma, -1..1. */
-export function fizzTone(rim565: number, liquid565: number): number {
+/** The ring's tone from its lit colour and the liquid behind it (RGB565; liqA / liqB: the palette's rows at a quarter and
+ *  three quarters of the tube, so a highlight band on the centre row does not count as the liquid):
+ *  (Y_rim - (Y_a + Y_b) / 2) / 32 in 8-bit luma, -1..1. Integers until the last division. */
+export function fizzTone(rim565: number, liqA565: number, liqB565: number): number {
   const y = (c: number): number => { const r = (c >> 11) & 31, g = (c >> 5) & 63, b = c & 31; return (((r << 3) | (r >> 2)) * 77 + ((g << 2) | (g >> 4)) * 150 + ((b << 3) | (b >> 2)) * 29) >> 8; };
-  return Math.max(-1, Math.min(1, (y(rim565) - y(liquid565)) / 32));
+  return Math.max(-1, Math.min(1, (2 * y(rim565) - y(liqA565) - y(liqB565)) / 64));
 }
 
 /** A bubble's light (firmware FizzLit). */

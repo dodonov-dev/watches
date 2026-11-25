@@ -2989,7 +2989,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     const phys = Math.max(0, Math.min(1, p.fizzPhys)), physT = Math.round(phys * 256);
     const rimLit = blend565T(0, pal.bubbleRim, 205);   // the lit rim, 0.8 of the scalar rim so the pinpoint reads above it
     const lit = phys > 0 ? fizzLightFrame(p.liquidTransparency, R32, mir ? -fizzUp[idx][0] : fizzUp[idx][0], s.light, lidV, lidTau, lidDelta,
-      fizzExposed[idx], fizzTone(rimLit, pal.rows[H >> 1])) : null;
+      fizzExposed[idx], fizzTone(rimLit, pal.rows[H >> 2], pal.rows[H - 1 - (H >> 2)])) : null;
     const yc32 = F((H - 1) / 2);
     // Vertical (tilted-fizz point 7): back to front without a sort, two passes over the pool: the back half (tint levels
     // FIZZ_DEPTHS / 2 and deeper, physical z <= 0) first, then the front half, slot order within each. Landscape: one pass.

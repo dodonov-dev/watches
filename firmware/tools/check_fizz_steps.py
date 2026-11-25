@@ -1436,6 +1436,8 @@ def main():
     ap.add_argument('--tubes', type=int, default=2, choices=(2, 3), help='3 = + the seconds tube (-DTUBE_COUNT=3)')
     ap.add_argument('--tiles', action='store_true', help='current side through the tiled band loop (-DTILE_RENDER=1)')
     ap.add_argument('--pixels-only', action='store_true', help='compare strips and counts, not the fizz state (struct Fizz changed on purpose)')
+    ap.add_argument('--set', action='append', default=[], metavar='NAME=VALUE', help='--reference: this param on every preset and scene, both sides (repeatable; e.g. fizzPhys=1 to run a new path, or with a copy of the current render.cpp as the reference and --tiles: strip vs tiles of one build)')
+    ap.add_argument('--sanitize', action='store_true', help='--reference: both sides with -fsanitize=address,undefined')
     ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
     ap.add_argument('-v', action='store_true', help='print each preset\'s fizz counts: most per tube over the sequence and at the end')
     ap.add_argument('presets', nargs='*')
@@ -1450,6 +1452,7 @@ def main():
         params = json.load(open(path))
         if isinstance(params, dict) and 'tubeHeight' in params:
             jobs.append((path, ''.join(f'{k}={fmt(v)}\n' for k, v in params.items() if k != 'v')))
+    if a.set: jobs = [(path, script + ''.join(f'{kv}\n' for kv in a.set)) for path, script in jobs]
     lcd = a.board == 'lcd316'
     with tempfile.TemporaryDirectory(prefix='watches-steps-') as tmp:
         tmp = Path(tmp)
@@ -1464,6 +1467,7 @@ def main():
         builds = [subprocess.Popen([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2', '-fno-strict-aliasing', *fp, *board,   # fizzHash reads floats as uint16_t
                                     *(['-DTILE_RENDER=1'] if a.tiles and name == 'current' else []),
                                     *(['-DPIXELS_ONLY'] if a.pixels_only else []), f'-DRENDER_SRC="{src}"',
+                                    *(['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if a.sanitize else []),
                                     '-I', str(tmp), '-I', str(ROOT / 'firmware/src'), '-I', str(ROOT / 'spec'),
                                     str(tmp / 'h.cpp'), str(ROOT / 'firmware/src/physics.cpp'), '-o', str(tmp / name)])
                   for name, src in sides]
@@ -1494,7 +1498,8 @@ def main():
                         mean = [sum(int(r[t].split('/')[1]) for r in rows) / len(rows) for t in T]
                         print(f'  {side + " " if side else ""}fizz live max {" ".join(f"{nm[t]} {most[t]}" for t in T)}, foam max {" ".join(f"{nm[t]} {foam[t]}" for t in T)}'
                               f' mean {" ".join(f"{nm[t]} {mean[t]:.1f}" for t in T)}, end {" ".join(rows[-1])}')
-        tag = f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}{" fma" if a.fma else ""}{" tiles" if a.tiles else ""}'
+        tag = (f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}{" fma" if a.fma else ""}{" tiles" if a.tiles else ""}'
+               f'{" sanitize" if a.sanitize else ""}{"".join(" " + kv for kv in a.set)}')
         print(f'{tag}: {len(jobs) - bad} of {len(jobs)} presets identical over the sequence')
         sys.exit(1 if bad else 0)
 

@@ -482,6 +482,8 @@ static inline float sqrtExact(float x) {
   return sqrtf(x);
 #endif
 }
+#define FIZZ_SQRT sqrtExact   // fizzPhys's per-bubble kernel (fizzLit): the exact root, inline
+#include "fizz_light.h"
 // Step 5 fizz: one row of an AA bubble disc (see drawTube). Coverage and core are decided from squared distances
 // with a 1e-4 relative margin that float rounding cannot cross; a root is taken only in the anti-aliased ring
 // (approximate, see sqrtApprox) and in the core's margin (exact).
@@ -511,6 +513,7 @@ struct DiscRow {
 };
 #define FIZZ_SIZES 12   // size classes, depth levels: see fizzV / fizzZ
 #define FIZZ_DEPTHS 4
+#define FIZZ_RIM_LEVELS (FIZZ_DEPTHS > FIZZ_LIGHTS ? FIZZ_DEPTHS : FIZZ_LIGHTS)   // FizzLook cRim: depth levels or fizzPhys's light levels
 #define FIZZ_MQ 4       // the masks' |dx| steps a px (4: maskRows shifts by 2), |dy| steps a px: see FizzClass
 #define FIZZ_MDY 8
 // Veil of one disc pixel by the pixel's footprint over each surface band (BandVeil): continuous as the edge moves.
@@ -1720,9 +1723,10 @@ struct Tube {
   void tickBand(int y0, const Mark &mark, int r0, int r1) const;
   void planLabels(const Labels &lb, const Warp &warp, int y0) const;
   void labelBand(int y0, const Labels &lb, const Warp &warp, const Mark &mark, bool rowFacts, int r0, int r1) const;
-  void planFizz(const Params &p, const FizzFrame &ff);
+  void planFizz(const Params &p, const FizzFrame &ff, float light);
   void fizzBand(int r0, int r1);
-  void planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd);
+  float planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd);
+  void planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd, float fx);
   void bubbleRows(const struct BubblePlan &b, int r0, int r1);
   void discOf(const struct BubblePlan &b, DiscRow &d) const;
   inline void discRowOf(const struct BubblePlan &b, DiscRow &d, int iy, float wallT, float dy);
@@ -3427,12 +3431,20 @@ struct FizzLook {
   const uint8_t *mask; int need;      // this frame's masks (fizzMasks, shared); bytes the classes' masks take
   bool sane;                         // every class a real disc (masks can be built)
   float tintA[FIZZ_DEPTHS];
-  uint16_t cRim[FIZZ_DEPTHS][TUBE_HEIGHT_MAX], cBlick[FIZZ_DEPTHS][TUBE_HEIGHT_MAX];   // rim per row; pinpoint by the centre row
+  // rim per row and level (fizzPhys 0: FIZZ_DEPTHS depth levels; > 0: FIZZ_LIGHTS light levels); pinpoint by the centre row
+  uint16_t cRim[FIZZ_RIM_LEVELS][TUBE_HEIGHT_MAX], cBlick[FIZZ_DEPTHS][TUBE_HEIGHT_MAX];
   // what tintA / cRim / cBlick were built from (planFizz): the palette build, the edge shade's (0: none), the rows and the
-  // params and colour they mix with; depthValid false = not built yet
-  uint32_t depthPalVer, depthShadeVer; int depthH; float depthKey[3]; uint16_t depthBlickC; bool depthValid, depthShaded;
+  // params and colour they mix with, fizzPhys's light levels (-1: the depth levels; else physT); depthValid false = not built yet
+  uint32_t depthPalVer, depthShadeVer; int depthH; float depthKey[3]; uint16_t depthBlickC; bool depthValid, depthShaded; int depthPhysT;
   int16_t veilLo[TUBE_HEIGHT_MAX], veilHi[TUBE_HEIGHT_MAX];   // per row: DiscRow veilLo / veilHi (no band: never)
+  // fizzPhys (planFizz, every frame): clamp(fizzPhys, 0, 1), round(256 phys), the lit rim (0.8 x the scalar bubbleRim) and,
+  // phys > 0, the frame's light (fizz_light.h); here, not on the render stack
+  float phys; int physT; uint16_t rimLit; FizzLight lit;
+  // the pose's up (tube frame) as the fizz was last stepped (stepFizzTube; face up before the first): fizzPhys's key light
+  // (sim fizzUp). Here, not in Tube: a Tube 12 B bigger changed the code of every tubes[idx] in IRAM (sizeof multiplies)
+  Pose fizzUp;
 };
+static_assert(FIZZ_DEPTHS <= FIZZ_RIM_LEVELS && FIZZ_LIGHTS <= FIZZ_RIM_LEVELS && FIZZ_RIM_LEVELS <= 255, "cRim holds every level b.lvl names");
 static_assert(sizeof(BubblePlan) == 64, "one cache line a bubble");
 struct MarkPlan {
   // the tick layer (one a frame: ticksOnTop picks rear or top)
@@ -4911,7 +4923,8 @@ static void __attribute__((noinline)) stepFizzVertical(Tube &t, const Params &p,
 }
 // One tube's step (idx): each tube steps only its own state, so two may step at once on two cores (main: each on the
 // core that renders it); stepFizz steps all, one after the other.
-FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation, const Pose &pose) {
+// The step's kernel (stepFizzTube, below: the pose first).
+FIZZ_IRAM void __attribute__((noinline)) stepFizzTubeK(int idx, const Params &p, float dt, float along, float across, float agitation, const Pose &pose) {
   FZ_T0(st0); if (idx == 1) FS_CNT(FS_STEPS, 1);   // a step: both tubes
   if (p.vertical) { stepFizzVertical(tubeAt(idx), p, dt, pose, agitation); FS_ADD(FS_CYC, st0); return; }   // the pose alone: no along / across
   if (mirrored(p)) along = -along;   // fizz lives in the mirrored liquid frame (see drawTube)
@@ -5057,6 +5070,12 @@ FIZZ_IRAM void stepFizzTube(int idx, const Params &p, float dt, float along, flo
     FS_ADD(FS_CYC_SETTLE, se0);
   }
   FS_ADD(FS_CYC, st0);
+}
+// The pose a tube's fizz is stepped with is fizzPhys's key light (FizzLook::fizzUp; sim stepFizzTube). Stored out of IRAM, in
+// this wrapper: in the kernel (inline or by a call) its code grew by 40..100 B, and IRAM is internal RAM.
+void stepFizzTube(int idx, const Params &p, float dt, float along, float across, float agitation, const Pose &pose) {
+  if (FizzLook *const l = tubeAt(idx).look) l->fizzUp = pose;   // (render_init allocates it)
+  stepFizzTubeK(idx, p, dt, along, across, agitation, pose);
 }
 void stepFizz(const Params &pH, const Params &pM, float dt, float along, float across, float agitation, const Pose &pose) {
   stepFizzTube(0, pH, dt, along, across, agitation, pose); stepFizzTube(1, pM, dt, along, across, agitation, pose);
@@ -5821,7 +5840,7 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
                        mir};
     fzBandDx = xs - xsI; fzBandHw = softW * 0.5f;   // the band's footprint for the foam veil (bandVeil)
     fzLid = lidT > 0; fzLidFill = fill; fzLidRimB = lidT > 0 ? lidRimB : 0.0f;
-    planFizz(p, ff);
+    planFizz(p, ff, st.light);
     FZ_ADD(fizzProf, FZ_CYC, fz0);
   }
   // 6: bubble
@@ -6584,7 +6603,7 @@ static float __attribute__((noinline, optimize("fp-contract=off"))) fizzEndClamp
 // Step 5, one bubble (drawTube): its disc setup (planBubble, once a frame), then its rows (bubbleRows, discRow; step 9:
 // band by band). Out of drawTube (noinline, in IRAM on the LCD): inside it the setup spilled and its code competed for
 // the instruction cache with the other core's render.
-FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd) {
+FIZZ_IRAM float __attribute__((noinline)) Tube::planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd) {
   const float *mag = ff.mag; const float yHi = ff.yHi, invHalfH = ff.invHalfH, lxSign = ff.lxSign;
   const float lxS = -0.7f;   // light from screen-left (a constant, as it was in drawTube: lxS * lxS folds)
   const FizzLook &fl = *look;
@@ -6635,6 +6654,48 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::planBubble(const Fizz &f, const P
 #ifdef FIZZ_PROF
   fizzProf[FZ_BUBBLES]++; FZ_ADD(fizzProf, FZ_CYC_SETUP, fb0);
 #endif
+  return fx;   // its centre before the mask's rounding (fizzPhys: planFizz -> planBubbleLit)
+}
+// fizzPhys > 0 (planFizz, after planBubble; fx its centre before the mask rounded b.fx): the bubble's own light (fizz_light.h fizzLit) at its place in
+// the bore (vertical: its body; else its row and depth level), blended with the explicit values by fizzPhys (sim step 5):
+// the ring's mix weight K, one of FIZZ_LIGHTS levels (b.lvl, planFizz's light levels), toward the lit rim; the core's shift
+// along the ring's thick side, at most FIZZ_RING_KEEP; the pinpoint where the bubble mirrors the key, its weight by the
+// key's path in and the view path out (white, blickC: the weight carries the depth); the tint by the view path, gone in
+// foam at an open surface. The explicit side is the old per-bubble look: depthK from the level's z, the offsets and the
+// pinpoint's place (also when the old pinpoint was off) by planBubble's expressions. Plain flash (not FIZZ_IRAM), called
+// from planFizz (flash): the phys 0 path in IRAM pays planBubble's return value only. fp-contract off: fizzLit keeps the
+// sim's roundings (a fused multiply-add rounds once; tools/check_fizz_light.py holds the kernel to the sim bit for bit).
+void __attribute__((noinline, optimize("fp-contract=off"))) Tube::planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd, float fx) {
+  const FizzLook &fl = *look; const FizzLight &lit = fl.lit; const float phys = fl.phys;
+  const float lxS = -0.7f;
+  const int fy = (int)clampf(jround(f.y), 0, H - 1);
+  const float pop = f.life != 0 && fabsf(f.life) < FOAM_POP_T ? fabsf(f.life) / FOAM_POP_T : 1;
+  const FizzClass &c = fl.k[fizzClass(f.v)];
+  const float r = b.r;   // fx: the drawn centre before the mask's rounding (b.fx)
+  const float off = pop < 1 ? fmn(r * p.fizzShadeOff, r - 1) : c.off;
+  const float ly = clampf((ff.yHi - f.y) * ff.invHalfH, -1, 1), nrm = rsqrtApprox(lxS * lxS + ly * ly);
+  const float dirX = ff.lxSign * lxS * nrm, dirY = ly * nrm;
+  const float bk = pop < 1 ? 0.4f * (r - 1) : c.bk;
+  const float depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency), tint0 = p.bubbleDark * depthK;   // the explicit look's (sim depthK, tintA)
+  float yb, zb;
+  if (bd) { yb = bd->y; zb = bd->z; }
+  else {
+    const float a = fmx(0, lit.R - r); yb = clampf(f.y - (H - 1) * 0.5f, -a, a);
+    const float zm = sqrtExact(fmx(0, a * a - yb * yb)); zb = clampf(a * (1 - 2 * f.z), -zm, zm);
+  }
+  FizzLit o; fizzLit(lit, fx, yb, zb, r, fizzSurf[fy], fizzSurfL[fy], fzLid ? strokeR[fy] : 0.0f, o);
+  const float K = depthK + (o.K - depthK) * phys;
+  const int lvl = (int)(K * (FIZZ_LIGHTS - 1) + 0.5f);
+  b.lvl = (uint8_t)(lvl < 0 ? 0 : lvl > FIZZ_LIGHTS - 1 ? FIZZ_LIGHTS - 1 : lvl);   // (K in [0, 1]: a guard)
+  const float offP = fmn(off, FIZZ_RING_KEEP);   // the ring thins, never opens
+  b.offX = b.offX + ((-offP * o.cx) - b.offX) * phys; b.offY = b.offY + ((-offP * o.cy) - b.offY) * phys;
+  const float bX0 = dirX * bk, bY0 = dirY * bk;
+  const float bk0 = b.blickK * depthK;
+  b.blickK = bk0 + (p.fizzBlick * o.wl - bk0) * phys;
+  b.tintA = tint0 + ((p.bubbleDark * o.tv) * o.sk - tint0) * phys;
+  b.blick = (pop < 1 ? r >= 2.5f && p.fizzBlick > 0 : c.blick) && b.blickK > 0;
+  if (b.blick) { b.bX = bX0 + (r * lit.hx - bX0) * phys; b.bY = bY0 + (r * lit.hy - bY0) * phys; b.cBlick = ff.blickC; }
+  else { b.bX = b.bY = 0; b.cBlick = 0; }
 }
 // A planned bubble's rows in [r0, r1): its DiscRow on the stack, the disc set-up derived from the plan as planBubble
 // derived it before (the same expressions, so the same values), then each row's fields.
@@ -6785,21 +6846,45 @@ FIZZ_IRAM void __attribute__((noinline)) Tube::maskRows(const BubblePlan &b, int
     FZ_ADD(fizzProf, FZ_CYC_DISC, fr1);
   }
 }
+// blend565T out of line for fizzPhys's per-frame tables: one call site of blend565T, so GCC's inlining of it into the
+// pixel kernels (maskPx, tickPx, traceZoneRow) stays as it was (three more sites moved those out of line, into flash).
+static uint16_t __attribute__((noinline)) blend565TCold(uint16_t a, uint16_t b, int T) { return blend565T(a, b, T); }
 // The frame's bubbles, planned in slot order (idle slots: v 0), and (tiled) each band's list of them.
-void Tube::planFizz(const Params &p, const FizzFrame &ff) {
+void Tube::planFizz(const Params &p, const FizzFrame &ff, float light) {
   MarkPlan &mp = *plan;
   fzVeilA = ff.veilA; fzPullR = ff.pullR; fzPullL = ff.pullL; fzXsI = ff.xsI; fzL = ff.L; fzMir = ff.mir;
   FizzLook &fl = *look;
   if (!fl.valid || fl.key[0] != p.fizzSize || fl.key[1] != p.fizzSizeVar || fl.key[2] != p.fizzShadeOff || fl.key[3] != p.fizzBlick) buildFizzClasses(fl, p);
   takeFizzMasks(fl, p);
+  // fizzPhys > 0: each bubble lit where it is (fizz_light.h; docs/fizz-light/model.md). The key light: world-up along the
+  // tube (the pose the fizz was stepped with, liquid frame), the palette's light in the cross-section. 0: the explicit look.
+  fl.phys = clampf(p.fizzPhys, 0, 1);
+  if (fl.phys > 0) {
+    fl.physT = (int)jround(fl.phys * 256);
+    fl.rimLit = blend565TCold(0, pal.bubbleRim, 205);   // the lit rim, 0.8 of the scalar rim so the pinpoint reads above it
+    fizzLightFrame(fl.lit, p.liquidTransparency, boreR(p), ff.mir ? -fl.fizzUp.x : fl.fizzUp.x, light, fzLid, fizzLidTau, fizzLidDelta,
+                   fizzExposed, fizzTone(fl.rimLit, pal.rows[H >> 2], pal.rows[H - 1 - (H >> 2)]));
+  }
+  const int physKey = fl.phys > 0 ? fl.physT : -1;   // the ring's levels: depth (-1) or light at physT
   // A depth level's colours: functions of the palette rows, the edge shade, the params below and blickC only (no bubble or
   // fill state), so rebuilt when one of those changes, not every frame (perf-cheap B2).
   const uint32_t shadeKey = shF ? rc.shadeVer : 0;
   if (!(fl.depthValid && fl.depthPalVer == pal.ver && fl.depthShaded == (shF != nullptr) && fl.depthShadeVer == shadeKey && fl.depthH == H
-        && fl.depthKey[0] == p.fizzDepth && fl.depthKey[1] == p.liquidTransparency && fl.depthKey[2] == p.bubbleDark && fl.depthBlickC == ff.blickC)) {
+        && fl.depthKey[0] == p.fizzDepth && fl.depthKey[1] == p.liquidTransparency && fl.depthKey[2] == p.bubbleDark && fl.depthBlickC == ff.blickC
+        && fl.depthPhysT == physKey)) {
   fl.depthValid = true; fl.depthPalVer = pal.ver; fl.depthShaded = shF != nullptr; fl.depthShadeVer = shadeKey; fl.depthH = H;
   fl.depthKey[0] = p.fizzDepth; fl.depthKey[1] = p.liquidTransparency; fl.depthKey[2] = p.bubbleDark; fl.depthBlickC = ff.blickC;
-  for (int l = 0; l < FIZZ_DEPTHS; l++) {   // a depth level's colours: as planBubble / bubbleRows mixed them per bubble (sim cRimD / cBlickD)
+  fl.depthPhysT = physKey;
+  // fizzPhys > 0: the ring's FIZZ_LIGHTS light levels, liquid .. the rim mixed toward the lit rim by phys (sim KT, cRimD);
+  // the pinpoint (blickC) and the tint are per bubble then (planBubbleLit): cBlick / tintA are not read
+  if (physKey >= 0) for (int l = 0; l < FIZZ_LIGHTS; l++) {
+    const int KT = (512 * l + FIZZ_LIGHTS - 1) / (2 * (FIZZ_LIGHTS - 1));   // round(l 256 / (FIZZ_LIGHTS - 1)), half up (sim Math.round)
+    for (int iy = 0; iy < H; iy++) {
+      fl.cRim[l][iy] = blend565TCold(pal.rows[iy], blend565TCold(pal.bubbleRimRows[iy], fl.rimLit, fl.physT), KT);
+      if (shF) fl.cRim[l][iy] = shade565(fl.cRim[l][iy], shF[iy]);
+    }
+  }
+  else for (int l = 0; l < FIZZ_DEPTHS; l++) {   // a depth level's colours: as planBubble / bubbleRows mixed them per bubble (sim cRimD / cBlickD)
     const float z = (l + 0.5f) * (1.0f / FIZZ_DEPTHS), depthK = 1 - p.fizzDepth * z * (1 - p.liquidTransparency);   // fizzZ's values
     const int depthT = depthK < 1 ? (int)(depthK * 256 + 0.5f) : 256;
     fl.tintA[l] = p.bubbleDark * depthK;
@@ -6825,8 +6910,11 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff) {
   // below keep the plan's order. Landscape: one pass, slot order.
   for (int pass = p.vertical ? 0 : 1; pass < 2; pass++)
     for (int k = 0; k < fizzN; k++)
-      if (fizz[k].v != 0 && (!p.vertical || (fizzLevel(fizz[k].z) >= FIZZ_DEPTHS / 2) == (pass == 0)))
-        planBubble(fizz[k], p, ff, mp.bub[mp.nBub++], vb ? &body[k] : nullptr);
+      if (fizz[k].v != 0 && (!p.vertical || (fizzLevel(fizz[k].z) >= FIZZ_DEPTHS / 2) == (pass == 0))) {
+        BubblePlan &b = mp.bub[mp.nBub++]; const FizzBody *const bd = vb ? &body[k] : nullptr;
+        const float fx = planBubble(fizz[k], p, ff, b, bd);
+        if (fl.phys > 0) planBubbleLit(fizz[k], p, ff, b, bd, fx);   // fizzPhys: lit where it is
+      }
 #if TILE_RENDER
   const int nb = (H + TUBE_BAND - 1) / TUBE_BAND;
   int16_t *const start = mp.bandStart;
@@ -6931,7 +7019,7 @@ bool render_init(bool fast) {
     tb.look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
     if (tb.look) {
       FizzLook &fl = *tb.look;
-      fl.valid = fl.masks = fl.depthValid = false; fl.mask = nullptr;
+      fl.valid = fl.masks = fl.depthValid = false; fl.mask = nullptr; fl.phys = 0; fl.depthPhysT = -1; fl.fizzUp = POSE_DEFAULT;
     }
     ok = ok && tb.look;
     tb.foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB

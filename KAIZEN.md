@@ -1085,3 +1085,16 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   reply to `v`) until `esptool chip-id` reset it. Then it booted normally. flash-win.sh could finish with that reset.
 - edge-ends: the NVS recovery covers a v35 blob left under an older CRC; a v34 blob left under the v33 CRC by an
   interrupted save of the earlier v34 firmware is still dropped (no board is known in that state).
+
+## Fizz light (fizzPhys, 2026-11-25)
+- Not built (docs/fizz-light/astra-model.md f): the surface's mirror image of a bubble from below (total reflection past
+  48.6 deg), a brighter core where the bubble removes absorbing path (x1.3 on the centre ray in ink), a per-pixel ring
+  gradient instead of the shifted core, the bubble's shadow / caustic on the back.
+- No sim-vs-firmware PIXEL check exists for fizz (check_board_render and compare-device switch it off; check_fizz_steps
+  --sim compares state). check_fizz_light.py compares the light kernel's numbers only.
+- A black liquid has bubbleRimRows = 0 on every row (rowL / rowLMax of a zero luma): with fizzPhys 0 its rings are black
+  and only the pinpoints show. fizzPhys mixes in the unshaded rim; the explicit path was left as it is.
+- The view axis for the ring's cone and the pinpoint is the screen normal; the desk view's eye (delta above it, refracted
+  to ~5 deg in the liquid) is ignored there, and the lid's projected x is used as the axial position.
+- fizzPhys reads the pose from the last fizz step (Tube::fizzUp / sim fizzUp); a frame rendered before any step is lit
+  face-up. Not in the `x` dump: a replayed frame with fizz would need it (fizz is off in compare-device).
