@@ -1,6 +1,29 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-24 (perf-cheap: exact render memos B + palette key A'; the physics hold A dropped; board-checked)_
+_Last update: 2026-11-25 (edge-ends: edgeShadeEnd, darker very edges by the rod's side-view magnification; board-checked)_
+
+## Edge shade ends (2026-11-25), branch `edge-ends` on perf-cheap 5ef545f: edgeShadeEnd; board-checked (lcd316@320w8-8)
+
+- Params v34: `edgeShadeEnd` 0..1 (default 0, UI "· edge end" after the fold cover). Darkness at the tube's very edge,
+  falling off quickly by the rod's side-view magnification (docs/edge-shade-ends/astra-model3.md sections 2 / 4). Per
+  physical row r from the outermost: F_r = F0_r (1 - e^2 w_r), F0 the existing profile's unrounded factor (1 at
+  edgeShade 0; shading is on with either strength), applied before the bs() averaging and the lens path; e 0 = today.
+- Weights: u_0 = 1, u_r = min(9/16 u_{r-1}, C[r] / C[0]), joined to zero by a smoothstep over min(2, b) rows before b
+  (the last row of the edge run whose rounded F0 equals the edge's; b 0: the edge row alone). C: per row parity, the
+  projected samples landing in each physical row over 15 side views 45..80 deg, N = 2^20 (rod.h rodEndCounts, sim
+  render.ts the same: sqrt and the addition theorems instead of asin, the tilts' sin / cos as shared literals, so the
+  counts agree bit for bit; reproduces Astra's C_j exactly: even 41011 / 20616 / 9002 / 2386 / 54, odd 128455 / 29136 /
+  14103 / 5143 / 684). Board: generated into flash by tools/gen_rod_rays.py (ROD_GEN_END); host tools / the AB face count at
+  init (0.1 s on the host).
+- H 72, 0.4 / 3 / 0.4, retained K rows 0..5 (rows 6..35 unchanged: 154 x 8, then 164 .. 242): e 0.5 115, 134, 145, 151,
+  154, 154; e 0.8 55, 104, 132, 148, 153, 154; e 1 0, 76, 120, 145, 153, 154 (the spec's table, pinned in check_shade_rows).
+- NVS: v33 blobs (724 B) migrate to v34 (edgeShadeEnd 0); the v32 / v31 chain is kept. The board migrated the user's look by
+  itself ("params: restored from nvs (v33 -> v34: edgeShadeEnd 0)"): p? diff against docs/edge-shade-ends/
+  board-look-before.json = v 33 -> 34, edgeShadeEnd 0 only; then edgeShadeEnd 0.8 set (saved), all else the user's.
+- Checks: check_shade_rows lcd316@320w8-8 7531 looks (1584 with the edge end), 1208972 rows, 0 differ, all pins ok
+  (amoled191 0 differ too); check_render_frames vs 5ef545f 13136 strips byte-identical (e 0); test_params_nvs all ok;
+  sim tsc / build, check:presets 31 ok. Board: bench --fix-pose --runs 2, render 17.20 ms, stage edgeShadeEnd=0.8 +0.02
+  ms (-0.01..0.04: no per-frame cost); compare-device at e 0.8: 19 px mismatched, 0 > 12/255.
 
 ## perf-cheap (2026-11-24), branch `perf-cheap` on tilted_rise 87f19af: B (exact render memos) + A' (palette key); board-checked
 

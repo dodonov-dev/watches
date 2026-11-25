@@ -5,7 +5,10 @@ render.ts edgeShadeRows) over a matrix of looks per board / canvas.
   python3 firmware/tools/check_shade_rows.py [--board lcd316 --res 320w8-8] [--tubes 2]
 
 Looks: every preset's tube geometry (tubeHeight, rows, stacking) x edgeShade 0.3 / 0.7 / 1 x edgeShadeShape 0.5 / 1 / 1.5 /
-2 / 3 x edgeShadeFold 0 / 0.4 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3). Compares per tube the shown rows'
+2 / 3 x edgeShadeFold 0 / 0.4 / 1, plus a tubeHeight sweep and a lens sweep (lens -1 .. 1 x curve -3 .. 3); the edge end:
+every geometry x edgeShadeEnd 0.5 / 0.8 / 1 x (edgeShade, shape, fold) 0 / 1.5 / 0.4, 0.4 / 3 / 0.4, 0.7 / 1 / 0, 1 / 2 / 1,
+pinned at H 72, 0.4 / 3 / 0.4 (docs/edge-shade-ends/astra-model3.md section 3: K rows 0..5 per edgeShadeEnd, rows 6..35 as
+at 0). Compares per tube the shown rows'
 factors and the lens row map the fold uses (firmware lensSrc, sim lensSourceRows: float32 both), and pins one strong
 lenses (H 72, lens 1 / curve 3: shown rows 33..35 show drawn row 36; H 25, lens 0.25 / 0.5: row 2 shows 2) and the pooled
 plateau (H 72, s 0.9, shape 1.5, fold 0.4: K 35 on rows 0..12, 223 on row 35). Builds the firmware side twice, with the
@@ -98,6 +101,12 @@ def main():
         for k in (0.3, 0.7, 1):
             for q in (0.5, 1, 1.5, 2, 3):
                 for fo in (0, 0.4, 1): looks.append({**g, 'edgeShade': k, 'edgeShadeShape': q, 'edgeShadeFold': fo, 'fizz': False})
+    for g in geo:
+        for k, q, fo in ((0, 1.5, 0.4), (0.4, 3, 0.4), (0.7, 1, 0), (1, 2, 1)):
+            for e in (0.5, 0.8, 1): looks.append({**g, 'edgeShade': k, 'edgeShadeShape': q, 'edgeShadeFold': fo, 'edgeShadeEnd': e, 'fizz': False})
+    END = {0: [154] * 6, 0.5: [115, 134, 145, 151, 154, 154], 0.8: [55, 104, 132, 148, 153, 154], 1: [0, 76, 120, 145, 153, 154]}
+    endAt = len(looks)
+    for e in END: looks.append({**pin, 'lens': 0, 'edgeShade': 0.4, 'edgeShadeShape': 3, 'edgeShadeFold': 0.4, 'edgeShadeEnd': e})
     looks.append(pin)
     looks.append({**pin, 'tubeHeight': 19, 'lens': 0.25, 'lensCurve': 0.5})   # H 25 at 320w8-8
     looks.append({**pin, 'lens': 0, 'edgeShade': 0.9, 'edgeShadeFold': 0.4})   # the pooled plateau: K 35 (Astra review 7)
@@ -153,9 +162,15 @@ def main():
     K9 = [256 - int(v) for v in fw[len(looks) - 1].split(';')[0].split(':')[2].split(',') if v]   # H 72, s 0.9, q 1.5, fold 0.4
     pinned = (len(L) == 72 and L[33:36] == [36, 36, 36] and len(L25) == 25 and L25[2] == 2 and len(K9) == 72 and K9[:13] == [35] * 13
               and K9[35] == 223) if lcd and a.res == '320w8-8' else None
+    endK = {e: [256 - int(v) for v in fw[endAt + n].split(';')[0].split(':')[2].split(',') if v] for n, e in enumerate(END)}
+    endOk = (all(len(K) == 72 and K[:6] == END[e] and K[66:][::-1] == END[e] and K[6:66] == endK[0][6:66] for e, K in endK.items())
+             if lcd and a.res == '320w8-8' else None)
+    if endOk is not None:
+        for e, K in endK.items(): print(f'H 72, 0.4 / 3 / 0.4, edgeShadeEnd {e}: K rows 0..5 {K[:6]}, 6..13 {K[6:14]}, 14..35 {K[14:36]}')
     tag = f'{a.board}{"@" + a.res if lcd else ""}{"+t3" if a.tubes == 3 else ""}'
     print(f'{tag}: {len(looks)} looks, {rows} shaded rows, {diff} differ (worst {worst}/256); {maps} lens maps, {mapdiff} differ; generated ray tables = built at init'
-          + ('' if pinned is None else f'; pins: H 72 lens 1 / 3 rows 33..35 -> {L[33:36]}, H {len(L25)} lens 0.25 / 0.5 row 2 -> {L25[2:3]}, H 72 s 0.9 K rows 0 / 35 -> {K9[0:1]} / {K9[35:36]} {"ok" if pinned else "MOVED"}'))
-    sys.exit(1 if diff or mapdiff or bad or pinned is False else 0)
+          + ('' if pinned is None else f'; pins: H 72 lens 1 / 3 rows 33..35 -> {L[33:36]}, H {len(L25)} lens 0.25 / 0.5 row 2 -> {L25[2:3]}, H 72 s 0.9 K rows 0 / 35 -> {K9[0:1]} / {K9[35:36]} {"ok" if pinned else "MOVED"}')
+          + ('' if endOk is None else f'; edge end pins (H 72, 0.4 / 3 / 0.4, e 0 / 0.5 / 0.8 / 1) {"ok" if endOk else "MOVED"}'))
+    sys.exit(1 if diff or mapdiff or bad or pinned is False or endOk is False else 0)
 
 if __name__ == '__main__': main()
