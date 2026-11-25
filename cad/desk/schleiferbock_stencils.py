@@ -1,6 +1,8 @@
 """Schleiferbock logo stencils for the pebble (round C) glow-through pocket: the E+H stencil's plate (smooth.stencil_block,
 16.00 x 10.83 pocket, 1.60 thick, same clearances, sloped sides, bed face = the face against the skin, mirrored) with the
-Schleiferbock logo (wheel, gear) as apertures instead of the letters; two stencils in a column as the E+H set.
+Schleiferbock logo (wheel, gear) as apertures instead of the letters; two stencils in a column as the E+H set, two
+types side by side: "through" (the whole logo cut through) and "sparks" (only the sparks cut through; the body a pocket
+from the top, the LED side, down to a FLOOR left on the bed face, so the body glows dimmer and the sparks brighter).
 
 Designed for a 0.2 nozzle: apertures and bridges down to MIN_W (0.25). The logo body is kept as drawn (sharp tips print
 under-cut; trim by hand). The sparks are redrawn as slim wedges (SPARK_W_IN -> SPARK_W_OUT wide) on the SVG's spark axes,
@@ -36,7 +38,9 @@ SAMPLE = 0.02                                  # mm, curve sampling
 SPARKS = 3                                     # the last SPARKS paths in each SVG are the sparks (separate cuts)
 SEG = 96                                       # circular segments of round offsets
 OUT_STEP = sm.OUT_ROOT / "logo-stencils-pebble-schleiferbock.step"
-OUT_STL = HERE / "to-print" / "logo-stencils-pebble-schleiferbock.stl"
+FLOOR = 0.36                                   # "sparks": the body's floor on the bed face (plate _10: 0.2 first layer + 2 x 0.08)
+TYPES = ("through", "sparks")
+OUT_STL = HERE / "to-print" / "logo-stencil-schleiferbock-{name}-{type}.stl"     # one per object on the plate
 OUT_TXT = sm.OUT_ROOT / "logo-stencils-pebble-schleiferbock.txt"
 OUT_PNG = LOGO_DIR / "stencil-pebble-preview.png"
 REF_STEP = sm.OUT_ROOT / "logo-stencils-pebble.step"
@@ -201,11 +205,16 @@ def bed_outline():
         .offset(BED_R, m3.JoinType.Round, 2.0, 256).translate((0, BED_DY))
 
 
-def stencil(lg):
+def stencil(lg, floor=None):
+    """floor None: the whole logo cut through; else only the sparks, the body a pocket from the top down to floor."""
     st = sm.stencil_block(Plane.XY, PW, PH, T)
-    holes = [Polygon(*[tuple(v) for v in P], align=None) for P in polys(lg.ap.simplify(0.001))]
+    poly = lambda c: [Polygon(*[tuple(v) for v in P], align=None) for P in polys(c.simplify(0.001))]
+    holes = poly(lg.ap if floor is None else union(lg.sparks))
     for h in holes:
         st = st - Pos(0, 0, -1) * extrude(h, T + 2)
+    if floor is not None:
+        for h in poly(lg.body):
+            st = st - Pos(0, 0, floor) * extrude(h, T + 1)
     return st, len(holes)
 
 
@@ -226,7 +235,7 @@ def main():
     bed = bed_outline()
     ref = sorted(import_step(str(REF_STEP)).solids(), key=lambda s_: -s_.bounding_box().center().Y)
     v_want = T * (BED_W + K * T) * BED_H - T * (4 - math.pi) * BED_R ** 2
-    out, R, data = [], [], []
+    out, R, data, stl = [], [], [], {}
     for i, lg in enumerate(logos):
         st, n_holes = stencil(lg)
         st = Pos(0, -i * (PH + 4), 0) * st              # the E+H set's column
@@ -247,27 +256,46 @@ def main():
         D = dict(lg=lg, st=st, bb=bb, vp=vp, vr=vr, dbb=dbb, gaps=gaps, comps=len(comps),
                  spark_w=[inscribed_w(x) for x in lg.sparks],
                  thin={(k, w): lg.thin(reg, w, k) for k, reg in (("aperture", lg.ap), ("bridge", mat)) for w in (MIN_W, W_04)})
+        # "sparks": the same plate, the sparks through (bed face: their holes only), the body a pocket FLOOR above the bed
+        sp, n_sp = stencil(lg, FLOOR)
+        sp = Pos(PW + 4, -i * (PH + 4), 0) * sp
+        check(sp.is_valid and len(sp.solids()) == 1 and n_sp == SPARKS, f"{lg.name} sparks: {len(sp.solids())} solids, {n_sp} holes")
+        check(len(bed_face(sp, 0.0).inner_wires()) == SPARKS and len(bed_face(sp, T).inner_wires()) == len(comps),
+              f"{lg.name} sparks: apertures on the bed / top face")
+        fl = bed_face(sp, FLOOR)
+        a_body = lg.body.area()
+        check(abs(fl.area - a_body) < 1e-3 * a_body and not fl.inner_wires(), f"{lg.name} sparks: floor {fl.area:.4f} vs body {a_body:.4f}")
+        check(abs(sp.volume - st.volume - FLOOR * fl.area) < 1e-4, f"{lg.name} sparks: volume {sp.volume:.4f} vs {st.volume + FLOOR * fl.area:.4f}")
+        D["sp"], D["floor_a"] = sp, fl.area
         data.append(D)
-        out.append(st)
+        out += [st, sp]
+        stl[(lg.name, "through")], stl[(lg.name, "sparks")] = st, sp
     c = Compound(out)
     stp = sm.write_step(c, OUT_STEP)
-    sm.write_stl(c, OUT_STL)
-    ms = sm.check_stl(c, OUT_STL, bodies=len(out))
+    ms = {}
+    for (nm, ty), s_ in stl.items():
+        f = pathlib.Path(str(OUT_STL).format(name=nm, type=ty))
+        sm.write_stl(s_, f)
+        ms[f.name] = sm.check_stl(s_, f, bodies=1)
     lines = [f"LOGO STENCILS Schleiferbock, pebble C: the E+H stencil's plate (logo-stencils-pebble.*: pocket {PW:.2f} x {PH:.2f} "
              f"R{sm.STENCIL_R:g}, bed face {BED_W:.2f} x {BED_H:.2f} R{BED_R:g}, sides {sm.LOGO_FLARE_DEG:g} deg, {T:.4f} thick, "
              f"bed face = the face against the skin, logo mirrored); first row wheel, second gear (as the E+H set: 1st, 2nd row)",
              f"designed for a 0.2 nozzle: apertures and bridges >= {MIN_W} except sharp tips (under-cut: trim by hand); body as drawn but the ear bar (a {EAR_W} stroke along it, its root was ~0.1); "
-             f"sparks redrawn as wedges {SPARK_W_IN} -> {SPARK_W_OUT} wide on the SVG sparks' axes, outer ends at the SVG tips"]
+             f"sparks redrawn as wedges {SPARK_W_IN} -> {SPARK_W_OUT} wide on the SVG sparks' axes, outer ends at the SVG tips",
+             f"two types (columns): through (the logo cut through); sparks (only the sparks through, the body a pocket from the top "
+             f"face, the LED side, to a {FLOOR:g} floor on the bed face: no bridges, the body glows dimmer)"]
     for D in data:
         lg = D["lg"]
         lines.append(f"{lg.name}: logo {lg.size[0]:.2f} x {lg.size[1]:.2f} ({lg.s * 1000:.2f} um/unit), {D['comps']} apertures, one "
                      f"solid; plate bbox = E+H's within {D['dbb']:.1e}, filled volume {D['vp']:.4f} (E+H {D['vr']:.4f}); sparks' inner "
                      f"ends {lg.spark_d:.2f} out along their axes, widest {', '.join(f'{w:.2f}' for w in D['spark_w'])}; gaps " +
-                     ", ".join(f"{k} {v:.3f}" for k, v in D["gaps"].items()))
+                     ", ".join(f"{k} {v:.3f}" for k, v in D["gaps"].items()) +
+                     f"; sparks type: floor {FLOOR:g} x {D['floor_a']:.2f} mm2 (= the body), volume {D['sp'].volume:.4f}")
         for (k, w), th in D["thin"].items():
             lines.append(f"  {k}s narrower than {w:g} ({'0.2' if w == MIN_W else '0.4'} nozzle): " + ("none" if not th else "; ".join(
                 f"{nm} (x{n}, {a:.3f} mm2, {L:.2f} long, up to {wi:.2f} wide)" for nm, (n, a, L, wi) in sorted(th.items(), key=lambda t: -t[1][1]))))
-    lines += sm.file_lines({"logo-stencils-pebble-schleiferbock": (stp, ms)})
+    lines += sm.file_lines({"logo-stencils-pebble-schleiferbock": (stp, None)})
+    lines += [f"  {n:<52} STL closed, {m['tris']} triangles, volume {m['err'] * 100:+.3f} %, {m['kb']:.0f} kB" for n, m in ms.items()]
     OUT_TXT.write_text("\n".join(lines) + "\n")
     print("\n".join(lines), flush=True)
     preview(data, bed)
@@ -278,8 +306,9 @@ def preview(data, bed):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import cv2
-    fig, axs = plt.subplots(2, 3, figsize=(18, 8.6))
+    fig, axs = plt.subplots(2, 4, figsize=(24, 8.6))
     px = 0.01
+    DIM = 0.35                                 # the body's glow through FLOOR, relative: illustrative only
     for row, D in enumerate(data):
         lg, st = D["lg"], D["st"]
 
@@ -315,6 +344,12 @@ def preview(data, bed):
             q = np.c_[(-P[:, 0] + 10) / px, (6 - P[:, 1]) / px].round().astype(np.int32)
             cv2.fillPoly(img, [q], 1.0)
         glow = cv2.GaussianBlur(img, (0, 0), 0.3 / px)
+        img_sp = img * DIM
+        for P in polys(union(lg.sparks)):
+            cv2.fillPoly(img_sp, [np.c_[(-P[:, 0] + 10) / px, (6 - P[:, 1]) / px].round().astype(np.int32)], 1.0)
+        ax = axs[row, 3]
+        ax.imshow(cv2.GaussianBlur(img_sp, (0, 0), 0.3 / px), cmap="magma", extent=(-10, 10, -6, 6), vmin=0, vmax=0.7)
+        ax.set_title(f"{lg.name}, sparks type: from outside; body through the {FLOOR:g} floor, dimmed x{DIM} (a guess)", fontsize=9)
         ax = axs[row, 2]
         ax.imshow(glow, cmap="magma", extent=(-10, 10, -6, 6), vmin=0, vmax=0.7)
         for P in polys(union([cs([lg.tr(r) for r in p]) for p in lg.paths])):   # the SVG as drawn, for comparison
