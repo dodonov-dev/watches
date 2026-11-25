@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """Views of the roly-poly print set (out-rolypoly/*.stl), coloured like the clay views where it helps comparing.
 
-  logo-compare.png      body from the front and three-quarter right, the logo's footprint painted on: old and new position
+  tilt-compare.png      true side silhouettes for TILT 6 / 8 / 10 (surface level, out-rolypoly/surface-tilt*.json; each run with
+                        ROLY_TILT=<t> rolypoly.py --surface): each alone (face plane and rods marked) and laid over each other
   keel-compare.png      side view of the whole clock, the study's keel and the chosen one at the same scale, and their
                         outlines (section x 0) laid over each other
   clay-ortho.png        body + rocking cup + rods: front, front mid-rock (15 deg), left side (the clay's cameras)
   clay-hero.png         the same in perspective: front-left, mid-rock, back-right
-  stable-ortho.png      with the flat cup: front, tilted 15 deg on its foot edge, left side
-  parts-views.png       body, rocking cup, flat cup, arc gauge, feature edges drawn
+  parts-views.png       body, rocking cup, arc gauge, feature edges drawn
   print-cup.png         rocking cup as printed: standing on its back (build direction up), from the side and from above
   body-views.png        body: front, left, back, bottom (seam, bosses, inner land, slots, cable notch)
-  face-views.png        round 7's front: front (raking light from the left), three-quarter left (raking light), the left slot
-                        cut along x (front, land, rods standing proud, glass, board, battery), the seam's front close-up
+  face-views.png        round 8's front: front (raking light from the left), three-quarter left (raking light), the side
+                        (raking light from above: the lean, the seam's front)
+  lips-views.png        the slots' lips close up: the left slot's top end in raking light, the section across both slots
+                        (board frame, the rods standing proud), the section along the centre line at the seam (no shelf)
   section-views.png     cuts: y 3.5 seen from the front (battery, trim spots, cast, segments); x = the face's centre seen from +x
                         (front, board, battery, cast); x = cable close-up seen from -x (USB head, cable hole, seam, cast)
-  ballast-views.png     cups from above: rocking cup with the cast (brown) and the trim layer as planned (left-out
-                        segments red), the flat cup with its segments, a cut through the rocking cup
+  ballast-views.png     the rocking cup from above with the cast (brown) and the trim layer as planned (left-out segments
+                        red), a cut through it
   detail-joint.png      seam faces: body from below, rocking cup from above
   detail-logo.png       the logo's stencil pocket: outside (raking light), inside, inside with the stencil, a section
 
@@ -100,7 +102,6 @@ Z = (0, 0, 1)
 FRONT, LEFT, BACK = ((0, -1, 0), Z, True, None), ((-1, 0, 0), Z, True, None), ((0, 1, 0), Z, True, None)
 HERO, HERO_BR = ((-0.55, -1.0, 0.34), Z, False, None), ((0.9, 1.0, 0.34), Z, False, None)
 ROCK = ["body", "cup-rock", "rod-l", "rod-r"]
-FLAT = ["body", "cup-flat", "rod-l", "rod-r"]
 
 def logo_compare():
     """Body from the front and three-quarter right, the letters' footprint painted on: the old position and the new one."""
@@ -159,12 +160,53 @@ def keel_compare():
     print(OUT / "keel-compare.png")
 
 
+def tilt_compare():
+    """Side silhouettes per tilt (surface level): front / back outline per height, the face plane over the slots, the rods'
+    crowns 0.75 in front of it; then all laid over each other."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    runs = sorted((json.loads(p.read_text()) for p in OUT.glob("surface-tilt*.json")), key=lambda d: d["tilt"])
+    if not runs:
+        return
+    cols = {6.0: "tab:green", 8.0: "tab:blue", 10.0: "tab:red"}
+    fig, axs = plt.subplots(1, len(runs) + 1, figsize=(4.2 * (len(runs) + 1), 7.2), sharey=True)
+    for ax, d in zip(axs, runs):
+        s_ = d["sil"]
+        z, f, b = np.array(s_["z"]), np.array(s_["front"]), np.array(s_["back"])
+        ax.fill_betweenx(z, f, b, color=np.array(IVORY) / 255, ec="0.35", lw=1.0)
+        ax.axhline(F["seam"], color="0.55", lw=0.8, ls=":")
+        fz, fy = np.array(d["face"]["z"]), np.array(d["face"]["y"])
+        ax.plot(fy, fz, color=cols.get(d["tilt"], "k"), lw=3, alpha=0.6)
+        t = np.radians(d["tilt"])
+        ax.plot(fy - 0.75 * np.cos(t), fz + 0.75 * np.sin(t), color=np.array(BLUE) / 255, lw=2)
+        ax.set_title(f"tilt {d['tilt']:g} deg (body lean {d['shear']:g})", fontsize=10)
+        ax.set_aspect("equal")
+        ax.set_xlim(-30, 36)
+        ax.set_xlabel("y (front left, back right), mm")
+        ax.grid(alpha=0.25)
+    ax = axs[-1]
+    for d in runs:
+        s_ = d["sil"]
+        ax.plot(s_["front"], s_["z"], color=cols.get(d["tilt"], "k"), lw=1.5, label=f"tilt {d['tilt']:g}")
+        ax.plot(s_["back"], s_["z"], color=cols.get(d["tilt"], "k"), lw=1.5)
+    ax.set_aspect("equal")
+    ax.set_xlim(-30, 36)
+    ax.legend(fontsize=9)
+    ax.set_title("laid over each other", fontsize=10)
+    ax.grid(alpha=0.25)
+    axs[0].set_ylabel("z above the desk, mm")
+    fig.suptitle("side silhouettes, seen from the left (true scale); blue: rod crowns, thick: the face plane over the slots; dotted: "
+                 "the seam", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(str(OUT / "tilt-compare.png"), dpi=110)
+    print(OUT / "tilt-compare.png")
+
+
+tilt_compare()
 keel_compare()
-if (OUT / "dummy-logo-new.stl").exists():
-    logo_compare()
 shot("clay-ortho.png", [scene(ROCK), scene(ROCK, 15), scene(ROCK)], [FRONT, FRONT, LEFT])
 shot("clay-hero.png", [scene(ROCK), scene(ROCK, 15), scene(ROCK)], [HERO, HERO, HERO_BR], size=(820, 1100))
-shot("stable-ortho.png", [scene(FLAT), scene(FLAT, 15), scene(FLAT)], [FRONT, FRONT, LEFT])
 
 
 def single(n, d, up=Z, c=None, scale=None):
@@ -197,8 +239,8 @@ def multi(fname, items, size=(600, 700), edges=True):
 
 
 ISO = (-0.8, -1.0, 0.7)
-multi("parts-views.png", [single("body", ISO), single("cup-rock", (-0.8, -1.0, -0.7)), single("cup-flat", (-0.8, -1.0, 0.7)),
-                          single("arc-gauge", (-0.8, -1.0, 0.7))], size=(480, 600))
+multi("parts-views.png", [single("body", ISO), single("cup-rock", (-0.8, -1.0, -0.7)), single("arc-gauge", (-0.8, -1.0, 0.7))],
+      size=(480, 600))
 cup = rd("cup-rock")
 cup_p = cup.copy().rotate_x(-90, point=(0, 0, 0))         # standing on its back: +y down, so -y is the build direction (up)
 cup_p.translate((0, 0, -cup_p.bounds[4]), inplace=True)
@@ -230,8 +272,6 @@ multi("section-views.png", [(clipped(INSIDE, (0, 1, 0), (0, 3.5, 0)), ((0, -1, 0
       size=(650, 900), edges=False)
 multi("ballast-views.png", [([(n, rd(n)) for n in ("cup-rock", "cast", "segments-rock", "segments-rock-left-out") if rd(n) is not None],
                              ((0, 0, 1), (0, 1, 0), True, (0, 2, 10)), 34),
-                            ([(n, rd(n)) for n in ("cup-flat", "segments-flat") if rd(n) is not None],
-                             ((0, 0, 1), (0, 1, 0), True, (0, 2, 17)), 34),
                             ([(n, rd(n).clip(normal=(0, 1, 0), origin=(0, 0, 0), invert=False)) for n in ("cup-rock", "cast", "segments-rock")
                               if rd(n) is not None], ((0, -1, 0.0), Z, True, (0, 2, 11)), 24)], size=(620, 560), edges=False)
 multi("detail-joint.png", [single("body", (0, 0, -1), up=(0, -1, 0), c=(0, 2, F["seam"]), scale=30),
@@ -286,55 +326,27 @@ detail_logo()
 
 
 def face_views():
-    """Round 7's front for judging the face: raking light from the left shows the flat zone and its blend."""
+    """Round 8's front for judging the face: raking light from the left (front, three-quarter), the side with light from
+    above-front (the lean, the head, the seam's front), the seam close up from the front-left below."""
     ms = scene(ROCK)
-    pl = pv.Plotter(off_screen=True, window_size=(640 * 4, 900), shape=(1, 4), lighting="none")
+    pl = pv.Plotter(off_screen=True, window_size=(640 * 4, 900), shape=(1, 4))
     zc = F["face_c"][2]
-    cams = [((0, -1, 0), (0, 0, zc), 72, "front, light from the left"), ((-0.6, -1.0, 0.25), (0, 0, zc), 72, "three-quarter left")]
-    for i, (d, c, sc, label) in enumerate(cams):
+    sz = F["seam"]
+    cams = [((0, -1, 0), (0, 0, zc), 72, "front", (-400, -120, zc + 60)),
+            ((-0.6, -1.0, 0.25), (0, 0, zc), 72, "three-quarter left", (-400, -120, zc + 60)),
+            ((-1, 0, 0), (0, 4, zc), 72, f"left side: the face leans {F['tilt']:g} deg", (-150, -400, 300)),
+            ((-1.0, -0.35, 0.1), (-5, F["seam_front_y"], sz + 6), 24, "the seam's front from the left: no shelf", (-300, -300, 200))]
+    for i, (d, c, sc, label, lp) in enumerate(cams):
         pl.subplot(0, i)
         pl.set_background("#d8d5cf", top="#f3f1ed")
-        pl.add_light(pv.Light(position=(-400, -120, zc + 60), focal_point=(0, 0, zc), intensity=0.9))
-        pl.add_light(pv.Light(position=(200, -400, 300), focal_point=(0, 0, zc), intensity=0.25))
         for n, m in ms:
-            pl.add_mesh(m, color=color(n), smooth_shading=True, split_sharp_edges=True, specular=0.15, ambient=0.15, diffuse=0.9)
+            pl.add_mesh(m, color=color(n), smooth_shading=True, split_sharp_edges=True, specular=0.1, ambient=0.3, diffuse=0.8)
         pl.add_text(label, font_size=11)
         n_ = np.linalg.norm(d)
         pl.camera_position = [tuple(np.array(c) + np.array(d) / n_ * 500), c, (0, 0, 1)]
         pl.camera.parallel_projection = True
         pl.camera.parallel_scale = sc
         pl.reset_camera_clipping_range()
-    # the left slot cut along x: front, land, rods, glass, board, battery
-    x0 = F["slot_top"][0]
-    names = ["body", "rod-l", "glass", "pcb", "battery", "cup-rock", "usb-head"]
-    pl.subplot(0, 2)
-    pl.set_background("white")
-    pl.enable_lightkit()
-    for n in names:
-        m = rd(n)
-        if m is None:
-            continue
-        cl = m.clip(normal=(-1, 0, 0), origin=(x0, 0, 0), invert=False)
-        if cl.n_points:
-            pl.add_mesh(cl, color=color(n), smooth_shading=False, specular=0.1)
-    pl.add_text(f"cut x {x0:.1f} (left slot), seen from +x", font_size=11)
-    c = (x0, F["face_y"] + 10, F["slot_top"][2] - 6)
-    pl.camera_position = [(c[0] + 400, c[1], c[2]), c, (0, 0, 1)]
-    pl.camera.parallel_projection = True
-    pl.camera.parallel_scale = 20
-    pl.reset_camera_clipping_range()
-    # the seam's front: the cups' flare meeting the body
-    pl.subplot(0, 3)
-    pl.set_background("#d8d5cf", top="#f3f1ed")
-    pl.enable_lightkit()
-    for n, m in ms:
-        pl.add_mesh(m, color=color(n), smooth_shading=True, specular=0.1)
-    pl.add_text("the seam's front (cup: round 6's flare)", font_size=11)
-    c = (F["face_c"][0], F["face_y"], F["seam"])
-    pl.camera_position = [(c[0] - 250, c[1] - 400, c[2] + 60), c, (0, 0, 1)]
-    pl.camera.parallel_projection = True
-    pl.camera.parallel_scale = 22
-    pl.reset_camera_clipping_range()
     pl.enable_anti_aliasing("ssaa")
     pl.screenshot(str(OUT / "face-views.png"))
     pl.close()
@@ -342,3 +354,77 @@ def face_views():
 
 
 face_views()
+
+
+def lips_views():
+    """The slots' lips: the left slot's top end close up (raking light), the section across both slots at the face's centre
+    (in the board frame: the rods standing proud), the centre line's section through the seam (body and cup: no shelf)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    st = np.array(F["slot_top"])
+    fn = np.array(F["face_n"])
+    t = np.radians(F["tilt"])
+    lean = np.array([0.0, np.sin(t), np.cos(t)])
+    ms = scene(ROCK)
+    pl = pv.Plotter(off_screen=True, window_size=(900, 900))
+    pl.set_background("#d8d5cf", top="#f3f1ed")
+    c = st - 6 * lean + np.array([5.0, 0, 0])
+    for n, m in ms:
+        pl.add_mesh(m, color=color(n), smooth_shading=True, split_sharp_edges=True, specular=0.1, ambient=0.3, diffuse=0.8)
+    d = -fn * 1.0 + np.array([-0.45, 0, 0]) + lean * 0.35
+    pl.camera_position = [tuple(c - d / np.linalg.norm(d) * 160), tuple(c), tuple(lean)]
+    pl.camera.view_angle = 14
+    pl.reset_camera_clipping_range()
+    pl.enable_anti_aliasing("ssaa")
+    img = pl.screenshot(None, return_img=True)
+    pl.close()
+    fig, axs = plt.subplots(1, 3, figsize=(19, 6.6), gridspec_kw=dict(width_ratios=[1, 1.5, 0.9]))
+    axs[0].imshow(img)
+    axs[0].set_axis_off()
+    axs[0].set_title("the left slot's top end")
+    # across the slots: plane through the face's centre, normal = the lean
+    fc = np.array(F["face_c"])
+    ax = axs[1]
+    for n, col in (("body", "0.35"), ("rod-l", "tab:blue"), ("rod-r", "tab:blue"), ("glass", "0.2")):
+        m = rd(n)
+        if m is None:
+            continue
+        sl = m.slice(normal=tuple(lean), origin=tuple(fc))
+        P = sl.points
+        u = P[:, 0]
+        v = -(P - fc) @ fn                                 # depth behind the face plane
+        for i in range(sl.n_cells):
+            ids = sl.get_cell(i).point_ids
+            ax.plot(u[ids], v[ids], color=col, lw=1.2)
+    ax.axhline(0, color="tab:orange", lw=0.6, ls="--")
+    ax.set_xlim(F["zone_x"][0] - 4, F["zone_x"][1] + 4)
+    ax.set_ylim(6, -2)
+    ax.set_aspect("equal")
+    ax.set_xlabel("x, mm")
+    ax.set_ylabel("behind the face plane, mm")
+    ax.set_title("across the slots at mid-height (board frame): 0.6 land, round lips, 7 mm flat strip, rods proud")
+    ax.grid(alpha=0.25)
+    # the centre line through the seam
+    ax = axs[2]
+    for n, col in (("body", "0.25"), ("cup-rock", "tab:brown")):
+        m = rd(n)
+        sl = m.slice(normal="x", origin=(-5.0, 0, 0))
+        P = sl.points
+        for i in range(sl.n_cells):
+            ids = sl.get_cell(i).point_ids
+            ax.plot(P[ids, 1], P[ids, 2], color=col, lw=1.2)
+    ax.axhline(F["seam"], color="0.6", lw=0.6, ls=":")
+    ax.set_xlim(-26, -4)
+    ax.set_ylim(0, 60)
+    ax.set_aspect("equal")
+    ax.set_xlabel("y, mm (front left)")
+    ax.set_ylabel("z, mm")
+    ax.set_title("section x -5 (between the slots): body / cup")
+    ax.grid(alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(str(OUT / "lips-views.png"), dpi=100)
+    print(OUT / "lips-views.png")
+
+
+lips_views()

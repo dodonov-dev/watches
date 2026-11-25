@@ -1019,3 +1019,19 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - The stencil is up to ~3 mm thick at its centre: flare the letter holes towards the back (or paint only the front face) so the LEDs' oblique light reaches the outer strokes.
 - The stencil's curved front prints as 0.08 terraces against the smooth floor; try ironing / finer top layers if the letter edges halo.
 - overlap() against the whole body takes ~100 s per call; clipping the body to a local box first would speed the logo and trim checks.
+
+## 2026-11-23 roly-poly round 8 (tilted face, pebble-like front)
+- The tilted USB head's far end dips ~1.9 into the cast's level: solved with a printed cast plug (dimple). A shorter / flatter right-angle head, or the head turned to send its cable sideways, would need none.
+- Battery's way in is set by its top corners against the narrowing back once tilted: the body above the seam leans fully with the face to give 0.5 a side. A 2000 mAh / shorter cell would free the lean as a pure design choice.
+- The belly below the face is an S-curve (convex keel, concave waist, plane): a slightly smaller belly (keel corner at z 5-15) would calm it further, at some cast mass.
+- `misc` (10 g) still at the study's (0, 8, 35): it does not tilt with the board.
+- The front_check's column sampling evaluates the full section per z (slow, ~1 min): sample only the front half near the column.
+- The logo moved to x 27, z 38 for its pocket's flanks and the LEDs' room; the surface turns less there: a plain flat stencil could do.
+- slot_land_measure / front_thickness / land checks take ~15 min on the lipped body (many facet faces): section a local box of the front once and reuse it.
+- The build stalled ~21 h once in make_body (machine asleep or heavy swap?); a per-stage timer in the log would show it.
+- Trim spots are fixed x positions, so plumb comes in 5 g steps (round 8: the third moved 20 -> 18 for the nominal case, the bad case now misses by 0.02 mm): let the plan slide the last spot along the wall.
+- Round 8 lets the body above the seam lean back (smoothstep to z 70) mainly for the battery's way in; at 10 deg the head needs the full lean or its WALL offset folds at the crown.
+- Look: the head's round-over starts right above the slots (z 103): a soft horizontal band shows there in the clay views, and the crown is narrow in the side view. A lower slot top or a longer head would let it round over sooner and fuller.
+- A cached-report mode (pickle the report's inputs) would let mass or wording changes skip the 30-min build.
+- Polish (round 8): the flat's left edge still reads faintly where the left shoulder narrows (curve only ~10 mm wide there); a slightly wider left shoulder (A2L) would soften it.
+- Roly-poly colourway "Dead Poly" (Totes Stehaufmännchen / Мёртвая неваляшка): black body, ivory cup (split at the seam, so it costs nothing), dark liquid with sparkling fizz, vertical remaining-time mode. In black, the logo does not glow through the 1.0 skin. Options: (a) through-cut + light inlay (REJECTED by the user: the fit line around the logo is a visible scar that is not artistic); (d) one colour change by height in the body (ivory below, black above; a single AMS swap, a crisp level line; the logo sits in the ivory band and glows through the skin as now; the body-cup seam then lies inside the ivory, less visible; needs the logo below the line, e.g. under the slots); (b) AMS logo in natural/translucent PLA (crisp, flush, but ~1 swap per layer over ~11 mm: est. ~140 swaps, ~3 h, ~80 g purge; acceptable to the user: test a coupon once the translucent filament arrives, incl. a black outer skin over a white core lit by a bright LED); (c) seam as a wave rising in front so the logo sits in the ivory cup (a design change: magnets, board way in, seam fit).

@@ -1,89 +1,78 @@
-ROLY-POLY: BUILD SHEET, round 7: no door, flush front (files in cad/desk/out-rolypoly/; numbers in report.txt). The two cups
-are round 6's, already printed: reuse them (cup-rock.stl / cup-flat.stl are byte-identical to the printed files).
-
-MASS MODEL FAILS with the assumed masses (see report.txt): bad: sideways rest positions [-0.25, 0.25, 101.5] (upright only, expected); bad case: centre of mass 6.17 under the rocking centre (needs 8.0)
-Weigh the board and the battery before the cast.
+ROLY-POLY: BUILD SHEET, round 8: face tilted back 8 deg, pebble-like front with lipped slots, a new rocking cup
+(files in cad/desk/out-rolypoly/; numbers in report.txt). The round 6 / 7 cups do NOT fit this body (its front at the seam is
+new): print the new cup-rock. The flat cup is dropped.
 
 PRINT  (Bambu X1E, Bambu Studio, 0.4 nozzle)
-  body.stl        PLA Matte white, 0.08 mm (0.08 HQ, as round 6), 6 walls. Seam ring on the plate, crown up. Supports: tree,
-                  on build plate only, for the crown's inside (784 mm2 steeper than 45 deg) and the cable notch's arch;
-                  NO supports in the slots (block them with a support blocker if the slicer adds any): each slot's top end
-                  is a bridge 8.1 wide at the inner land, 12.9 at the face (60 mm2 for both), as on the
-                  smooth shells and the pebble. The outside has no overhang steeper than 45 deg (0.0 mm2): the
-                  flat zone's top blend leans out at most ~40 deg. The logo pocket needs none (its top flank leans 39 deg from vertical, the rest
-                  steeper; block supports there too).
-                  The inner land's lower edge rises 50 deg. No brim on the seam ring. Ironing on top
-                  surfaces: optional.
-                  Slicer speeds (outer wall, overhang wall, the layer where each slot's top closes): from the closure-ring
-                  test (pending): a trench appeared above the right tube slot where it closes, suspected to be the 10 -> 60
-                  mm/s outer-wall speed jump at that layer.
-  cup-rock.stl    already printed (round 6). Reprint only if needed: as round 6 (on its back, support cradle + brim).
-  cup-flat.stl    already printed (round 6).
-  arc-gauge.stl   any PLA, flat side down (not needed per the round 6 print).
-  logo-stencil.stl  3 stencils (webs 0.72, 1.00, 1.40: the first as designed, wider webs = thinner
-                  letters): any PLA, 0.08 mm, as laid out: flat back on the plate (the curved face up), no supports. Paint the
-                  one you use black (at least its curved front face and its edges).
+  body.stl        PLA Matte white, 0.08 mm (0.08 HQ), 6 walls. Seam ring on the plate, crown up. Supports: tree, on build
+                  plate only (as round 7: they improved the slots' top ends): for the slots' top ends (54 mm2; each a
+                  bridge 8.1 wide at the inner land, 13.5 at the face, its end face 8 deg off straight down),
+                  the crown's inside (452 mm2) and the cable notch's arch. The outside has no overhang steeper than
+                  45 deg (0.0 mm2; it leans out at most 31 deg). Block supports in the logo pocket
+                  (its top flank leans 40 deg from vertical). The inner land's lower edge rises 50 deg.
+                  No brim on the seam ring. enable_overhang_speed 0 as round 7's plate (closure-ring test: B best).
+  cup-rock.stl    PLA Matte white, 0.08. On its back as round 7, tipped 35 deg toward its rim (to-print/mkplate8.py,
+                  CUP_TILT): it stands on the rim's back edge; round 7's ring patch moves from the front to the
+                  lower front by the keel; tree supports (mostly inside the bowl) + 8 mm brim on the back edge.
+                  (Lying on its front would put the support cradle on the front.) Sand the rolling band lightly if a seam shows.
+  arc-gauge.stl   any PLA, flat side down (optional).
+  cast-plug.stl   any PLA, handle up (it stands on its sloped bottom: a few support pins, or print it handle down).
+  logo-stencil.stl  3 stencils (webs 0.72, 1.00, 1.40), as round 7b: flat back on the plate,
+                  no supports; paint the one you use black.
 
 FINISH
-  Slots: a rod (8.0) should drop in with a little play (8.1 slot, 0.6 land at the inner face); if tight, a light pass
-  with a flat needle file on the land only. Check the inner land behind the glass is clean (no blobs at the slots' ends):
-  the glass must lie flat on it. Break the seam ring's outer edge lightly with 400 so body and cups meet without a lip.
-  The front at the seam: the cups carry round 6's alcove flare at their front rim; the body continues it into the flat
-  zone (the slope changes at the parting line, by design).
+  Slots: a rod (8.0) should drop in with a little play (8.1 slot, 0.6 land at the inner face, then the round lips); if
+  tight, a light pass with a flat needle file on the land only, not on the lips. Check the inner land behind the glass is
+  clean (no blobs at the slots' ends). Break the seam ring's outer edge lightly with 400 so body and cup meet without a lip.
 
 PARTS
-  As round 6 minus the door's parts (no door magnets, no suction cup): 12 magnets D3.0 x 2.0 and 2 dowels (in
-  the printed cups already), the right-angle USB-C extension, the logo stencil (printed), two warm-white 0603 LEDs + an SH1.0 4-pin pigtail, Kapton,
-  double-sided foam tape (1 mm) for the battery, gasket tape (0.5 thick) for the glass's border, a soft foam pad (~20 x 20,
-  thicker than the gap behind the battery: see step 6), OCA for the rods, 2 rods 8 x 4 half-round cut to 66.65, the 304
-  balls and 5-minute epoxy (cast: unchanged from round 6), stick-on weights.
+  As round 7: 12 magnets D3.0 x 2.0 and 2 dowels (new holes: the cup is new), the right-angle USB-C extension,
+  the logo stencil, two warm-white 0603 LEDs + an SH1.0 4-pin pigtail, Kapton, double-sided foam tape (1 mm) for the battery,
+  gasket tape (0.5) for the glass's border, a soft foam pad, OCA for the rods, 2 rods 8 x 4 half-round cut to 66.65,
+  the 304 balls and 5-minute epoxy, stick-on weights.
 
-ASSEMBLY (in this order; everything goes in from below with the cup off)
-  1. Body: magnets and dowels as round 6 (flush in glue; the cups' side is done if they are the printed ones).
-  2. Logo, then LEDs: from inside (seam opening), push the stencil, painted black, curved face first, straight into the
-     pocket behind the logo along its axis (its curved face seats only one way round; check the letters read right from outside
-     against a light), a drop of glue on its back edge; it stands up to 1.7 mm proud of the inner wall. Then the
-     LEDs in the checked room 4.5-8.5 mm behind the logo (dummy-led-room.stl, 0.41 behind
-     the stencil's back), clear hot glue on their leads. To swap the logo later: cup off, battery and board out, stencil out.
-  3. Board: rods on the glass (OCA on their flat, centred on the tubes), gasket tape on the glass's border (top and bottom
-     strips at least; all round if it fits outside the active area). Plug the LED pigtail into the I2C header and switch
-     the board ON first (the slide is not reachable afterwards; no hole for it). Hold the body upside down or on its side.
-     Bring the board in through the seam opening, glass to the front, and push it straight up keeping it 4.2 mm behind
-     its seat (the rods' crowns 0.5 behind the inner land; checked >= 0.3 on the way), up to its height (the PCB's
-     bottom 4 mm above the seam plane), then forward: the rods drop into their slots (they are the guide: 0.05 a side),
-     the glass presses onto the land. Press the border tape home through the slots' ends.
-  4. Battery, from below after the board: Kapton on the board's back, double-sided foam tape on the battery's front (liner on).
-     Plug its lead into the board first (reach in from below). Push it up 0.5 mm behind its seat, centred at x -0.2,
-     until its bottom is 1.5 mm above the seam plane, then 0.9 mm to the left and on up until its bottom is
-     5 mm above the seam plane (1 over where the USB head will be); peel the liner (or pull the tab) and
-     press it forward onto the board's back. Checked: >= 0.51 to the body on the way.
-  5. USB: push the extension's right-angle plug straight up into the board's port from below (checked: 2.50 to the
-     body, 1.00 to the battery), cable towards the back, into the round notch in the back rim (x -5).
-  6. Hold-down: the board hangs on the gasket tape and is located by the rods in their slots (0.05 a side, 0.1 at each end);
-     a soft foam pad between the battery's back and the back wall, left of x +5 (clear of the trim spots), keeps the stack
-     on the land if the tape creeps or the clock falls on its back. No printed retainer: it would sit in the board's way in,
-     and the slots already locate the board in x and z.
-  7. Cast (cup-rock off), as round 6: three batches of 5-minute epoxy to 12.4 / 8.4 / 5.0 mm below the
-     seam face; the cup gains 109 g of balls in all (101 g is still fine). 24 h cure.
-  8. Trim layer: 4 segments fit on the cast (dummy-segments-rock.stl). The plan (nominal masses): stick
-     1 segment(s) standing on the back inner wall at x +28 (right of centre,
-     turned to the wall; bottoms at z 25.5, 28.5, 48.0, i.e. 3.5, 6.5, 26.0 mm above
-     the seam plane; dummy-trim-spots.stl; on the curved wall a segment rests on its two vertical edges: fill the gap behind
-     its middle, up to 1.9 mm, with foam tape or putty), leave out 2 of the trim layer (x -19 y -3, x +8 y -3)
-     and slide the rest 93 % of their rows' slack to the right. Do not peel the adhesive yet.
+ASSEMBLY (in this order; everything goes in from below with the cup off; "along the lean" = parallel to the face, 8 deg
+back from vertical)
+  1. Body: magnets and dowels in the seam bosses (flush in glue); the cup's magnets likewise.
+  2. Logo, then LEDs: as round 7b (stencil in from inside along the pocket's axis, a drop of glue on its back edge; LEDs in
+     the room 4.5-8.5 mm behind the logo).
+  3. Board: rods on the glass (OCA, centred on the tubes), gasket tape on the glass's border. Plug the LED pigtail into the I2C
+     header and switch the board ON first. Bring the board in through the seam opening, glass to the front, and push it up
+     ALONG THE LEAN keeping it 4.2 mm behind its seat (the rods' crowns 0.5 behind the inner land; checked >=
+     0.3 on the way), up to its height, then forward: the rods drop into their slots (0.05 a side), the glass
+     presses onto the land.
+  4. Battery, from below after the board, taped to its back as round 7: Kapton on the board's back, foam tape on the battery
+     (liner on), its lead plugged first; push it up along the lean 0.5 mm behind its seat, centred at x -0.5 (the
+     centre of the seam opening), until it is 1.2 mm in, then 0.5 mm to the
+     left and on up to its height (its bottom 1 mm over where the USB head will be); peel
+     the liner and press it onto the board's back. Checked: >= 0.36 to the body
+     on the way; its top corners are the tight spot.
+  5. USB: push the extension's right-angle plug up into the board's port from below, along the lean (checked:
+     2.50 to the body, 1.00 to the battery), cable towards the back, bent 8 deg at the head
+     to run level into the round notch in the back rim (x -5).
+  6. Hold-down: as round 7 (gasket tape, rods in their slots, a foam pad between the battery's back and the back wall left of
+     x +5).
+  7. Cast (cup off), as round 7: three batches of 5-minute epoxy to 12.5 / 8.5 / 5.0 mm
+     below the seam face; 108 g of balls in all (100 g is still fine). NEW: before the last batch sets, press
+     the cast plug (cast-plug.stl, wrapped in packing tape or greased) into it under where the USB head's far end will be: its
+     flat top flush with the cast's top, its long side along y at x -5 (dummy-usb-head.stl shows the place); pull it out
+     after the cure. It leaves the dimple the tilted head needs (0.5 clear). 24 h cure.
+  8. Trim layer: 3 segments fit on the cast (dummy-segments-rock.stl). The plan (nominal masses): stick
+     3 segment(s) standing on the back inner wall at x +28, +13, +18 (bottoms at z
+     25.5, 28.5, 48.0, i.e. 3.5, 6.5, 26.0 mm above the seam
+     plane; fill the gap behind each one's middle, up to 2.0 mm, with foam tape), leave out
+     0 of the trim layer and slide the rest
+     73 % of their rows' slack to the right. Do not peel the adhesive yet.
   9. Cup on, straight up: the cable slides into the cup's notch, pins find the holes, magnets close the seam. Trim on the
-     table (below), then stick the segments down.
-  To service: cup off (straight down), unplug the USB head from below; battery and board come out the way they went in
-  (battery first: back 0.5, down; board: back 4.2, down).
+     table, then stick the segments down.
+  To service: cup off, unplug the USB head; battery and board come out the way they went in (along the lean).
 
 TRIM
-  Level table, phone level on the flat zone of the face, everything wired and closed. Coarse: a segment at the back-wall
-  spots (cup off, from below). Fine: slide a row of segments towards the high side: 10 mm of travel of one 5 g segment moves
-  the lean by about 1.1 deg. 0.5 mm of offset leans it 3.3 deg.
-
-STABLE VARIANT
-  cup-flat instead of cup-rock: 8 segments fit; no cast, no trim needed.
+  Level table, everything wired and closed. The face leans 8 deg back now: put the phone level on the back of the head or
+  on the table edge, not on the face. Coarse: a segment at the back-wall spots. Fine: slide a row of segments towards the high
+  side: 10 mm of one 5 g segment moves the lean by about 1.0 deg.
 
 CHECK ON THE PRINT
-  the face (flat zone, its blend, the seam's front), the slots' top ends (bridges) and the closure line, the rods' crowns
-  standing proud, the board's way in, rocking and falling forward (beyond 28 deg, calculated), the stencil's fit in its pocket and the logo glow.
+  the front (flat over the slots, no brow, no shelf, the seam's front), the lips and the slots' top ends, the rods' crowns
+  standing proud (3 front, 0.55..0.75), the board's and battery's ways in along the lean, the USB cable's bend at
+  the head, rocking and falling forward (beyond 33 deg) / backward (beyond 26 deg, calculated), the
+  stencil's fit and the logo glow.

@@ -5,7 +5,28 @@ plumb. No stand and no mechanism: a rounded, weighted underside. The liquid on t
 Order of work: the decisions are settled and the clay views accepted; **the CAD for a cheap FDM print is built
 (round 2, see "CAD state"); then the user's print test, then the final white body by SLA.**
 
-## Start here: round 7 printed, round 8 next (2026-11-23), worktree `../watches-rolypoly`, branch `rolypoly-print`
+## Start here: round 8 built, plate ready; wavy seam next (2026-11-25), worktree `../watches-rolypoly`, branch `rolypoly-print`
+Round 8 = face, tubes, board and battery tilted back 8 deg (`TILT`, pivot at the board's bottom back edge); the front is
+the body's own superellipse sections with a flat only as wide as the slots need (x -22.3..+12.3), fading into the head
+over 25 mm (polish pass: no band, no shoulder kink); pebble-A slot lips (0.6 land, quarter-ellipse 2.75 x 2.40, 7.00
+strip); body above the seam leans back to z 100; body and cup cut from one surface (seam 0.012); logo moved to x 27,
+z 38; new `cast-plug.stl` dimples the cast under the tilted USB head; cup-flat dropped. Checks: front 3.000 at the slot
+edges, outside overhang 0, min radius 4.78, battery way in 0.36. Masses weighed (board 34, battery 47, misc ~10; printed
+body 56 / cup 17 = the model); all rocking checks are report-only (nominal margin 8.72, fwd 33.2 / back 25.8).
+Views: `out-rolypoly/compare-r7-r8.png`, `band-before-after.png`, `tilt-compare.png`, `face-views.png`.
+- **Plate:** `to-print/_9_plate_roly_poly_r8.3mf` (builder `to-print/mkplate8.py`; sliced 7 h 18 min, 74 g): body as
+  round 7's settings; cup-rock on its back tipped 35 deg toward the rim (`CUP_TILT`): round 7's ring patch moves to the
+  lower front by the keel, supports mostly inside the bowl, brim on the rim's back edge (at 40 deg it hangs on its
+  supports). Fallback `_9_plate_roly_poly_r8_cup-as-r7.3mf` (cup as round 7). The 3MFs carry PLA Basic: switch to Matte.
+- **User rules (2026-11-24/25):** shape and printability first; few checks, few builds; mass sim report-only, ballast
+  by feel. Scars hidden (low, back) or artistic: the through-cut + inlay logo was rejected (its fit line).
+- **Next: wavy seam.** The cup's rim rises toward the front in a smooth S (cubic / tanh-like, user's sketch: low and
+  level at the back, rising to the front), so the logo can sit in the ivory cup in a black-over-ivory "Dead Poly"
+  colourway and glow through the skin as now. Variants first (side sections + clay), then CAD. Masses unaffected.
+- **Later:** AMS-translucent logo coupon (user ordering translucent filament; also black outer skin over a white core
+  with a bright LED).
+
+## Round 7 (2026-11-23)
 Round 7 = no door: board and battery in from below (cup off), battery taped to the board's back, no bulkhead, trim
 spots on the back inner wall; front = a vertical flat zone (y -16.40) over the slots, 3.0 thick at the slot edges (rods
 0.75 proud); cups byte-identical to round 6. Round 7b = logo as one rounded pocket (1.0 skin, curved floor) + a

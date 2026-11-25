@@ -1,4 +1,4 @@
-"""Fault injection for the round-7 checks: each fault must raise (FIRED), each baseline must pass (SILENT). The faulty part is
+"""Fault injection for the round-8 checks: each fault must raise (FIRED), each baseline must pass (SILENT). The faulty part is
 built separately; the checks keep the design values. Run from cad/desk after a build with ROLY_DUMP=<file>:
 ~/.venvs/cad/bin/python rolypoly_faults.py <file>"""
 import sys, pickle, types
@@ -7,8 +7,10 @@ import rolypoly as rp
 from build123d import Pos
 D = pickle.loads(open(sys.argv[1], 'rb').read())
 body, blank, cups, bat, bd, rods, cast, seg_sets, spots = (D[k] for k in ("body", "blank", "cups", "bat", "bd", "rods", "cast", "seg_sets", "spots"))
-S7 = types.SimpleNamespace(outer=D["outer7"])
+S8 = types.SimpleNamespace(outer=D["outer"])
 box = rp.box
+tw = rp.tw
+import numpy as np
 X, Z, YB = rp.HEAD_X, rp.CABLE_Z, rp.Y_BACK_OUT
 RES = []
 
@@ -32,7 +34,7 @@ def uc(**kw):
                          **{k: v for k, v in kw.items() if k in ("dz", "dx")})
 
 
-# ---- round 6's USB faults (unchanged but for the door) --------------------------------------------------------------
+# ---- round 6's USB faults (one cup now) -----------------------------------------------------------------------------
 run("USB: no fault", lambda: uc(), expect=False)
 run("USB: head + cable 2 mm down (cups / cast)", lambda: uc(dz=-2.0))
 run("USB: obstruction in the cable passage (body notch)", lambda: uc(body=body + box(X - 0.3, X + 0.3, YB - 1.5, YB - 1.0, Z + 2.55, Z + 2.75)))
@@ -49,34 +51,47 @@ def cable_up(dz=0.0, dx=0.0):
 rp.usb_solids = cable_up
 run("USB: cable 1.5 up (laid into the body's notch)", lambda: uc())
 rp.usb_solids = orig
-run("USB: cup-rock: a lip in its notch's open top (cup off)", lambda: uc(cups=dict(rock=cups["rock"] + box(X + 2.7, X + 2.8, YB - 2.0, YB - 1.0, 21.8, 22.0), flat=cups["flat"])))
+run("USB: cup-rock: a lip in its notch's open top (cup off)", lambda: uc(cups=dict(rock=cups["rock"] + box(X + 2.7, X + 2.8, YB - 2.0, YB - 1.0, 21.8, 22.0))))
 run("USB: a boss-like block 0.3 over the cable's inner run (body)", lambda: uc(body=body + box(X - 1, X + 1, 18, 19, Z + 2.8, Z + 3.2)))
 ss = dict(seg_sets)
-c_, sg = ss["cup-flat"]
-ss["cup-flat"] = (c_, sg + [box(X - 6, X + 6, rp.HEAD_Y0, rp.HEAD_Y0 + 19, 13.4, 17.4)])
-run("USB: a flat-cup segment under the head (0.1 below it)", lambda: uc(seg_sets=ss))
+c_, sg = ss["cup-rock nominal"]
+hb = rp.HEAD_BB
+ss["cup-rock nominal"] = (c_, sg + [box(hb[0], hb[1], hb[2] + 1, hb[3] - 1, hb[4] - 4.1, hb[4] - 0.1)])
+run("USB: a trim segment under the head (0.1 below it)", lambda: uc(seg_sets=ss))
 
-# ---- new round 7 checks ----------------------------------------------------------------------------------------------
-# 1. the flat zone and its blend (designed surface): a creased blend, and a plane too far forward for the zone
-run("flat zone: the built surface", lambda: rp.flat_zone_check(), expect=False)
-run("flat zone: blend with a linear ramp (crease)", lambda: rp.flat_zone_check(sh=rp.face_shape(rp.FACE_Y, ease=lambda t: t)))
-run("flat zone: plane 0.5 further forward (natural surface creeps into the zone)",
-    lambda: rp.flat_zone_check(sh=rp.face_shape(rp.FACE_Y - 0.5), face=rp.FACE_Y - 0.5))
-# 2. the front's thickness along the slot edges: a 0.2 skin proud of the face beside the left slot's top
+# ---- round 8: the front surface, the slots' lips, the seam -------------------------------------------------------------
+from rolypoly import body8_xyz, _quad, Z_B, Z_T
+run("front surface: as built (function)", lambda: rp.front_check(), expect=False)
+run("front surface: linear ease into the belly (a crease)", lambda: rp.front_check(lambda th, z: body8_xyz(th, z, ease=lambda t: np.clip(t, 0, 1))))
+
+
+def bumped(th, z, d=0.5):
+    X, Y, Z = body8_xyz(th, z)
+    b = rp._sstep(np.clip((np.asarray(z) - Z_T - 1) / 3, 0, 1)) * rp._sstep(np.clip((Z_T + 12 - np.asarray(z)) / 3, 0, 1))
+    return X, np.where(Y < 0, Y - d * b * np.clip(-Y / 5, 0, 1), Y), Z
+
+
+run("front surface: a 0.5 brow over the slots' top", lambda: rp.front_check(bumped))
+run("front surface: the belly eased in over the last 40 % (a shelf)", lambda: rp.front_check(
+    lambda th, z: body8_xyz(th, z, ease=lambda t: _quad(np.clip((np.asarray(t) - 0.6) / 0.4, 0, 1)))))
+run("front surface: no flat (the plain curve at the plane's depth)", lambda: rp.front_check(lambda th, z: body8_xyz(th, z, flat=False)))
+# the front's thickness along the slot edges (board frame boxes, turned): a 0.2 skin proud beside the left slot's top, 0.1 off the face
 x_l = rp.TUBE_X[0] - rp.FACE_OPEN / 2
-zt = rp.AA_ZC + rp.SLOT_L / 2
+zt = rp.SLOT_Z[1]
 run("front thickness: the body", lambda: rp.front_thickness_check(body), expect=False)
 run("front thickness: 0.2 proud beside the left slot's top", lambda: rp.front_thickness_check(
-    body + box(x_l - 1.5, x_l - 0.02, rp.FACE_Y - 0.2, rp.FACE_Y + 0.5, zt - 8, zt - 4)))
-# 3. the inner land under the glass: a 0.2 rib behind it, and a 0.5 dent into it
+    body + tw(box(x_l - 1.5, x_l - 0.02, rp.FACE_Y - 0.2, rp.FACE_Y + 0.5, zt - 8, zt - 4))))
+run("front thickness: the face 0.1 further back beside the right slot", lambda: rp.front_thickness_check(
+    body - tw(box(rp.TUBE_X[1] + rp.FACE_OPEN / 2 + 0.02, rp.ZONE_X[1] + 2, rp.FACE_Y - 1, rp.FACE_Y + 0.1, 50, 60))))
+# the inner land under the glass: a 0.2 rib behind it, and a 0.5 dent into it
 run("inner land: the body", lambda: rp.land_check(body), expect=False)
 run("inner land: a 0.2 rib behind the land plane", lambda: rp.land_check(
-    body + box(rp.LAND_X[0] + 0.5, rp.LAND_X[0] + 2.5, rp.Y_LAND - 0.5, rp.Y_LAND + 0.2, 60, 62)))
+    body + tw(box(rp.LAND_X[0] + 0.5, rp.LAND_X[0] + 2.5, rp.Y_LAND - 0.5, rp.Y_LAND + 0.2, 60, 62))))
 run("inner land: a 0.5 dent in the land at the glass's corner", lambda: rp.land_check(
-    body - box(rp.LAND_X[0] - 1, rp.LAND_X[0] + 3, rp.Y_LAND - 0.5, rp.Y_LAND + 1, rp.LAND_Z[1] - 3, rp.LAND_Z[1] + 1)))
+    body - tw(box(rp.LAND_X[0] - 1, rp.LAND_X[0] + 3, rp.Y_LAND - 0.5, rp.Y_LAND + 1, rp.LAND_Z[1] - 3, rp.LAND_Z[1] + 1))))
 
 
-# 4. the slots' land, measured on a separately cut front (the design's SLOT_W / RIM stay as they are)
+# the slots' land and lips, measured on a separately cut front (the design's SLOT_W / RIM / LIP_A stay as they are)
 def cut(**kw):
     b = blank
     for x in rp.TUBE_X:
@@ -84,25 +99,31 @@ def cut(**kw):
     return b
 
 
-run("slot land: the body", lambda: rp.slot_land_check(body), expect=False)
-run("slot land: front blank cut as designed", lambda: rp.slot_land_check(cut()), expect=False)
-run("slot land: cut 8.2 wide", lambda: rp.slot_land_check(cut(w=8.2)))
-run("slot land: knife edge (no land)", lambda: rp.slot_land_check(cut(rim=0.0)))
-# 5. the board's way in: a rib 0.1 beside the PCB's up move, and a lip in a slot's land in the rod's way forward
-bb = rp.board_sweeps()[("pcb", "up")].bounding_box()
-rb = rods["rod-l"].bounding_box()
+run("slot land + lip: the body", lambda: rp.slot_land_check(body), expect=False)
+run("slot land + lip: front blank cut as designed", lambda: rp.slot_land_check(cut()), expect=False)
+run("slot land + lip: cut 8.2 wide", lambda: rp.slot_land_check(cut(w=8.2)))
+run("slot land + lip: knife edge (no land)", lambda: rp.slot_land_check(cut(rim=0.0)))
+run("slot land + lip: lips 2.4 wide instead of 2.75", lambda: rp.slot_land_check(cut(lip_a=2.4)))
+# the seam: body and cup sections
+run("seam: body and cup as built", lambda: rp.seam_check(body, cups["rock"]), expect=False)
+run("seam: the cup 0.1 further back", lambda: rp.seam_check(body, Pos(0, 0.1, 0) * cups["rock"]))
+run("seam: the cup 1 % wider", lambda: rp.seam_check(body, cups["rock"].scale(1.01)))
+# the board's way in (board frame): a rib 0.1 beside the PCB's up move, a lip in a slot's land in the rod's way forward
+pcb = rp.board_bodies_b()["pcb"].bounding_box()
+sh = rp.BOARD_UP_SHIFT
+rb = rp.rod_solids_b()["rod-l"].bounding_box()
 run("board's way in: the body", lambda: rp.board_way_check(body), expect=False)
 run("board's way in: a rib 0.1 beside the PCB's up move", lambda: rp.board_way_check(
-    body + box(bb.min.X - 20, bb.min.X - 0.1, bb.min.Y, bb.max.Y, 70, 72)))
+    body + tw(box(pcb.min.X - 20, pcb.min.X - 0.1, pcb.min.Y + sh, pcb.max.Y + sh, 70, 72))))
 run("board's way in: a 0.2 lip in the left slot's land (rod's way forward)", lambda: rp.board_way_check(
-    body + box(rb.min.X - 0.2, rb.min.X + 0.15, rp.Y_LAND - 0.6, rp.Y_LAND, 60, 62)))
-# 6. the battery's way in: a rib 0.1 beside its last move up
-bs = rp.battery_sweeps()
-b2 = (bs.get("up to the seat") or bs["up"]).bounding_box()
+    body + tw(box(rb.min.X - 0.2, rb.min.X + 0.15, rp.Y_LAND - 0.6, rp.Y_LAND, 60, 62))))
+# the battery's way in (board frame): a rib 0.1 beside its last move up
+bp = rp.BAT_PATH
+hx = rp.BAT_L / 2
 run("battery's way in: the body", lambda: rp.battery_way_check(body, bd), expect=False)
 run("battery's way in: a rib 0.1 beside its way up", lambda: rp.battery_way_check(
-    body + box(b2.max.X + 0.1, b2.max.X + 20, b2.min.Y, b2.max.Y, 50, 52), bd))
-# 7. the trim spots: one pushed 0.3 into the wall, one floating 0.5 off it, the battery seated 12 further back
+    body + tw(box(bp["X2"] + hx + 0.1, bp["X2"] + hx + 20, rp.BAT_Y0 + rp.BAT_HOLD, rp.BAT_Y1 + rp.BAT_HOLD, 50, 52)), bd))
+# the trim spots: one pushed 0.3 into the wall, one floating 0.5 off it, the battery seated 12 further back
 x0 = rp.TRIM_SPOTS[0]
 rp.place_spots(body)                                       # the reference placement (the build's)
 n_ = rp.SPOTS[x0]["R"][:, 1]                               # into the wall
@@ -110,9 +131,9 @@ run("trim spots: as placed", lambda: rp.trim_spot_check(body, bat, spots), expec
 run("trim spots: one 0.3 into the back wall", lambda: rp.trim_spot_check(body, bat, {**spots, x0: Pos(*(0.3 * n_)) * spots[x0]}))
 run("trim spots: one floating 0.5 off the wall", lambda: rp.trim_spot_check(body, bat, {**spots, x0: Pos(*(-0.5 * n_)) * spots[x0]}))
 run("trim spots: battery seated 12 further back", lambda: rp.trim_spot_check(body, Pos(0, 12, 0) * bat, spots))
-# 8. the logo's clearance to the zone's blend: the letters moved left onto the blend
-run("logo clearance: as built", lambda: rp.check(rp.logo_outside(S7)["clr"] >= rp.LOGO_ZONE_CLR, "logo on the zone's blend"), expect=False)
-run("logo clearance: letters at x 24", lambda: rp.check(rp.logo_outside(S7, 24.0)["clr"] >= rp.LOGO_ZONE_CLR, "logo on the zone's blend"))
+# the logo's clearance to the front's flat: the letters moved left onto it
+run("logo clearance: as built", lambda: rp.check(rp.logo_outside(S8)["clr"] >= rp.LOGO_ZONE_CLR, "logo on the front's flat"), expect=False)
+run("logo clearance: letters at x 18", lambda: rp.check(rp.logo_outside(S8, 18.0)["clr"] >= rp.LOGO_ZONE_CLR, "logo on the front's flat"))
 
 # ---- round 7b: the logo's stencil pocket and the stencil ---------------------------------------------------------------
 import math, tempfile, pathlib
@@ -121,7 +142,7 @@ from build123d import Plane, Rectangle, extrude, Polygon, Solid
 PK, led, after = D["pocket"], D["led"], D["after"]
 F = PK["F"]
 p_, n_l, xd, up = F
-outer_face = [f for f in rp.bspline_faces(D["outer7"])][0]
+outer_face = [f for f in rp.bspline_faces(D["outer"])][0]
 
 
 def frame_box(u0, u1, v0, v1, w0, w1):
