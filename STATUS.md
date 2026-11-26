@@ -1,6 +1,6 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.4..0.6 ms a frame at 1; Astra reviews 1-3 addressed)_
+_Last update: 2026-11-27 (fizz-light: fizzPhys on the board, +0.4..0.6 ms a frame at 1; Astra reviews 1-4 settled)_
 
 ## Fizz light (2026-11-25 / 26), branch `fizz-light` on edge-ends 41121d2: fizzPhys; board-benched (lcd316@320w8-8), look check pending
 
@@ -36,11 +36,8 @@ _Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.4..0.6 ms a fram
   free, was 32.9) and, firmware only, each slot's light is retaken every 4th frame (docs/fizz-light/model.md "Cost").
   Astra review 3 (medium): a reborn slot could keep the last bubble's light for up to 3 frames; the memo is now retaken
   whenever the bubble is not where it was taken (> 6 px along, > 2 px across / in depth).
-  Astra's confirming pass (review 4) did not finish: the Codex workspace ran out of credits mid-run. The two cases it was
-  probing are covered without it: a reborn bubble of another radius (the memo keeps r), a scene change between frames
-  (liquid, bore, tone, lid / end: every memo old at once). Not reviewed by Astra: that last delta (docs/fizz-light/astra-review3.md).
-  Panel refills OK (late 0, restarts 0). The board had v28 firmware and a default-like look (saved:
-  docs/fizz-light/board-look-before-flash.json); NVS was reset by the schema change.
+  Review 4 (2026-11-27, after the Codex credits came back; docs/fizz-light/astra-review4.md): the place check and the
+  radius / scene-change handling both settled, nothing at medium or above left at 2f24622.
 - Left on the board: this branch's build, the pale look written to NVS with fizzPhys 1, the clock set.
 - Open: the look check with the user (fizzPhys 0 / 0.5 / 1; viewElevation for the lid), live-IMU fps.
 

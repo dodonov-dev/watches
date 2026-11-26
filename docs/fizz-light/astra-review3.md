@@ -7,3 +7,5 @@ depth), not by birth hooks in the stepper. A confirming pass was started and die
 credits"); it was building cases for a rebirth of another radius inside that box and a geometry change between frames.
 Both are handled in the next commit (the memo keeps r; a change of liquid / bore / tone / lid / end ages every memo at
 once). That delta has no Astra review.
+
+2026-11-27: reviewed after all, see astra-review4.md (both settled, nothing new).
