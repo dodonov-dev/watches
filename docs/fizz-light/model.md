@@ -26,7 +26,8 @@ FIZZ_RING_KEEP = 0.6 px) the core's largest shift, `bubbleDark` the core tint aw
     v = +-y beta - z mu.
   - surface: d = clr / (q . n), clr = S - x (side view: the drawn meniscus, n = the tube axis), under the lid
     clr = S + (z_R - z) B / 2 z_R - x (the level line at the body's depth; B the lid's height at its row) and
-    n = (1, 0, tan tau). q . n <= 0: never. Home edge: clrL = x - S_home, n = -axis.
+    n = (1, 0, tan tau); a row the lid does not cover (B = 0: closed against the end glass) takes the side view's
+    rule, rays included. q . n <= 0: never. Home edge: clrL = x - S_home, n = -axis.
 - Ring asymmetry: C = C_GAIN ((a_0 - a_1), (a_2 - a_3)) / E, |C| <= 1, C_GAIN = 2 (a clear liquid lit from the side gives
   ~0.25..0.3 before the gain: broad light leaves the ring nearly even).
 - Pinpoint = the key's own Fresnel reflection off the bubble: at r H_xy, H = (l + V) / |l + V| (rho / r = sin(theta / 2),

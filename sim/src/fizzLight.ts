@@ -41,7 +41,8 @@ export interface FizzLight {
   a8: number;            // 8 x optical depth a px: -8 ln(transparency) / 2R
   R: number; R2: number; // bore radius px
   w: Float32Array;       // [4] probe weights L_i / sum L (a clear, open tube: E = 1)
-  invS: Float32Array;    // [5] 1 / (q . n) against the time edge's surface (0: the ray never meets it)
+  invS: Float32Array;    // [5] 1 / (q . n) against the time edge's surface (0: the ray never meets it): the lid's level plane, or the axial one
+  invSA: Float32Array;   // [5] the same against a surface across the tube (n = the axis): a row the lid does not cover (B 0: closed against the end glass)
   invH: Float32Array;    // [5] the home edge's
   ly: number; lz: number; la: number; invA: number;   // the key ray against the bore wall: its cross-section part, |.|^2 and 1 / that (0: along the tube, never)
   fk: number;            // the pinpoint's Fresnel factor min(1, F / F_REF)
@@ -61,7 +62,7 @@ export function fizzLightFrame(transparency: number, R: number, upX: number, lig
   const lx = bx, ly = F(-c * F(Math.sin(a2))), lz = F(c * F(Math.cos(a2)));
   // ring probes (unit): x, y, z components
   const qx = [BETA, -BETA, 0, 0, lx], qy = [0, 0, BETA, -BETA, ly], qz = [-MU, -MU, -MU, -MU, lz];
-  const w = new Float32Array(4), invS = new Float32Array(5), invH = new Float32Array(5);
+  const w = new Float32Array(4), invS = new Float32Array(5), invSA = new Float32Array(5), invH = new Float32Array(5);
   let sum = 0;
   for (let i = 0; i < 4; i++) { w[i] = F(AMB + F(F(1 - AMB) * Math.max(0, F(F(F(qx[i] * lx) + F(qy[i] * ly)) + F(qz[i] * lz))))); sum = F(sum + w[i]); }
   for (let i = 0; i < 4; i++) w[i] = F(w[i] / sum);
@@ -70,6 +71,7 @@ export function fizzLightFrame(transparency: number, R: number, upX: number, lig
   for (let i = 0; i < 5; i++) {
     const den = F(qx[i] + F(qz[i] * tanT)), denH = F(-qx[i]);
     invS[i] = den > 1e-3 ? F(1 / den) : 0;
+    invSA[i] = qx[i] > 1e-3 ? F(1 / qx[i]) : 0;
     invH[i] = denH > 1e-3 ? F(1 / denH) : 0;
   }
   const a = F(F(ly * ly) + F(lz * lz));
@@ -84,7 +86,7 @@ export function fizzLightFrame(transparency: number, R: number, upX: number, lig
   const hk = 1 / Math.sqrt(Math.max(1e-3, 2 * (1 + lz))), hm = Math.hypot(lx, ly) * hk, hc = hm > 0.75 ? 0.75 / hm : 1;
   // under the lid a foam's view ray refracts at the surface: path = clearance x cos tau / cos theta_w, sin theta_w = cos e / n
   const sw = Math.cos(tau + delta) / n, kLid = lid ? Math.cos(tau) / Math.sqrt(Math.max(0.05, 1 - sw * sw)) : 0;
-  return { a8, R: F(R), R2: F(F(R) * F(R)), w, invS, invH, ly, lz, la: a, invA: a > 1e-6 ? F(1 / a) : 0,
+  return { a8, R: F(R), R2: F(F(R) * F(R)), w, invS, invSA, invH, ly, lz, la: a, invA: a > 1e-6 ? F(1 / a) : 0,
     fk: F(Math.min(1, fr / F_REF)), hx: F(lx * hk * hc), hy: F(ly * hk * hc),
     openR: (exposed & 1) !== 0, openL: (exposed & 2) !== 0, lid, kLid: F(kLid), tone: F(Math.max(-1, Math.min(1, tone))) };
 }
@@ -121,7 +123,7 @@ export function fizzLit(fl: FizzLight, x: number, y: number, z: number, r: numbe
   if (lid && fl.openR) dv = Math.min(dv, F(clr * fl.kLid));
   const tv = att(a8, dv);
   // ring probes: the first boundary each ray meets, and whether light comes in there
-  const w = fl.w, invS = fl.invS, invH = fl.invH;
+  const w = fl.w, invS = lid ? fl.invS : fl.invSA, invH = fl.invH;   // no lid over this row: the surface across the tube
   const ray = (i: number, dw: number): number => {
     let d = dw, m = true;
     if (invS[i] > 0) { const ds = F(clr * invS[i]); if (ds < d) { d = ds; m = fl.openR; } }

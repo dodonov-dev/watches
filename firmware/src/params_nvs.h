@@ -64,31 +64,32 @@ template <class Store, class Log> bool paramsNvsSave(Store &prefs, const Params 
   return true;
 }
 
+// The blob size of schema v (31 .. PARAMS_V), 0 for any other.
+constexpr size_t paramsSizeOf(int v) {
+  return v == 31 || v == 32 ? PARAMS_V32_SIZE : v == 33 ? PARAMS_V33_SIZE : v == 34 ? PARAMS_V34_SIZE : v == 35 ? PARAMS_V35_SIZE
+       : v == PARAMS_V ? sizeof(Params) : 0;
+}
+
 // Boot: params from NVS when the blob is whole and its schema known (this one, or v35 / v34 / v33 / v32 / v31 migrated
 // and saved at once: the next edit would otherwise overwrite the old look with the defaults). Read into a copy
-// (sizeof(Params) of the boot stack): a short read or an unknown schema leaves params as they are and NVS untouched. A
-// migration's save interrupted between the blob and its label (power lost, a failed CRC write) leaves a v36 blob under
-// the old CRC: whole (sizeof(Params): no older layout has that size) and v 36, it is this schema's, loaded and
-// relabelled at once.
+// (sizeof(Params) of the boot stack): a short read or an unknown schema leaves params as they are and NVS untouched.
+// A migration's save interrupted between the blob and its label (power lost, a failed CRC write) leaves the migrating
+// firmware's blob under the old CRC: v36's (736 B, v 36) or, from the v35 / v34 / v33 firmware, a v35 (732 B, v 35), v34
+// (728 B, v 34) or v33 (724 B, v 33) blob. A blob under a known CRC whose size is a newer layout's (sizes 724 .. 736 are
+// one schema each, and a blob the firmware saved normally always has its own CRC's size) and whose v is that layout's
+// (the migrations set v; a mismatch: dropped) is that layout's: migrated on from there and saved, or (v36) relabelled.
+// Not told apart: a v32 blob (720 B, v32's interrupted v31 -> v32) under the v31 CRC is read as v31, so edgeShadeShape
+// takes 1.5 again (the rest kept).
 template <class Store, class Log> bool paramsNvsLoad(Store &prefs, Params &params, Log &out) {
   const uint32_t crc = prefs.getUInt("crc", 0);
   const size_t len = prefs.getBytesLength("cur");
   Params tmp; uint8_t *const b = (uint8_t *)&tmp;
   const int from = crc == PARAMS_SCHEMA_CRC_V31 ? 31 : crc == PARAMS_SCHEMA_CRC_V32 ? 32 : crc == PARAMS_SCHEMA_CRC_V33 ? 33
                  : crc == PARAMS_SCHEMA_CRC_V34 ? 34 : crc == PARAMS_SCHEMA_CRC_V35 ? 35 : crc == PARAMS_SCHEMA_CRC ? PARAMS_V : 0;
-  if (from && len == sizeof(Params)) {
-    if (prefs.getBytes("cur", b, sizeof(Params)) != sizeof(Params)) { out.println("error params: nvs blob unreadable, defaults (nvs kept)"); return false; }
-    if (from != PARAMS_V) {
-      if (tmp.v != PARAMS_V) { out.println("params: nvs blob dropped: a v36-sized blob under an old schema's crc, not v 36; defaults, replaced on the next save"); return false; }
-      params = tmp;
-      if (prefs.putUInt("crc", PARAMS_SCHEMA_CRC) != 4) out.println("error params: interrupted v36 save: crc not relabelled (crc write)");
-      else out.println("params: restored from nvs (an interrupted v36 save: crc relabelled)");
-      return true;
-    }
-    params = tmp; out.println("params: restored from nvs"); return true;
-  }
-  const size_t want = from == 35 ? PARAMS_V35_SIZE : from == 34 ? PARAMS_V34_SIZE : from == 33 ? PARAMS_V33_SIZE : PARAMS_V32_SIZE;
-  if (!from || from == PARAMS_V || len != want) {
+  int at = 0;   // the layout the blob holds: its CRC's, or a newer one an interrupted migration's save left under it
+  if (from && len == paramsSizeOf(from)) at = from;
+  else if (from) for (int k = from + 1; k <= PARAMS_V; k++) if (len == paramsSizeOf(k) && k >= 33) { at = k; break; }
+  if (!at) {
     if (crc || len) {   // dropped: one line, what was found against what this firmware reads (256 B of the boot stack)
       char ver[16];
       if (from) snprintf(ver, sizeof ver, "v%d", from); else snprintf(ver, sizeof ver, "unknown");
@@ -100,22 +101,37 @@ template <class Store, class Log> bool paramsNvsLoad(Store &prefs, Params &param
     }
     return false;
   }
-  char what[16]; snprintf(what, sizeof what, "v%d -> v36", from);
-  if (prefs.getBytes("cur", b, want) != want) {
-    out.print("error params: v"); out.print(from == 31 ? "31" : from == 32 ? "32" : from == 33 ? "33" : from == 34 ? "34" : "35");
-    out.println(" blob unreadable, defaults (nvs kept)"); return false;
+  if (prefs.getBytes("cur", b, len) != len) {
+    if (at == PARAMS_V) out.println("error params: nvs blob unreadable, defaults (nvs kept)");
+    else { char m[64]; snprintf(m, sizeof m, "error params: v%d blob unreadable, defaults (nvs kept)", at); out.println(m); }
+    return false;
   }
-  if (from == 31) paramsV31toV32(b);
-  if (from <= 32) paramsV32toV33(b);
-  if (from <= 33) paramsV33toV34(b);
-  if (from <= 34) paramsV34toV35(b);
+  char m[160];
+  if (at != from && tmp.v != at) {
+    snprintf(m, sizeof m, "params: nvs blob dropped: a v%d-sized blob under the v%d crc, not v %d; defaults, replaced on the next save", at, from, at);
+    out.println(m); return false;
+  }
+  if (at == PARAMS_V) {
+    params = tmp;
+    if (from == PARAMS_V) { out.println("params: restored from nvs"); return true; }
+    if (prefs.putUInt("crc", PARAMS_SCHEMA_CRC) != 4) out.println("error params: interrupted v36 save: crc not relabelled (crc write)");
+    else out.println("params: restored from nvs (an interrupted v36 save: crc relabelled)");
+    return true;
+  }
+  char what[16]; snprintf(what, sizeof what, "v%d -> v36", at);
+  if (at == 31) paramsV31toV32(b);
+  if (at <= 32) paramsV32toV33(b);
+  if (at <= 33) paramsV33toV34(b);
+  if (at <= 34) paramsV34toV35(b);
   paramsV35toV36(b);
   params = tmp;
   if (paramsNvsSave(prefs, params, out, what)) {
-    out.print("params: restored from nvs ("); out.print(what);
-    out.println(from == 31 ? ": edgeShadeShape 1.5, viewElevation 0, edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0)"
-                : from == 32 ? ": viewElevation 0, edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0)"
-                : from == 33 ? ": edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0)" : from == 34 ? ": edgeShadeEndWidth 1, fizzPhys 0)" : ": fizzPhys 0)");
+    static const char *const added[] = {"edgeShadeShape 1.5, viewElevation 0, edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0",
+                                        "viewElevation 0, edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0",
+                                        "edgeShadeEnd 0, edgeShadeEndWidth 1, fizzPhys 0", "edgeShadeEndWidth 1, fizzPhys 0", "fizzPhys 0"};
+    if (at == from) snprintf(m, sizeof m, "params: restored from nvs (%s: %s)", what, added[at - 31]);
+    else snprintf(m, sizeof m, "params: restored from nvs (%s: %s; an interrupted v%d save under the v%d crc)", what, added[at - 31], at, from);
+    out.println(m);
   }
   return true;
 }

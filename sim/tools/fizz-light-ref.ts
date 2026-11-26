@@ -17,7 +17,7 @@ for (const line of fs.readFileSync(process.argv[2], 'utf8').split('\n')) {
     const v = w.slice(1).map(fromHex);
     lit = fizzLightFrame(v[0], v[1], v[2], v[3], v[4] !== 0, v[5], v[6], Math.round(v[7]), v[8]);
     const L = lit;
-    out.push(['L', hex(L.a8), hex(L.R), hex(L.R2), ...Array.from(L.w, hex), ...Array.from(L.invS, hex), ...Array.from(L.invH, hex),
+    out.push(['L', hex(L.a8), hex(L.R), hex(L.R2), ...Array.from(L.w, hex), ...Array.from(L.invS, hex), ...Array.from(L.invSA, hex), ...Array.from(L.invH, hex),
       hex(L.ly), hex(L.lz), hex(L.la), hex(L.invA), hex(L.fk), hex(L.hx), hex(L.hy), L.openR ? 1 : 0, L.openL ? 1 : 0, L.lid ? 1 : 0,
       hex(L.kLid), hex(L.tone)].join(' '));
   } else if (w[0] === 'B' && lit) {

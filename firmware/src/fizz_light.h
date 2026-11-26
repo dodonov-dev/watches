@@ -59,7 +59,8 @@ struct FizzLight {
   float a8;              // 8 x optical depth a px: -8 ln(transparency) / 2R
   float R, R2;           // bore radius px
   float w[4];            // probe weights L_i / sum L (a clear, open tube: E = 1)
-  float invS[5];         // 1 / (q . n) against the time edge's surface (0: the ray never meets it)
+  float invS[5];         // 1 / (q . n) against the time edge's surface (0: the ray never meets it): the lid's level plane, or the axial one
+  float invSA[5];        // the same against a surface across the tube (n = the axis): a row the lid does not cover (B 0: closed against the end glass)
   float invH[5];         // the home edge's
   float ly, lz, la, invA;   // the key ray against the bore wall: its cross-section part, |.|^2 and 1 / that (0: never)
   float fk;              // the pinpoint's Fresnel factor min(1, F / F_REF)
@@ -97,6 +98,7 @@ static void __attribute__((noinline)) fizzLightFrame(FizzLight &o, float transpa
   for (int i = 0; i < 5; i++) {
     const float den = qx[i] + qz[i] * tanT, denH = -qx[i];
     o.invS[i] = den > 1e-3 ? 1 / den : 0;     // the sim's double 1e-3
+    o.invSA[i] = qx[i] > 1e-3 ? 1 / qx[i] : 0;
     o.invH[i] = denH > 1e-3 ? 1 / denH : 0;
   }
   const float a = ly * ly + lz * lz;
@@ -130,9 +132,10 @@ static inline float fizzTone(uint16_t rim565, uint16_t liqA565, uint16_t liqB565
 }
 
 // One probe's ray: the first boundary it meets (the wall at dw, the time / home surface) and whether light comes in there.
-static inline float fizzRay(const FizzLight &fl, int i, float dw, float clr, float clrL) {
+// invS: the time edge's surface the bubble's row sees (fizzLit: the lid's plane, or across the tube).
+static inline float fizzRay(const FizzLight &fl, const float *invS, int i, float dw, float clr, float clrL) {
   float d = dw; bool m = true;
-  if (fl.invS[i] > 0) { const float ds = clr * fl.invS[i]; if (ds < d) { d = ds; m = fl.openR; } }
+  if (invS[i] > 0) { const float ds = clr * invS[i]; if (ds < d) { d = ds; m = fl.openR; } }
   if (fl.invH[i] > 0) { const float dh = clrL * fl.invH[i]; if (dh < d) { d = dh; m = fl.openL; } }
   return m ? fizzAtt(fl.a8, d) : 0.0f;
 }
@@ -151,12 +154,13 @@ static inline void fizzLit(const FizzLight &fl, float x, float y, float z, float
   float dv = fizzMx(0, zR - z);
   if (lid && fl.openR) dv = fizzMn(dv, clr * fl.kLid);
   const float tv = fizzAtt(a8, dv);
-  // ring probes
+  // ring probes and the key ray: a row the lid does not cover sees the surface across the tube
+  const float *const invS = lid ? fl.invS : fl.invSA;
   const float dwx = (zR + z) * FIZZ_INV_MU;   // +-x probes: back to the wall, (z_R + z) / mu
   const float vp = y * FIZZ_BETA - z * FIZZ_MU, vm = -y * FIZZ_BETA - z * FIZZ_MU;
-  const float a0 = fl.w[0] * fizzRay(fl, 0, dwx, clr, clrL), a1 = fl.w[1] * fizzRay(fl, 1, dwx, clr, clrL);
-  const float a2 = fl.w[2] * fizzRay(fl, 2, fizzMx(0, FIZZ_SQRT(vp * vp + rem) - vp), clr, clrL);
-  const float a3 = fl.w[3] * fizzRay(fl, 3, fizzMx(0, FIZZ_SQRT(vm * vm + rem) - vm), clr, clrL);
+  const float a0 = fl.w[0] * fizzRay(fl, invS, 0, dwx, clr, clrL), a1 = fl.w[1] * fizzRay(fl, invS, 1, dwx, clr, clrL);
+  const float a2 = fl.w[2] * fizzRay(fl, invS, 2, fizzMx(0, FIZZ_SQRT(vp * vp + rem) - vp), clr, clrL);
+  const float a3 = fl.w[3] * fizzRay(fl, invS, 3, fizzMx(0, FIZZ_SQRT(vm * vm + rem) - vm), clr, clrL);
   const float E = (a0 + a1) + (a2 + a3);
   // the ring's bright side: the probes' imbalance, gained to fizzShadeOff's calibration, at most 1 long
   float cx = 0, cy = 0;
@@ -172,7 +176,7 @@ static inline void fizzLit(const FizzLight &fl, float x, float y, float z, float
     const float v = y * fl.ly + z * fl.lz;
     const float dw = fl.invA > 0 ? fizzMx(0, FIZZ_SQRT(v * v + rem * fl.la) - v) * fl.invA : FIZZ_NEVER;
     float d = dw; bool m = true;
-    if (fl.invS[4] > 0) { const float ds = clr * fl.invS[4]; if (ds < d) { d = ds; m = fl.openR; } }
+    if (invS[4] > 0) { const float ds = clr * invS[4]; if (ds < d) { d = ds; m = fl.openR; } }
     if (fl.invH[4] > 0) { const float dh = clrL * fl.invH[4]; if (dh < d) { d = dh; m = fl.openL; } }
     if (m) wl = fl.fk * fizzAtt(a8, d + dv);
   }

@@ -15,6 +15,10 @@ is a float32 (hex bits) both sides read. Compared (float32 bits from both, -ffp-
   - FizzLit, each side on its own frame: within 1e-4 absolute;
   - FizzLit with the native kernel fed the sim's frame fields: bit for bit;
   - both sides: every output finite, K / wl / tv / sk in [0, 1], |(cx, cy)| <= 1 + 1e-6.
+Every 4th frame has the lid on, tau < 0 and a closed tube, 60 % of its bubbles B 0 (rows the lid does not cover: the
+surface across the tube, invSA). Pinned last frame (Astra review 1): R 20, r 3, x 97, S 100, SL 0, y = z = B = 0,
+transparency 1, upX 0.87758256, light 0, lid on, tau -0.5, delta 0, closed, tone 1: K 0.618980 within 1e-5 on both
+sides (0.206327 with the lid's plane on that row).
 Also a native run under ASan / UBSan (--no-asan skips it) and the host's ns per bubble of fizzLit at -O2 (--no-time skips).
 Exits 1 on any failure.
 """
@@ -36,7 +40,7 @@ static int words(char *line, char **w, int n) {
   int k = 0; for (char *t = strtok(line, " \t\r\n"); t && k < n; t = strtok(nullptr, " \t\r\n")) w[k++] = t; return k;
 }
 static void printFrame(const FizzLight &L) {
-  printf("L"); ph(L.a8); ph(L.R); ph(L.R2); for (float v : L.w) ph(v); for (float v : L.invS) ph(v); for (float v : L.invH) ph(v);
+  printf("L"); ph(L.a8); ph(L.R); ph(L.R2); for (float v : L.w) ph(v); for (float v : L.invS) ph(v); for (float v : L.invSA) ph(v); for (float v : L.invH) ph(v);
   ph(L.ly); ph(L.lz); ph(L.la); ph(L.invA); ph(L.fk); ph(L.hx); ph(L.hy);
   printf(" %d %d %d", L.openR ? 1 : 0, L.openL ? 1 : 0, L.lid ? 1 : 0); ph(L.kLid); ph(L.tone); printf("\n");
 }
@@ -45,9 +49,9 @@ static bool readFrame(FILE *f, FizzLight &L) {
   static char line[4096]; char *w[64];
   while (fgets(line, sizeof line, f)) {
     if (line[0] != 'L') continue;
-    if (words(line, w, 64) != 30) return false;
+    if (words(line, w, 64) != 35) return false;
     int k = 1; L.a8 = fh(w[k++]); L.R = fh(w[k++]); L.R2 = fh(w[k++]);
-    for (float &v : L.w) v = fh(w[k++]); for (float &v : L.invS) v = fh(w[k++]); for (float &v : L.invH) v = fh(w[k++]);
+    for (float &v : L.w) v = fh(w[k++]); for (float &v : L.invS) v = fh(w[k++]); for (float &v : L.invSA) v = fh(w[k++]); for (float &v : L.invH) v = fh(w[k++]);
     L.ly = fh(w[k++]); L.lz = fh(w[k++]); L.la = fh(w[k++]); L.invA = fh(w[k++]); L.fk = fh(w[k++]); L.hx = fh(w[k++]); L.hy = fh(w[k++]);
     L.openR = atoi(w[k++]); L.openL = atoi(w[k++]); L.lid = atoi(w[k++]); L.kLid = fh(w[k++]); L.tone = fh(w[k++]);
     return true;
@@ -123,10 +127,11 @@ def make_job(frames, bubbles, seed):
         R = rnd.uniform(12, 40) if fi % 7 else float(rnd.randint(12, 40))
         up = pick([0.974, 0, 1, -1, -0.974], -1, 1, 0.35)
         light = pick([0, 45, -45, 60, -60, 22.5], -60, 60)
-        lid = rnd.random() < 0.4
-        tau = pick([0, 0.6, -0.5], -0.5, 0.6) if lid else 0.0
+        focus = fi % 4 == 3   # the lid on, tilted forward (tau < 0), a closed tube: its uncovered rows (B 0) see the end glass across the tube
+        lid = focus or rnd.random() < 0.4
+        tau = (pick([-0.5], -0.5, -0.01) if focus else pick([0, 0.6, -0.5], -0.5, 0.6)) if lid else 0.0
         delta = pick([0, 1.3], 0, 1.3) if lid else 0.0
-        exposed = rnd.randint(0, 3)
+        exposed = 0 if focus else rnd.randint(0, 3)
         tone = pick([0, 1, -1], -1, 1, 0.3)
         lines.append('F ' + ' '.join(hx(v) for v in (t, R, up, light, 1 if lid else 0, tau, delta, exposed, tone)))
         for bi in range(bubbles):
@@ -147,11 +152,19 @@ def make_job(frames, bubbles, seed):
             y, z = f32(y), f32(z)
             if y * y + z * z > R * R:                                   # float rounding past the wall: back inside
                 q = R / math.hypot(y, z) * (1 - 1e-6); y, z = y * q, z * q
-            B = 0.0 if rnd.random() < 0.4 else rnd.uniform(0, 2 * R)
+            B = 0.0 if rnd.random() < (0.6 if focus else 0.4) else rnd.uniform(0, 2 * R)
             lines.append('B ' + ' '.join(hx(v) for v in (x, y, z, r, S, SL, B)))
+    lines += PINNED
     for _ in range(2000):
         lines.append('T %04x %04x %04x' % (rnd.randrange(65536), rnd.randrange(65536), rnd.randrange(65536)))
     return '\n'.join(lines) + '\n'
+
+# Astra review 1's reproduction (pinned, last frame of every job): the lid on, tilted forward (tau -0.5), a closed tube,
+# a bubble 3 px under the surface on a row the lid does not cover (B 0): the probes meet the surface across the tube, the
+# end glass, so the ring's light is the walls' only. K was 0.206327 with the lid's level plane there.
+PINNED = ['F ' + ' '.join(hx(v) for v in (1, 20, 0.87758256, 0, 1, -0.5, 0, 0, 1)),
+          'B ' + ' '.join(hx(v) for v in (97, 0, 0, 3, 100, 0, 0))]
+PINNED_K = 0.618980
 
 def parse(text):
     A = None; L = []; O = []; T = []
@@ -164,10 +177,10 @@ def parse(text):
         elif w[0] == 'T': T.append(w[1])
     return A, L, O, T
 
-# FizzLight field names in print order (booleans at 25, 26, 27)
-LNAMES = ['a8', 'R', 'R2', 'w0', 'w1', 'w2', 'w3', 'invS0', 'invS1', 'invS2', 'invS3', 'invS4', 'invH0', 'invH1', 'invH2', 'invH3', 'invH4',
+# FizzLight field names in print order (booleans: BOOLS)
+LNAMES = ['a8', 'R', 'R2', 'w0', 'w1', 'w2', 'w3', 'invS0', 'invS1', 'invS2', 'invS3', 'invS4', 'invSA0', 'invSA1', 'invSA2', 'invSA3', 'invSA4', 'invH0', 'invH1', 'invH2', 'invH3', 'invH4',
           'ly', 'lz', 'la', 'invA', 'fk', 'hx', 'hy', 'openR', 'openL', 'lid', 'kLid', 'tone']
-BOOLS = {24, 25, 26}
+BOOLS = {29, 30, 31}
 ONAMES = ['K', 'cx', 'cy', 'wl', 'tv', 'sk']
 
 def sane(O, side):
@@ -214,8 +227,8 @@ def main():
         if not a.no_time:
             timing = subprocess.run([str(tmp / 'd'), 'time', str(tmp / 'job.txt'), '10000000'], stdout=subprocess.PIPE, check=True).stdout.decode().split()
     sA, sL, sO, sT = parse(simOut); nA, nL, nO, nT = parse(own); fA, fL, fO, fT = parse(fed)
-    nb = a.frames * a.bubbles
-    if not (len(sL) == len(nL) == len(fL) == a.frames and len(sO) == len(nO) == len(fO) == nb and len(sT) == len(nT)):
+    nfr, nb = a.frames + 1, a.frames * a.bubbles + 1   # + the pinned frame and its bubble
+    if not (len(sL) == len(nL) == len(fL) == nfr and len(sO) == len(nO) == len(fO) == nb and len(sT) == len(nT)):
         sys.exit(f'counts: frames {len(sL)} / {len(nL)} / {len(fL)}, bubbles {len(sO)} / {len(nO)} / {len(fO)}, tones {len(sT)} / {len(nT)}')
     attOk = sA == nA and len(sA) == 66
     if not attOk: fails.append('FIZZ_ATT')
@@ -247,13 +260,18 @@ def main():
         fails.append('FizzLit (sim frames, bits)')
         for i, k in fedDiff[:5]: print(f'fed: frame {i // a.bubbles} bubble {i % a.bubbles} {ONAMES[k]}: sim {sO[i][k]} ({fl(sO[i][k]):.9g}) native {fO[i][k]} ({fl(fO[i][k]):.9g})')
     badS, badN = sane(sO, 'sim'), sane(nO, 'native') + sane(fO, 'native fed')
+    pinK = [fl(O[-1][0]) for O in (sO, nO, fO)]   # the pinned bubble: sim, native on its own frame, native on the sim's
+    pinOk = all(abs(k - PINNED_K) <= 1e-5 for k in pinK)
+    if not pinOk: fails.append('pinned K')
+    lidB0 = sum(1 for line in make_job(a.frames, a.bubbles, a.seed).split('\n') if line.startswith('B') and line.split()[7] == '00000000')
     if badS or badN: fails.append('ranges')
     print(f'FIZZ_ATT {len(sA)} entries {"identical" if attOk else "DIFFER"}; fizzTone {len(sT)} triples, {toneDiff} differ')
-    print(f'FizzLight: {a.frames} frames x {nf // a.frames} float fields, {bitsEq}/{nf} bit-identical, {fieldsOver} over 2e-6 relative, worst {worstRel:.3g}'
+    print(f'FizzLight: {nfr} frames x {nf // nfr} float fields, {bitsEq}/{nf} bit-identical, {fieldsOver} over 2e-6 relative, worst {worstRel:.3g}'
           + (f' (frame {worstAt[0]} {worstAt[1]}: sim {worstAt[2]:.9g} native {worstAt[3]:.9g})' if worstAt else '') + f'; booleans {boolDiff} differ')
     print(f'FizzLit, own frames: {nb} bubbles, {ownExact} bit-identical, {over} outputs over 1e-4, worst {worstAbs:.3g}'
           + (f' (frame {absAt[0]} bubble {absAt[1]} {absAt[2]}: sim {absAt[3]:.9g} native {absAt[4]:.9g})' if absAt else ''))
-    print(f'FizzLit, the sim\'s frames: {nb} bubbles x 6 outputs, {len(fedDiff)} differ in a bit')
+    print(f'FizzLit, the sim\'s frames: {nb} bubbles x 6 outputs, {len(fedDiff)} differ in a bit ({lidB0} bubbles with B 0, {a.frames // 4} frames lid on / tau < 0 / closed)')
+    print(f'pinned (R 20, r 3, x 97, S 100, lid on, tau -0.5, closed, B 0): K sim {pinK[0]:.6f}, native {pinK[1]:.6f}, native on the sim frame {pinK[2]:.6f}; want {PINNED_K} within 1e-5: {"ok" if pinOk else "MOVED"}')
     print(f'ranges (finite, K / wl / tv / sk in [0, 1], |c| <= 1 + 1e-6): sim {badS}, native {badN} out' + ('' if a.no_asan else f'; ASan / UBSan {"clean" if "ASan / UBSan" not in fails else "FAILED"}'))
     if timing: print(f'host -O2: fizzLit {timing[0]} ns a bubble; the explicit set-up\'s rough equivalent {timing[1]} ns')
     print('fizz light parity: ' + ('ok' if not fails else 'FAILED: ' + ', '.join(fails)))

@@ -11,7 +11,9 @@ viewElevation 0 too), and be saved at once under the v36 CRC; the next boot rest
 failed read and an unknown schema leave the defaults and NVS untouched (a dropped blob: one line with the schema, CRC
 and bytes found and expected); a failed blob write keeps the old blob and CRC (the next boot migrates again); a failed
 CRC write (or power lost after the blob) leaves the v36 blob under the old CRC: the next boot restores the migrated look
-and relabels the CRC. Exit 1 on a failure.
+and relabels the CRC. An older firmware's interrupted migration (a v35 / v34 / v33 blob, its v set, under any older
+CRC) loads as that layout and migrates on to v36, saved and relabelled; a newer layout's size with the wrong v is
+dropped. Exit 1 on a failure.
 """
 import os, subprocess, sys, tempfile
 from pathlib import Path
@@ -158,9 +160,7 @@ def main():
             args = [str(tmp / 'load'), f'{crc:x}', blob, flags] + ([str(trunc)] if trunc else [])
             return parse(subprocess.run(args, stdout=subprocess.PIPE, text=True, check=True).stdout)
 
-        for tag, (rev, crc) in LEGACY.items():
-            old = blobs[tag]['F']; r = load(crc, str(tmp / f'{tag}.bin'))
-            new = r['F']
+        def expected(tag, old):   # the v36 fields a `tag` blob with fields `old` migrates to
             renamed = {'edgeShadePow': 'edgeShadeShape'} if tag == 'v31' else {}
             expect = {renamed.get(n, n): h for n, h in old.items()}
             expect['v'] = (36).to_bytes(4, 'little').hex(); expect['fizzPhys'] = '00000000'
@@ -168,6 +168,12 @@ def main():
             if tag in ('v31', 'v32', 'v33'): expect['edgeShadeEnd'] = '00000000'
             if tag in ('v31', 'v32'): expect['viewElevation'] = '00000000'
             if tag == 'v31': expect['edgeShadeShape'] = bytes.fromhex('0000c03f').hex()   # 1.5f
+            return expect
+
+        for tag, (rev, crc) in LEGACY.items():
+            old = blobs[tag]['F']; r = load(crc, str(tmp / f'{tag}.bin'))
+            new = r['F']
+            expect = expected(tag, old)
             bad = [n for n in sorted(set(expect) | set(new)) if expect.get(n) != new.get(n)]
             check(r['RET'] == '1' and not bad, f'{tag} blob ({SIZE[tag]} B) -> v36: {len(new)} fields, fizzCount {f32(new["fizzCount"]):g}, '
                   f'viewElevation {f32(new["viewElevation"]):g}, edgeShadeFold {f32(new["edgeShadeFold"]):g}, edgeShadeEnd {f32(new["edgeShadeEnd"]):g}, edgeShadeEndWidth {f32(new["edgeShadeEndWidth"]):g}, fizzBlick {f32(new["fizzBlick"]):g}, fizzPhys {f32(new["fizzPhys"]):g}, fizzSourceX {f32(new["fizzSourceX"]):g}, edgeShadeShape {f32(new["edgeShadeShape"]):g}, v {int.from_bytes(bytes.fromhex(new["v"]), "little")}'
@@ -204,12 +210,12 @@ def main():
         r = load(v32crc, v32, 'blob')
         check(r['RET'] == '1' and r['DEFAULTS'] == '0' and r['STORE'] == f'{v32crc:08x} 720 other' and r['BLOB'] == v32hex
               and any('not saved (blob write)' in l for l in r['LOG']), f'v32 blob, blob write fails: migrated in RAM, old blob and CRC kept; log {r["LOG"][:1]}')
-        for tag in ('v32', 'v33', 'v34', 'v35'):
+        for tag in ('v31', 'v32', 'v33', 'v34', 'v35'):
             ocrc = LEGACY[tag][1]; r = load(ocrc, str(tmp / f'{tag}.bin'), 'crc')
             check(r['RET'] == '1' and r['STORE'] == f'{ocrc:08x} 736 params' and any('not saved (crc write)' in l for l in r['LOG'])
                   and r['RET2'] == '1' and r['SAME2'] == '1' and r['STORE2'] == f'{cur:08x} 736'
                   and any('interrupted v36 save: crc relabelled' in l for l in r['LOG']),
-                  f'{tag} blob, CRC write fails (the v36 blob under the {tag} CRC): the next boot restores the migrated look and relabels ({r["STORE2"]})')
+                  f'{tag} blob, CRC write fails (the v36 blob under the {tag} CRC): the next boot restores the migrated look and relabels ({r["STORE2"]}); log {r["LOG"][1:]}')
         r = load(v32crc, v32, 'blob')
         check(r['RET2'] == '1' and r['SAME2'] == '1' and r['STORE2'] == f'{cur:08x} 736',
               f'v32 blob, blob write fails: the next boot migrates again ({r["STORE2"]})')
@@ -218,6 +224,32 @@ def main():
               and r['LOG'][:1] == [f'{DROP} unknown (crc 12345678, 720 B), {WANT}'], f'unknown schema: defaults, NVS kept; log {r["LOG"][:1]}')
         r = load(0, '-')
         check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['LOG'] == [] and r['STORE'] == '00000000 0 other', 'empty NVS: defaults, nothing logged')
+
+        # An older firmware's interrupted migration: its whole blob (v set to its schema, as the migrations do) under any
+        # older CRC loads as that layout, migrates on to v36 and is saved at once; the next boot restores it as is.
+        def with_v(tag, v, name):
+            data = bytearray(open(tmp / f'{tag}.bin', 'rb').read()); data[0:4] = v.to_bytes(4, 'little')
+            path = tmp / name; path.write_bytes(bytes(data)); return str(path)
+        tags = list(LEGACY)
+        for btag in ('v33', 'v34', 'v35'):
+            bv = int(btag[1:]); blob = with_v(btag, bv, f'{btag}-interrupted.bin')
+            for ctag in tags[:tags.index(btag)]:
+                ocrc = LEGACY[ctag][1]; r = load(ocrc, blob); new = r['F']
+                expect = expected(btag, {**blobs[btag]['F'], 'v': bv.to_bytes(4, 'little').hex()})
+                bad = [n for n in sorted(set(expect) | set(new)) if expect.get(n) != new.get(n)]
+                check(r['RET'] == '1' and not bad and r['STORE'] == f'{cur:08x} 736 params' and r['RET2'] == '1' and r['SAME2'] == '1'
+                      and r['STORE2'] == f'{cur:08x} 736' and r['LOG'][1:] == ['params: restored from nvs'],
+                      f'{btag} blob (v {bv}, {SIZE[btag]} B) under the {ctag} CRC (an interrupted {btag} save) -> v36: fields equal by name, '
+                      f'fizzPhys {f32(new["fizzPhys"]):g}, saved as v36 ({r["STORE"]}); log {r["LOG"][:1]}'
+                      + (f'; differ: {bad[:8]}' if bad else ''))
+        r = load(LEGACY['v34'][1], with_v('v35', 34, 'v35-v34.bin'))
+        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == f'{LEGACY["v34"][1]:08x} 732 other',
+              f'v35-sized blob with v 34 under the v34 CRC: dropped, NVS kept; log {r["LOG"][:1]}')
+        r = load(LEGACY['v35'][1], str(tmp / 'v35.bin'), 'crc')   # its v36 blob under the v35 CRC, then made wrong in v
+        v36 = bytearray(bytes.fromhex(r['BLOB'])); v36[0:4] = (30).to_bytes(4, 'little'); (tmp / 'v36-v30.bin').write_bytes(bytes(v36))
+        r = load(LEGACY['v34'][1], str(tmp / 'v36-v30.bin'))
+        check(r['RET'] == '0' and r['DEFAULTS'] == '1' and r['STORE'] == f'{LEGACY["v34"][1]:08x} 736 other',
+              f'v36-sized blob with v 30 under the v34 CRC: dropped, NVS kept; log {r["LOG"][:1]}')
     print('all ok' if not fails else f'FAIL {len(fails)}')
     sys.exit(1 if fails else 0)
 
