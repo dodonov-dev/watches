@@ -3,7 +3,10 @@
 Shells (enf=true) get a support-enforcer part over the pebble's two slot top end walls (the middle 6 mm of each); with
 SUP: tree(manual) supports from the build plate only, branch angle 10 deg (the trees cannot escape out of the front
 opening: the face leans 15 deg), 0.7 xy distance. Lids are flipped (inner face down).
-    PLATE_OUT=_N_name.3mf PLATE_OBJECTS='[["name","file.stl",{per-object settings},x,y,enf], ...]' \\
+An optional 7th entry names a seam route (to-print CSV of x,y,z in the STL's frame, optionally + polyline id and strip
+half width): the triangles within SEAM_R (or the given half width) of it get a painted seam (Bambu's seam enforcer),
+so the slicer starts the outer wall of every loop that touches the strip on that line (with seam = aligned).
+    PLATE_OUT=_N_name.3mf PLATE_OBJECTS='[["name","file.stl",{per-object settings},x,y,enf(,"route.csv")], ...]' \\
         ~/.venvs/cad/bin/python cad/desk/make_plate.py
 """
 import sys, uuid, zipfile, numpy as np, pyvista as pv
@@ -13,6 +16,7 @@ TPL = "/home/andrey/_PROJECTS/watches-rolypoly/cad/desk/to-print/_7_plate_roly_p
 SUP = {"enable_support": "1", "support_type": "tree(manual)", "support_on_build_plate_only": "1", "enable_overhang_speed": "0,0",
        "tree_support_branch_angle": "10", "support_object_xy_distance": "0.7"}   # 10 deg: trees cannot escape out of the front opening (face leans 15)
 NOSUP = {"enable_overhang_speed": "0,0"}
+SEAM_R = 0.4                           # half width of the painted seam strip: the seam lands in its middle (seam = aligned)
 import os; OUT = os.environ.get("PLATE_OUT", None)
 
 def enforcer():
@@ -20,12 +24,23 @@ def enforcer():
     bs = [pv.Box(bounds=(sx * 9.0 - 3.0, sx * 9.0 + 3.0, -0.8, 3.25, 90.9, 92.0), level=0).triangulate() for sx in (-1, 1)]
     return pv.merge(bs).rotate_x(-15, point=(0, 0, 0))   # the middle 6 of each 8.1 end wall; body -> world
 
+def seam_mask(m, route):
+    """triangles of m whose centre is within the half width of a route polyline (each densified to 0.02 mm)"""
+    from scipy.spatial import cKDTree
+    A = np.loadtxt(TP + route, delimiter=","); C = m.points[m.faces.reshape(-1, 4)[:, 1:]].mean(1); out = np.zeros(len(C), bool)
+    if A.shape[1] == 3: A = np.c_[A, np.zeros(len(A)), np.full(len(A), SEAM_R)]
+    for pid in np.unique(A[:, 3]):
+        R = A[A[:, 3] == pid]; L = np.r_[0, np.cumsum(np.linalg.norm(np.diff(R[:, :3], axis=0), axis=1))]
+        t = np.arange(0, L[-1], 0.02); D = np.c_[[np.interp(t, L, R[:, k]) for k in range(3)]].T
+        out |= cKDTree(D).query(C)[0] < R[0, 4]
+    return out
+
 def obj_xml(parts):
     body = []
-    for pid, m, c in parts:
-        p = m.points - c; f = m.faces.reshape(-1, 4)[:, 1:]
+    for pid, m, c, seam in parts:
+        p = m.points - c; f = m.faces.reshape(-1, 4)[:, 1:]; sm = seam if seam is not None else np.zeros(len(f), bool)
         v = "\n".join(f'     <vertex x="{a:.5f}" y="{b:.5f}" z="{z:.5f}"/>' for a, b, z in p)
-        t = "\n".join(f'     <triangle v1="{a}" v2="{b}" v3="{z}"/>' for a, b, z in f)
+        t = "\n".join(f'     <triangle v1="{a}" v2="{b}" v3="{z}"' + (' paint_seam="4"/>' if k else '/>') for (a, b, z), k in zip(f, sm))
         body.append(f'  <object id="{pid}" p:UUID="{uuid.uuid4()}" type="model">\n   <mesh>\n    <vertices>\n{v}\n    </vertices>\n'
                     f'    <triangles>\n{t}\n    </triangles>\n   </mesh>\n  </object>')
     return ('<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" '
@@ -38,33 +53,34 @@ def main():
     import json; OBJECTS = [tuple(o) for o in json.loads(os.environ["PLATE_OBJECTS"])]; OUT = TP + os.environ["PLATE_OUT"]
     zt = zipfile.ZipFile(TPL); res, build, settings, inst, rels, files = [], [], [], [], [], {}
     nid = 1
-    for i, (name, stl, cfg, x, y, enf) in enumerate(OBJECTS):
+    for i, (name, stl, cfg, x, y, enf, *route) in enumerate(OBJECTS):
         m = pv.read(TP + stl).triangulate().clean()
         if 'lid' in stl: m = m.rotate_x(180, point=(0, 0, 0))   # lids print flipped: inner face down (as the oval lid on plate 3)
         bd = m.bounds
         c = np.array([(bd[0] + bd[1]) / 2, (bd[2] + bd[3]) / 2, (bd[4] + bd[5]) / 2]); hz = (bd[5] - bd[4]) / 2
-        parts = [(nid, m, c)]; nid += 1
+        seam = seam_mask(m, route[0]) if route else None
+        parts = [(nid, m, c, seam)]; nid += 1
         if enf:
-            parts.append((nid, enforcer(), c)); nid += 1
+            parts.append((nid, enforcer(), c, None)); nid += 1
         oid = nid; nid += 1; k = i + 1
         files[f"3D/Objects/object_{k}.model"] = obj_xml(parts)
         rels.append(f' <Relationship Target="/3D/Objects/object_{k}.model" Id="rel-{k}" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/>')
-        comps = "\n".join(f'    <component p:path="/3D/Objects/object_{k}.model" objectid="{pid}" p:UUID="{uuid.uuid4()}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>' for pid, _, _ in parts)
+        comps = "\n".join(f'    <component p:path="/3D/Objects/object_{k}.model" objectid="{pid}" p:UUID="{uuid.uuid4()}" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>' for pid, *_ in parts)
         res.append(f'  <object id="{oid}" p:UUID="{uuid.uuid4()}" type="model">\n   <components>\n{comps}\n   </components>\n  </object>')
         build.append(f'  <item objectid="{oid}" p:UUID="{uuid.uuid4()}" transform="1 0 0 0 1 0 0 0 1 {x} {y} {hz:.5f}" printable="1"/>')
         md = "\n".join(f'    <metadata key="{kk}" value="{escape(vv)}"/>' for kk, vv in cfg.items())
         ps = []
-        for j, (pid, pm, _) in enumerate(parts):
+        for j, (pid, pm, *_) in enumerate(parts):
             sub, pn = ("normal_part", name) if j == 0 else ("support_enforcer", "support enforcer: slot top end walls")
             ps.append(f'    <part id="{pid}" subtype="{sub}">\n      <metadata key="name" value="{escape(pn)}"/>\n'
                       '      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n'
                       f'      <metadata key="source_file" value="{stl}"/>\n      <metadata key="source_object_id" value="0"/>\n'
                       f'      <metadata key="source_volume_id" value="{j}"/>\n    </part>')
         settings.append(f'  <object id="{oid}">\n    <metadata key="name" value="{escape(name)}"/>\n' + (md + "\n" if md else "") +
-                        f'    <metadata key="extruder" value="1"/>\n    <metadata face_count="{sum(pm.n_cells for _, pm, _ in parts)}"/>\n' + "\n".join(ps) + '\n  </object>')
+                        f'    <metadata key="extruder" value="1"/>\n    <metadata face_count="{sum(pm.n_cells for _, pm, *_ in parts)}"/>\n' + "\n".join(ps) + '\n  </object>')
         inst.append(f'    <model_instance>\n      <metadata key="object_id" value="{oid}"/>\n      <metadata key="instance_id" value="0"/>\n'
                     f'      <metadata key="identify_id" value="{100 + i}"/>\n    </model_instance>')
-        print(name, "parts", len(parts), "height", round(2 * hz, 2))
+        print(name, "parts", len(parts), "height", round(2 * hz, 2), *(("seam triangles", int(seam.sum())) if route else ()))
     head = zt.read("3D/3dmodel.model").decode().split("<resources>")[0]
     files["3D/3dmodel.model"] = (head + "<resources>\n" + "\n".join(res) + "\n </resources>\n" f' <build p:UUID="{uuid.uuid4()}">\n' + "\n".join(build) + "\n </build>\n</model>\n")
     files["3D/_rels/3dmodel.model.rels"] = ('<?xml version="1.0" encoding="UTF-8"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">\n' + "\n".join(rels) + "\n</Relationships>\n")

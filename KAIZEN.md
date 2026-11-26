@@ -959,3 +959,20 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - `schleiferbock_stencils.inscribed_w` caps at 4.0 (search limit 2.0): wrong for anything wider.
 - Simplified Schleiferbock stencils have no STEP (polyline apertures made the old one 9 MB); export splines if a STEP is wanted.
 - Simplified goat head has no eye: an island needs bridges; in the "sparks" type it could stand on the floor.
+
+## 2026-11-26 seam coupon (plate _13)
+- Slicer CLIs drop a changed project setting unless it is also listed in `different_settings_to_system` (OrcaSlicer 2.5.0; seen with `wall_sequence`). Per-object keys in `model_settings.config` are taken as is.
+- Bambu Studio's flatpak slices from the command line (`flatpak run --command=bambu-studio com.bambulab.BambuStudio --slice 1 --outputdir <dir under $HOME> plate.3mf`, ~1 min for plate _10): use it, not Orca, for slicer checks. It sees only $HOME, not /tmp.
+- G-code readers: `; FEATURE:` is not repeated when the next object starts in the same role; find loop starts by travel moves (`seam_coupon.py check`).
+- OrcaSlicer's "inner-outer-inner" with Arachne came out as outer-first on the shell; not looked into.
+- `make_plate.py` could paint the full shells too: cavity wall in the slot and notch zones, edge routes in the foot and dome bands; plus a seam blocker over the front as a safety net (untested).
+- Seam route finder works on y(x) of the back contour: fine within ~0.45 of the half width, artefacts on the shoulders.
+- The coupon STLs differ only in the id notches (5 MB each); one STL plus notch modifiers on the plate would do.
+
+## 2026-11-26 seam on the full shells (plate _15)
+- Bambu Studio's CLI places the shells 2.00 mm off in y from make_plate's nominal position (object centre), cause unknown; `seam_shell.py check` takes the frame from the outer walls' bounding box instead.
+- The pillar's inner face (and other flat CAD faces) are a few huge triangles: per-triangle seam paint cannot mark a line there. Would need a local subdivision in make_plate (keeping the mesh closed) or Bambu's sub-triangle paint code.
+- W's back skin has a jagged patch at z 8–9, x −2..4 (strong +-15 deg speckle in `seam-shell-routes.png`): a relief mesh artefact, not looked into.
+- Route finder: where edges are faint (W) it still wanders up to 12 mm sideways for a 3 deg edge; a higher sideways price or a minimum edge strength would give a straighter line.
+- With the scarf on, the apex's last tiny loops are drawn in several pieces (many loop starts in 3 of the top 12 layers); same settings as coupon 2, which printed fine.
+- Bambu Studio CLI, sliced 3mf: `--export-3mf name.gcode.3mf` takes a bare file name (it is joined to --outputdir). No thumbnails (no OpenGL from the command line), `printer_model_id` empty in slice_info, the model is kept in the file (32 MB). A single object gets no `; start printing object` labels.
