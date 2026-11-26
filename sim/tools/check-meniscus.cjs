@@ -8,6 +8,7 @@ const { DEFAULT_PARAMS, migrateParams } = require(path.join(cache, 'sim/src/para
 // Contact angle whose spherical cap has wall depth `depth` px in the 61 px test tube (R = 30).
 const ang = (depth) => 90 - 2 * Math.atan(depth / 30) * 180 / Math.PI;
 const { newTube, columnLen, mirrored } = require(path.join(cache, 'sim/src/physics.js'));
+const { lidWet } = require(path.join(cache, 'sim/src/lidLaw.js'));
 const jobs = [];
 // Sprite sheets decoded by check_meniscus.py (sprites/<name>.rgba), metadata from the sim's assets.
 R.SPRITE_SHEETS.forEach((name, i) => {
@@ -478,17 +479,23 @@ for (const e of [20, 30]) {
   // dry past the body: a band below visible opacity (strokeA < 1/255: no lid layers; surfaceBand 0 has no lid at all)
   const d = render('lid-marks-dry', { ...scene, surfaceBand: 0.002 }, { backTilt: 0.26 }); jobs.pop();
   const at = (fr, x) => fr[30 * 536 + x];
-  // under the lid (full pixel past the body ramp) the mark shows its dry share u of what it shows dry, u = 0 at the
-  // body's ramp, 1 at the back line (the liquid path thinning to nothing)
-  let n = 0;
+  // under the lid (full pixel past the body ramp) the mark shows the dry share of what it shows dry: 1 - wet, wet the
+  // liquid over the rear wall there, the larger of the stroke's a (1 - u) and the absorption along the refracted path
+  // (lidLaw.ts lidWet: this liquid is opaque, so a mark is hidden from the front line until the path thins out near the
+  // back line); u = 0 at the body's ramp, 1 at the back line
+  let n = 0, shown = 0, hidden = 0;
+  assert.ok(b.law && b.lidQ, `the lid publishes its law (e ${e})`);
   for (let x = Math.ceil(xm + hw); x + 1 <= xm + w; x++) {
     const dry = delta([at(d, x)], [at(g, x)]);
     if (dry < 150) continue;   // no mark there
     const u = (x + 0.5 - xm + hw) / (w + hw), seen = delta([at(f, x)], [at(g, x)]);
-    assert.ok(Math.abs(seen - dry * u) <= 20, `mark under the lid seen through the liquid path (e ${e}, x ${x}: ${seen} vs ${dry} x ${u.toFixed(3)})`);
+    const wet = Math.min(1, Math.max(b.fill[0][30] * (1 - u), Math.min(1, w) * lidWet(b.law, b.lidQ[30], u)));
+    assert.ok(Math.abs(seen - dry * (1 - wet)) <= 20, `mark under the lid seen through the liquid path (e ${e}, x ${x}: ${seen} vs ${dry} x ${(1 - wet).toFixed(3)})`);
+    if (u < 0.45) { assert.ok(seen <= 0.5 * dry, `an opaque liquid hides a mark under the lid's front part (e ${e}, x ${x}, u ${u.toFixed(2)}: ${seen} of ${dry})`); hidden++; }
+    if (u > 0.92) { assert.ok(seen >= 0.5 * dry, `the mark shows again where the liquid thins out at the back line (e ${e}, x ${x}, u ${u.toFixed(2)}: ${seen} of ${dry})`); shown++; }
     n++;
   }
-  assert.ok(n >= 4, `test scene must put a mark under the lid (e ${e}: ${n} px)`);
+  assert.ok(n >= 4 && hidden + shown >= 1, `test scene must put a mark under the lid (e ${e}: ${n} px, ${hidden} in its front part, ${shown} at the back line)`);
   const r = render(`lid-marks-rim-${e}`, { ...scene, surfaceRim: 1 }, { backTilt: 0.26 }), rn = render(`lid-marks-rim-noticks-${e}`, { ...scene, surfaceRim: 1, ticksH: false }, { backTilt: 0.26 });
   const fl = Math.floor(xm);   // the pixel the front line crosses
   assert.ok(delta([at(r, fl)], [at(rn, fl)]) < delta([at(rn, fl)], [black]), `front rim kept over a black mark (e ${e})`);

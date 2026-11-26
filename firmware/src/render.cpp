@@ -484,6 +484,7 @@ static inline float sqrtExact(float x) {
 }
 #define FIZZ_SQRT sqrtExact   // fizzPhys's per-bubble kernel (fizzLit): the exact root, inline
 #include "fizz_light.h"
+#include "lid_law.h"      // the desk-view lid's liquid (lidRow, Mark::bandMark's lid branch)
 // Step 5 fizz: one row of an AA bubble disc (see drawTube). Coverage and core are decided from squared distances
 // with a 1e-4 relative margin that float rounding cannot cross; a root is taken only in the anti-aliased ring
 // (approximate, see sqrtApprox) and in the core's margin (exact).
@@ -760,15 +761,16 @@ TUBE_IRAM static void __attribute__((noinline)) bandRow(uint16_t *row, int xa, i
   }
 }
 // Desk view: the lid over [xa, xb) from its front contact line xm, w px tall (sim drawTube lid()): the band's colours,
-// the fill fading from the front line to 0 at the back line (1 - u: the liquid path under the lid), the blick, today's
-// rim on the front line (rimK, 1 px centred on it) and a thinner liquid-tinted contour on the back line (rimBK,
-// LID_BACK_W px). One write per pixel: a single layer as bandRow, several bg (1 - A) + P (premultiplied, no division).
-// In flash: drawn only with params viewElevation on.
-static void __attribute__((noinline)) lidRow(uint16_t *row, int xa, int xb, float xm, float hw, float w, float invWidth, float a,
+// the fill: the liquid's opacity along its refracted path to the back wall (lid_law.h: law, lq the row's chord share),
+// at least the shaded fill a x fill x (1 - u) of before, the blick, today's rim on the front line (rimK, 1 px centred on
+// it) and a thinner liquid-tinted contour on the back line (rimBK, LID_BACK_W px). One write per pixel: a single layer as
+// bandRow, several bg (1 - A) + P (premultiplied, no division). In flash: drawn only with params viewElevation on.
+static void __attribute__((noinline, optimize("fp-contract=off"))) lidRow(uint16_t *row, int xa, int xb, float xm, float hw, float w, float invWidth, float a,
                                              float fill, float blickK, float pull, float rimK, float rimBK, uint16_t inner,
-                                             uint16_t outer, uint16_t liquid, uint16_t blickC, uint16_t rimC, uint16_t rimBC) {
+                                             uint16_t outer, uint16_t liquid, uint16_t blickC, uint16_t rimC, uint16_t rimBC,
+                                             const LidLaw &law, float lq) {
   if (xa < 0) xa = 0; if (xb > PANEL_W) xb = PANEL_W;
-  const float bLo = w - LID_BACK_W;
+  const float bLo = w - LID_BACK_W, w1 = fmn(1, w);
   for (int x = xa; x < xb; x++) {
     const float t = x + 0.5f - xm;
     const float lo = fmx(t - 0.5f, -hw), hi = fmn(t + 0.5f, w);
@@ -777,7 +779,7 @@ static void __attribute__((noinline)) lidRow(uint16_t *row, int xa, int xb, floa
     const float u = clampf(((lo + hi) * 0.5f + hw) * invWidth, 0, 1);
     const float us = u * u * (3 - 2 * u);
     const uint16_t c = blend565(inner, outer, us);
-    const float af = a * fill * coverage * (1 - u) * (1 - pull * us);
+    const float af = fmx(a * fill * (1 - u), w1 * lidOpacity(law, lq, u)) * coverage * (1 - pull * us);
     const float ab = a * blickK * coverage * 4 * u * (1 - u);
     const float arF = a * rimK * fmx(0, fmn(hi, 0.5f) - fmx(lo, -0.5f));
     const float arB = a * rimBK * fmx(0, hi - fmx(lo, bLo));
@@ -1198,8 +1200,15 @@ static inline uint16_t throughLiquid(uint16_t bg, uint16_t mark, int T, int C, i
 // mirror; 0 = time edge, dir +1, 1 = home edge, dir -1): per row the profile x, the outward stroke width
 // (0 = no band) and the fill / blick / rim weights, stroke opacity included. See sim BandInfo / markFn.
 // lid (desk view, drawTube lidRow): the time edge's band is the lid, xm[0] its front contact line, w[0] its height,
-// fill[0] its opacity a (not x surfaceFill: the marks' liquid path), rimB its back contour's weight per a x min(1, w / 2).
-struct BandInfo { const float *xm[2], *w[2], *fill[2], *blick[2], *rim[2]; float pull[2], hw; bool mirror; int L; bool lid; float rimB; };
+// fill[0] its opacity a (not x surfaceFill: the marks' liquid path), rimB its back contour's weight per a x min(1, w / 2),
+// law / lidQ its liquid (lid_law.h) and per row the chord share q (Tube::lidLaw; null without a lid). The new fields last:
+// the hot kernels' offsets of the others unchanged.
+struct BandInfo { const float *xm[2], *w[2], *fill[2], *blick[2], *rim[2]; float pull[2], hw; bool mirror; int L; bool lid; float rimB;
+                  const LidLaw *law; const float *lidQ; };
+// The desk-view lid's liquid per tube (sim lidLaws / lidLawKey / lidQs): the law, what it was built for (lidTau, lidDelta,
+// contactAngle, liquidTransparency; valid once built) and per row the chord share q = z_R / R. PSRAM, one per tube
+// (render_init): not in the Tube (internal RAM on the LCD), never file-static (the two tubes render at once).
+struct LidLawState { LidLaw law; float key[4]; bool valid; float q[TUBE_HEIGHT_MAX]; };
 // Liquid body bounds per tube row (panel frame) plus, when drawn, the surface band past them.
 struct Edges { const float *lo, *hi; const BandInfo *band = nullptr; };
 struct Mark {
@@ -1756,6 +1765,7 @@ struct Tube {
   const uint16_t *effectTable(EffectTable &T, const Params &p, const uint16_t *back, const uint16_t *rows, uint32_t gen, float lightK, bool glow) const;
   void drawTube(int y0, const TubeState &st, const Params &p, uint32_t gen, int ticksN);
   void traceBlur(const uint16_t *trace, bool mir, int a0, int a1, int c0, int c1, float filmV, int &aLo, int &aHi);
+  LidLawState *lidLaw = nullptr;   // the desk-view lid's liquid (drawTube, Mark::bandMark), PSRAM, render_init; last: no other member moves
 };
 static Tube tubes[2];
 static bool renderOk = false;   // render_init succeeded: every tube exists (the profile resets visit them all)
@@ -1795,6 +1805,12 @@ void __attribute__((noinline)) Mark::profPixel(int x, int y, uint16_t c, int cov
   prof[TP_CYC_GEN] += esp_cpu_get_cycle_count() - c0; prof[TP_PX_GEN]++;
 }
 #endif
+// The wet share of a rear mark past the body under the lid (sim markFn): at least the lid's own absorption path
+// (lidWet), whatever surfaceBand. Its own noinline flash call, taken on lid pixels only: bandMark stays as it was.
+static float __attribute__((noinline, optimize("fp-contract=off"))) lidMarkWet(const BandInfo &b, int ry, float u, float us, float wEff, float coverage) {
+  const float lw = b.law ? fmn(1, wEff) * lidWet(*b.law, b.lidQ[ry], u) : 0.0f;
+  return fmn(1, fmx(b.fill[0][ry] * (1 - u), lw) * coverage * (1 - b.pull[0] * us));
+}
 // The concave surface band's footprint at a rear-mark pixel — it overlaps the body by hw inside the profile:
 // its rim and blick stay on top of the mark (the write is scaled by what they let through; approximation as
 // in the sim: the layers' own colour also yields by that share). Past the body the rear wall is seen through
@@ -1836,7 +1852,7 @@ bool __attribute__((noinline)) Mark::bandMark(int x, int y, int ry, uint16_t c, 
     t.wr(x, y, covT >= 256 ? c : blend565T(t.rd(x, y), c, covT));
     return true;
   }
-  const float wet = lid ? fmn(1, b.fill[0][ry] * coverage * (1 - u) * (1 - b.pull[0] * us)) : fmn(1, b.fill[side][ry] * coverage * (1 - b.pull[side] * us));
+  const float wet = lid ? lidMarkWet(b, ry, u, us, wEff, coverage) : fmn(1, b.fill[side][ry] * coverage * (1 - b.pull[side] * us));
   const float cov = covT * (1 / 256.0f);
   const float aw = cov * wet * (rel ? T * (1 / 256.0f) : 1) * wallK, ad = cov * (1 - wet) * (t.pal.dryT[ry] * (1 / 256.0f));
   const float al = (aw + ad) * through;
@@ -5647,11 +5663,23 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
   if (lidT > 0) { lidAngles(p, st.backTilt, lidTau, lidDelta); lidEnd = clampf((L - 0.5f - xe) / fmx(1, 2 * lidR * fabsf(tanf(lidTau))), 0, 1); }
   fizzLidT = lidT; fizzLidTau = lidT > 0 ? lidTau : 0; fizzLidDelta = lidT > 0 ? lidDelta : 0;   // the stepper's lid inputs (with strokeR)
   lid = fizzLidOf(fizzLidT, fizzLidTau, fizzLidDelta, boreR(p));
+  // The liquid under the lid (lid_law.h; docs/lid-fill/model.md): its law when the pose or the look changed, and per row
+  // the chord share q (sim lidQ: z / R, the root below).
+  float *const lidQ = lidT > 0 ? lidLaw->q : nullptr;
+  const float lidInvR = lidT > 0 ? 1 / lidR : 0.0f;
+  if (lidT > 0) {
+    LidLawState &ls = *lidLaw;
+    if (!(ls.valid && ls.key[0] == lidTau && ls.key[1] == lidDelta && ls.key[2] == p.contactAngle && ls.key[3] == p.liquidTransparency)) {
+      lidLawBuild(ls.law, lidTau, lidDelta, p.contactAngle, p.liquidTransparency);
+      ls.key[0] = lidTau; ls.key[1] = lidDelta; ls.key[2] = p.contactAngle; ls.key[3] = p.liquidTransparency; ls.valid = true;
+    }
+  }
   for (int ry = 0; ry < H; ry++) {
     float ex;
     const float exL = p.freeLiquid ? edgeXL(ry, xs, tanL, capL) : 0;
     if (lidT > 0) {
       const float dy = ry - lidYc, z2 = lidR * lidR - dy * dy, z = z2 > 0 ? sqrtf(z2) : 0.0f;
+      lidQ[ry] = z * lidInvR;   // sim z2 > 0 ? sqrt(z2) x (1 / R) : 0
       const float xb = fmx(exL, wallX(ry, xe, tanR, capR) - capR.k * (capR.h - capR.cap) - lidT * lidR + lidT * z);   // the back line, never behind the home profile
       const float w = fmn(2 * lidT * z * lidEnd, fmx(0, xb - exL));   // the lid: what is left of the body
       ex = xb - w; strokeR[ry] = w;
@@ -5807,7 +5835,8 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
     if (mir) { boundLo[ry] = L - hi; boundHi[ry] = L - lo; } else { boundLo[ry] = lo; boundHi[ry] = hi; }
   }
   const BandInfo band{{edges, edgesL}, {strokeR, strokeL}, {bandFill[0], bandFill[1]}, {bandBlick[0], bandBlick[1]},
-                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L, lidT > 0, lidT > 0 ? lidRimB : 0.0f};
+                      {bandRim[0], bandRim[1]}, {pullR, pullL}, softW * 0.5f, mir, L, lidT > 0, lidT > 0 ? lidRimB : 0.0f,
+                      lidT > 0 ? &lidLaw->law : nullptr, lidQ};
   Edges bounds{boundLo, boundHi, hasLiquid && p.surfaceBand > 0 ? &band : nullptr};
   if (!p.ticksOnTop || !p.digitsOnTop) buildWetShare(bounds, H, wetShare, wetRun, wetKey, wetKeyH);
   TU_MARK(TU_BOUNDS);
@@ -6387,7 +6416,8 @@ __attribute__((optimize("fp-contract=off"))) void Tube::drawTube(int y0, const T
       const uint16_t rimB0 = blend565(pal.rows[ry], rc.darkC, 0.75f), rimBC = sp ? shade565(rimB0, rc.shadeF[ry]) : rimB0;
       int xa = (int)ffloor(xm - hw), xb = (int)fceil(xm + w); if (xa < xlo) xa = xlo; if (xb > xhi) xb = xhi;
       TCLIP(FB + ry * PANEL_W, PANEL_W);
-      lidRow(FB + ry * PANEL_W, xa, xb, xm, hw, w, 1 / (w + hw), a, fill, blickK, pullR, rimK, lidRimB * fmn(1, w / 2), inner, outer, bRows[ry], blickC, rimC, rimBC);
+      lidRow(FB + ry * PANEL_W, xa, xb, xm, hw, w, 1 / (w + hw), a, fill, blickK, pullR, rimK, lidRimB * fmn(1, w / 2), inner, outer, bRows[ry], blickC, rimC, rimBC,
+             lidLaw->law, lidQ[ry]);
     };
     for (int ry = rb0; ry < rb1; ry++) {
       int xi = (int)ffloor(edges[ry]), xa = (int)ffloor(edgesL[ry]) + 1; if (xa < capX0[ry]) xa = capX0[ry];
@@ -7098,6 +7128,8 @@ bool render_init(bool fast) {
     tb.traceMemo = (TraceMemo *)heap_caps_malloc(sizeof(TraceMemo), MALLOC_CAP_SPIRAM);
     if (tb.traceMemo) tb.traceMemo->valid = false;
     tb.traceStreakTab = (float *)heap_caps_malloc(TUBE_LENGTH_PX * sizeof(float), MALLOC_CAP_SPIRAM);
+    if ((tb.lidLaw = (LidLawState *)heap_caps_malloc(sizeof(LidLawState), MALLOC_CAP_SPIRAM))) tb.lidLaw->valid = false;   // < 1 KB a tube
+    ok = ok && tb.lidLaw;
     if (tb.traceStreakTab) for (int x = 0; x < TUBE_LENGTH_PX; x++) tb.traceStreakTab[x] = traceStreak(x + (uint32_t)i * 6151u);
     ok = ok && tb.traceStreakTab;
     if (uint8_t *rows = (uint8_t *)heap_caps_malloc(TUBE_HEIGHT_MAX * sizeof(DigitRow) + 63, MALLOC_CAP_SPIRAM))   // one row per cache line
