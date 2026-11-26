@@ -1,6 +1,6 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.39 ms a frame at 1; Astra reviews 1-3)_
+_Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.4..0.6 ms a frame at 1; Astra reviews 1-3 addressed)_
 
 ## Fizz light (2026-11-25 / 26), branch `fizz-light` on edge-ends 41121d2: fizzPhys; board-benched (lcd316@320w8-8), look check pending
 
@@ -29,12 +29,16 @@ _Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.39 ms a frame at
   plane for their rays: axial there), review 2 both settled, nothing else at medium or above
   (docs/fizz-light/astra-review1.md, astra-review2.md).
 - Board (lcd316@320w8-8, the pale look docs/edge-shade-ends/board-look-before.json, stand pose pinned, 100 + 18 bubbles,
-  medians): fizzPhys 0 53.2 fps / render 18.22 ms; fizzPhys 1 52.1 fps / 18.61 ms (+0.39 ms). The first port cost
+  medians of 3 runs x 5): fizzPhys 0 53.2-53.3 fps / render 18.2 ms; fizzPhys 1 52.1 fps / 18.61 ms (+0.39 ms) and, the final
+  build, 51.6 fps / 18.77 ms (+0.57 ms, runs 0.05..0.79; the hours core 16.4 vs ~15.95 ms in both): -1.1 to -1.7 fps. The first port cost
   +0.94 ms (53.7 -> 51.0): a double-precision frame set-up (soft float), 3.6 KB of flash code refetched every frame and
   ~5.6 us a bubble (FIZZ_PROF). Now the set-up is float32 and keyed on its inputs, planBubbleLit is in IRAM (heap 29 KB
   free, was 32.9) and, firmware only, each slot's light is retaken every 4th frame (docs/fizz-light/model.md "Cost").
   Astra review 3 (medium): a reborn slot could keep the last bubble's light for up to 3 frames; the memo is now retaken
   whenever the bubble is not where it was taken (> 6 px along, > 2 px across / in depth).
+  Astra's confirming pass (review 4) did not finish: the Codex workspace ran out of credits mid-run. The two cases it was
+  probing are covered without it: a reborn bubble of another radius (the memo keeps r), a scene change between frames
+  (liquid, bore, tone, lid / end: every memo old at once). Not reviewed by Astra: that last delta (docs/fizz-light/astra-review3.md).
   Panel refills OK (late 0, restarts 0). The board had v28 firmware and a default-like look (saved:
   docs/fizz-light/board-look-before-flash.json); NVS was reset by the schema change.
 - Left on the board: this branch's build, the pale look written to NVS with fizzPhys 1, the clock set.

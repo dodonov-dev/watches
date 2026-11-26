@@ -3429,8 +3429,9 @@ struct FizzClass {
 #define FIZZ_LIT_JUMP 6.0f  // px along the tube: farther from where its light was taken = another bubble's place
 #define FIZZ_LIT_SIDE 2.0f  // px across the bore / in depth likewise (a slot reborn at the same height, elsewhere in the bore: review 3)
 // x, y, z: where it was taken (y, z: the body's; without bodies the row and the depth level x 2R); frame: litFrame then (0: never)
-struct FizzLitMemo { FizzLit o; float x, y, z; uint32_t frame; };
-static_assert(sizeof(FizzLitMemo) == 40, "FIZZ_POOL x 40 B a tube");
+// r: the radius it was taken for (another size in the slot: another bubble)
+struct FizzLitMemo { FizzLit o; float x, y, z, r; uint32_t frame; };
+static_assert(sizeof(FizzLitMemo) == 44, "FIZZ_POOL x 44 B a tube");
 struct FizzLook {
   float key[4]; bool valid, masks;   // fizzSize, fizzSizeVar, fizzShadeOff, fizzBlick the classes were built for; masks fit
   FizzClass k[FIZZ_SIZES];
@@ -6700,7 +6701,7 @@ FIZZ_IRAM void __attribute__((noinline, optimize("fp-contract=off"))) Tube::plan
   const float dx = fx - mm.x, dy = my - mm.y, dz = mz - mm.z;
   // (a NaN place fails every <= below: retaken every frame)
   const bool here = dx <= FIZZ_LIT_JUMP && dx >= -FIZZ_LIT_JUMP && dy <= FIZZ_LIT_SIDE && dy >= -FIZZ_LIT_SIDE && dz <= FIZZ_LIT_SIDE && dz >= -FIZZ_LIT_SIDE;
-  if (mm.frame == 0 || age >= FIZZ_LIT_EVERY || ((fl.litFrame + (uint32_t)slot) & (FIZZ_LIT_EVERY - 1)) == 0 || !here) {
+  if (mm.frame == 0 || age >= FIZZ_LIT_EVERY || ((fl.litFrame + (uint32_t)slot) & (FIZZ_LIT_EVERY - 1)) == 0 || !here || !(mm.r == r)) {
     float yb, zb;
     if (bd) { yb = bd->y; zb = bd->z; }
     else {
@@ -6708,7 +6709,7 @@ FIZZ_IRAM void __attribute__((noinline, optimize("fp-contract=off"))) Tube::plan
       const float zm = sqrtExact(fmx(0, a * a - yb * yb)); zb = clampf(a * (1 - 2 * f.z), -zm, zm);
     }
     fizzLit(lit, fx, yb, zb, r, fizzSurf[fy], fizzSurfL[fy], fzLid ? strokeR[fy] : 0.0f, mm.o);
-    mm.x = fx; mm.y = my; mm.z = mz; mm.frame = fl.litFrame;
+    mm.x = fx; mm.y = my; mm.z = mz; mm.r = r; mm.frame = fl.litFrame;
   }
   const FizzLit &o = mm.o;
   const float K = depthK + (o.K - depthK) * phys;
@@ -6899,6 +6900,9 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff, float light) {
     bool same = fl.litValid && fl.litKeyI == lkI;
     for (int i = 0; same && i < 7; i++) same = fl.litKey[i] == lk[i];   // (a NaN never matches: rebuilt every frame)
     if (!same) {
+      // not the pose or the light moving but the scene changing (the liquid, the bore, the ring's tone, a lid or an end
+      // opening): every memo is old at once (planBubbleLit), not up to FIZZ_LIT_EVERY - 1 frames later
+      if (fl.litValid && !(fl.litKeyI == lkI && fl.litKey[0] == lk[0] && fl.litKey[1] == lk[1] && fl.litKey[6] == lk[6])) fl.litFrame += FIZZ_LIT_EVERY;
       fizzLightFrame(fl.lit, lk[0], lk[1], lk[2], lk[3], fzLid, lk[4], lk[5], fizzExposed, lk[6]);
       for (int i = 0; i < 7; i++) fl.litKey[i] = lk[i];
       fl.litKeyI = lkI; fl.litValid = true;
@@ -7060,7 +7064,7 @@ bool render_init(bool fast) {
       FizzLook &fl = *tb.look;
       fl.valid = fl.masks = fl.depthValid = fl.litValid = false; fl.mask = nullptr; fl.phys = 0; fl.depthPhysT = -1; fl.fizzUp = POSE_DEFAULT;
       fl.litFrame = 0;
-      fl.litMemo = (FizzLitMemo *)heap_caps_malloc(FIZZ_POOL * sizeof(FizzLitMemo), MALLOC_CAP_SPIRAM);   // 19,200 B a tube
+      fl.litMemo = (FizzLitMemo *)heap_caps_malloc(FIZZ_POOL * sizeof(FizzLitMemo), MALLOC_CAP_SPIRAM);   // 21,120 B a tube
       if (fl.litMemo) memset(fl.litMemo, 0, FIZZ_POOL * sizeof(FizzLitMemo));   // frame 0: never taken
     }
     ok = ok && tb.look && tb.look->litMemo;
