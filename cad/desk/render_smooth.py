@@ -23,7 +23,7 @@ VIEWS = {   # camera direction (from the object towards the camera), up
     "iso-under-back": ((0.6, 1.3, -1.0), (0, 0, 1)), "iso-top": ((-0.6, -0.8, 1.6), (0, 0, 1)),
     "slot-top": ((-0.7, -1.0, 0.9), (0, 0, 1)), "slot-bottom": ((-0.7, -1.0, -0.5), (0, 0, 1)),
 }
-COLORS = {"shell": "tan", "lid": "sienna", "glass": "steelblue", "board": "darkgreen", "rod-l": "lightcyan",
+COLORS = {"shell": "tan", "lid": "sienna", "fork": "darkorange", "glass": "steelblue", "board": "darkgreen", "rod-l": "lightcyan",
           "rod-r": "lightcyan", "battery": "silver", "adapter": "purple"}
 
 

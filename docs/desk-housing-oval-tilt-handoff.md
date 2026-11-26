@@ -157,6 +157,14 @@ Pictures in `images/desk-housing-v3/` (`sheet-codex.jpg`; `agy/` Neon; `fable/` 
   - **Reviewed by Astra (codex CLI, 2026-11-26):** no fault found in the paint or the settings; four weaknesses in `check` (frame fitted on the seams it verifies, loops starting as an overhang wall, 3-d instead of in-layer distance, slot lips counted as inside) are fixed, the numbers above are from the fixed check.
 - **The shell STLs are unchanged:** the seam is hidden by paint and seam settings in the plate files only. The routes follow the exact surface (STL coordinates), so after regenerating a shell STL (e.g. a relief change) the old route CSVs and plates are stale: rerun `cad/desk/seam_shell.py`, slice again and run its `check`.
 
+## Board keeper, pebble round D (2026-11-26)
+- **Problem:** the pebble's board was only located by the rods (x, s); along the depth it had to be taped. Tape is not wanted (a strong one breaks the display on removal).
+- **Chosen (user):** a printed fork behind the board's acrylic back plate plus ribs on the shell's side walls. UART, J5 and I2C open upwards, so the plug side has no prong, upper pad or upper rib: 3 pads, 3 ribs. Details and numbers: `cad/desk/out-smooth/pebble/WIP.md` (top) and `report.txt` (last line).
+- **Variants looked at and dropped** (sketches in `cad/desk/concept/board-bracket/`, one line each in `KAIZEN.md`): magnet bracket on the M2 screws, wedge sled on the back wall, strap + battery tray, strap + battery on foam.
+- **Built:** `smooth.py pebble` adds the ribs on the mesh and exports the fork; `keeper_to_print.py` puts the same ribs on round C's relief shells. Files `to-print/pebble-D-*`.
+- **Assembly:** board with its cables, adapter, fork, lid. The 0.5 foam strips at the glass's short ends stay, but must not stick to the glass (wall side only, or liner left on).
+- **Open:** the remaining board measurements in `docs/lcd316-mechanical.md` ("To measure"; the total thickness is done: 9.15); seam plates for the D relief shells (`seam_shell.py` still reads the C names; the user does not print `_15` / `_16`).
+
 ## Simplified Schleiferbock stencils (2026-11-26)
 - **User:** the plate _12 stencils are good but too detailed for a glow-through logo. Wanted: goat's head only, bigger wheel / gear, bigger sparks.
 - **Logo:** `images/schleiferbock-logo/simple.py` draws it in mm at stencil size (14 × 8.83 box) and writes `schleiferbock-simple-{wheel,gear}.svg` + `simple-preview.png`. No arm, no knife. Wheel Ø 6.2 (was 4.1), gear 8 teeth 0.9 high, sparks 1.05 wide × ~2 long (were 0.4 × 1.5). Nothing narrower than 0.5 (0.4 nozzle), ≥ 0.8 of plate between the five cuts.

@@ -976,3 +976,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Route finder: where edges are faint (W) it still wanders up to 12 mm sideways for a 3 deg edge; a higher sideways price or a minimum edge strength would give a straighter line.
 - With the scarf on, the apex's last tiny loops are drawn in several pieces (many loop starts in 3 of the top 12 layers); same settings as coupon 2, which printed fine.
 - Bambu Studio CLI, sliced 3mf: `--export-3mf name.gcode.3mf` takes a bare file name (it is joined to --outputdir). No thumbnails (no OpenGL from the command line), `printer_model_id` empty in slice_info, the model is kept in the file (32 MB). A single object gets no `; start printing object` labels.
+
+## 2026-11-26 pebble board retention: fork chosen, alternatives not pursued
+- Chosen and built (round D, `smooth.py`'s `KEEPER`): keeper fork + side-wall ribs; first sketch `cad/desk/concept/board-bracket/keeper_clay.py` (still two prongs). Not pursued, sketches kept beside it:
+- Strap + battery tray (`strap_clay.py`): one wall-to-wall strap in the shell, the battery in a printed tray fills the gap. Fewer shell features, but a bigger part and a 58 mm bridge.
+- Strap + battery on foam strips (same script): no printed part, but the hold goes through the pouch and the foam; squeeze is the size of the tolerances.
+- Wedge sled on the back wall (`crutch_clay.py`): needs no shell change; borderline self-locking, bears on a curved wall.
+- `smooth.py pebble` rebuilds the upright / tilt15 stencils too and touches their STEPs (timestamps only).
+- `PEB_FULL_CHECKS` still places the battery on the board; with the keeper it is off the board. Move or drop its checks before turning the flag on.

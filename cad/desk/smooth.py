@@ -2239,6 +2239,39 @@ PEBBLE = dict(P=2.7, N=2.8, BW=33.0, BZ=18.0,          # the user's pick D (2026
               CUT_THROUGH=1.0,                          # slot cutter mesh: how far behind the inner face it cuts through
               STRIP_T=12.0)                             # test strip: the shell in front of t 12
 
+# The pebble's board keeper (round D, user 2026-11-26). The rods fix the board along x and s; nothing held it against the
+# front wall (it hangs under the 15 deg lean). A printed fork slides up from the open bottom right behind the board's
+# acrylic back plate and presses the plate through 3 pads over its screws; 3 ribs on the shell's side walls back the
+# fork there. Assembly: board (cables plugged), adapter, fork, lid. The battery is off the board (Kapton to the back
+# wall; not modelled). Body frame; s absolute, laid out for the PCB's bottom edge at PCB_S0.
+# The plug side (user, 2026-11-26: UART, J5 and I2C open upwards, to the back; only RTC opens to the side): their plugs
+# and wires stand behind the plate, in the column of that side's screws, so nothing of the fork may slide up through
+# that column above the lowest socket. The fork has no prong and no upper pad there, and the shell no upper rib: the
+# board is held at both lower screws and the button side's upper one (three points and the front wall hold a stiff board).
+KEEPER = dict(PCB_S0=16.8,
+              BOARD_T=9.15,                             # glass front .. the back plate's back face: measured (user, 2026-11-26).
+                                                        # hw.BOARD_T (9.0, all variants) still places the USB port and adapter
+              PAD=5.0, PAD_H=1.5,                       # square pads centred on the plate's screws; the fork's face this far
+                                                        # behind the plate
+              PAD_OVER=0.2, PAD_LEAD=0.6,               # pads printed this much proud and sanded to fit; lead-in on their upper edge
+              FORK_T=2.5, RIB_T=2.5,
+              SLOT_X=8.5,                               # centre slot's half width: the adapter (+-6), the plate's BAT window
+              PRONG_X=20.5, TOP_S=95.3,                 # the prong's outer edge and top end (PCB top 95.65; cavity 21.4 wide there)
+              PRONG_WIDE=(0.5, 1.5),                    # ... wider by this up to this far below its top (the cavity is wider there)
+              EAR_X=24.0, EAR_S1=30.0,                  # the two feet, backed by the lower ribs (the cavity is 24.8 at the rim);
+                                                        # the plug side's foot ends here, below the lowest socket
+              ADAPTER_CLR=0.3, LID_CLR=0.15,            # bridge under the adapter; the fork's foot above the lid
+              LEAD=0.8,                                 # lead-in on the back edges that run under the ribs
+              RIB_LO=(21.5, 15.0, 31.0),                # ribs: inner edge |x|, s range. Lower pair: outside the RTC plug's up-move
+              RIB_HI=(17.5, 84.0, 96.0),                # upper rib, button side only: as far in as the board's edge lets it (the
+                                                        # one-prong fork can sway; keeper_fork_check takes the bearing skewed)
+              RIB_EMBED=1.0, RIB_STEP=0.5,              # ribs run this far into the wall; their wall side sampled at this step
+              JST_Z={"uart": 22.45, "rtc": 67.5},       # sockets above the PCB bottom besides hw.PLUG_Z's (rtc: from a photo)
+              RTC_LEN=4.4,                              # the 2-pin plug's length along the edge (hw.PLUG_LEN: the 4-pin ones)
+              PLUG_IN=5.0, PLUG_UP=4.0,                 # upward sockets: their column reaches this far in from the PCB edge (the
+                                                        # plate's cut-outs); plug + wire bend this far behind the plate. ASSUMED
+              PATH_MIN=0.5)                             # the board's insertion moves to the ribs, at least
+
 
 def _ss(g):
     return 0.0 if g <= 0 else 1.0 if g >= 1 else g * g * (3 - 2 * g)
@@ -2609,6 +2642,7 @@ class PebbleModel(Model):
 
     def __init__(self):
         super().__init__("pebble", 58.0)
+        self.BOARD_T1 = self.GLASS_T0 + KEEPER["BOARD_T"]   # the plate's back face as measured (the port's depth stays hw's)
         self.shape = PebbleShape()
         self.H = PEBBLE["H"]
         self._cache = {}
@@ -2934,6 +2968,138 @@ class PebbleModel(Model):
                                             align=(Align.CENTER, Align.CENTER, Align.MAX))
         return l
 
+    # ---- board keeper (round D) ----
+    def moving_bodies(self):
+        """Model's, with this board's plugs instead of hw's side plugs: UART, J5 and I2C stand behind the plate (upward
+        sockets, in the plate's cut-outs), RTC goes in from the side."""
+        K, q = KEEPER, self.keeper()
+        m = [b for b in Model.moving_bodies(self) if not b.name.startswith("plug")]
+        e = q["plug_sx"] * hw.PCB_W / 2
+        for n, (s, ln) in q["plugs"].items():
+            if n == "rtc":
+                m.append(Body(self, f"plug-{n}", (e, e + q["plug_sx"] * hw.PLUG_PROUD, self.GLASS_T1, self.BOARD_T1, s - ln / 2, s + ln / 2)))
+            else:
+                m.append(Body(self, f"plug-{n}", (e - q["plug_sx"] * K["PLUG_IN"], e, self.BOARD_T1, self.BOARD_T1 + K["PLUG_UP"],
+                                                   s - ln / 2, s + ln / 2)))
+        return m
+
+    def keeper(self):
+        """The keeper's derived numbers (body frame): depths, the screws' s, the sockets, the pads, the ribs."""
+        if "keeper" not in self._cache:
+            K = KEEPER
+            check(abs(self.PCB_S0 - K["PCB_S0"]) < 1e-6, f"keeper laid out for the PCB bottom at s {K['PCB_S0']}, it is at {self.PCB_S0}")
+            ft = (self.BOARD_T1 + K["PAD_H"], self.BOARD_T1 + K["PAD_H"] + K["FORK_T"])
+            psx = -hw.BTN_SIDE
+            plugs = {n: (self.PCB_S0 + z, K["RTC_LEN"] if n == "rtc" else hw.PLUG_LEN) for n, z in {**hw.PLUG_Z, **K["JST_Z"]}.items()}
+            screws = (self.PCB_S0 + hw.NUT_INSET, self.PCB_S0 + hw.NUT_INSET + hw.NUT_DZ)
+            pads = [(psx, screws[0]), (-psx, screws[0]), (-psx, screws[1])]          # (side, s): none at the plug side's upper screw
+            low = min(s - ln / 2 for n, (s, ln) in plugs.items() if n != "rtc")
+            check(K["EAR_S1"] < low - 2.0, f"keeper: the plug side's foot (to s {K['EAR_S1']}) reaches the lowest upward socket ({low:.2f})")
+            ribs = [(-psx, *K["RIB_HI"]), (1, *K["RIB_LO"]), (-1, *K["RIB_LO"])]
+            self._cache["keeper"] = dict(fork_t=ft, rib_t=(ft[1], ft[1] + K["RIB_T"]), plug_sx=psx, plugs=plugs, screws=screws,
+                                         pads=pads, ribs=ribs, bridge_s1=self.AD_S[0] - K["ADAPTER_CLR"])
+        return self._cache["keeper"]
+
+    def fork(self, over=0.0, drop=0.0):
+        """The keeper fork, world frame, seated. over: the pads this much proud (as printed). drop > 0: every piece
+        stretched that far down the face instead: the volume its way up from below sweeps (no lead-ins, no foot cut)."""
+        K, q = KEEPER, self.keeper()
+        (T0, T1), psx, top, br1 = q["fork_t"], q["plug_sx"], K["TOP_S"], q["bridge_s1"]
+        lo = lambda s: s - drop
+        s_bot = 2.0                                     # below the lid's plane at this depth: the foot is cut along it
+        parts = [box(-K["EAR_X"], K["EAR_X"], T0, T1, lo(s_bot), br1)]                         # bridge, under the adapter
+        for sx in (-1, 1):
+            parts.append(box(sx * K["SLOT_X"], sx * K["EAR_X"], T0, T1, lo(s_bot), K["EAR_S1"]))   # foot
+        parts.append(box(-psx * K["SLOT_X"], -psx * K["PRONG_X"], T0, T1, lo(s_bot), top))     # the prong: button side only
+        parts.append(box(-psx * K["SLOT_X"], -psx * (K["PRONG_X"] + K["PRONG_WIDE"][0]), T0, T1, lo(s_bot), top - K["PRONG_WIDE"][1]))
+        for sx, s in q["pads"]:
+            parts.append(box(sx * (hw.NUT_DX - K["PAD"]) / 2, sx * (hw.NUT_DX + K["PAD"]) / 2, self.BOARD_T1 - over, T0,
+                             lo(s - K["PAD"] / 2), s + K["PAD"] / 2))
+        f = parts[0]
+        for p_ in parts[1:]:
+            f = f + p_
+        if drop == 0.0:
+            wedge = lambda pts, x0, x1: Pos((x0 + x1) / 2, 0, 0) * extrude(Plane.YZ * Polygon(*pts, align=None), (x1 - x0) / 2, both=True)
+            L, e = K["LEAD"], 0.01
+            f = f - wedge([(T1 - L, top + e), (T1 + e, top + e), (T1 + e, top - L)], -30, 30)   # the prong's top, back edge
+            for sx in (-1, 1):                                                                  # the feet's tops, back edge
+                x0, x1 = sorted((sx * (K["SLOT_X"] - 1 if sx == psx else K["PRONG_X"]), sx * (K["EAR_X"] + 1)))
+                f = f - wedge([(T1 - L, K["EAR_S1"] + e), (T1 + e, K["EAR_S1"] + e), (T1 + e, K["EAR_S1"] - L)], x0, x1)
+            tf, L = self.BOARD_T1 - over, K["PAD_LEAD"]
+            for s in q["screws"]:
+                s1 = s + K["PAD"] / 2
+                f = f - wedge([(tf - e, s1 - L), (tf - e, s1 + e), (tf + L, s1 + e)], -30, 30)  # pads, upper edge
+        f = self.wt(f.clean())
+        if drop == 0.0:
+            f = f & box(-100, 100, -100, 300, K["LID_CLR"], 300)                                # the foot, level above the lid
+        check(f.is_valid and len(f.solids()) == 1, "keeper fork is not one valid solid")
+        return f
+
+    def fork_print(self):
+        """The fork as printed: flat on its back face (the ribs' side), pads up, PAD_OVER proud."""
+        f = self.fork(over=KEEPER["PAD_OVER"]).rotate(Axis.X, self.tilt).rotate(Axis.X, -90)    # body (x, t, s) -> (x, s, -t)
+        f = Pos(0, 0, self.keeper()["fork_t"][1]) * f
+        bb = f.bounding_box()
+        check(abs(bb.min.Z) < 1e-6 and abs(bb.max.Z - (KEEPER["FORK_T"] + KEEPER["PAD_H"] + KEEPER["PAD_OVER"])) < 1e-6,
+              f"fork as printed: z {bb.min.Z:.4f}..{bb.max.Z:.4f}")
+        return f
+
+    def rib_mesh(self, core_M):
+        """The ribs as one mesh (world frame; manifold3d), added to the shell on the mesh as the slots are cut. Each is a
+        prism along t (the fork's back face .. RIB_T behind it) of a profile in (s, x): the inner edge |x| = x_in from s_a
+        to s_b, square at the top; below s_a a 45 deg corbel in that plane (43.1 deg from vertical printed standing); the
+        wall side RIB_EMBED inside the cavity wall, which is read off core_M (the shell before the ribs) at the rib's
+        three depths, every RIB_STEP. Returns (mesh, [(sx, x_in, s_a, s_b, corbel's foot s, volume)])."""
+        import manifold3d as m3
+        K, q = KEEPER, self.keeper()
+        T0, T1 = q["rib_t"]
+        ts = (T0, (T0 + T1) / 2, T1)
+        Mb = {1: core_M.transform([[1, 0, 0, 0], [0, self.c, -self.sn, 0], [0, self.sn, self.c, 0]])}     # body (x, t, s)
+        Mb[-1] = Mb[1].mirror((1, 0, 0))
+
+        def wall(sx, s):
+            polys = [np.asarray(P) for P in Mb[sx].slice(s).to_polygons()]
+            out = []
+            for t0 in ts:
+                xs = []
+                for P in polys:
+                    Q = np.roll(P, -1, axis=0)
+                    k = (P[:, 1] - t0) * (Q[:, 1] - t0) < 0
+                    x = P[k, 0] + (t0 - P[k, 1]) * (Q[k, 0] - P[k, 0]) / (Q[k, 1] - P[k, 1])
+                    xs += x[x > 0].tolist()
+                check(len(xs) == 2, f"rib: the wall at s {s:.2f}, t {t0:.2f} crosses {len(xs)} times")   # inner, outer
+                out.append(min(xs))
+            return max(out)
+
+        ribs, info = None, []
+        for sx, x_in, s_a, s_b in q["ribs"]:
+            emb = lambda s: x_in + (s_a - s) - (wall(sx, s) + K["RIB_EMBED"])     # > 0: the corbel is that deep in the wall
+            lo = s_a - K["RIB_STEP"]
+            while emb(lo) < 0:
+                lo -= K["RIB_STEP"]
+            hi = lo + K["RIB_STEP"]
+            for _ in range(40):
+                mid = 0.5 * (lo + hi)
+                lo, hi = (mid, hi) if emb(mid) >= 0 else (lo, mid)
+            s_c = 0.5 * (lo + hi)
+            check(self.to_world(T1, s_c)[1] > 1.0, f"rib at x {sx * x_in:+.1f}: its corbel reaches the rim (s {s_c:.2f})")
+            side = [(float(s), wall(sx, float(s)) + K["RIB_EMBED"]) for s in np.arange(s_b, s_c, -K["RIB_STEP"])]
+            P = np.array([(s_a, x_in), (s_b, x_in)] + side + [(s_c, x_in + (s_a - s_c))])          # (s, x)
+            area = 0.5 * np.sum(P[:, 0] * np.roll(P[:, 1], -1) - np.roll(P[:, 0], -1) * P[:, 1])
+            if area < 0:
+                P = P[::-1]
+            cs = m3.CrossSection([P.tolist()])
+            check(cs.num_contour() == 1 and abs(cs.area() - abs(area)) < 1e-6 * abs(area), f"rib profile at x {sx * x_in:+.1f}")
+            R = m3.Manifold.extrude(cs, T1 - T0)                                                    # (s, x, t - T0)
+            R = R.transform([[0, 1, 0, 0], [self.sn, 0, self.c, T0 * self.c], [self.c, 0, -self.sn, -T0 * self.sn]])
+            if sx < 0:
+                R = R.mirror((1, 0, 0))
+            check(R.status() == m3.Error.NoError and R.volume() > 0, f"rib at x {sx * x_in:+.1f}: {R.status()}")
+            info.append((sx, x_in, s_a, s_b, s_c, R.volume()))
+            ribs = R if ribs is None else ribs + R
+        check(len(ribs.decompose()) == len(q["ribs"]), "ribs touch each other")
+        return ribs.as_original(), info
+
 
 PEB_STRAIGHT_TOL = 0.01                # the face over the slots: straight along the lean within this (t, both ways)
 PEB_OVERHANG_MAX = 45.0                # deg from vertical, outside and inside (bridges apart)
@@ -3140,6 +3306,147 @@ def mesh_front_wall(m, shell_M):
     return best
 
 
+def keeper_ribs_on(m, shell_M, ribs_M):
+    """shell + ribs. The ribs must stay inside the wall: what they add is one piece per rib, all in the cavity (a rib that
+    came out through the outer skin would add a piece outside), and each rib is in the wall all along its bearing span
+    (its section in the wall at 7 heights from s_a to s_b). Returns (the union, the added volume, the steepest overhang
+    of the ribs' faces left on the surface printed standing (deg from vertical) and where)."""
+    import manifold3d as m3
+    spans = m.keeper()["ribs"]
+    n_ribs = len(spans)
+    Eb = (ribs_M ^ shell_M).transform([[1, 0, 0, 0], [0, m.c, -m.sn, 0], [0, m.sn, m.c, 0]])        # in the wall; body (x, t, s)
+    for sx, x_in, s_a, s_b in spans:
+        for s in np.linspace(s_a + 0.3, s_b - 0.3, 7):
+            a_ = 0.0
+            for P in Eb.slice(float(s)).to_polygons():
+                P = np.asarray(P)
+                if sx * P[:, 0].mean() > 0:
+                    a_ += abs(0.5 * np.sum(P[:, 0] * np.roll(P[:, 1], -1) - np.roll(P[:, 0], -1) * P[:, 1]))
+            check(a_ >= 0.6 * KEEPER["RIB_EMBED"] * KEEPER["RIB_T"],
+                  f"rib at x {sx * x_in:+.1f}: only {a_:.2f} mm2 of its section is in the wall at s {s:.1f}")
+    added = ribs_M - shell_M
+    check(len(added.decompose()) == n_ribs, f"ribs: they add {len(added.decompose())} pieces, not {n_ribs} (through the wall?)")
+    for R in ribs_M.decompose():                           # each rib by itself: one piece, in the cavity, RIB_EMBED in the wall
+        bb = R.bounding_box()
+        sx = 1.0 if bb[0] + bb[3] > 0 else -1.0
+        A = R - shell_M
+        V = np.asarray(A.to_mesh64().vert_properties)[:, :3]
+        p_in = V[np.argmin(sx * V[:, 0])] - np.array([sx * 0.05, 0, 0])     # just inside the cavity, off the rib's inner edge
+        hits = shell_M.ray_cast(tuple(p_in), tuple(p_in + np.array([sx * 100.0, 0, 0])))
+        emb = (R ^ shell_M).volume() / ((bb[5] - bb[2]) * KEEPER["RIB_T"])  # mean depth in the wall (over its height, ~)
+        check(len(A.decompose()) == 1 and len(hits) == 2 and emb >= 0.6 * KEEPER["RIB_EMBED"],
+              f"rib at x {sx * abs(p_in[0]):+.1f}: {len(A.decompose())} pieces, {len(hits)} wall faces outside it (2: in the cavity), "
+              f"{emb:.2f} deep in the wall")
+    U = shell_M + ribs_M
+    check(U.status() == m3.Error.NoError and len(U.decompose()) == 1, f"shell + ribs: {U.status()}, {len(U.decompose())} pieces")
+    me = U.to_mesh64()
+    V, F = np.asarray(me.vert_properties)[:, :3], np.asarray(me.tri_verts, np.int64)
+    ri = np.asarray(me.run_index) // 3
+    mine = np.zeros(len(F), bool)
+    for k, oid in enumerate(me.run_original_id):
+        if oid == ribs_M.original_id():
+            mine[ri[k]:ri[k + 1]] = True
+    check(mine.any(), "ribs: none of their faces is on the surface")
+    a, b, c_ = V[F[mine, 0]], V[F[mine, 1]], V[F[mine, 2]]
+    n = np.cross(b - a, c_ - a)
+    ar = np.linalg.norm(n, axis=1)
+    ov = np.degrees(np.arcsin(np.clip(-n[:, 2] / np.maximum(ar, 1e-15), 0, 1)))
+    ov[ar < 1e-7] = 0.0
+    i = int(np.argmax(ov))
+    return U, added.volume(), (float(ov[i]), ((a[i] + b[i] + c_[i]) / 3).round(2))
+
+
+def keeper_plugs(m):
+    """This board's plugs (PebbleModel.moving_bodies): three standing behind the plate, RTC to the side."""
+    return [b for b in m.moving_bodies() if b.name.startswith("plug")]
+
+
+def keeper_path_gap(m, ribs_M):
+    """The board's insertion moves (up at insert_shift behind its seat, then forward) against the ribs: board, glass,
+    buttons and every plug. Returns the least gap and whose."""
+    K = KEEPER
+    bodies = [b for b in m.moving_bodies() if b.name != "battery" and not isinstance(b, Rod)]      # (rods: within the glass's width)
+    worst = (math.inf, None)
+    for b in bodies:
+        for move, sw in (("up", b.solid(dt=m.insert_shift, es0=2 * m.H, es1=Z_STOP)), ("forward", b.solid(et=m.insert_shift))):
+            Ms = occ_to_manifold(sw, 0.01, 0.1)
+            v = (Ms ^ ribs_M).volume()
+            check(v < EPS_V, f"{m.name}: the {b.name}'s {move} move runs into a rib ({v:.3f} mm3)")
+            worst = min(worst, (Ms.min_gap(ribs_M, 10.0), f"{b.name}, {move}"))
+    check(worst[0] >= K["PATH_MIN"] - 1e-9, f"{m.name}: {worst[1]} passes a rib at {worst[0]:.2f}")
+    return worst
+
+
+def keeper_fork_check(m, fork, core_M, core0_M, ribs_M, lid, moving, adapter):
+    """The fork seated and on its way up from below (after the adapter): no overlap with the shell (ribs included), the
+    seated board, plugs, buttons, adapter or lid. Returns its gaps: to the walls (the shell before the ribs), to the
+    adapter, the bearing area on the ribs (the overlap of fork and ribs, seen along t)."""
+    Mf = occ_to_manifold(fork, 0.01, 0.1)
+    sweep = m.fork(drop=2 * m.H)
+    for what, M_ in (("seated", Mf), ("on its way up", occ_to_manifold(sweep, 0.01, 0.1))):
+        v = (M_ ^ core_M).volume()
+        check(v < EPS_V, f"{m.name}: the fork {what} cuts {v:.3f} mm3 out of the shell")
+    seated = [(b.name, b.solid()) for b in moving if b.name != "battery"] + [("adapter", adapter.solid())]
+    psx = -hw.BTN_SIDE                                      # what must be there, stated here (not read back from keeper())
+    check(sorted(b.name for b in keeper_plugs(m)) == ["plug-i2c", "plug-j5", "plug-rtc", "plug-uart"],
+          f"keeper: the plugs among the moving bodies are {sorted(b.name for b in keeper_plugs(m))}")
+    for on, o in seated + [("lid", lid)]:
+        for what, f_ in (("seated", fork), ("on its way up", sweep)):
+            if on == "lid" and f_ is sweep:
+                continue
+            v = volume_common(f_, o)
+            check(v < EPS_V, f"{m.name}: the fork {what} runs into the {on} ({v:.3f} mm3)")
+    K, q = KEEPER, m.keeper()
+    T1, e = q["fork_t"][1], 1e-3
+    tb = lambda M_: M_.transform([[1, 0, 0, 0], [0, m.sn, m.c, 0], [0, m.c, -m.sn, 0]])       # (x, s, t): slices at a depth t
+    Fb, Rb = tb(Mf), tb(ribs_M)
+    # contact in the bearing plane: the fork's back face (just inside it: the lead-ins have receded there) on the ribs' front face
+    def contact(F_):                                        # (x, s) of each contact patch's centre, its area
+        out = []
+        for c in (F_.slice(T1 - e) ^ Rb.slice(T1 + e)).decompose():
+            b = c.bounds()
+            out.append(((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, c.area()))
+        return out
+    bear = contact(Fb)
+    areas = sorted(round(a, 1) for _, _, a in bear)
+    s_lo, s_hi = m.PCB_S0 + hw.NUT_INSET, m.PCB_S0 + hw.NUT_INSET + hw.NUT_DZ
+    where = sorted((round(x / abs(x)), s > (s_lo + s_hi) / 2) for x, s, _ in bear)      # (side, upper?)
+    check(where == sorted([(psx, False), (-psx, False), (-psx, True)]) and min(areas) > 5.0 and Mf.min_gap(ribs_M, 1.0) < 1e-3,
+          f"{m.name}: the fork bears on the ribs at (side, upper) {where} over {areas} mm2, {Mf.min_gap(ribs_M, 1.0):.3f} from them")
+    # ... and skewed as far as its stops let it, the prong's top swung away from its rib: the fork down on the lid, turned
+    # about the plug side's foot corner until the bridge meets the adapter, pushed sideways until it meets the wall (the
+    # turn and the push each solved by bisection on the overlap with the adapter / the shell, twice over)
+    wall = Mf.min_gap(core0_M, 10.0)
+    Ab, Cb = tb(occ_to_manifold(adapter.solid(), 0.01, 0.1)), tb(core0_M)
+    ds = -(K["LID_CLR"] - 1e-3) / m.c                       # down the face until the foot is on the lid
+    px, ps = psx * K["EAR_X"], q["fork_t"][0] * m.sn / m.c  # the plug side's foot corner (the lid's plane at the fork's depth)
+
+    def pose(ang, dx):
+        ca, sa = math.cos(-psx * ang), math.sin(-psx * ang)
+        return Fb.transform([[ca, -sa, 0, px - (ca * px - sa * ps) + psx * dx], [sa, ca, 0, ps - (sa * px + ca * ps) + ds], [0, 0, 1, 0]])
+
+    def limit(f, hi):                                       # the largest value in 0..hi at which f() still overlaps nothing
+        lo = 0.0
+        for _ in range(30):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if f(mid) < 1e-6 else (lo, mid)
+        return lo
+    ang, dx = 0.0, 0.0
+    for _ in range(2):
+        ang = limit(lambda a_: (pose(a_, dx) ^ Ab).volume(), math.radians(5.0))
+        dx = limit(lambda d_: (pose(ang, d_) ^ Cb).volume(), 3.0)
+    top_skew = sum(a_ for x, s, a_ in contact(pose(ang, dx)) if s > (s_lo + s_hi) / 2 and x * psx < 0)
+    check(0 < ang < math.radians(4.9) and 0 < dx < 2.9 and top_skew > 5.0,
+          f"{m.name}: skewed {math.degrees(ang):.2f} deg and {dx:.2f} sideways, the prong bears on its rib over {top_skew:.1f} mm2")
+    pads = Fb.slice(m.BOARD_T1 + e).decompose()             # the pads' tips: on the plate, one over each of the three screws
+    board = [o for n, o in seated if n == "board"][0]
+    want = sorted([(psx * hw.NUT_DX / 2, s_lo), (-psx * hw.NUT_DX / 2, s_lo), (-psx * hw.NUT_DX / 2, s_hi)])
+    got = sorted((round((c.bounds()[0] + c.bounds()[2]) / 2, 3), round((c.bounds()[1] + c.bounds()[3]) / 2, 3)) for c in pads)
+    check(len(pads) == len(want) and gap(fork, board) < 1e-6 and all(abs(g[0] - w[0]) < 0.5 and abs(g[1] - w[1]) < 0.5 for g, w in zip(got, want))
+          and min(c.area() for c in pads) > 0.7 * K["PAD"] ** 2,
+          f"{m.name}: the pads' tips {got} (screws {want}), {gap(fork, board):.3f} from the plate")
+    return dict(wall=wall, adapter=gap(fork, adapter.solid()), lid=gap(fork, lid), bear=areas, skew=(math.degrees(ang), dx, top_skew))
+
 
 def build_pebble(order=ORDER):
     """Rounds B, C: the shell is built in OCC without the slots (shell-noslots.step), meshed finely and cut with the slots'
@@ -3180,6 +3487,18 @@ def build_pebble(order=ORDER):
     for n_, M_ in (("shell", shell_M), ("core", core_M)):
         check(M_.status() == m3.Error.NoError and not M_.is_empty() and len(M_.decompose()) == 1,
               f"pebble {n_} after the slots: {M_.status()}, {len(M_.decompose())} pieces")
+
+    # ---- the keeper (round D): ribs added on the mesh, the fork ----
+    print(f"[{name}] keeper: ribs, fork ...", flush=True)
+    KQ = m.keeper()
+    core0_M = core_M                                       # the shell before the ribs: the cavity walls
+    ribs_M, rib_info = m.rib_mesh(core0_M)
+    shell_M, rib_vol, (ov_rib, ov_rib_p) = keeper_ribs_on(m, shell_M, ribs_M)
+    core_M = keeper_ribs_on(m, core0_M, ribs_M)[0]
+    check(ov_rib <= PEB_OVERHANG_MAX, f"pebble: a rib face overhangs {ov_rib:.2f} deg at {ov_rib_p}")
+    path_gap = keeper_path_gap(m, ribs_M)
+    fork = m.fork()
+    FK = keeper_fork_check(m, fork, core_M, core0_M, ribs_M, lid, moving, adapter)
     Q = mesh_quality(shell_M)
     check(Q["open"] == 0 and Q["nonman"] == 0 and Q["pieces"] == 1, f"pebble shell mesh: {Q}")
 
@@ -3326,10 +3645,15 @@ def build_pebble(order=ORDER):
             check(me.n_open_edges == 0 and abs(err) < 1e-4, f"{n_}.stl: {me.n_open_edges} open edges, volume {err * 100:+.3f} %")
             mesh_files[n_] = (me.n_cells, err, (out / f"{n_}.stl").stat().st_size / 1024)
 
-    final = [("lid", lid), ("adapter", ad)] + [(b.name, b.solid()) for b in moving]
-    for n, s_ in final:
+    final = [("lid", lid), ("adapter", ad), ("fork", fork)] + [(b.name, b.solid()) for b in moving if b.name != "battery"]
+    for n, s_ in final:                         # (the battery: off the board with the keeper, not modelled)
         if n not in ("lid",):
             write_stl(s_, out / f"dummy-{n}.stl")
+    export_step(fork, str(out / "fork.step"))
+    Mfp = occ_to_manifold(m.fork_print(), 0.005, 0.05)      # welded, closed (the plain STL writer leaves split vertices)
+    check(len(Mfp.decompose()) == 1, "fork-print: not one piece")
+    write_manifold_stl(Mfp, out / "fork-print.stl")
+    write_manifold_stl(ribs_M, out / "ribs.stl")
     if PEB_FULL_CHECKS:
         stc, SS = make_stencils(FL["w"], STENCIL_STRIPS["front"], t=P_["st_t"])
         base = OUT_ROOT / "logo-stencils-pebble"
@@ -3445,8 +3769,8 @@ def build_pebble(order=ORDER):
         endw = (float((m.FRONT - SP["f"](xw_)).min()), float(m.FRONT - SP["f"](SP["xc"])))
         horn = max(float(m.slot_surface(SP["xc"] + sg * (SP["half"] + 1e-6), sum(m.SLOT_S) / 2) - SP["f"](SP["xc"] + sg * (SP["half"] + 1e-6)))
                    for sg in (-1, 1))
-        R = [f"DESK HOUSING smooth / pebble, round C (user, 2026-11-24): A's openings as printed, re-solved for tubes c-c {m.tube_cc}; "
-             f"flat ends; no horn fix (the relief is to hide them); logo and the rest as B",
+        R = [f"DESK HOUSING smooth / pebble, round D (2026-11-26) = round C (user, 2026-11-24: A's openings as printed, re-solved for "
+             f"tubes c-c {m.tube_cc}; flat ends; no horn fix, the relief is to hide them; logo and the rest as B) + the board keeper",
              "[m] measured on the final mesh / exact surfaces, [d] design. Checks (round C, user: four only): the shell mesh closed, "
              "overhangs outside the supported top end walls, seated clearances (rods, the adapter's up-move), the logo's thinnest skin",
              f"frame        shell.stl's world (x, y, z); body frame x = x, t = y cos{m.tilt:g} - z sin{m.tilt:g} (inwards from the face), "
@@ -3466,7 +3790,33 @@ def build_pebble(order=ORDER):
              f"; the adapter's up-move past the chin {gaps[('adapter', 'shell')]:.3f}",
              f"logo         [d] {FL['w']:g} x {FL['h']:.2f} letters, pocket floor t {P_['floor']:.3f}; [m] skin {FL['skin'][0]:.3f} at its "
              f"thinnest, {FL['skin'][1]:.3f} at the pocket's centre; stencil {P_['st_t']:.2f} (as B: logo-stencils-pebble.*)",
-             f"files        out-smooth/pebble: shell.stl, teststrip.stl (cut meshes), lid.step / .stl, shell-noslots.step, sections, dummies"]
+             f"files        out-smooth/pebble: shell.stl, teststrip.stl (cut meshes), lid.step / .stl, shell-noslots.step (no slots, no "
+             f"ribs), sections, dummies"]
+    K = KEEPER
+    R.append(
+        f"keeper       round D (user, 2026-11-26): the board held against the front wall by a printed fork behind its back plate "
+        f"(plate's back face at t {m.BOARD_T1:.2f}: {K['BOARD_T']} behind the glass front, measured) "
+        f"and {len(rib_info)} ribs on the side walls. Plug side (x {KQ['plug_sx']:+d}): UART, J5, I2C open upwards, their plugs and wires "
+        f"stand behind the plate in that side's screw column, so the fork has no prong and no upper pad there and the shell no "
+        f"upper rib: 3 pads (both lower screws, the button side's upper one). [d] fork {K['FORK_T']} thick at t "
+        f"{KQ['fork_t'][0]:.2f}..{KQ['fork_t'][1]:.2f}: two feet |x| {K['SLOT_X']}..{K['EAR_X']} up to s {K['EAR_S1']:g}, the button side's "
+        f"prong |x| {K['SLOT_X']}..{K['PRONG_X']} up to s {K['TOP_S']:g}, bridge under the adapter up to s {KQ['bridge_s1']:.2f}, foot "
+        f"{K['LID_CLR']} above the lid; pads {K['PAD']:g} x {K['PAD']:g} over the plate's screws (x, s): " +
+        ", ".join(f"{sx * hw.NUT_DX / 2:+.2f}, {s:.2f}" for sx, s in KQ["pads"]) + f"; {K['PAD_H']} proud (+{K['PAD_OVER']} in "
+        f"fork-print.stl: sand to fit). Ribs at t {KQ['rib_t'][0]:.2f}..{KQ['rib_t'][1]:.2f} (x of the inner edge, s; the 45 deg "
+        f"corbel below ends at s): " + "; ".join(f"{sx * x_in:+.1f}, {s_a:g}..{s_b:g}, {s_c:.1f}" for sx, x_in, s_a, s_b, s_c, _ in rib_info) +
+        f". [m, mesh] the ribs add {rib_vol:.0f} mm3 in {len(rib_info)} pieces, each inside the cavity, {K['RIB_EMBED']} in the wall; "
+        f"their steepest face {ov_rib:.1f} deg from vertical; the board's insertion (up at {m.insert_shift:.2f} behind its seat, "
+        f"forward; board, glass, buttons, plugs) passes them at {path_gap[0]:.2f} ({path_gap[1]}); the fork, seated and on its way "
+        f"up, clear of shell, board, plugs, adapter and lid: {FK['wall']:.2f} to the walls, {FK['adapter']:.2f} under the adapter, "
+        f"{FK['lid']:.2f} above the lid; it bears on the ribs (contact in their front plane) over " +
+        ", ".join(f"{a:g}" for a in FK["bear"]) + f" mm2 (the prong still over {FK['skew'][2]:.1f} mm2 with the fork skewed as far as its "
+        f"stops let it: down on the lid, turned {FK['skew'][0]:.2f} deg to the adapter, {FK['skew'][1]:.2f} sideways to the wall), its pads on the plate over the screws. The glass still sits on "
+        f"the {hw.GASKET} foam strips at its short ends (hw.GASKET; stuck to the wall only, or the liner left on towards the glass): "
+        f"without them the board sits {hw.GASKET} further forward, the pads do not reach and the adapter meets the chin. ASSUMED plugs: UART / J5 / I2C "
+        f"{K['PLUG_IN']:g} in from the edge, plug + wire bend {K['PLUG_UP']:g} behind the plate; RTC {hw.PLUG_PROUD:g} beyond the edge. "
+        f"Order: board with its cables, adapter, fork, lid. The battery is off the board (Kapton to the back wall): not "
+        f"modelled, no dummy. Files: fork.step (seated), fork-print.stl (flat on its back, pads up), ribs.stl (for the relief shells)")
     text = "\n".join(R)
     (out / "report.txt").write_text(text + "\n")
     print(text, flush=True)
