@@ -3427,8 +3427,10 @@ struct FizzClass {
 };
 #define FIZZ_LIT_EVERY 4    // frames between a slot's fizzLit (planBubbleLit)
 #define FIZZ_LIT_JUMP 6.0f  // px along the tube: farther from where its light was taken = another bubble's place
-struct FizzLitMemo { FizzLit o; float x; uint32_t frame; };   // frame: litFrame when taken (0: never)
-static_assert(sizeof(FizzLitMemo) == 32, "a cache line a slot");
+#define FIZZ_LIT_SIDE 2.0f  // px across the bore / in depth likewise (a slot reborn at the same height, elsewhere in the bore: review 3)
+// x, y, z: where it was taken (y, z: the body's; without bodies the row and the depth level x 2R); frame: litFrame then (0: never)
+struct FizzLitMemo { FizzLit o; float x, y, z; uint32_t frame; };
+static_assert(sizeof(FizzLitMemo) == 40, "FIZZ_POOL x 40 B a tube");
 struct FizzLook {
   float key[4]; bool valid, masks;   // fizzSize, fizzSizeVar, fizzShadeOff, fizzBlick the classes were built for; masks fit
   FizzClass k[FIZZ_SIZES];
@@ -3450,7 +3452,8 @@ struct FizzLook {
   // A bubble's light changes slowly (it moves ~1-2 px a frame; the light's scale is tens of px), and fizzLit is ~5.6 us a
   // bubble on the S3 (2026-11-26, FIZZ_PROF): each slot keeps its last FizzLit (litMemo: FIZZ_POOL entries, PSRAM,
   // render_init) and takes a new one every FIZZ_LIT_EVERY-th frame, slots staggered, or at once when it is older than
-  // that or the bubble is not where it was (a slot reborn elsewhere). The blend with the explicit values runs every
+  // that or the bubble is not where it was in the bore (a slot reborn elsewhere: > FIZZ_LIT_JUMP along the tube or
+  // > FIZZ_LIT_SIDE across / in depth; within that box the light is the same to a level). The blend runs every
   // frame. The sim computes every bubble every frame.
   struct FizzLitMemo *litMemo; uint32_t litFrame;
   // the pose's up (tube frame) as the fizz was last stepped (stepFizzTube; face up before the first): fizzPhys's key light
@@ -6693,8 +6696,11 @@ FIZZ_IRAM void __attribute__((noinline, optimize("fp-contract=off"))) Tube::plan
   // its light: this slot's turn (one frame in FIZZ_LIT_EVERY), or its memo is older than that or from another place
   FizzLitMemo &mm = fl.litMemo[slot];
   const uint32_t age = fl.litFrame - mm.frame;
-  const float moved = fx - mm.x;
-  if (mm.frame == 0 || age >= FIZZ_LIT_EVERY || ((fl.litFrame + (uint32_t)slot) & (FIZZ_LIT_EVERY - 1)) == 0 || moved > FIZZ_LIT_JUMP || moved < -FIZZ_LIT_JUMP) {
+  const float my = bd ? bd->y : f.y, mz = bd ? bd->z : f.z * (2 * lit.R);   // its place across the bore and in depth, px
+  const float dx = fx - mm.x, dy = my - mm.y, dz = mz - mm.z;
+  // (a NaN place fails every <= below: retaken every frame)
+  const bool here = dx <= FIZZ_LIT_JUMP && dx >= -FIZZ_LIT_JUMP && dy <= FIZZ_LIT_SIDE && dy >= -FIZZ_LIT_SIDE && dz <= FIZZ_LIT_SIDE && dz >= -FIZZ_LIT_SIDE;
+  if (mm.frame == 0 || age >= FIZZ_LIT_EVERY || ((fl.litFrame + (uint32_t)slot) & (FIZZ_LIT_EVERY - 1)) == 0 || !here) {
     float yb, zb;
     if (bd) { yb = bd->y; zb = bd->z; }
     else {
@@ -6702,7 +6708,7 @@ FIZZ_IRAM void __attribute__((noinline, optimize("fp-contract=off"))) Tube::plan
       const float zm = sqrtExact(fmx(0, a * a - yb * yb)); zb = clampf(a * (1 - 2 * f.z), -zm, zm);
     }
     fizzLit(lit, fx, yb, zb, r, fizzSurf[fy], fizzSurfL[fy], fzLid ? strokeR[fy] : 0.0f, mm.o);
-    mm.x = fx; mm.frame = fl.litFrame;
+    mm.x = fx; mm.y = my; mm.z = mz; mm.frame = fl.litFrame;
   }
   const FizzLit &o = mm.o;
   const float K = depthK + (o.K - depthK) * phys;
@@ -7054,7 +7060,7 @@ bool render_init(bool fast) {
       FizzLook &fl = *tb.look;
       fl.valid = fl.masks = fl.depthValid = fl.litValid = false; fl.mask = nullptr; fl.phys = 0; fl.depthPhysT = -1; fl.fizzUp = POSE_DEFAULT;
       fl.litFrame = 0;
-      fl.litMemo = (FizzLitMemo *)heap_caps_malloc(FIZZ_POOL * sizeof(FizzLitMemo), MALLOC_CAP_SPIRAM);   // 15,360 B a tube
+      fl.litMemo = (FizzLitMemo *)heap_caps_malloc(FIZZ_POOL * sizeof(FizzLitMemo), MALLOC_CAP_SPIRAM);   // 19,200 B a tube
       if (fl.litMemo) memset(fl.litMemo, 0, FIZZ_POOL * sizeof(FizzLitMemo));   // frame 0: never taken
     }
     ok = ok && tb.look && tb.look->litMemo;

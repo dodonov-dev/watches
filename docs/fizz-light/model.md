@@ -54,7 +54,7 @@ Not done (KAIZEN): core brightening, the surface's mirror image, a ring gradient
 Per bubble: 4 sqrt, 1-3 divisions, 6 table lerps (exp(-tau), 65 entries by a float32 recurrence), ~100 flops; per pixel
 nothing. Per frame: trig / log / divisions in fizzLightFrame, skipped while its inputs repeat. The level table: 8 x H
 blends on a palette change. Memory: FizzLook (+ 4 x TUBE_HEIGHT_MAX x 2 B, the frame struct) and the per-slot memo
-(FIZZ_POOL x 32 B = 15,360 B), PSRAM, boot-time.
+(FIZZ_POOL x 40 B = 19,200 B), PSRAM, boot-time.
 
 Board (lcd316@320w8-8, the pale look, stand pose pinned, 100 + 18 bubbles; 2026-11-26):
 - First port (planBubbleLit in flash, the frame set-up with a double Fresnel): fizzPhys 1 = +0.94 ms a frame, 53.7 -> 51.0 fps.
@@ -62,6 +62,8 @@ Board (lcd316@320w8-8, the pale look, stand pose pinned, 100 + 18 bubbles; 2026-
   instruction-cache misses of 3.6 KB of flash code fetched every frame.
 - Now: the set-up in float32 and keyed on its inputs; planBubbleLit in IRAM (3.2 KB of internal heap, 29 KB left free);
   firmware only: each slot keeps its last FizzLit (FizzLitMemo) and takes a new one every 4th frame, slots staggered, at
-  once when older or > 6 px from where it was taken (a slot reborn elsewhere); the blend with the explicit values runs
-  every frame. fizzPhys 1 = +0.32 ms a frame, 53.2 -> 52.2 fps (median of 3 runs x 5). fizzPhys 0: unchanged path.
+  once when older or not where it was taken (> 6 px along the tube, > 2 px across or in depth: a slot reborn elsewhere,
+  Astra review 3); the blend with the explicit values runs
+  every frame. fizzPhys 1 = +0.39 ms a frame, 53.2 -> 52.1 fps (median of 3 runs x 5; +0.32 before the memo also
+  checked the place across the bore). fizzPhys 0: unchanged path.
   The sim computes every bubble every frame (a firmware bubble's light is at most 3 frames old).
