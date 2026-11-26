@@ -8,7 +8,7 @@ import {
 } from '@spec/layout';
 import type { Params } from './params';
 import { FIZZ_LIGHTS, FIZZ_RING_KEEP, fizzLightFrame, fizzLit, fizzTone, newFizzLit } from './fizzLight';
-import { type LidLaw, lidLawBuild, lidOpacity, lidWet, newLidLaw } from './lidLaw';
+import { type LidLaw, LID_BAND_FULL, lidKey, lidLawBuild, lidOpacity, lidWet, newLidLaw } from './lidLaw';
 import { BACK_TILT_MAX_DEG, boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
@@ -630,7 +630,8 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
               const arB = Math.min(1, band.fill[0][ry] * Math.min(1, wEff / 2) * band.rimB * Math.max(0, hi - Math.max(lo, wEff - LID_BACK_W)));
               through = (1 - ab) * (1 - arF) * (1 - arB);
               // the liquid over the rear wall there: at least the lid's own absorption path (lidWet), whatever surfaceBand
-              if (!inside) { wet = Math.min(1, Math.max(band.fill[0][ry] * (1 - u), band.law ? Math.min(1, wEff) * lidWet(band.law, band.lidQ![ry], u) : 0) * coverage * (1 - band.pull[0] * us)); under = true; }
+              // (the law's own coordinate: 0 at the front line itself, not hw inside it)
+              if (!inside) { wet = Math.min(1, Math.max(band.fill[0][ry] * (1 - u), band.law ? band.lidPb * Math.min(1, wEff) * lidWet(band.law, band.lidQ![ry], (lo + hi) / (2 * wEff)) : 0) * coverage * (1 - band.pull[0] * us)); under = true; }
             } else {
               const ar = Math.min(1, band.rim[side][ry] * Math.max(0, hi - Math.max(lo, Math.max(0, wEff - 1))));
               through = (1 - ab) * (1 - ar);
@@ -861,8 +862,9 @@ export interface BandInfo {
   /** Desk view: the time edge's band is the lid (drawTube lid(): xm the front contact line, w the lid's height, fill
    *  its opacity a, not x surfaceFill: the marks' liquid path), rimB its back contour's weight per a x min(1, w / 2). */
   lid: boolean; rimB: number;
-  /** The lid's liquid (lidLaw.ts): its law and per row the chord share q = z_R / R; null without a lid. */
-  law: LidLaw | null; lidQ: Float32Array | null;
+  /** The lid's liquid (lidLaw.ts): its law, per row the chord share q = z_R / R (null without a lid) and surfaceBand's
+   *  share of it (lidPb). */
+  law: LidLaw | null; lidQ: Float32Array | null; lidPb: number;
 }
 /** Liquid body bounds per tube row (panel frame) plus, when drawn, the surface band past them. */
 export interface Edges { lo: Float32Array; hi: Float32Array; band?: BandInfo; }
@@ -2854,14 +2856,16 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
     // path to the back wall, whatever surfaceBand / surfaceFill say (they add the shaded fill on top, as before).
     const lidLaw = lidLaws[idx], lidQ = lidQs[idx];
     if (lidT > 0) {
-      const key = lidLawKey[idx];
-      if (!(key[0] === lidTau && key[1] === lidDelta && key[2] === p.contactAngle && key[3] === p.liquidTransparency)) {
-        lidLawBuild(lidLaw, lidTau, lidDelta, p.contactAngle, p.liquidTransparency);
-        key[0] = lidTau; key[1] = lidDelta; key[2] = p.contactAngle; key[3] = p.liquidTransparency;
+      // built for the pose's step (lidKey: held against the IMU's noise), the contact angle and the transparency
+      const key = lidLawKey[idx], kT = lidKey(lidTau, key[0]), kD = lidKey(lidDelta, key[1]);
+      if (!(key[0] === kT && key[1] === kD && key[2] === p.contactAngle && key[3] === p.liquidTransparency)) {
+        lidLawBuild(lidLaw, kT, kD, p.contactAngle, p.liquidTransparency);
+        key[0] = kT; key[1] = kD; key[2] = p.contactAngle; key[3] = p.liquidTransparency;
       }
       const invR = F(1 / lidR);
       for (let ry = 0; ry < H; ry++) { const dy = F(ry - lidYc), z2 = F(F(lidR * lidR) - F(dy * dy)); lidQ[ry] = z2 > 0 ? F(F(Math.sqrt(z2)) * invR) : 0; }
     }
+    const lidPb = Math.min(1, strokeA / LID_BAND_FULL);   // surfaceBand's share of the absorption (1 from 0.1 on)
     const lid = (ry: number, xm: number, w: number, lk: number, xlo: number, xhi: number): number => {
       if (!(w > 0)) return 0;
       const y = y0 + ry, a = strokeA * Math.min(1, w);
@@ -2869,7 +2873,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const shade = 0.6 * (1 - Math.min(1, lk));
       const inner = shadeRow(tone(blend565(pal.rows[ry], darkC, 0.3)), ry);
       const outer = shadeRow(tone(blend565(blend565(lensC, pal.rows[ry], 0.2), darkC, shade)), ry);
-      const invWidth = 1 / (w + hw), pull = pullR;
+      const invWidth = 1 / (w + hw), pull = pullR, invW2 = 0.5 / w;
       const blickK = blickRow(ry) * Math.min(1, lk) * (1 - pull);
       const backK = backKs[ry];
       const rimK = p.surfaceRim * Math.min(1, w / 2) * (1 - pull) * ((1 - backK) * (0.5 + 0.5 * rowKs[ry]) * Math.min(1, lk) + backK);
@@ -2885,7 +2889,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) * invWidth));
         const us = u * u * (3 - 2 * u);
         const c = blend565T(inner, outer, opacityT(us));
-        const af = Math.max(a * fill * (1 - u), Math.min(1, w) * lidOpacity(lidLaw, lidQ[ry], u)) * coverage * (1 - pull * us);
+        // the law's own coordinate: 0 at the front line itself (u starts hw inside it, the stroke's overlap into the body)
+        const af = Math.max(a * fill * (1 - u), lidPb * Math.min(1, w) * lidOpacity(lidLaw, lidQ[ry], (lo + hi) * invW2)) * coverage * (1 - pull * us);
         const ab = a * blickK * coverage * 4 * u * (1 - u);
         const arF = a * rimK * Math.max(0, Math.min(hi, 0.5) - Math.max(lo, -0.5));
         const arB = a * rimBK * Math.max(0, hi - Math.max(lo, bLo));
@@ -2913,7 +2918,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const bounds: Edges = markBounds[idx] = { lo: new Float32Array(H), hi: new Float32Array(H) };
   if (hasLiquid && p.surfaceBand > 0)
     bounds.band = { xm: [edges, edgesL], w: [strokeR, strokeL], fill: bandFill, blick: bandBlick, rim: bandRim, pull: [pullR, pullL], hw: softW / 2, mirror: mir, L,
-      lid: lidT > 0, rimB: lidT > 0 ? lidRimB : 0, law: lidT > 0 ? lidLaws[idx] : null, lidQ: lidT > 0 ? lidQs[idx] : null };
+      lid: lidT > 0, rimB: lidT > 0 ? lidRimB : 0, law: lidT > 0 ? lidLaws[idx] : null, lidQ: lidT > 0 ? lidQs[idx] : null, lidPb: Math.min(1, strokeA / LID_BAND_FULL) };
   fizzStrokeR[idx] = strokeR; fizzStrokeL[idx] = strokeL;   // with fizzSurf / fizzSurfL: the vertical step's endpoint rule
   for (let ry = 0; ry < H; ry++) {
     const lo = edgesL[ry], hi = edges[ry];

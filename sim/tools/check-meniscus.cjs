@@ -489,7 +489,8 @@ for (const e of [20, 30]) {
     const dry = delta([at(d, x)], [at(g, x)]);
     if (dry < 150) continue;   // no mark there
     const u = (x + 0.5 - xm + hw) / (w + hw), seen = delta([at(f, x)], [at(g, x)]);
-    const wet = Math.min(1, Math.max(b.fill[0][30] * (1 - u), Math.min(1, w) * lidWet(b.law, b.lidQ[30], u)));
+    // (the law's own coordinate: 0 at the front line itself; surfaceBand's share of it, lidPb)
+    const wet = Math.min(1, Math.max(b.fill[0][30] * (1 - u), b.lidPb * Math.min(1, w) * lidWet(b.law, b.lidQ[30], (x + 0.5 - xm) / w)));
     assert.ok(Math.abs(seen - dry * (1 - wet)) <= 20, `mark under the lid seen through the liquid path (e ${e}, x ${x}: ${seen} vs ${dry} x ${(1 - wet).toFixed(3)})`);
     if (u < 0.45) { assert.ok(seen <= 0.5 * dry, `an opaque liquid hides a mark under the lid's front part (e ${e}, x ${x}, u ${u.toFixed(2)}: ${seen} of ${dry})`); hidden++; }
     if (u > 0.92) { assert.ok(seen >= 0.5 * dry, `the mark shows again where the liquid thins out at the back line (e ${e}, x ${x}, u ${u.toFixed(2)}: ${seen} of ${dry})`); shown++; }

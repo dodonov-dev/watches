@@ -8,6 +8,18 @@
 // Built when the pose or the look changes (a square root or two a sample), read per pixel by one interpolation.
 const F = Math.fround;
 export const LID_N = 32;                     // samples over u: LID_N + 1 entries
+/** The law is built for the pose in steps of 1 / LID_KEY_STEPS rad, re-keyed when the pose leaves its step by more than
+ *  LID_KEY_HOLD of one (the IMU's noise at rest would rebuild it every frame: ~0.15 ms a tube on the S3; a step moves
+ *  the opacity by < 1 %). lidKey: the step an angle takes from its last key (NaN: none yet). Firmware lidKey. */
+export const LID_KEY_STEPS = 128, LID_KEY_HOLD = 0.6;
+export function lidKey(angle: number, key: number): number {
+  const a = F(angle);
+  if (Math.abs(F(a - key)) <= F(LID_KEY_HOLD / LID_KEY_STEPS)) return key;   // (a NaN key fails the test: keyed afresh)
+  return F(Math.floor(F(F(a * LID_KEY_STEPS) + 0.5)) / LID_KEY_STEPS);
+}
+/** surfaceBand's share of the liquid under the lid: the whole absorption from a stroke opacity of LID_BAND_FULL on (a
+ *  surfaceBand of 0.1), fading with it to nothing below (surfaceBand 0 is no lid at all: no jump on the way there). */
+export const LID_BAND_FULL = 0.16;
 const NW = F(4 / 3), RW = F(0.75);           // water against air
 const ATT_N = 64;                            // exp(-i / 8) by the float32 recurrence of fizzLight.ts / fizz_light.h
 const ATT: Float32Array = (() => { const t = new Float32Array(ATT_N + 2), c = F(0.8824969); t[0] = 1; for (let i = 1; i <= ATT_N + 1; i++) t[i] = F(t[i - 1] * c); return t; })();
@@ -59,8 +71,12 @@ export function lidLawBuild(o: LidLaw, tau: number, delta: number, thetaDeg: num
     // refracted ray to the back wall z = -1
     const k = F(F(RW * ci) - ct), tx = F(F(RW * dx) + F(k * nx)), tz = F(F(RW * dz) + F(k * nz));
     const lz = F(z + 1);
-    let lam = 0;
-    if (tz < -1e-3) lam = F(F(lz / F(-tz)) * F(0.5) * F(Math.sqrt(F(F(tx * tx) + F(tz * tz)))));   // path / 2R (|t| = 1 up to rounding)
+    // its path / 2R to the wall it runs to (|t| = 1 up to rounding): the back wall, at extreme poses the front one
+    // (the eye far above a deep dish: review 1); along the tube it never leaves the liquid (4: opaque)
+    const tl = F(F(0.5) * F(Math.sqrt(F(F(tx * tx) + F(tz * tz)))));
+    let lam = 4;
+    if (tz < -1e-3) lam = F(F(lz / F(-tz)) * tl);
+    else if (tz > 1e-3) lam = F(F(F(1 - z) / tz) * tl);
     o.lam[i] = Math.min(4, lam);
     // the mirror ray: toward the dry back wall above the ring it shows the tube back (weight ramps in over 0.15 R);
     // lower it meets the dish again and shows liquid, back toward the viewer the room: neither thins the liquid
@@ -69,6 +85,8 @@ export function lidLawBuild(o: LidLaw, tau: number, delta: number, thetaDeg: num
     if (mz < -1e-3) { const xm = F(x + F(lz * F(mx / F(-mz)))); dry = Math.max(0, Math.min(1, F(F(xm - xRing) * F(1 / 0.15)))); }
     o.keep[i] = F(1 - F(fr * dry));
   }
+  // never less liquid nearer the front line (a ray that enters at the front wall itself, toward it, has no path of its own)
+  for (let i = LID_N - 1; i >= 0; i--) if (o.lam[i] < o.lam[i + 1]) o.lam[i] = o.lam[i + 1];
 }
 /** The table at u in 0..1. */
 function at(tab: Float32Array, u: number): number {
