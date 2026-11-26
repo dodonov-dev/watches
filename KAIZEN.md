@@ -953,3 +953,9 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - N1's ripples (0.02–0.05) may read as FDM ringing; `rip=(0, 0)` in VARIANTS turns them off.
 - Depth budget caps scar width: at 0.7 total relief a scar wider than ~9 mm on the R30 flanks is no longer concave. Bigger scars need a deeper budget or a thicker wall.
 - relief_natural.py caches the hull depth (out-coupon/relief-c-natural-depth.npy): a build takes ~3 s. relief_c.py could read the same cache.
+
+## 2026-11-26 simplified Schleiferbock stencils
+- Stencil glow previews blur by a guessed 0.3 mm; measure the real spread from a photo of a lit stencil behind the 1.3 skin.
+- `schleiferbock_stencils.inscribed_w` caps at 4.0 (search limit 2.0): wrong for anything wider.
+- Simplified Schleiferbock stencils have no STEP (polyline apertures made the old one 9 MB); export splines if a STEP is wanted.
+- Simplified goat head has no eye: an island needs bridges; in the "sparks" type it could stand on the floor.

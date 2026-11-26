@@ -137,3 +137,8 @@ Pictures in `images/desk-housing-v3/` (`sheet-codex.jpg`; `agy/` Neon; `fable/` 
   - **Lid:** printed unflipped and came out badly, worst at the holes. It must print inner face down. `make_plate.py` now flips lids; `_11` is the lid reprint.
   - **F5/F9 (triangle facets):** rejected as too geometric.
   - **N2/N3:** not printed; the STLs are left uncommitted and can be regenerated with `relief_natural.py`.
+
+## Simplified Schleiferbock stencils (2026-11-26)
+- **User:** the plate _12 stencils are good but too detailed for a glow-through logo. Wanted: goat's head only, bigger wheel / gear, bigger sparks.
+- **Logo:** `images/schleiferbock-logo/simple.py` draws it in mm at stencil size (14 × 8.83 box) and writes `schleiferbock-simple-{wheel,gear}.svg` + `simple-preview.png`. No arm, no knife. Wheel Ø 6.2 (was 4.1), gear 8 teeth 0.9 high, sparks 1.05 wide × ~2 long (were 0.4 × 1.5). Nothing narrower than 0.5 (0.4 nozzle), ≥ 0.8 of plate between the five cuts.
+- **Stencils:** `cad/desk/schleiferbock_simple_stencils.py` (same plate and the two types, through / sparks, as `schleiferbock_stencils.py`), STLs `to-print/logo-stencil-schleiferbock-simple-*`, plate `_14_plate_schleiferbock_simple_stencils.3mf`. Not printed yet.

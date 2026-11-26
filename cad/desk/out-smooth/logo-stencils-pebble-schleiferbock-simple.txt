@@ -1,0 +1,8 @@
+LOGO STENCILS Schleiferbock simplified, pebble C: the E+H stencil's plate (pocket 16.00 x 10.83, 1.6036 thick, bed face = the face against the skin, logo mirrored); goat's head, wheel / gear, three sparks, drawn for a 0.4 nozzle
+two types: through (the logo cut through); sparks (only the sparks through, head and wheel a pocket from the top face, the LED side, to a 0.36 floor on the bed face: they glow dimmer)
+wheel: logo 13.79 x 8.78, 5 cuts; sparks 1.05, 1.05, 1.05 wide; least plate between cuts 0.80, to the plate's edge 0.72
+  logo-stencil-schleiferbock-simple-wheel-through.stl  STL closed, 2876 triangles, volume 186.93 mm3, 141 kB
+  logo-stencil-schleiferbock-simple-wheel-sparks.stl   STL closed, 2868 triangles, volume 208.35 mm3, 140 kB
+gear: logo 13.72 x 8.78, 5 cuts; sparks 1.05, 1.05, 1.05 wide; least plate between cuts 0.80, to the plate's edge 0.72
+  logo-stencil-schleiferbock-simple-gear-through.stl   STL closed, 3804 triangles, volume 198.76 mm3, 186 kB
+  logo-stencil-schleiferbock-simple-gear-sparks.stl    STL closed, 3796 triangles, volume 217.53 mm3, 185 kB
