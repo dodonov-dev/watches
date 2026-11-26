@@ -51,6 +51,17 @@ FIZZ_RING_KEEP = 0.6 px) the core's largest shift, `bubbleDark` the core tint aw
 Not done (KAIZEN): core brightening, the surface's mirror image, a ring gradient per pixel, shadows / caustics.
 
 ## Cost
-Per bubble per frame: 4 sqrt, <= 3 divisions, 6 table lerps (exp(-tau), 65 entries by a float32 recurrence), ~100 flops;
-per pixel nothing. Per frame: trig / log / divisions in fizzLightFrame. The level table: 8 x H blends on a palette change
-(was 4 x H x 2). Memory: FizzLook + 4 x TUBE_HEIGHT_MAX x 2 B + the frame struct, PSRAM, boot-time; the table static.
+Per bubble: 4 sqrt, 1-3 divisions, 6 table lerps (exp(-tau), 65 entries by a float32 recurrence), ~100 flops; per pixel
+nothing. Per frame: trig / log / divisions in fizzLightFrame, skipped while its inputs repeat. The level table: 8 x H
+blends on a palette change. Memory: FizzLook (+ 4 x TUBE_HEIGHT_MAX x 2 B, the frame struct) and the per-slot memo
+(FIZZ_POOL x 32 B = 15,360 B), PSRAM, boot-time.
+
+Board (lcd316@320w8-8, the pale look, stand pose pinned, 100 + 18 bubbles; 2026-11-26):
+- First port (planBubbleLit in flash, the frame set-up with a double Fresnel): fizzPhys 1 = +0.94 ms a frame, 53.7 -> 51.0 fps.
+  FIZZ_PROF: fizzLit + the blend ~5.6 us a bubble on the S3 (host 34 ns); the rest was the set-up's soft-float doubles and
+  instruction-cache misses of 3.6 KB of flash code fetched every frame.
+- Now: the set-up in float32 and keyed on its inputs; planBubbleLit in IRAM (3.2 KB of internal heap, 29 KB left free);
+  firmware only: each slot keeps its last FizzLit (FizzLitMemo) and takes a new one every 4th frame, slots staggered, at
+  once when older or > 6 px from where it was taken (a slot reborn elsewhere); the blend with the explicit values runs
+  every frame. fizzPhys 1 = +0.32 ms a frame, 53.2 -> 52.2 fps (median of 3 runs x 5). fizzPhys 0: unchanged path.
+  The sim computes every bubble every frame (a firmware bubble's light is at most 3 frames old).

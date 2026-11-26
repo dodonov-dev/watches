@@ -1726,7 +1726,7 @@ struct Tube {
   void planFizz(const Params &p, const FizzFrame &ff, float light);
   void fizzBand(int r0, int r1);
   float planBubble(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd);
-  void planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd, float fx);
+  void planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, struct BubblePlan &b, const FizzBody *bd, float fx, int slot);
   void bubbleRows(const struct BubblePlan &b, int r0, int r1);
   void discOf(const struct BubblePlan &b, DiscRow &d) const;
   inline void discRowOf(const struct BubblePlan &b, DiscRow &d, int iy, float wallT, float dy);
@@ -3425,6 +3425,10 @@ struct FizzClass {
   bool core, blick;
   int xw, dyl, maskOff;   // mask: dyl |dy| rows of xw |dx| steps at pool + maskOff, then dyl bytes: each row's widest step (255: none)
 };
+#define FIZZ_LIT_EVERY 4    // frames between a slot's fizzLit (planBubbleLit)
+#define FIZZ_LIT_JUMP 6.0f  // px along the tube: farther from where its light was taken = another bubble's place
+struct FizzLitMemo { FizzLit o; float x; uint32_t frame; };   // frame: litFrame when taken (0: never)
+static_assert(sizeof(FizzLitMemo) == 32, "a cache line a slot");
 struct FizzLook {
   float key[4]; bool valid, masks;   // fizzSize, fizzSizeVar, fizzShadeOff, fizzBlick the classes were built for; masks fit
   FizzClass k[FIZZ_SIZES];
@@ -3440,6 +3444,15 @@ struct FizzLook {
   // fizzPhys (planFizz, every frame): clamp(fizzPhys, 0, 1), round(256 phys), the lit rim (0.8 x the scalar bubbleRim) and,
   // phys > 0, the frame's light (fizz_light.h); here, not on the render stack
   float phys; int physT; uint16_t rimLit; FizzLight lit;
+  // what lit was built from (fizzLightFrame's arguments; litKeyI: lid | exposed << 1): a resting board repeats them, and
+  // the set-up (trig, a log, divisions) is then skipped; litValid false = not built yet
+  float litKey[7]; int litKeyI; bool litValid;
+  // A bubble's light changes slowly (it moves ~1-2 px a frame; the light's scale is tens of px), and fizzLit is ~5.6 us a
+  // bubble on the S3 (2026-11-26, FIZZ_PROF): each slot keeps its last FizzLit (litMemo: FIZZ_POOL entries, PSRAM,
+  // render_init) and takes a new one every FIZZ_LIT_EVERY-th frame, slots staggered, or at once when it is older than
+  // that or the bubble is not where it was (a slot reborn elsewhere). The blend with the explicit values runs every
+  // frame. The sim computes every bubble every frame.
+  struct FizzLitMemo *litMemo; uint32_t litFrame;
   // the pose's up (tube frame) as the fizz was last stepped (stepFizzTube; face up before the first): fizzPhys's key light
   // (sim fizzUp). Here, not in Tube: a Tube 12 B bigger changed the code of every tubes[idx] in IRAM (sizeof multiplies)
   Pose fizzUp;
@@ -6665,7 +6678,7 @@ FIZZ_IRAM float __attribute__((noinline)) Tube::planBubble(const Fizz &f, const 
 // pinpoint's place (also when the old pinpoint was off) by planBubble's expressions. Plain flash (not FIZZ_IRAM), called
 // from planFizz (flash): the phys 0 path in IRAM pays planBubble's return value only. fp-contract off: fizzLit keeps the
 // sim's roundings (a fused multiply-add rounds once; tools/check_fizz_light.py holds the kernel to the sim bit for bit).
-void __attribute__((noinline, optimize("fp-contract=off"))) Tube::planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd, float fx) {
+FIZZ_IRAM void __attribute__((noinline, optimize("fp-contract=off"))) Tube::planBubbleLit(const Fizz &f, const Params &p, const FizzFrame &ff, BubblePlan &b, const FizzBody *bd, float fx, int slot) {
   const FizzLook &fl = *look; const FizzLight &lit = fl.lit; const float phys = fl.phys;
   const float lxS = -0.7f;
   const int fy = (int)clampf(jround(f.y), 0, H - 1);
@@ -6677,13 +6690,21 @@ void __attribute__((noinline, optimize("fp-contract=off"))) Tube::planBubbleLit(
   const float dirX = ff.lxSign * lxS * nrm, dirY = ly * nrm;
   const float bk = pop < 1 ? 0.4f * (r - 1) : c.bk;
   const float depthK = 1 - p.fizzDepth * f.z * (1 - p.liquidTransparency), tint0 = p.bubbleDark * depthK;   // the explicit look's (sim depthK, tintA)
-  float yb, zb;
-  if (bd) { yb = bd->y; zb = bd->z; }
-  else {
-    const float a = fmx(0, lit.R - r); yb = clampf(f.y - (H - 1) * 0.5f, -a, a);
-    const float zm = sqrtExact(fmx(0, a * a - yb * yb)); zb = clampf(a * (1 - 2 * f.z), -zm, zm);
+  // its light: this slot's turn (one frame in FIZZ_LIT_EVERY), or its memo is older than that or from another place
+  FizzLitMemo &mm = fl.litMemo[slot];
+  const uint32_t age = fl.litFrame - mm.frame;
+  const float moved = fx - mm.x;
+  if (mm.frame == 0 || age >= FIZZ_LIT_EVERY || ((fl.litFrame + (uint32_t)slot) & (FIZZ_LIT_EVERY - 1)) == 0 || moved > FIZZ_LIT_JUMP || moved < -FIZZ_LIT_JUMP) {
+    float yb, zb;
+    if (bd) { yb = bd->y; zb = bd->z; }
+    else {
+      const float a = fmx(0, lit.R - r); yb = clampf(f.y - (H - 1) * 0.5f, -a, a);
+      const float zm = sqrtExact(fmx(0, a * a - yb * yb)); zb = clampf(a * (1 - 2 * f.z), -zm, zm);
+    }
+    fizzLit(lit, fx, yb, zb, r, fizzSurf[fy], fizzSurfL[fy], fzLid ? strokeR[fy] : 0.0f, mm.o);
+    mm.x = fx; mm.frame = fl.litFrame;
   }
-  FizzLit o; fizzLit(lit, fx, yb, zb, r, fizzSurf[fy], fizzSurfL[fy], fzLid ? strokeR[fy] : 0.0f, o);
+  const FizzLit &o = mm.o;
   const float K = depthK + (o.K - depthK) * phys;
   const int lvl = (int)(K * (FIZZ_LIGHTS - 1) + 0.5f);
   b.lvl = (uint8_t)(lvl < 0 ? 0 : lvl > FIZZ_LIGHTS - 1 ? FIZZ_LIGHTS - 1 : lvl);   // (K in [0, 1]: a guard)
@@ -6858,12 +6879,24 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff, float light) {
   takeFizzMasks(fl, p);
   // fizzPhys > 0: each bubble lit where it is (fizz_light.h; docs/fizz-light/model.md). The key light: world-up along the
   // tube (the pose the fizz was stepped with, liquid frame), the palette's light in the cross-section. 0: the explicit look.
+  const bool physWas0 = !(fl.phys > 0);
   fl.phys = clampf(p.fizzPhys, 0, 1);
   if (fl.phys > 0) {
+    // the memos' clock: 0 marks a memo never taken (after the wrap every memo reads as old); switched on again, every memo is old
+    fl.litFrame += physWas0 ? FIZZ_LIT_EVERY + 1 : 1;
+    if (fl.litFrame <= FIZZ_LIT_EVERY) fl.litFrame = 2 * FIZZ_LIT_EVERY + 1;
     fl.physT = (int)jround(fl.phys * 256);
     fl.rimLit = blend565TCold(0, pal.bubbleRim, 205);   // the lit rim, 0.8 of the scalar rim so the pinpoint reads above it
-    fizzLightFrame(fl.lit, p.liquidTransparency, boreR(p), ff.mir ? -fl.fizzUp.x : fl.fizzUp.x, light, fzLid, fizzLidTau, fizzLidDelta,
-                   fizzExposed, fizzTone(fl.rimLit, pal.rows[H >> 2], pal.rows[H - 1 - (H >> 2)]));
+    const float lk[7] = {p.liquidTransparency, boreR(p), ff.mir ? -fl.fizzUp.x : fl.fizzUp.x, light, fizzLidTau, fizzLidDelta,
+                         fizzTone(fl.rimLit, pal.rows[H >> 2], pal.rows[H - 1 - (H >> 2)])};
+    const int lkI = (fzLid ? 1 : 0) | (fizzExposed << 1);
+    bool same = fl.litValid && fl.litKeyI == lkI;
+    for (int i = 0; same && i < 7; i++) same = fl.litKey[i] == lk[i];   // (a NaN never matches: rebuilt every frame)
+    if (!same) {
+      fizzLightFrame(fl.lit, lk[0], lk[1], lk[2], lk[3], fzLid, lk[4], lk[5], fizzExposed, lk[6]);
+      for (int i = 0; i < 7; i++) fl.litKey[i] = lk[i];
+      fl.litKeyI = lkI; fl.litValid = true;
+    }
   }
   const int physKey = fl.phys > 0 ? fl.physT : -1;   // the ring's levels: depth (-1) or light at physT
   // A depth level's colours: functions of the palette rows, the edge shade, the params below and blickC only (no bubble or
@@ -6913,7 +6946,7 @@ void Tube::planFizz(const Params &p, const FizzFrame &ff, float light) {
       if (fizz[k].v != 0 && (!p.vertical || (fizzLevel(fizz[k].z) >= FIZZ_DEPTHS / 2) == (pass == 0))) {
         BubblePlan &b = mp.bub[mp.nBub++]; const FizzBody *const bd = vb ? &body[k] : nullptr;
         const float fx = planBubble(fizz[k], p, ff, b, bd);
-        if (fl.phys > 0) planBubbleLit(fizz[k], p, ff, b, bd, fx);   // fizzPhys: lit where it is
+        if (fl.phys > 0) planBubbleLit(fizz[k], p, ff, b, bd, fx, k);   // fizzPhys: lit where it is
       }
 #if TILE_RENDER
   const int nb = (H + TUBE_BAND - 1) / TUBE_BAND;
@@ -7019,8 +7052,12 @@ bool render_init(bool fast) {
     tb.look = (FizzLook *)heap_caps_malloc(sizeof(FizzLook), MALLOC_CAP_SPIRAM);   // ~5 KB
     if (tb.look) {
       FizzLook &fl = *tb.look;
-      fl.valid = fl.masks = fl.depthValid = false; fl.mask = nullptr; fl.phys = 0; fl.depthPhysT = -1; fl.fizzUp = POSE_DEFAULT;
+      fl.valid = fl.masks = fl.depthValid = fl.litValid = false; fl.mask = nullptr; fl.phys = 0; fl.depthPhysT = -1; fl.fizzUp = POSE_DEFAULT;
+      fl.litFrame = 0;
+      fl.litMemo = (FizzLitMemo *)heap_caps_malloc(FIZZ_POOL * sizeof(FizzLitMemo), MALLOC_CAP_SPIRAM);   // 15,360 B a tube
+      if (fl.litMemo) memset(fl.litMemo, 0, FIZZ_POOL * sizeof(FizzLitMemo));   // frame 0: never taken
     }
+    ok = ok && tb.look && tb.look->litMemo;
     ok = ok && tb.look;
     tb.foam = (FoamWork *)heap_caps_malloc(sizeof(FoamWork), MALLOC_CAP_SPIRAM);   // ~12 KB
     if (tb.foam) memset(tb.foam, 0, sizeof(FoamWork));
@@ -7248,7 +7285,9 @@ int render_spare_rows(int idx) { return tubeAt(idx).rc.spareN; }   // the spare 
 #endif
 bool render_seq_reset(uint32_t seed) {
   for (int i = 0; i < TUBE_COUNT; i++) { Tube &t = tubeAt(i); t.fizzN = 0; t.fizzLen = 0; t.springScatter = 0; t.springClock = 0; t.bodyH = 0; if (t.foam) t.foam->nOrder = 0;
-    t.lightKeyOk = false; }   // perf-cheap A': a sequence keys its palette afresh (`X` frame hashes repeatable)
+    t.lightKeyOk = false;   // perf-cheap A': a sequence keys its palette afresh (`X` frame hashes repeatable)
+    // fizzPhys: the pose before the first step and the light memos start over too
+    if (t.look) { FizzLook &fl = *t.look; fl.fizzUp = POSE_DEFAULT; fl.phys = 0; fl.litFrame = 0; if (fl.litMemo) memset(fl.litMemo, 0, FIZZ_POOL * sizeof(FizzLitMemo)); } }
   return fizzReseed(seed);
 }
 #ifdef DIGIT_PROF

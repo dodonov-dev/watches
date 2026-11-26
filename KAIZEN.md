@@ -1098,3 +1098,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   to ~5 deg in the liquid) is ignored there, and the lid's projected x is used as the axial position.
 - fizzPhys reads the pose from the last fizz step (Tube::fizzUp / sim fizzUp); a frame rendered before any step is lit
   face-up. Not in the `x` dump: a replayed frame with fizz would need it (fizz is off in compare-device).
+- fizzPhys perf (2026-11-26): fizzLit is ~5.6 us a bubble on the S3 (4 inline roots, a soft-float division or two, no
+  fused multiply-add in its fp-contract=off region). Left: 1 / E by rsqrt, sqrtApprox with a sim mirror, the lid's
+  k B from fizzEndClampX (it computes k and drops it). The per-slot memo (every 4th frame) is firmware only: the sim
+  lights every bubble every frame.
+- A double in a per-frame firmware path is soft float (the Fresnel term of fizzLightFrame was most of ~0.38 ms a tube a
+  frame); bench.py's cores h / m lines showed it as a cost that did not scale with the bubble count.
+- `B1` on the lcd316 build of 2026-11-26 answered but `s` still read `ble off` 20 s later (heap unchanged): the BLE
+  window was not checked with the 3.2 KB of new IRAM.

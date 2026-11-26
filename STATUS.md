@@ -1,8 +1,8 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-25 (fizz-light: fizzPhys, each bubble lit where it is; host-checked, not on the board yet)_
+_Last update: 2026-11-26 (fizz-light: fizzPhys on the board, +0.32 ms a frame at 1; Astra reviews 1-2 settled)_
 
-## Fizz light (2026-11-25), branch `fizz-light` on edge-ends 41121d2: fizzPhys; host-checked, NOT flashed
+## Fizz light (2026-11-25 / 26), branch `fizz-light` on edge-ends 41121d2: fizzPhys; board-benched (lcd316@320w8-8), look check pending
 
 - Params v36: `fizzPhys` 0..1 (default 0, UI "· fizz physical light", after fizzBlick; a gas key). 0 = the explicit look,
   the old path byte for byte. > 0: each bubble's ring, core shift, pinpoint and tint follow the light it gets where it
@@ -24,9 +24,19 @@ _Last update: 2026-11-25 (fizz-light: fizzPhys, each bubble lit where it is; hos
   check_fizz_steps --reference amoled191 and lcd316@320w8-8 tiles 80 of 80, fizzPhys 1 / 0.5 strip = tiles 80 of 80;
   --sim lockstep 27 of 27, --free 25 of 25 vertical; test_params_nvs all ok; sim build, check:presets, check:materials
   1145 / 0, check:imu.
-- Cost: per bubble 4 roots, 2-3 divisions, 6 table lerps (host 32 ns vs 2.6 ns for the explicit set-up), nothing per
-  pixel; lcd316@320w8-8 build IRAM +28 B, DRAM 0, flash +7.6 KB; PSRAM + ~1.2 KB a tube. Board fps not measured yet.
-- Open: flash + bench (FIZZ_PROF planBubble share, fps at fizzPhys 0 / 1) and the look check with the user.
+- Astra: review 1 two medium (an interrupted v34 -> v35 migration's blob was dropped by the v36 loader: the loader now
+  takes a newer layout's blob by size + v under any older CRC, v33..v36; rows the lid does not cover took the lid's tilted
+  plane for their rays: axial there), review 2 both settled, nothing else at medium or above
+  (docs/fizz-light/astra-review1.md, astra-review2.md).
+- Board (lcd316@320w8-8, the pale look docs/edge-shade-ends/board-look-before.json, stand pose pinned, 100 + 18 bubbles,
+  medians): fizzPhys 0 53.2 fps / render 18.25 ms; fizzPhys 1 52.2 fps / 18.58 ms (+0.32 ms). The first port cost
+  +0.94 ms (53.7 -> 51.0): a double-precision frame set-up (soft float), 3.6 KB of flash code refetched every frame and
+  ~5.6 us a bubble (FIZZ_PROF). Now the set-up is float32 and keyed on its inputs, planBubbleLit is in IRAM (heap 29 KB
+  free, was 32.9) and, firmware only, each slot's light is retaken every 4th frame (docs/fizz-light/model.md "Cost").
+  Panel refills OK (late 0, restarts 0). The board had v28 firmware and a default-like look (saved:
+  docs/fizz-light/board-look-before-flash.json); NVS was reset by the schema change.
+- Left on the board: this branch's build, the pale look written to NVS with fizzPhys 1, the clock set.
+- Open: the look check with the user (fizzPhys 0 / 0.5 / 1; viewElevation for the lid), live-IMU fps.
 
 ## Edge shade ends (2026-11-25), branch `edge-ends` on perf-cheap 5ef545f: edgeShadeEnd + width; board-checked (lcd316@320w8-8)
 

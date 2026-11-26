@@ -97,27 +97,28 @@ static void __attribute__((noinline)) fizzLightFrame(FizzLight &o, float transpa
   const float tanT = lid ? tanf(tau) : 0.0f;
   for (int i = 0; i < 5; i++) {
     const float den = qx[i] + qz[i] * tanT, denH = -qx[i];
-    o.invS[i] = den > 1e-3 ? 1 / den : 0;     // the sim's double 1e-3
-    o.invSA[i] = qx[i] > 1e-3 ? 1 / qx[i] : 0;
-    o.invH[i] = denH > 1e-3 ? 1 / denH : 0;
+    // the sim's x > 1e-3 (double): (float)1e-3 is the first float above it, so >= 1e-3f is the same test in float32
+    o.invS[i] = den >= 1e-3f ? 1 / den : 0;
+    o.invSA[i] = qx[i] >= 1e-3f ? 1 / qx[i] : 0;
+    o.invH[i] = denH >= 1e-3f ? 1 / denH : 0;
   }
   const float a = ly * ly + lz * lz;
-  // Fresnel at half the angle between light and view (V = +z), water to air: in double as the sim (in float32 the
-  // factor drifted ~1e-6 relative; a dozen soft-float operations a frame)
-  const double nd = 4.0 / 3, ci = sqrt(fmax(0, (1 + (double)lz) / 2)), s2 = 1 - ci * ci;
-  double fr = 1;
-  if (nd * nd * s2 < 1) {
-    const double ct = sqrt(1 - nd * nd * s2), rs = (nd * ci - ct) / (nd * ci + ct), rp = (ci - nd * ct) / (ci + nd * ct);
-    fr = (rs * rs + rp * rp) / 2;
+  // Fresnel at half the angle between light and view (V = +z), water to air. Float32: the sim's is double, the factor
+  // agrees to ~1e-6 relative (check_fizz_light: fk within 1e-5). Double here was soft-float: with the trig below it cost
+  // ~0.38 ms a tube a frame on the S3 (2026-11-26, lcd316@320w8-8).
+  const float n = 4.0f / 3, ci = sqrtf(fizzMx(0, (1 + lz) * 0.5f)), s2 = 1 - ci * ci;
+  float fr = 1;
+  if (n * n * s2 < 1) {
+    const float ct = sqrtf(1 - n * n * s2), rs = (n * ci - ct) / (n * ci + ct), rp = (ci - n * ct) / (ci + n * ct);
+    fr = (rs * rs + rp * rp) * 0.5f;
   }
-  const float n = 4.0f / 3;
   // the pinpoint sits where the bubble's normal halves light and view: r (lx, ly) / sqrt(2 (1 + lz)), kept within 0.75 r
   const float hk = 1 / sqrtf(fizzMx(1e-3f, 2 * (1 + lz))), hm = sqrtf(lx * lx + ly * ly) * hk, hc = hm > 0.75f ? 0.75f / hm : 1;
   // under the lid a foam's view ray refracts at the surface: path = clearance x cos tau / cos theta_w, sin theta_w = cos e / n
   float kLid = 0;
   if (lid) { const float sw = cosf(tau + delta) / n; kLid = cosf(tau) / sqrtf(fizzMx(0.05f, 1 - sw * sw)); }
-  o.R = R; o.R2 = R * R; o.ly = ly; o.lz = lz; o.la = a; o.invA = a > 1e-6 ? 1 / a : 0;
-  o.fk = (float)fmin(1, fr / FIZZ_F_REF); o.hx = lx * hk * hc; o.hy = ly * hk * hc;
+  o.R = R; o.R2 = R * R; o.ly = ly; o.lz = lz; o.la = a; o.invA = a > 1e-6f ? 1 / a : 0;   // == the sim's a > 1e-6 (double): (float)1e-6 is below it
+  o.fk = fizzMn(1, fr * (float)(1 / FIZZ_F_REF)); o.hx = lx * hk * hc; o.hy = ly * hk * hc;
   o.openR = (exposed & 1) != 0; o.openL = (exposed & 2) != 0; o.lid = lid; o.kLid = kLid; o.tone = fizzMx(-1, fizzMn(1, tone));
 }
 // The ring's tone from its lit colour and the liquid behind it (RGB565; liqA / liqB: the palette's rows at a quarter and
