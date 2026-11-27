@@ -984,3 +984,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Wedge sled on the back wall (`crutch_clay.py`): needs no shell change; borderline self-locking, bears on a curved wall.
 - `smooth.py pebble` rebuilds the upright / tilt15 stencils too and touches their STEPs (timestamps only).
 - `PEB_FULL_CHECKS` still places the battery on the board; with the keeper it is off the board. Move or drop its checks before turning the flag on.
+
+## 2026-11-27 pebble round E (frame fork, wide ribs, USB slot, pocket stops)
+- The model still has `hw.GASKET` 0.5 under the glass; the user assembles without the foam strips. Worked round: pads +0.7, top wedge laid out for the glass on the pocket's floor. Proper: a per-variant gasket (moves the board, port and adapter 0.5 forward; the adapter's chin clearance is 0.09 now).
+- `insert_shift` / the back-shifted up move and `Rod` + `TAPE` as the board's location are model history: the board slides in along the front wall, the rods are loose. The standard "rods in the slots" clearance and `PEB_FULL_CHECKS`' sweeps still assume them; the cable path there still ends at the old rim notch.
+- Plate `_17` print: a thin horizontal ridge on the body's outer wall ~76 mm up, not in the G-code. Cause open (filament / stall / Z); compare on the next print.
+- `keeper_to_print.py` rebuilds the relief shells from round C's by mesh edits (notch foot filled, slot cut, ribs and stops added). Regenerating the relief on the new shell would be cleaner; `relief_natural.py` is tied to the C shell's cached base.
+- Relief shells for round E have no seam plate for W (only N1, plate `_18`).
+- `keeper_clay.py` / `keeper_e_clay.py` / `pocket_sketch.py` repeat the model's numbers by hand; they are sketches of their day, not kept in step.

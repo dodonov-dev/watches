@@ -11,6 +11,9 @@ The STLs are only read. The routes follow the exact surface: after regenerating 
 route CSVs and plates are stale), slice and `check`.
     ~/.venvs/cad/bin/python cad/desk/seam_shell.py [check]
 SEAM_ONLY=N1: that shell alone in the middle of the bed, plate _16_plate_pebble_N1_seam.3mf (build and check).
+SEAM_ROUND=D SEAM_ONLY=N1: round D's N1 (the board keeper's ribs in the cavity) with its fork and the lid, plate
+_17_plate_pebble_D_N1_fork_lid.3mf, route pebble-D-seam-route-N1.csv (build and check). SEAM_ROUND=E: round E's N1 and
+fork, plate _18_plate_pebble_E_N1_fork.3mf.
 Writes to-print/pebble-C-seam-route-{W,N1}.csv (x,y,z,polyline,half width), _15_plate_pebble_W_N1_seam.3mf and
 images/desk-housing-v3/seam-shell-routes.png. `check` reads G-code sliced from the plate (SEAM_GCODE=plate_1.gcode).
 """
@@ -20,14 +23,21 @@ import seam_coupon as sc
 
 HERE, TP, IMG, LAYER, log = sc.HERE, sc.TP, sc.IMG, sc.LAYER, sc.log
 PLATE = "_15_plate_pebble_W_N1_seam.3mf"
-SHELLS = [("pebble-C-relief-W", "W", 70, 160), ("pebble-C-relief-N1-knapped", "N1", 186, 160)]     # as on plate _10
+RND = os.environ.get("SEAM_ROUND", "C")                                                            # the shells' round (to-print names)
+SHELLS = [(f"pebble-{RND}-relief-W", "W", 70, 160), (f"pebble-{RND}-relief-N1-knapped", "N1", 186, 160)]   # as on plate _10
 ONLY = os.environ.get("SEAM_ONLY")
 if ONLY: SHELLS = [(nm, tag, 128, 128) for nm, tag, _, _ in SHELLS if tag == ONLY]; PLATE = f"_16_plate_pebble_{ONLY}_seam.3mf"
-STL = "pebble-C-shell-relief-{}.stl"; ROUTE = "pebble-C-seam-route-{}.csv"
+EXTRA = []                             # further objects, after the shells: their G-code labels stay 100..
+if RND in ("D", "E"):                  # N1 with the board keeper's ribs and its fork. Plate _17: round D + the lid (round C's,
+    assert ONLY == "N1"                # unchanged since); plate _18: round E, no lid
+    SHELLS = [(SHELLS[0][0], "N1", 90, 170)]; PLATE = {"D": "_17_plate_pebble_D_N1_fork_lid.3mf", "E": "_18_plate_pebble_E_N1_fork.3mf"}[RND]
+    EXTRA = [[f"pebble-{RND}-fork (pads up: sand them to fit)", f"pebble-{RND}-fork.stl", {}, 190, 128, False]]
+    if RND == "D": EXTRA.append(["pebble-C-lid (flipped)", "pebble-C-lid.stl", {}, 90, 60, False])
+STL = f"pebble-{RND}-shell-relief-{{}}.stl"; ROUTE = f"pebble-{RND}-seam-route-{{}}.csv"
 SUP = {"enable_support": "1", "support_type": "tree(manual)", "support_on_build_plate_only": "1", "enable_overhang_speed": "0,0",
        "tree_support_branch_angle": "10", "support_object_xy_distance": "0.7"}                     # make_plate.SUP
 SEAM = {"seam_position": "aligned", "override_filament_scarf_seam_setting": "1", "seam_slope_type": "external"}
-XC = 6.0                               # the cavity strip's x: clear of the cable notch (|x| < 3.1)
+XC = 8.0 if RND == "E" else 6.0        # the cavity strip's x: clear of the cable notch (|x| < 3.1; round E: the USB slot, |x| < 5.5)
 STEP = 0.2; PAD = 0.24                 # topology scan step; the edge routes overlap the neighbouring zones by PAD
 R_EDGE = 0.4; R_IN = 1.2               # strip half widths: outer skin (fine mesh) / cavity (triangles ~1.5)
 OUTER, CAV = 0, 100                    # polyline ids: 0.. edge routes, 100.. cavity
@@ -86,7 +96,7 @@ def picture(M):
 def build():
     M = {tag: routes(tag) for _, tag, _, _ in SHELLS}
     if not ONLY: picture(M)
-    objs = [[nm, STL.format(tag), {**SUP, **SEAM}, x, y, True, ROUTE.format(tag)] for nm, tag, x, y in SHELLS]
+    objs = [[nm, STL.format(tag), {**SUP, **SEAM}, x, y, True, ROUTE.format(tag)] for nm, tag, x, y in SHELLS] + EXTRA
     subprocess.run([sys.executable, str(HERE / "make_plate.py")], check=True, env={**os.environ, "PLATE_OUT": PLATE, "PLATE_OBJECTS": json.dumps(objs)})
 
 
@@ -97,7 +107,7 @@ def check(gcode):
     lips, pockets: can be seen), deeper = cavity side"""
     from scipy.spatial import cKDTree, ConvexHull
     num = re.compile(r"([XYZEF])(-?\d*\.?\d+)"); S = [[] for _ in SHELLS]; B = [[1e9, 1e9, -1e9, -1e9] for _ in SHELLS]
-    one = len(SHELLS) == 1; cur = 0 if one else None                   # a single object is not labelled in the G-code
+    one = len(SHELLS) + len(EXTRA) == 1; cur = 0 if one else None      # a single object is not labelled in the G-code
     x = y = z = 0.0; feat = ""; trav = True; path = None
     for ln in open(gcode, errors="ignore"):
         if ln[0] == ";":
