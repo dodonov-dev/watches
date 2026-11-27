@@ -23,7 +23,10 @@ _Last update: 2026-11-27 (lid fill: the desk-view lid by its liquid's absorption
 - Astra: review 1 four medium (a refracted ray toward the front wall read as no liquid; a jump at the artistic layers'
   1/255 cutoff; the law looked up at the stroke's u, hw inside the front line; the parity check's job-wide tolerance),
   review 2 all settled + one medium (1/128 rad key steps showed as jumps near a grazing path: now 1/1024); review 3:
-  see docs/lid-fill/astra-review3.md.
+  that case settled (6/255 a re-key) + one medium (tipped far forward, e 40 / theta 80 / tau -41.26 deg, the table's back
+  contact entry flipped 0 <-> 4 between two steps and the lid's back rim line with it): that entry is 0 by definition
+  now; my sweep of tau -45..45 deg in 0.002 deg steps: at most 5.7/255 a re-key in that case, <= 11/255 at the extremes,
+  1.6/255 at e 24 / theta 70. Not reviewed again (three rounds done): docs/lid-fill/astra-review1-3.md.
 - Checks: check_lid_law (new: 305 laws and 61000 points bit for bit on the sim's tables, lidKey 16005 pairs);
   test_compare_device lid look 7 px off, ink looks 100 / 87 px off, all 0 > 12/255 (the old firmware against the new sim:
   1510 > 12/255); check_meniscus 560 native / sim frames (one lone two-step pixel from the float / double lid geometry,

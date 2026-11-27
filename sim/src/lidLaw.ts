@@ -88,6 +88,10 @@ export function lidLawBuild(o: LidLaw, tau: number, delta: number, thetaDeg: num
     o.keep[i] = F(1 - F(fr * dry));
   }
   // never less liquid nearer the front line (a ray that enters at the front wall itself, toward it, has no path of its own)
+  // The back contact line itself has no liquid under it, whichever way the refracted ray runs: with the ray near the
+  // tube's axis (the tube tipped far forward) its entry flipped 0 <-> 4 between two pose steps and the lid's back rim
+  // line with it (review 3: e 40, theta 80, tau -41.26 deg). The last cell fades to it over half a px.
+  o.lam[LID_N] = 0;
   for (let i = LID_N - 1; i >= 0; i--) if (o.lam[i] < o.lam[i + 1]) o.lam[i] = o.lam[i + 1];
 }
 /** The table at u in 0..1. */

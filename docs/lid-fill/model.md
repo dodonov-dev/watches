@@ -46,6 +46,11 @@ gradient, never a uniform veil; a clear liquid (t 0.8) stays a faint wedge (opac
   leaves its step by more than 0.6 of one (lidKey). One build is 0.14-0.2 ms on the S3 (a throwaway build repeating it
   20 times a frame: +3.85 ms), and the IMU's noise changed the exact angles every frame. 1 / 128 rad steps showed as
   jumps where the refracted ray grazes the tube axis (review 2: tau -44.5 deg, e 20, theta 89: 33/255 on a re-key).
+- The back contact line's entry lam(1) is 0 by definition (no liquid under the contact line), whichever wall the
+  refracted ray runs to: left to the trace it flipped 0 <-> 4 with the ray's direction when the tube is tipped far
+  forward (review 3: e 40, theta 80, tau -41.26 deg: the lid's back rim line jumped). A sweep of tau -45..45 deg in
+  0.002 deg steps now moves the opacity by at most 5.7/255 a re-key there, <= 11/255 at the extremes, 1.6/255 at the
+  board's e 24 / theta 70.
 
 ## Board (lcd316@320w8-8, the tuned ink look board-look-tuned.json, stand pose pinned, fizz on; 2026-11-27)
 - Final build: 43.2 fps / render 22.50 ms. The per-pixel law costs ~0.4 ms of it (the same build with the law compiled
