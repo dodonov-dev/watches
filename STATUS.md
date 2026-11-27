@@ -36,7 +36,15 @@ _Last update: 2026-11-27 (lid fill: the desk-view lid by its liquid's absorption
   22.50 ms; the per-pixel law ~0.4 ms of it; against the firmware before (20.5-21.8 ms over three runs) 0.7-2 ms slower,
   the part beyond the law's 0.4 ms not separable from run-to-run / build-layout noise (docs/lid-fill/model.md "Board").
   Left on the board: this build, the user's tuned look untouched, the clock set.
-- Open: the look check with the user; lidRow's per-pixel cost (KAIZEN); the lid itself costs ~2.5-4 ms on this look.
+- 2026-11-27, later: the user: "shading is okay now, but too foggy, not liquid-ish; the back rim should be a little
+  wider, probably by the wall wetting". Absorption kept; what fog has and a surface does not was added: the back contact
+  band = 0.35 of the meniscus rise R tan(45 deg - theta / 2), 0.5..3 px (contactAngle 70: 1.2 px, 45: 3 px), and the lid's
+  blick = the key light mirrored in the back meniscus, a crescent as wide just in front of the band, white through the
+  panel dimmer (surfaceBlick; the user's look has it 0), each at most a third of the lid's height on a row. Rear marks
+  under the lid take both. Sim a8bc44a + the firmware mirror; checks as above (check_lid_law with hm / lidRimW,
+  check_meniscus 560 frames, test_compare_device 6 / 104 / 89 px off, 0 > 12/255, lid off byte-identical); build IRAM +0.
+  NOT flashed: the board was not reachable (no port). Picture docs/lid-fill/lid-rim-gloss.png.
+- Open: flash + the look check with the user; refraction of rear marks under the lid (KAIZEN); lidRow's per-pixel cost.
 
 ## Fizz light (2026-11-25 / 26), branch `fizz-light` on edge-ends 41121d2: fizzPhys; board-benched (lcd316@320w8-8), look check pending
 

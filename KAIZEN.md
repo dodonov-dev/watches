@@ -1125,4 +1125,11 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   pixel, in flash). Levers not tried: a 9-entry opacity table per lid row, lidRow in IRAM, the row's colours from the
   band cache again. bench.py across two builds could not resolve < 1 ms on this look: the old build's base read 20.5,
   21.5 and 21.8 ms in three runs (random fizz under the lid); an in-function cycle counter (TU_MARK around lidDraw) would.
+- Lid, 2026-11-27 (band + crescent): no repo check draws the light's crescent over rear marks under the lid (the port
+  was checked with a throwaway harness: 144 lid scenes with thin ticks, surfaceBlick 1); such scenes also give lone
+  17/255 pixels in 27 frames (ticks under the lid, float / double geometry; the same before the change), more than
+  check_meniscus's allowance of 2, so they cannot simply be added to it.
+- Lid: refraction of rear marks under it is not drawn (a mark on the back wall is seen ~0.6x compressed along the tube
+  through the surface, kinked at the back contact line); the foam veil's lid branch still uses the old 0.5 px contour and
+  the mid-dish blick.
 

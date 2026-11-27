@@ -19,12 +19,18 @@ NaN / the angle's step / a neighbour step / random. Every input is a float32 (he
     relative; the points to the first-order bound of their tables' differences (+ 2e-6). The plain 2e-6 / 1e-5 counts
     are printed too;
   - lidKey: bit for bit;
+  - hm (the meniscus rise / R) with the tables (fed: bit for bit; own trig: the tables' bound, its own one-ulp
+    sensitivity) and lidRimW(law, R) for R 4..60 px (20 and 26.5 included) on every law: bit for bit given the same hm
+    (the native one on the sim's hm; each side's own against a float32 model of it), own trig within the bound of the
+    hm difference;
   - both sides: every value finite, lam in [0, 4] and non-increasing over u, keep / opacity / wet in [0, 1].
 Pinned second-to-last law, the front-wall branch (review 1: tau 0, delta 75 deg, contactAngle 20, transparency 0.08):
 lam > 1 at u = 1 / 16, non-increasing, no 0 before the last entry, on both sides.
 Pinned last law, the board pose (tau 13 deg, delta 11 deg, contactAngle 70, transparency 0.08): lam at u 0 / .25 / .5 /
 .75 / 1 = 1.528 / 0.662 / 0.369 / 0.164 / 0 and F = 1 - keep at u .25 / .5 = 0.109 / 0.057, within 2e-3 on both sides
-(docs/lid-fill/model.md).
+(docs/lid-fill/model.md); hm 0.1763 (tan 10 deg) within 1e-4 and lidRimW at R 20 = 1.234 within 2e-3. The back contact
+band's clamps: contactAngle 20 (the front-wall law) at R 20 -> 3 (LID_RIM_MAX), contactAngle 89 (a pinned law) -> 0.5
+(LID_RIM_MIN), on both sides.
 Also a native run under ASan / UBSan (--no-asan skips it). Exits 1 on any failure.
 """
 import argparse, math, os, random, struct, subprocess, sys, tempfile
@@ -42,8 +48,8 @@ static void ph(float f) { uint32_t u; memcpy(&u, &f, 4); printf(" %08x", u); }
 static int words(char *line, char **w, int n) {
   int k = 0; for (char *t = strtok(line, " \t\r\n"); t && k < n; t = strtok(nullptr, " \t\r\n")) w[k++] = t; return k;
 }
-#define LWORDS (1 + 7 + 2 * (LID_N + 1))
-// "L tanT tanD sd cd A k8 inv1t lam keep" of the sim's output (fed mode)
+#define LWORDS (1 + 7 + 2 * (LID_N + 1) + 1)
+// "L tanT tanD sd cd A k8 inv1t lam keep hm" of the sim's output (fed mode)
 static bool readLaw(FILE *f, float *trig, LidLaw &L) {
   static char line[8192]; char *w[LWORDS + 4];
   while (fgets(line, sizeof line, f)) {
@@ -53,6 +59,7 @@ static bool readLaw(FILE *f, float *trig, LidLaw &L) {
     L.k8 = fh(w[k++]); L.inv1t = fh(w[k++]);
     for (float &v : L.lam) v = fh(w[k++]);
     for (float &v : L.keep) v = fh(w[k++]);
+    L.hm = fh(w[k++]);
     return true;
   }
   return false;
@@ -71,12 +78,12 @@ int main(int argc, char **argv) {
       float trig[5];
       if (fedMode) {   // the sample loop from the sim's trig; the points on the sim's own tables
         if (!readLaw(fed, trig, S)) { fprintf(stderr, "fed: sim law missing\n"); return 3; }
-        lidLawSamples(L, trig[0], trig[1], trig[2], trig[3], trig[4]); L.k8 = S.k8; L.inv1t = S.inv1t;
+        lidLawSamples(L, trig[0], trig[1], trig[2], trig[3], trig[4]); L.k8 = S.k8; L.inv1t = S.inv1t;   // S.hm: the sim's
         if (nudge) {   // the sample loop's sensitivity: each input one ulp up / down ("N input sign lam keep")
           for (int i = 0; i < 5; i++) for (int sg = -1; sg <= 1; sg += 2) {
             float t2[5]; memcpy(t2, trig, sizeof t2); t2[i] = nextafterf(t2[i], sg * INFINITY);
             LidLaw V{}; lidLawSamples(V, t2[0], t2[1], t2[2], t2[3], t2[4]);
-            printf("N %d %d", i, sg); for (float v : V.lam) ph(v); for (float v : V.keep) ph(v); printf("\n");
+            printf("N %d %d", i, sg); for (float v : V.lam) ph(v); for (float v : V.keep) ph(v); ph(V.hm); printf("\n");
           }
           continue;
         }
@@ -86,10 +93,12 @@ int main(int argc, char **argv) {
         trig[0] = tanf(tau); trig[1] = tanf(delta); trig[2] = sinf(delta); trig[3] = cosf(delta); trig[4] = 1 / cosf(thr);
         S = L;
       }
-      printf("L"); for (float v : trig) ph(v); ph(L.k8); ph(L.inv1t); for (float v : L.lam) ph(v); for (float v : L.keep) ph(v); printf("\n");
+      printf("L"); for (float v : trig) ph(v); ph(L.k8); ph(L.inv1t); for (float v : L.lam) ph(v); for (float v : L.keep) ph(v); ph(L.hm); printf("\n");
       have = true;
     } else if (n == 3 && !strcmp(w[0], "K") && !nudge) {
       printf("Y"); ph(lidKey(fh(w[1]), fh(w[2]))); printf("\n");
+    } else if (n == 2 && !strcmp(w[0], "R") && have && !nudge) {   // the back contact band on S's hm (fed: the sim's)
+      printf("M"); ph(lidRimW(S, fh(w[1]))); printf("\n");
     } else if (n == 3 && !strcmp(w[0], "P") && have && !nudge) {
       const float q = fh(w[1]), u = fh(w[2]);
       printf("O"); ph(lidOpacity(S, q, u)); ph(lidWet(S, q, u)); printf("\n");
@@ -115,6 +124,9 @@ FRONT = (0, math.radians(75), 20, 0.08)   # review 1: the refracted ray runs to 
 FRONT_LOW = [(0.49, 0.8775, 29, 0.08), (0.2333, 0.8612, 35, 0.08), (0.16, 0.8775, 35, 0.5)]
 PIN_LAM = [(0, 1.528), (8, 0.662), (16, 0.369), (24, 0.164), (32, 0.0)]   # table index (u = i / 32), lam
 PIN_F = [(8, 0.109), (16, 0.057)]                                            # 1 - keep
+TH89 = (0, math.radians(11), 89, 0.08)   # the back contact band's floor (lidRimW 0.5 at R 20)
+RADII = [4, 4.5, 5, 6, 7.25, 8, 10, 12.5, 15, 17.75, 20, 22, 26.5, 30, 33.3, 40, 47.1, 52, 60]   # lidRimW's R, px
+PIN_HM, PIN_RIM, R_PIN = 0.1763, 1.234, RADII.index(20)
 
 def make_job(laws, points, seed):
     rnd = random.Random(seed)
@@ -128,6 +140,7 @@ def make_job(laws, points, seed):
             elif k % 4 == 0: u = rnd.uniform(-6, 3)    # the law's own coordinate (lo + hi) / 2w: below 0 by up to hw / w
             else: u = rnd.uniform(-0.1, 1.1)
             lines.append('P ' + hx(q) + ' ' + hx(u))
+        lines.extend('R ' + hx(r) for r in RADII)   # no rnd: the key job below keeps its draws
     for _ in range(laws):
         tau = pick([0, -0.5, 0.6, math.radians(13)], -0.5, 0.6)
         delta = pick([0, 1.3, math.radians(11)], 0, 1.3)
@@ -135,6 +148,8 @@ def make_job(laws, points, seed):
         t = pick([0, 0.08, 0.8, 1, 0.01, 0.999], 0, 1, 0.4)
         lines.append('W ' + ' '.join(hx(v) for v in (tau, delta, theta, t)))
         pts()
+    lines.append('W ' + ' '.join(hx(v) for v in TH89))
+    pts()
     for w in FRONT_LOW:
         lines.append('W ' + ' '.join(hx(v) for v in w))
         pts()
@@ -173,18 +188,25 @@ def key_job(rnd):
     return out
 
 def parse(text):
-    L = []; O = []; Y = []
+    L = []; O = []; Y = []; M = []
     for line in text.split('\n'):
         w = line.split()
         if not w: continue
         if w[0] == 'L': L.append(w[1:])
         elif w[0] == 'O': O.append(w[1:])
         elif w[0] == 'Y': Y.append(w[1])
-    return L, O, Y
+        elif w[0] == 'M': M.append(w[1])
+    return L, O, Y, M
 
 N1 = 33
-def fields(l):   # -> trig[5], k8, inv1t, lam[33], keep[33] as hex strings
+def fields(l):   # -> trig[5], k8, inv1t, lam[33], keep[33] as hex strings (hmOf: hm)
     return l[:5], l[5], l[6], l[7:7 + N1], l[7 + N1:7 + 2 * N1]
+
+def hmOf(l):
+    return l[7 + 2 * N1]
+
+def rimModel(hm, r):   # lidRimW in float32 (sim: max(0.5, min(3, F(F(hm F(R)) F(0.35)))))
+    return max(0.5, min(3.0, f32(f32(hm * f32(r)) * f32(0.35))))
 
 def sane(L, O, side):
     bad = 0
@@ -234,8 +256,9 @@ def main():
             r2 = subprocess.run([str(tmp / 'da'), 'fed', str(tmp / 'job.txt'), str(tmp / 'sim.txt')], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if not (r1.returncode == 0 and r2.returncode == 0 and r1.stdout.decode() == own and r2.stdout.decode() == fed):
                 fails.append('ASan / UBSan'); print(r1.stderr.decode()[-2000:], r2.stderr.decode()[-2000:])
-    sL, sO, sY = parse(simOut); nL, nO, nY = parse(own); fL, fO, fY = parse(fed)
-    nl = a.laws + len(FRONT_LOW) + 2; npt = nl * a.points
+    sL, sO, sY, sM = parse(simOut); nL, nO, nY, nM = parse(own); fL, fO, fY, fM = parse(fed)
+    nl = a.laws + len(FRONT_LOW) + 3; npt = nl * a.points; nR = len(RADII)
+    if not (len(sM) == len(nM) == len(fM) == nl * nR): sys.exit(f'counts: lidRimW {len(sM)} / {len(nM)} / {len(fM)}')
     if not (len(sY) == len(nY) == len(fY) > 0): sys.exit(f'counts: lidKey {len(sY)} / {len(nY)} / {len(fY)}')
     keyDiff = [i for i, (x, y, z) in enumerate(zip(sY, nY, fY)) if not (x == y == z)]
     if keyDiff:
@@ -245,17 +268,17 @@ def main():
     if not (nud.count('N ') == 10 * nl and len(sL) == len(nL) == len(fL) == nl and len(sO) == len(nO) == len(fO) == npt):
         sys.exit(f'counts: laws {len(sL)} / {len(nL)} / {len(fL)}, points {len(sO)} / {len(nO)} / {len(fO)}')
     # tables, own trig: the plain relative counts, and against the sensitivity bound where the trig inputs differ
-    sens = [[[0.0] * (2 * N1) for _ in range(5)] for _ in range(nl)]   # law, input, value: the largest one-ulp move
+    sens = [[[0.0] * (2 * N1 + 1) for _ in range(5)] for _ in range(nl)]   # law, input, value (lam, keep, hm): the largest one-ulp move
     jumps = []; nN = 0
     for line in nud.split('\n'):
         w = line.split()
         if w and w[0] == 'N':
             li = nN // 10; nN += 1   # 5 inputs x 2 signs a law
-            base = sL[li][7:7 + 2 * N1]
+            base = sL[li][7:7 + 2 * N1 + 1]
             for j, (x, y) in enumerate(zip(base, w[3:])):
                 d = abs(fl(x) - fl(y)); k = int(w[1])
                 if d > 1e-3:   # a jump across a branch (the dish's discriminant, the cuts |tz| > 1e-3, the fold): counted, and in that entry's own bound
-                    jumps.append((li, k, int(w[2]), ('lam', 'keep')[j // N1], j % N1, fl(x), fl(y)))
+                    jumps.append((li, k, int(w[2]), ('lam', 'keep', 'hm')[j // N1], j % N1, fl(x), fl(y)))
                 if d > sens[li][k][j]: sens[li][k][j] = d
     def ulps(x, y):   # float32 ulps between two finite floats of one sign (as here)
         return abs(struct.unpack('<i', struct.pack('<f', fl(x)))[0] - struct.unpack('<i', struct.pack('<f', fl(y)))[0])
@@ -267,7 +290,8 @@ def main():
         du = [ulps(x, y) for x, y in zip(st, nt)]
         dTab.append(([abs(fl(x) - fl(y)) for x, y in zip(slam, nlam)], [abs(fl(x) - fl(y)) for x, y in zip(skeep, nkeep)],
                      abs(fl(sk) - fl(nk)), abs(fl(si) - fl(ni))))
-        for name, xs, ys, off in (('k8', [sk], [nk], None), ('inv1t', [si], [ni], None), ('lam', slam, nlam, 0), ('keep', skeep, nkeep, N1)):
+        for name, xs, ys, off in (('k8', [sk], [nk], None), ('inv1t', [si], [ni], None), ('lam', slam, nlam, 0), ('keep', skeep, nkeep, N1),
+                                  ('hm', [hmOf(s_)], [hmOf(n)], 2 * N1)):
             for j, (x, y) in enumerate(zip(xs, ys)):
                 nf += 1; bitsEq += x == y
                 u, v = fl(x), fl(y)
@@ -312,6 +336,30 @@ def main():
                 overP += 1
                 if overP <= 5: print(f'own tables: law {li} point {i % a.points} {("opacity", "wet")[k]}: sim {fl(s_[k]):.9g} native {fl(n[k]):.9g}, bound {bound[k]:.3g}')
     if overP: fails.append('lidOpacity / lidWet (own tables)')
+    # the back contact band: fed bit for bit (the sim's hm), each side against the float32 model on its own hm, own trig
+    # within the hm difference's bound
+    rimFed = [i for i, (x, y) in enumerate(zip(sM, fM)) if x != y]
+    rimModelOff = [(side, i) for side, (Ls, Ms) in (('sim', (sL, sM)), ('native', (nL, nM))) for i, m in enumerate(Ms)
+                   if f32(rimModel(fl(hmOf(Ls[i // nR])), RADII[i % nR])) != fl(m)]
+    rimOwn = 0; rimOwnEq = 0
+    for i, (x, y) in enumerate(zip(sM, nM)):
+        rimOwnEq += x == y
+        dh = abs(fl(hmOf(sL[i // nR])) - fl(hmOf(nL[i // nR])))
+        if abs(fl(x) - fl(y)) > dh * RADII[i % nR] * 0.35 + 2e-6 * max(abs(fl(x)), abs(fl(y))):
+            rimOwn += 1
+            if rimOwn <= 5: print(f'lidRimW own: law {i // nR} R {RADII[i % nR]}: sim {fl(x):.9g} native {fl(y):.9g}')
+    for i in rimFed[:5]: print(f'lidRimW fed: law {i // nR} R {RADII[i % nR]}: sim {sM[i]} native {fM[i]}')
+    for side, i in rimModelOff[:5]: print(f'lidRimW {side}: law {i // nR} R {RADII[i % nR]}: off the float32 model')
+    if rimFed: fails.append('lidRimW (sim hm, bits)')
+    if rimModelOff: fails.append('lidRimW (float32 model)')
+    if rimOwn: fails.append('lidRimW (own trig)')
+    # its pins: the board pose (last law), contactAngle 20 (the front-wall law, second to last), 89 (TH89)
+    iTh89 = nl - 3 - len(FRONT_LOW)
+    rimPin = []
+    for Ls, Ms in ((sL, sM), (nL, nM)):
+        rimPin.append((fl(hmOf(Ls[-1])), fl(Ms[(nl - 1) * nR + R_PIN]), fl(Ms[(nl - 2) * nR + R_PIN]), fl(Ms[iTh89 * nR + R_PIN])))
+    rimPinOk = all(abs(hm - PIN_HM) <= 1e-4 and abs(r70 - PIN_RIM) <= 2e-3 and r20 == 3.0 and r89 == 0.5 for hm, r70, r20, r89 in rimPin)
+    if not rimPinOk: fails.append('pinned back contact band')
     badS = sane(sL, sO, 'sim'); badN = sane(nL, nO, 'native') + sane(fL, fO, 'native fed')
     if badS or badN: fails.append('ranges')
     # the board pose, last law
@@ -334,11 +382,16 @@ def main():
           + (f' (law {worstBAt[0]} {worstBAt[1]}[{worstBAt[2]}])' if worstBAt else ''))
     for j in jumps[:3]: print(f'one-ulp jump: law {j[0]} input {j[1]} {"+-"[j[2] < 0]}1 ulp: {j[3]}[{j[4]}] {j[5]:.6g} -> {j[6]:.6g}')
     print(f'lidKey: {len(sY)} (angle, key) pairs, {len(keyDiff)} differ in a bit')
-    print(f'tables, the sim\'s trig: {nl} laws x {2 + 2 * N1} values, {len(fedDiff)} differ in a bit')
+    print(f'tables, the sim\'s trig: {nl} laws x {3 + 2 * N1} values (k8, inv1t, lam, keep, hm), {len(fedDiff)} differ in a bit')
     print(f'lidOpacity / lidWet, the sim\'s tables: {npt} points x 2, {len(ptDiff)} differ in a bit')
     print(f'lidOpacity / lidWet, own tables: {npt} points, {ptEq} bit-identical, {overA} outputs over 1e-5, worst {worstAbs:.3g}'
           + (f' (law {absAt[0]} point {absAt[1]} {absAt[2]}: sim {absAt[3]:.9g} native {absAt[4]:.9g})' if absAt else '')
           + f'; {overP} over the bound (1e-5 where the trig agrees, else the tables\' first-order bound)')
+    print(f'lidRimW: {nl} laws x {nR} R (4..60 px), the sim\'s hm: {len(rimFed)} differ in a bit; off the float32 model on its own hm: {len(rimModelOff)}; '
+          f'own trig: {rimOwnEq}/{len(sM)} bit-identical, {rimOwn} over the hm difference\'s bound')
+    for side, (hm, r70, r20, r89) in zip(('sim', 'native'), rimPin):
+        print(f'back contact band ({side}): hm {hm:.4f}, lidRimW at R 20: contactAngle 70 {r70:.4f}, 20 {r20:g}, 89 {r89:g}')
+    print(f'back contact band: want hm {PIN_HM} within 1e-4, lidRimW {PIN_RIM} within 2e-3, 3, 0.5: {"ok" if rimPinOk else "MOVED"}')
     for side, (lam, F) in zip(('sim', 'native'), pin):
         print(f'board pose ({side}): lam ' + ' / '.join(f'{v:.3f}' for v in lam) + ', F ' + ' / '.join(f'{v:.3f}' for v in F))
     print(f'board pose: want lam ' + ' / '.join(str(x) for _, x in PIN_LAM) + ', F ' + ' / '.join(str(x) for _, x in PIN_F) + f' within 2e-3: {"ok" if pinOk else "MOVED"}')

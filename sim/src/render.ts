@@ -625,7 +625,7 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
             let ab = Math.min(1, band.blick[side][ry] * coverage * 4 * u * (1 - u));
             if (band.lid && side === 0) {
               // the lid's light is a crescent just in front of its back contact band (lid()), not the band's mid-dish patch
-              const rw = band.lidRimW;
+              const rw = Math.min(band.lidRimW, wEff / 3);   // (at most a third of the lid's height there, as lid())
               ab = Math.min(1, band.blick[0][ry] * Math.max(0, Math.min(hi, wEff - rw) - Math.max(lo, wEff - 2 * rw)));
               // the lid (drawTube lid()): the front rim on the front line, the back contour, and past the body the rear
               // wall seen through the liquid under the lid, its path thinning from the front line to 0 at the back line
@@ -2890,7 +2890,8 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const rimC = shadeRow(blend565(hiC, blend565(pal.rows[ry], darkC, 0.75), backK), ry);
       const rimBK = lidRimB * Math.min(1, w / 2), rimBC = shadeRow(blend565(pal.rows[ry], darkC, 0.75), ry);
       bandFill[0][ry] = a; bandBlick[0][ry] = a * blickK; bandRim[0][ry] = a * rimK;
-      const bLo = w - lidRimPx, gLo = bLo - lidRimPx, liq = bRows[ry], blickC = shadeRow(lidGlossN, ry);
+      // (band and crescent each at most a third of the lid's height on this row: the lid pinches to nothing at the walls)
+      const rimPx = Math.min(lidRimPx, w / 3), bLo = w - rimPx, gLo = bLo - rimPx, liq = bRows[ry], blickC = shadeRow(lidGlossN, ry);
       for (let x = Math.max(xlo, Math.floor(xm - hw)), xb = Math.min(xhi, Math.ceil(xm + w)); x < xb; x++) {
         const t = x + 0.5 - xm;
         const lo = Math.max(t - 0.5, -hw), hi = Math.min(t + 0.5, w);

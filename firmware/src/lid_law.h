@@ -31,8 +31,15 @@
 #define LID_BAND_FULL ((float)0.16)
 
 // lam[i]: the liquid path / 2R under lid position u = i / LID_N on the centre row; keep[i]: 1 - the share the surface
-// mirrors of the dry tube back; k8: -8 ln t; inv1t: 1 / (1 - t), 0 for t ~ 1 (sim LidLaw).
-struct LidLaw { float lam[LID_N + 1], keep[LID_N + 1]; float k8, inv1t; };
+// mirrors of the dry tube back; k8: -8 ln t; inv1t: 1 / (1 - t), 0 for t ~ 1; hm: the meniscus rise at the wall / R
+// (sim LidLaw).
+struct LidLaw { float lam[LID_N + 1], keep[LID_N + 1]; float k8, inv1t; float hm; };
+// The back contact band (the meniscus climbing the back wall, seen from above): LID_RIM_K of the meniscus rise hm R px,
+// LID_RIM_MIN .. LID_RIM_MAX; the key light's crescent (surfaceBlick) is as wide, just in front of it (sim lidRimW).
+#define LID_RIM_K 0.35f
+#define LID_RIM_MIN 0.5f
+#define LID_RIM_MAX 3.0f
+static inline float lidRimW(const LidLaw &o, float R) { return fizzMx(LID_RIM_MIN, fizzMn(LID_RIM_MAX, (o.hm * R) * LID_RIM_K)); }
 
 // The sample loop from the pose's trig (tanT = tan tau, tanD = tan delta, sd / cd = sin / cos delta) and the cap's radius
 // A = 1 / cos theta (bore radius 1). The sim's double literals as float tests that answer the same for every float:
@@ -42,6 +49,7 @@ struct LidLaw { float lam[LID_N + 1], keep[LID_N + 1]; float k8, inv1t; };
 static inline void lidLawSamples(LidLaw &o, float tanT, float tanD, float sd, float cd, float A) {
   const float T = tanT + tanD;
   const float A2 = A * A, hm = A - LID_SQRT(A2 - 1);
+  o.hm = hm;
   const float xF = hm - T, W = 2 * T;           // the front line's screen x, the lid's height
   const float xRing = hm + tanT;                // the back contact ring on the back wall (tube x)
   const float dx = -sd, dz = -cd;               // the ray, from the eye

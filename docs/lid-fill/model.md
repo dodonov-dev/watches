@@ -60,6 +60,26 @@ gradient, never a uniform veil; a clear liquid (t 0.8) stays a faint wedge (opac
   noise (with the lid off, viewElevation 0, the two builds read 17.7 vs 18.8 ms in one run and 20.0 in another; with
   surfaceBand 0 they agree, 18.60 vs 18.62).
 
+## Liquid, not fog (2026-11-27, the user after the law: "shading is okay now, but too foggy, not liquid-ish; the back
+rim should be a little wider, probably by the wall wetting")
+The absorption gradient is what a liquid with 7 % transmission a bore diameter does over a pale back; it stays. What made
+it read as fog is what fog has and a surface does not: no edge (the fill fades out to a 0.5 px hairline) and no gloss
+(the blick was off: it took liquidHi's luma, black on this look). A translucent liquid reads as liquid by its meniscus
+and its reflections.
+- The back contact band: the meniscus climbing the back wall. Width = 0.35 of its rise R tan(45 deg - theta / 2),
+  0.5..3 px: theta 70 on a 20 px bore 1.2 px, theta 45 3 px (more wetting, taller meniscus, wider band). Colour and
+  weight as the old contour (deep liquid tint, surfaceRim).
+- The lid's light: the key light mirrored in the meniscus. A lamp above needs the surface tilted toward the eye by
+  (elevation - e) / 2, more than the dish has away from the back wall, so the reflection sits on the back meniscus: a
+  crescent as wide as the band, just in front of it, on the blick's rows, white through the panel dimmer;
+  surfaceBlick is its strength. The side view's blick (a soft patch mid-dish at liquidHi's luma) is not drawn on the lid.
+- Band and crescent are each at most a third of the lid's height on a row (the lid pinches to nothing at the walls).
+- Rear marks under the lid take the same band and crescent; the foam veil's lid branch keeps the old ones.
+- Not built: refraction of the rear marks under the lid (a mark on the back wall is seen ~0.6x compressed along the tube
+  through the surface, with a kink at the back contact line: the straw-in-a-glass cue), a lid denser than the body's
+  transparency says (it read more liquid in a prototype at 2-3x the path, but it is not what the liquid would do).
+Picture: lid-rim-gloss.png (before | band, surfaceBlick 0 | surfaceBlick 0.6 | contactAngle 45).
+
 ## Checks
 check_lid_law.py (tables bit for bit on the sim's trig, lidOpacity / lidWet, lidKey, the board pose's numbers);
 test_compare_device.py on the lid look and the board's ink looks (sim vs native pixels); check_meniscus.py (560 lid /
