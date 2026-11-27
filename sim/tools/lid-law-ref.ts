@@ -1,11 +1,11 @@
 // The desk-view lid's law (src/lidLaw.ts) on a job file (argv[2]), the sim side of firmware/tools/check_lid_law.py.
-// Input lines: "W tau delta thetaDeg transparency" (a law), "P q u" (a point of the last law); numbers as float32 bits in
-// hex (the check's generator).
-// Output: per law "L tanT tanD sd cd A k8 inv1t lam[LID_N + 1] keep[LID_N + 1]", per point "O lidOpacity lidWet": float32
-// bits in hex. tanT .. A are lidLawBuild's own first lines (the inputs of its sample loop, which the native side can be
+// Input lines: "W tau delta thetaDeg transparency" (a law), "P q u" (a point of the last law), "K angle key" (lidKey);
+// numbers as float32 bits in hex (the check's generator).
+// Output: per law "L tanT tanD sd cd A k8 inv1t lam[LID_N + 1] keep[LID_N + 1]", per point "O lidOpacity lidWet", per key
+// "Y lidKey": float32 bits in hex. tanT .. A are lidLawBuild's own first lines (the inputs of its sample loop, which the native side can be
 // fed): if they drifted from lidLaw.ts the fed tables would stop matching the sim's bit for bit.
 const fs = require('fs'); declare const process: any; declare function require(m: string): any;
-import { LID_N, lidLawBuild, lidOpacity, lidWet, newLidLaw } from '../src/lidLaw';
+import { LID_N, lidKey, lidLawBuild, lidOpacity, lidWet, newLidLaw } from '../src/lidLaw';
 const F = Math.fround;
 const buf = new DataView(new ArrayBuffer(4));
 const fromHex = (h: string): number => { buf.setUint32(0, parseInt(h, 16)); return buf.getFloat32(0); };
@@ -22,6 +22,9 @@ for (const line of fs.readFileSync(process.argv[2], 'utf8').split('\n')) {
     if (law.lam.length !== LID_N + 1) throw new Error('LID_N');
     out.push(['L', ...trig.map(hex), hex(law.k8), hex(law.inv1t), ...Array.from(law.lam, hex), ...Array.from(law.keep, hex)].join(' '));
     have = true;
+  } else if (w[0] === 'K') {
+    const [angle, key] = w.slice(1).map(fromHex);
+    out.push('Y ' + hex(lidKey(angle, key)));
   } else if (w[0] === 'P' && have) {
     const [q, u] = w.slice(1).map(fromHex);
     out.push(['O', hex(lidOpacity(law, q, u)), hex(lidWet(law, q, u))].join(' '));

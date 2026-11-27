@@ -4,18 +4,24 @@
   python3 firmware/tools/check_lid_law.py [--laws 300] [--points 200] [--seed 1] [--no-asan]
 
 A seeded job: laws over tau -0.5..0.6 rad, delta 0..1.3 rad, contactAngle 0..120 (20, 70, 89, 90 included) and
-liquidTransparency 0..1 (0, 0.08, 0.8, 1 included), each with points q 0..1, u -0.1..1.1 (the ends included). Every input
-is a float32 (hex bits) both sides read. Compared (float32 bits from both, -ffp-contract=off):
+liquidTransparency 0..1 (0, 0.08, 0.8, 1 included), each with points q 0..1, u -0.1..1.1 (the ends included) and, for
+the law's own coordinate (lo + hi) / 2w (negative by up to hw / w on a thin row), u -6..3; and lidKey on (angle, key)
+pairs: angles on and an ulp or two around the step boundaries (n + 0.5) / 128 and the hold edges key +- 0.6 / 128, keys
+NaN / the angle's step / a neighbour step / random. Every input is a float32 (hex bits) both sides read. Compared (float32 bits from both, -ffp-contract=off):
   - the tables with the native sample loop fed the sim's tanT / tanD / sd / cd / A (and its k8 / inv1t): bit for bit;
   - lidOpacity / lidWet on the sim's tables: bit for bit;
   - each side from its own trig (the firmware's float32 tanf / sinf / cosf / logf, the sim's double ones rounded, an ulp
     apart on ~1-3 % of arguments): laws whose trig agree, tables within 2e-6 relative and points within 1e-5; where an
     input differs, the dish's root near the back line is ill-conditioned (z + 1 -> 0, a near-tangent discriminant), so a
     one-ulp input moves lam there by up to ~1e-4 relative on the sim's own maths too. Those laws are held to the native
-    loop's measured sensitivity: per value, 2 x sum over inputs of (ulps apart) x (the largest move one ulp of that input
-    makes, both signs) + 2e-6 relative; the points to the first-order bound of the tables' differences (+ 2e-6). The
-    plain 2e-6 / 1e-5 counts are printed too;
-  - both sides: every value finite, lam in [0, 4], keep / opacity / wet in [0, 1].
+    loop's measured sensitivity, that law's own and that entry's: 2 x sum over inputs k of (ulps apart in k) x (the
+    largest move one ulp of k makes in the entry, both signs: the native loop fed the sim's trig, nudged) + 2e-6
+    relative; the points to the first-order bound of their tables' differences (+ 2e-6). The plain 2e-6 / 1e-5 counts
+    are printed too;
+  - lidKey: bit for bit;
+  - both sides: every value finite, lam in [0, 4] and non-increasing over u, keep / opacity / wet in [0, 1].
+Pinned second-to-last law, the front-wall branch (review 1: tau 0, delta 75 deg, contactAngle 20, transparency 0.08):
+lam > 1 at u = 1 / 16, non-increasing, no 0 before the last entry, on both sides.
 Pinned last law, the board pose (tau 13 deg, delta 11 deg, contactAngle 70, transparency 0.08): lam at u 0 / .25 / .5 /
 .75 / 1 = 1.528 / 0.662 / 0.369 / 0.164 / 0 and F = 1 - keep at u .25 / .5 = 0.109 / 0.057, within 2e-3 on both sides
 (docs/lid-fill/model.md).
@@ -82,6 +88,8 @@ int main(int argc, char **argv) {
       }
       printf("L"); for (float v : trig) ph(v); ph(L.k8); ph(L.inv1t); for (float v : L.lam) ph(v); for (float v : L.keep) ph(v); printf("\n");
       have = true;
+    } else if (n == 3 && !strcmp(w[0], "K") && !nudge) {
+      printf("Y"); ph(lidKey(fh(w[1]), fh(w[2]))); printf("\n");
     } else if (n == 3 && !strcmp(w[0], "P") && have && !nudge) {
       const float q = fh(w[1]), u = fh(w[2]);
       printf("O"); ph(lidOpacity(S, q, u)); ph(lidWet(S, q, u)); printf("\n");
@@ -101,6 +109,10 @@ def fl(h):
     return struct.unpack('<f', struct.pack('<I', int(h, 16)))[0]
 
 PIN = (math.radians(13), math.radians(11), 70, 0.08)
+FRONT = (0, math.radians(75), 20, 0.08)   # review 1: the refracted ray runs to the front wall
+# poses whose table takes the front-wall path below the cap of 4 (rare: ~1 in 10^4 of a tau x delta x theta grid), so the
+# fed comparison holds that branch's arithmetic bit for bit
+FRONT_LOW = [(0.49, 0.8775, 29, 0.08), (0.2333, 0.8612, 35, 0.08), (0.16, 0.8775, 35, 0.5)]
 PIN_LAM = [(0, 1.528), (8, 0.662), (16, 0.369), (24, 0.164), (32, 0.0)]   # table index (u = i / 32), lam
 PIN_F = [(8, 0.109), (16, 0.057)]                                            # 1 - keep
 
@@ -112,7 +124,9 @@ def make_job(laws, points, seed):
     def pts():
         for k in range(points):
             q = pick([0, 1, 0.5], 0, 1, 0.1)
-            u = rnd.choice([-0.1, 0, 1, 1.1, 0.5, 1 / 32, 31 / 32]) if k < 10 else rnd.uniform(-0.1, 1.1)
+            if k < 14: u = (-0.1, 0, 1, 1.1, 0.5, 1 / 32, 31 / 32, -6, -1, -0.5, -0.01, 1.01, 1.5, 3)[k]
+            elif k % 4 == 0: u = rnd.uniform(-6, 3)    # the law's own coordinate (lo + hi) / 2w: below 0 by up to hw / w
+            else: u = rnd.uniform(-0.1, 1.1)
             lines.append('P ' + hx(q) + ' ' + hx(u))
     for _ in range(laws):
         tau = pick([0, -0.5, 0.6, math.radians(13)], -0.5, 0.6)
@@ -121,18 +135,51 @@ def make_job(laws, points, seed):
         t = pick([0, 0.08, 0.8, 1, 0.01, 0.999], 0, 1, 0.4)
         lines.append('W ' + ' '.join(hx(v) for v in (tau, delta, theta, t)))
         pts()
+    for w in FRONT_LOW:
+        lines.append('W ' + ' '.join(hx(v) for v in w))
+        pts()
+    lines.append('W ' + ' '.join(hx(v) for v in FRONT))
+    pts()
     lines.append('W ' + ' '.join(hx(v) for v in PIN))
     pts()
+    lines += key_job(rnd)
     return '\n'.join(lines) + '\n'
 
+def nextf(v, n):   # the float n ulps from float v (finite, n may be negative)
+    i = struct.unpack('<i', struct.pack('<f', f32(v)))[0]
+    i = i if i >= 0 else -(i & 0x7fffffff)   # ordered by value
+    j = i + n
+    return struct.unpack('<f', struct.pack('<i', j if j >= 0 else (-j) | -0x80000000))[0]
+
+NAN_HEX = '7fc00000'
+def key_job(rnd):
+    out = []
+    def K(angle, key): out.append('K ' + hx(angle) + ' ' + (key if isinstance(key, str) else hx(key)))
+    step = lambda a: math.floor(f32(f32(a * 128) + 0.5)) / 128
+    for _ in range(600):   # step boundaries (n + 0.5) / 128 and an ulp or two around them
+        b = (rnd.randint(-90, 200) + 0.5) / 128
+        for d in (-2, -1, 0, 1, 2):
+            a = nextf(b, d)
+            K(a, NAN_HEX); K(a, step(a)); K(a, step(a) + 1 / 128)
+    for _ in range(600):   # the hold edges: key +- 0.6 / 128 and an ulp or two around
+        key = rnd.randint(-90, 200) / 128
+        for e in (f32(0.6 / 128), -f32(0.6 / 128)):
+            for d in (-2, -1, 0, 1, 2): K(nextf(f32(key + e), d), key)
+    for _ in range(1000):  # random angles and keys
+        a = rnd.uniform(-0.6, 1.4)
+        K(a, rnd.choice([NAN_HEX, step(a), step(a) - 1 / 128, rnd.uniform(-0.6, 1.4), a]))
+    K(0.0, NAN_HEX); K(-0.0, NAN_HEX); K(0.0, -0.0); K(-0.5 / 128, NAN_HEX); K(0.5 / 128, NAN_HEX)
+    return out
+
 def parse(text):
-    L = []; O = []
+    L = []; O = []; Y = []
     for line in text.split('\n'):
         w = line.split()
         if not w: continue
         if w[0] == 'L': L.append(w[1:])
         elif w[0] == 'O': O.append(w[1:])
-    return L, O
+        elif w[0] == 'Y': Y.append(w[1])
+    return L, O, Y
 
 N1 = 33
 def fields(l):   # -> trig[5], k8, inv1t, lam[33], keep[33] as hex strings
@@ -143,7 +190,9 @@ def sane(L, O, side):
     for i, l in enumerate(L):
         _, k8, inv, lam, keep = fields(l)
         v = [fl(h) for h in [k8, inv, *lam, *keep]]
-        ok = all(math.isfinite(x) for x in v) and all(0 <= fl(h) <= 4 for h in lam) and all(0 <= fl(h) <= 1 for h in keep)
+        lv = [fl(h) for h in lam]
+        ok = all(math.isfinite(x) for x in v) and all(0 <= x <= 4 for x in lv) and all(0 <= fl(h) <= 1 for h in keep) \
+            and all(lv[j] >= lv[j + 1] for j in range(N1 - 1))
         if not ok:
             bad += 1
             if bad <= 3: print(f'{side} law {i}: out of range')
@@ -184,8 +233,14 @@ def main():
             r2 = subprocess.run([str(tmp / 'da'), 'fed', str(tmp / 'job.txt'), str(tmp / 'sim.txt')], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             if not (r1.returncode == 0 and r2.returncode == 0 and r1.stdout.decode() == own and r2.stdout.decode() == fed):
                 fails.append('ASan / UBSan'); print(r1.stderr.decode()[-2000:], r2.stderr.decode()[-2000:])
-    sL, sO = parse(simOut); nL, nO = parse(own); fL, fO = parse(fed)
-    nl, npt = a.laws + 1, (a.laws + 1) * a.points
+    sL, sO, sY = parse(simOut); nL, nO, nY = parse(own); fL, fO, fY = parse(fed)
+    nl = a.laws + len(FRONT_LOW) + 2; npt = nl * a.points
+    if not (len(sY) == len(nY) == len(fY) > 0): sys.exit(f'counts: lidKey {len(sY)} / {len(nY)} / {len(fY)}')
+    keyDiff = [i for i, (x, y, z) in enumerate(zip(sY, nY, fY)) if not (x == y == z)]
+    if keyDiff:
+        fails.append('lidKey')
+        kj = [l for l in make_job(a.laws, a.points, a.seed).split('\n') if l.startswith('K')]
+        for i in keyDiff[:5]: print(f'lidKey: {kj[i]}: sim {sY[i]} native {nY[i]}')
     if not (nud.count('N ') == 10 * nl and len(sL) == len(nL) == len(fL) == nl and len(sO) == len(nO) == len(fO) == npt):
         sys.exit(f'counts: laws {len(sL)} / {len(nL)} / {len(fL)}, points {len(sO)} / {len(nO)} / {len(fO)}')
     # tables, own trig: the plain relative counts, and against the sensitivity bound where the trig inputs differ
@@ -198,13 +253,11 @@ def main():
             base = sL[li][7:7 + 2 * N1]
             for j, (x, y) in enumerate(zip(base, w[3:])):
                 d = abs(fl(x) - fl(y)); k = int(w[1])
-                if d > 1e-3:   # a jump across a branch (the dish's discriminant, the grazing cut tz < -1e-3, the fold): not a slope
-                    jumps.append((li, k, int(w[2]), ('lam', 'keep')[j // N1], j % N1, fl(x), fl(y))); continue
+                if d > 1e-3:   # a jump across a branch (the dish's discriminant, the cuts |tz| > 1e-3, the fold): counted, and in that entry's own bound
+                    jumps.append((li, k, int(w[2]), ('lam', 'keep')[j // N1], j % N1, fl(x), fl(y)))
                 if d > sens[li][k][j]: sens[li][k][j] = d
     def ulps(x, y):   # float32 ulps between two finite floats of one sign (as here)
         return abs(struct.unpack('<i', struct.pack('<f', fl(x)))[0] - struct.unpack('<i', struct.pack('<f', fl(y)))[0])
-    # the job's envelope (the jumps left out): the largest move one ulp of one input makes in lam / keep (absolute), over every law
-    envelope = [max(max(sens[i][k][j] for i in range(nl) for k in range(5)) for j in range(h * N1, (h + 1) * N1)) for h in range(2)]
     worstRel = 0.0; worstAt = None; over = 0; bitsEq = 0; nf = 0; trigEq = 0; overB = 0; worstB = 0.0; worstBAt = None
     dTab = []   # per law: |own - sim| of lam, keep, k8, inv1t (for the points' bound)
     for i, (s_, n) in enumerate(zip(sL, nL)):
@@ -221,7 +274,7 @@ def main():
                 if rel > worstRel: worstRel, worstAt = rel, (i, name, j, u, v)
                 if rel > 2e-6: over += 1
                 lim = 2e-6 * max(abs(u), abs(v))
-                if off is not None and not same: lim = max(lim, 2 * envelope[off // N1])
+                if off is not None and not same: lim += 2 * sum(du[k] * sens[i][k][off + j] for k in range(5))   # this law's, this entry's
                 if abs(u - v) > lim:
                     overB += 1
                     if overB <= 5: print(f'own trig: law {i} {name}[{j}]: sim {u:.9g} native {v:.9g}, bound {lim:.3g} (inputs {du} ulps apart)')
@@ -267,11 +320,19 @@ def main():
         pin.append(([fl(lam[i]) for i, _ in PIN_LAM], [1 - fl(keep[i]) for i, _ in PIN_F]))
     pinOk = all(abs(v - w) <= 2e-3 for lam, F in pin for v, w in zip(lam + F, [x for _, x in PIN_LAM] + [x for _, x in PIN_F]))
     if not pinOk: fails.append('pinned board pose')
+    # the front-wall branch, second-to-last law
+    front = []
+    for L in (sL, nL, fL):
+        lam = [fl(h) for h in fields(L[-2])[3]]
+        front.append((lam[2], all(lam[j] >= lam[j + 1] for j in range(N1 - 1)), all(x > 0 for x in lam[:-1])))
+    frontOk = all(l2 > 1 and mono and pos for l2, mono, pos in front)
+    if not frontOk: fails.append('front-wall branch')
     print(f'tables, own trig: {nl} laws x {nf // nl} values, {bitsEq}/{nf} bit-identical, {over} over 2e-6 relative, worst {worstRel:.3g}'
           + (f' (law {worstAt[0]} {worstAt[1]}[{worstAt[2]}]: sim {worstAt[3]:.9g} native {worstAt[4]:.9g})' if worstAt else '')
-          + f'; trig inputs bit-identical on {trigEq}/{nl} laws; {overB} over the bound (2e-6 relative; where the trig differs, or 2 x the one-ulp envelope lam {envelope[0]:.3g} / keep {envelope[1]:.3g}; {len(jumps)} one-ulp jumps over 1e-3 left out of it), worst {worstB:.2f} of it'
+          + f'; trig inputs bit-identical on {trigEq}/{nl} laws; {overB} over the per-value bound (2e-6 relative + where the trig differs 2 x sum_k ulps_k x that entry\'s one-ulp sensitivity to k; {len(jumps)} one-ulp moves over 1e-3 among them), worst {worstB:.2f} of it'
           + (f' (law {worstBAt[0]} {worstBAt[1]}[{worstBAt[2]}])' if worstBAt else ''))
     for j in jumps[:3]: print(f'one-ulp jump: law {j[0]} input {j[1]} {"+-"[j[2] < 0]}1 ulp: {j[3]}[{j[4]}] {j[5]:.6g} -> {j[6]:.6g}')
+    print(f'lidKey: {len(sY)} (angle, key) pairs, {len(keyDiff)} differ in a bit')
     print(f'tables, the sim\'s trig: {nl} laws x {2 + 2 * N1} values, {len(fedDiff)} differ in a bit')
     print(f'lidOpacity / lidWet, the sim\'s tables: {npt} points x 2, {len(ptDiff)} differ in a bit')
     print(f'lidOpacity / lidWet, own tables: {npt} points, {ptEq} bit-identical, {overA} outputs over 1e-5, worst {worstAbs:.3g}'
@@ -280,7 +341,9 @@ def main():
     for side, (lam, F) in zip(('sim', 'native'), pin):
         print(f'board pose ({side}): lam ' + ' / '.join(f'{v:.3f}' for v in lam) + ', F ' + ' / '.join(f'{v:.3f}' for v in F))
     print(f'board pose: want lam ' + ' / '.join(str(x) for _, x in PIN_LAM) + ', F ' + ' / '.join(str(x) for _, x in PIN_F) + f' within 2e-3: {"ok" if pinOk else "MOVED"}')
-    print(f'ranges (finite, lam in [0, 4], keep / opacity / wet in [0, 1]): sim {badS}, native {badN} out' + ('' if a.no_asan else f'; ASan / UBSan {"clean" if "ASan / UBSan" not in fails else "FAILED"}'))
+    print('front wall (tau 0, delta 75 deg, contactAngle 20, t 0.08): ' + '; '.join(f'{side} lam(1/16) {l2:.3f}, non-increasing {mono}, no 0 before the last {pos}' for side, (l2, mono, pos) in zip(('sim', 'native', 'native fed'), front))
+          + f': {"ok" if frontOk else "FAILED"}')
+    print(f'ranges (finite, lam in [0, 4] and non-increasing, keep / opacity / wet in [0, 1]): sim {badS}, native {badN} out' + ('' if a.no_asan else f'; ASan / UBSan {"clean" if "ASan / UBSan" not in fails else "FAILED"}'))
     print('lid law parity: ' + ('ok' if not fails else 'FAILED: ' + ', '.join(fails)))
     sys.exit(1 if fails else 0)
 

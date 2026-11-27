@@ -35,3 +35,18 @@ gradient, never a uniform veil; a clear liquid (t 0.8) stays a faint wedge (opac
   at, scaled by surfaceRim), the fill's colours, the foam veil's lid branch (a popping bubble's fade target only).
 - theta is clamped to 20..89 deg (a flat surface is a cap too wide to tell); rows off centre scale the path by the chord
   (an approximation near the walls).
+- The law's coordinate is its own: 0 at the front line itself, (lo + hi) / 2w of the pixel's footprint; the artistic
+  layers keep the stroke's u (which starts edgeSoft / 2 inside the body). Review 1.
+- surfaceBand's share (lidPb = min(1, strokeA / 0.16), strokeA = min(1, 1.6 surfaceBand)): the whole absorption from
+  surfaceBand 0.1 on, fading to nothing with it (surfaceBand 0 is no lid at all, the side view: no jump on the way; Astra
+  asked for absorption even at 0, not taken: 0 means the surface is not drawn). Review 1.
+- A refracted ray that runs toward the front wall (the eye far above a deep dish: delta 75 deg, theta 20) takes its path
+  to that wall, along the tube 4 (opaque); the table never has less liquid nearer the front line. Review 1.
+- The pose key: the law is built for tau and delta in steps of 1 / 128 rad, re-keyed when the exact angle leaves its
+  step by more than 0.6 of one (lidKey). One build is 0.14-0.2 ms on the S3 (a throwaway build repeating it 20 times a
+  frame: +3.85 ms), and the IMU's noise changed the exact angles every frame; a step moves the opacity by < 1 %.
+
+## Checks
+check_lid_law.py (tables bit for bit on the sim's trig, lidOpacity / lidWet, lidKey, the board pose's numbers);
+test_compare_device.py on the lid look and the board's ink looks (sim vs native pixels); check_meniscus.py (560 lid /
+meniscus scenes, sim vs native, and rear marks under the lid against the law); lid off: check_render_frames byte-identical.

@@ -1106,3 +1106,19 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   frame); bench.py's cores h / m lines showed it as a cost that did not scale with the bubble count.
 - `B1` on the lcd316 build of 2026-11-26 answered but `s` still read `ble off` 20 s later (heap unchanged): the BLE
   window was not checked with the 3.2 KB of new IRAM.
+
+## Lid fill (2026-11-27)
+- Not built (docs/lid-fill/astra-model.md): the fill's colour still mixes the body row (which already holds the back's
+  share) instead of the intrinsic liquid colour; the near-side grazing shoulder (~2 px of strong reflection off the dish,
+  mirroring the dish itself) and a mirror ray that reaches the room instead of the tube back; rows off centre scale the
+  path by the chord only; the foam veil's lid branch (a popping bubble's fade target) keeps the linear fill.
+- The lid's blick takes liquidHi's luma: on a look with liquidHi #000000 it is a black patch mid-lid, not a reflection.
+- The back contour (0.5 px, surfaceRim) has no physical counterpart on a dark liquid over a light back (the liquid thins
+  out to the backing there); it stays as the line the time is read at.
+- check_render_frames has no lid scenes (vertical / viewElevation never set): the lid is covered by check_meniscus and
+  test_compare_device only.
+- render.cpp's inlining sits at GCC's budget limit: small additions flip blend565T / tickOp inlining in unrelated kernels
+  (the lid port had to use sqrtf in lidLawBuild: sqrtExact there de-inlined a blend in the IRAM surface() lambda).
+- The lid itself costs ~2.5 ms of render on the ink look (lid on 14.4 ms vs viewElevation 0 11.8 ms, fizz off, pinned
+  stand pose): not looked into.
+

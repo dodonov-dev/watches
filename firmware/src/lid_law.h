@@ -4,10 +4,11 @@
 // lidWet bit for bit on the same tables).
 // A ray to lid position u (0 the front contact line .. 1 the back one) meets the dish (a spherical cap of radius
 // R / cos(theta), sheared onto the level plane), a share F mirrors off (Fresnel), the rest refracts and runs through the
-// liquid to the back wall: opacity keep(u) (1 - t^(q lam(u))), lam the path / 2R on the centre plane, q the row's chord.
+// liquid to the wall it runs to (the back one; at extreme poses the front one): opacity keep(u) (1 - t^(q lam(u))), lam
+// the path / 2R on the centre plane, q the row's chord.
 // Include after fizz_light.h (its FIZZ_ATT table and fizzAtt, fizzMn / fizzMx). No double anywhere: the constants are
-// float literals or double expressions folded to float by the compiler. lidLawBuild runs when the pose or the look
-// changes (flash, noinline; on the board the stand's tilt moves it most frames): its roots by LID_SQRT (default
+// float literals or double expressions folded to float by the compiler. lidLawBuild runs when the pose's step (lidKey) or
+// the look changes (flash, noinline; 0.14-0.2 ms on the S3): its roots by LID_SQRT (default
 // sqrtf; an includer's override must round correctly). render.cpp keeps sqrtf: its inline sqrtExact here (six copies),
 // or out of line, moved GCC's inlining across the unit (an IRAM band kernel lost an inlined blend565T, a fizz kernel
 // grew 108 B; 2026-11-27, lcd316@320w8-8). lidOpacity / lidWet per
@@ -22,6 +23,12 @@
 #define LID_N 32                          // samples over u: LID_N + 1 entries
 #define LID_NW ((float)(4.0 / 3))         // water against air (sim F(4 / 3))
 #define LID_RW 0.75f                      // 1 / n (exact)
+// The law is built for the pose in steps of 1 / LID_KEY_STEPS rad, re-keyed when the pose leaves its step by more than
+// LID_KEY_HOLD of one (the IMU's noise at rest would rebuild it every frame). surfaceBand's share of the absorption:
+// min(1, stroke opacity / LID_BAND_FULL) (sim LID_BAND_FULL, a double literal: (float)0.16 as Math.fround'd).
+#define LID_KEY_STEPS 128
+#define LID_KEY_HOLD_F ((float)(0.6 / LID_KEY_STEPS))   // sim F(LID_KEY_HOLD / LID_KEY_STEPS)
+#define LID_BAND_FULL ((float)0.16)
 
 // lam[i]: the liquid path / 2R under lid position u = i / LID_N on the centre row; keep[i]: 1 - the share the surface
 // mirrors of the dry tube back; k8: -8 ln t; inv1t: 1 / (1 - t), 0 for t ~ 1 (sim LidLaw).
@@ -59,8 +66,12 @@ static inline void lidLawSamples(LidLaw &o, float tanT, float tanD, float sd, fl
     // refracted ray to the back wall z = -1
     const float k = LID_RW * ci - ct, tx = LID_RW * dx + k * nx, tz = LID_RW * dz + k * nz;
     const float lz = z + 1;
-    float lam = 0;
-    if (tz <= -1e-3f) lam = (lz / -tz) * 0.5f * LID_SQRT(tx * tx + tz * tz);   // sim (q * 0.5) * r in double: q * 0.5 exact, one rounding
+    // its path / 2R to the wall it runs to: the back wall, at extreme poses the front one; along the tube it never leaves
+    // the liquid (4: opaque). tz > 1e-3 (double) is tz >= 1e-3f, as above; a NaN keeps 4, as in the sim
+    const float tl = 0.5f * LID_SQRT(tx * tx + tz * tz);
+    float lam = 4;
+    if (tz <= -1e-3f) lam = (lz / -tz) * tl;
+    else if (tz >= 1e-3f) lam = ((1 - z) / tz) * tl;
     o.lam[i] = fizzMn(4, lam);
     // the mirror ray: toward the dry back wall above the ring it shows the tube back (weight ramps in over 0.15 R)
     const float mx = dx + (2 * ci) * nx, mz = dz + (2 * ci) * nz;
@@ -68,6 +79,8 @@ static inline void lidLawSamples(LidLaw &o, float tanT, float tanD, float sd, fl
     if (mz <= -1e-3f) { const float xm = x + lz * (mx / -mz); dry = fizzMx(0, fizzMn(1, (xm - xRing) * (float)(1 / 0.15))); }
     o.keep[i] = 1 - fr * dry;
   }
+  // never less liquid nearer the front line (a ray that enters at the front wall itself, toward it, has no path of its own)
+  for (int i = LID_N - 1; i >= 0; i--) if (o.lam[i] < o.lam[i + 1]) o.lam[i] = o.lam[i + 1];
 }
 // tau: the stand's back tilt, delta: the eye above the screen normal (rad, lidAngles); thetaDeg: contactAngle;
 // transparency: liquidTransparency. Float transcendentals (the sim takes double ones and rounds: an ulp apart at most).
@@ -79,6 +92,19 @@ static void __attribute__((noinline, optimize("fp-contract=off"))) lidLawBuild(L
   const float th = fizzMx(20, fizzMn(89, thetaDeg)) * (float)(M_PI / 180);   // concave dishes; 90 = flat
   const float A = 1 / cosf(th);
   lidLawSamples(o, tanf(tau), tanf(delta), sinf(delta), cosf(delta), A);
+}
+// floor without the libm call (render.cpp ffloor): |x| >= 2^23 is already integral (or inf / NaN)
+static inline float lidFloor(float x) {
+  if (!(fabsf(x) < 8388608.0f)) return x;
+  const float t = (float)(int)x;
+  return t > x ? t - 1 : t;
+}
+// The step an angle takes from its last key (sim lidKey; NaN: none yet, keyed afresh): the key while the angle stays
+// within LID_KEY_HOLD of a step of it, else the nearest step, floor(a 128 + 0.5) / 128 (x 128 and / 128 exact in float:
+// the sim's roundings, one at the + 0.5).
+static inline float lidKey(float angle, float key) {
+  if (fabsf(angle - key) <= LID_KEY_HOLD_F) return key;
+  return lidFloor(angle * LID_KEY_STEPS + 0.5f) * (1.0f / LID_KEY_STEPS);
 }
 // The table at u in 0..1 (sim at()).
 static inline float lidAt(const float *tab, float u) {
