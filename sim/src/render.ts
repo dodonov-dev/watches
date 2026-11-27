@@ -8,7 +8,7 @@ import {
 } from '@spec/layout';
 import type { Params } from './params';
 import { FIZZ_LIGHTS, FIZZ_RING_KEEP, fizzLightFrame, fizzLit, fizzTone, newFizzLit } from './fizzLight';
-import { type LidLaw, LID_BAND_FULL, lidKey, lidLawBuild, lidOpacity, lidWet, newLidLaw } from './lidLaw';
+import { type LidLaw, LID_BAND_FULL, lidKey, lidLawBuild, lidOpacity, lidRimW, lidWet, newLidLaw } from './lidLaw';
 import { BACK_TILT_MAX_DEG, boreR, columnLen, contactLeads, filmEta, filmFullPxS, mirrored, FILM_ETA_MAX, TRACE_FULL, type TubeState, type Pose } from './physics';
 
 export const fb = new Uint16Array(PANEL_W * PANEL_H);
@@ -622,12 +622,15 @@ function markFn(y0: number, edges: Edges, p: Params, onTop: boolean, contrast: n
           const lo = Math.max(t - 0.5, -hw), hi = Math.min(t + 0.5, wEff), coverage = hi - lo;
           if (coverage > 0) {
             const u = Math.max(0, Math.min(1, ((lo + hi) / 2 + hw) / (wEff + hw))), us = u * u * (3 - 2 * u);
-            const ab = Math.min(1, band.blick[side][ry] * coverage * 4 * u * (1 - u));
+            let ab = Math.min(1, band.blick[side][ry] * coverage * 4 * u * (1 - u));
             if (band.lid && side === 0) {
+              // the lid's light is a crescent just in front of its back contact band (lid()), not the band's mid-dish patch
+              const rw = band.lidRimW;
+              ab = Math.min(1, band.blick[0][ry] * Math.max(0, Math.min(hi, wEff - rw) - Math.max(lo, wEff - 2 * rw)));
               // the lid (drawTube lid()): the front rim on the front line, the back contour, and past the body the rear
               // wall seen through the liquid under the lid, its path thinning from the front line to 0 at the back line
               const arF = Math.min(1, band.rim[0][ry] * Math.max(0, Math.min(hi, 0.5) - Math.max(lo, -0.5)));
-              const arB = Math.min(1, band.fill[0][ry] * Math.min(1, wEff / 2) * band.rimB * Math.max(0, hi - Math.max(lo, wEff - LID_BACK_W)));
+              const arB = Math.min(1, band.fill[0][ry] * Math.min(1, wEff / 2) * band.rimB * Math.max(0, hi - Math.max(lo, wEff - rw)));
               through = (1 - ab) * (1 - arF) * (1 - arB);
               // the liquid over the rear wall there: at least the lid's own absorption path (lidWet), whatever surfaceBand
               // (the law's own coordinate: 0 at the front line itself, not hw inside it)
@@ -865,6 +868,8 @@ export interface BandInfo {
   /** The lid's liquid (lidLaw.ts): its law, per row the chord share q = z_R / R (null without a lid) and surfaceBand's
    *  share of it (lidPb). */
   law: LidLaw | null; lidQ: Float32Array | null; lidPb: number;
+  /** The lid's back contact band's width px (lidRimW); the light's crescent, as wide, sits just in front of it. */
+  lidRimW: number;
 }
 /** Liquid body bounds per tube row (panel frame) plus, when drawn, the surface band past them. */
 export interface Edges { lo: Float32Array; hi: Float32Array; band?: BandInfo; }
@@ -2866,6 +2871,11 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       for (let ry = 0; ry < H; ry++) { const dy = F(ry - lidYc), z2 = F(F(lidR * lidR) - F(dy * dy)); lidQ[ry] = z2 > 0 ? F(F(Math.sqrt(z2)) * invR) : 0; }
     }
     const lidPb = Math.min(1, strokeA / LID_BAND_FULL);   // surfaceBand's share of the absorption (1 from 0.1 on)
+    // The back contact band (the meniscus on the back wall, wider the more the liquid wets: lidRimW) and, just in front of
+    // it, the key light mirrored in the meniscus: a crescent of the same width on the blick's rows, the light's own
+    // colour (white through the panel dimmer, as the fizz's pinpoint), surfaceBlick its strength. The side view's blick
+    // (a patch mid-dish at liquidHi's luma) is not drawn on the lid.
+    const lidRimPx = lidT > 0 ? lidRimW(lidLaw, lidR) : LID_BACK_W, lidGlossN = q(scale([255, 255, 255], p.brightness));
     const lid = (ry: number, xm: number, w: number, lk: number, xlo: number, xhi: number): number => {
       if (!(w > 0)) return 0;
       const y = y0 + ry, a = strokeA * Math.min(1, w);
@@ -2880,7 +2890,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
       const rimC = shadeRow(blend565(hiC, blend565(pal.rows[ry], darkC, 0.75), backK), ry);
       const rimBK = lidRimB * Math.min(1, w / 2), rimBC = shadeRow(blend565(pal.rows[ry], darkC, 0.75), ry);
       bandFill[0][ry] = a; bandBlick[0][ry] = a * blickK; bandRim[0][ry] = a * rimK;
-      const bLo = w - LID_BACK_W, liq = bRows[ry], blickC = shadeRow(blickN, ry);
+      const bLo = w - lidRimPx, gLo = bLo - lidRimPx, liq = bRows[ry], blickC = shadeRow(lidGlossN, ry);
       for (let x = Math.max(xlo, Math.floor(xm - hw)), xb = Math.min(xhi, Math.ceil(xm + w)); x < xb; x++) {
         const t = x + 0.5 - xm;
         const lo = Math.max(t - 0.5, -hw), hi = Math.min(t + 0.5, w);
@@ -2891,7 +2901,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
         const c = blend565T(inner, outer, opacityT(us));
         // the law's own coordinate: 0 at the front line itself (u starts hw inside it, the stroke's overlap into the body)
         const af = Math.max(a * fill * (1 - u), lidPb * Math.min(1, w) * lidOpacity(lidLaw, lidQ[ry], (lo + hi) * invW2)) * coverage * (1 - pull * us);
-        const ab = a * blickK * coverage * 4 * u * (1 - u);
+        const ab = a * blickK * Math.max(0, Math.min(hi, bLo) - Math.max(lo, gLo));
         const arF = a * rimK * Math.max(0, Math.min(hi, 0.5) - Math.max(lo, -0.5));
         const arB = a * rimBK * Math.max(0, hi - Math.max(lo, bLo));
         nL = 0; A = 0; P[0] = P[1] = P[2] = 0;
@@ -2918,7 +2928,7 @@ export function drawTube(idx: number, y0: number, state: TubeState, p: Params, p
   const bounds: Edges = markBounds[idx] = { lo: new Float32Array(H), hi: new Float32Array(H) };
   if (hasLiquid && p.surfaceBand > 0)
     bounds.band = { xm: [edges, edgesL], w: [strokeR, strokeL], fill: bandFill, blick: bandBlick, rim: bandRim, pull: [pullR, pullL], hw: softW / 2, mirror: mir, L,
-      lid: lidT > 0, rimB: lidT > 0 ? lidRimB : 0, law: lidT > 0 ? lidLaws[idx] : null, lidQ: lidT > 0 ? lidQs[idx] : null, lidPb: Math.min(1, strokeA / LID_BAND_FULL) };
+      lid: lidT > 0, rimB: lidT > 0 ? lidRimB : 0, law: lidT > 0 ? lidLaws[idx] : null, lidQ: lidT > 0 ? lidQs[idx] : null, lidPb: Math.min(1, strokeA / LID_BAND_FULL), lidRimW: lidT > 0 ? lidRimW(lidLaws[idx], lidR) : LID_BACK_W };
   fizzStrokeR[idx] = strokeR; fizzStrokeL[idx] = strokeL;   // with fizzSurf / fizzSurfL: the vertical step's endpoint rule
   for (let ry = 0; ry < H; ry++) {
     const lo = edgesL[ry], hi = edges[ry];

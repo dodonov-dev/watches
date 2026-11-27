@@ -35,8 +35,16 @@ function att8(v: number): number {
 /** lam[i]: the liquid path / 2R under lid position u = i / LID_N on the centre row; keep[i]: 1 - the share the surface
  *  mirrors of the dry tube back above the liquid (the same colour as what the liquid lets through, so it only thins the
  *  liquid's opacity); k8: 8 x the optical depth of a bore diameter, -8 ln t; inv1t: 1 / (1 - t), 0 for t ~ 1. */
-export interface LidLaw { lam: Float32Array; keep: Float32Array; k8: number; inv1t: number }
-export const newLidLaw = (): LidLaw => ({ lam: new Float32Array(LID_N + 1), keep: new Float32Array(LID_N + 1), k8: 0, inv1t: 0 });
+export interface LidLaw { lam: Float32Array; keep: Float32Array; k8: number; inv1t: number; hm: number }   // hm: the meniscus rise at the wall / R
+export const newLidLaw = (): LidLaw => ({ lam: new Float32Array(LID_N + 1), keep: new Float32Array(LID_N + 1), k8: 0, inv1t: 0, hm: 0 });
+/** The back contact band: the meniscus climbing the back wall, seen from above. Its width px is LID_RIM_K of the
+ *  meniscus rise hm R (R tan(45 deg - theta / 2): 3.5 px at theta 70 on a 20 px bore, so 1.2 px; more wetting, a taller
+ *  meniscus, a wider band), between LID_RIM_MIN (the old hairline) and LID_RIM_MAX. The key light's reflection on the
+ *  meniscus (surfaceBlick) is a crescent of the same width just in front of it. Firmware lidRimW. */
+export const LID_RIM_K = 0.35, LID_RIM_MIN = 0.5, LID_RIM_MAX = 3;
+export function lidRimW(o: LidLaw, R: number): number {
+  return Math.max(LID_RIM_MIN, Math.min(LID_RIM_MAX, F(F(o.hm * F(R)) * F(LID_RIM_K))));
+}
 /** tau: the stand's back tilt, delta: the eye above the screen normal (rad, lidAngles); thetaDeg: contactAngle;
  *  transparency: liquidTransparency. Trig and a log here only; the samples take + - x /, sqrt and clamps. */
 export function lidLawBuild(o: LidLaw, tau: number, delta: number, thetaDeg: number, transparency: number): void {
@@ -47,6 +55,7 @@ export function lidLawBuild(o: LidLaw, tau: number, delta: number, thetaDeg: num
   const sd = F(Math.sin(delta)), cd = F(Math.cos(delta));
   // bore radius 1: the cap's radius A = 1 / cos theta, its rise at the wall hm = A - sqrt(A^2 - 1)
   const A = F(1 / F(Math.cos(th))), A2 = F(A * A), hm = F(A - F(Math.sqrt(F(A2 - 1))));
+  o.hm = hm;
   const xF = F(hm - T), W = F(2 * T);                 // the front line's screen x, the lid's height
   const xRing = F(hm + tanT);                         // the back contact ring on the back wall (tube x)
   const dx = F(-sd), dz = F(-cd);                     // the ray, from the eye
