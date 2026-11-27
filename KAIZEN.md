@@ -1121,4 +1121,8 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
   (the lid port had to use sqrtf in lidLawBuild: sqrtExact there de-inlined a blend in the IRAM surface() lambda).
 - The lid itself costs ~2.5 ms of render on the ink look (lid on 14.4 ms vs viewElevation 0 11.8 ms, fizz off, pinned
   stand pose): not looked into.
+- Lid perf (2026-11-27): the per-pixel law is ~0.4 ms a frame on the ink look (two table lerps + the exp table a lid
+  pixel, in flash). Levers not tried: a 9-entry opacity table per lid row, lidRow in IRAM, the row's colours from the
+  band cache again. bench.py across two builds could not resolve < 1 ms on this look: the old build's base read 20.5,
+  21.5 and 21.8 ms in three runs (random fizz under the lid); an in-function cycle counter (TU_MARK around lidDraw) would.
 

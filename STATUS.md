@@ -1,6 +1,39 @@
 # Liquid Watch — STATUS
 
-_Last update: 2026-11-27 (fizz-light: fizzPhys on the board, +0.4..0.6 ms a frame at 1; Astra reviews 1-4 settled)_
+_Last update: 2026-11-27 (lid fill: the desk-view lid by its liquid's absorption, on the board; fizzPhys as before)_
+
+## Lid fill (2026-11-27), branch `fizz-light`: the desk-view lid's liquid by absorption; on the board (lcd316@320w8-8)
+
+- The user (black ink look, viewElevation 24): "the surface looks foggy instead of like the liquid ... surface fill
+  affects only the front part to the middle". Cause: the lid's fill was surfaceBand x surfaceFill x (1 - u), whatever
+  liquidTransparency: at most 0.28 on that look, a flat grey veil (luma 120-145 between a body of 18 and a back of 197).
+- Physics (my ray trace and Astra's agree; docs/lid-fill/astra-model.md): under lid position u the ray refracts at the
+  dish and runs to the back wall; path / 2R at the board pose 1.53 / 0.66 / 0.37 / 0.16 / 0.06 / 0 at u 0 / .25 / .5 /
+  .75 / .9 / 1. Ink reads 48 / 57 / 87 / 135 / 171 / 198: its own colour at the front, thinning out to the backing at the
+  back contact line. A gradient is right; a uniform veil was not, and "black to the rim" would not be either.
+- Built (docs/lid-fill/model.md): sim/src/lidLaw.ts = firmware/src/lid_law.h: a 33-sample trace of the dish per pose
+  step (tau, delta in 1/1024 rad steps, held against IMU noise), contactAngle and liquidTransparency; the lid's fill is
+  at least keep(u) (1 - t^(q lam(u))) (the Fresnel share mirrored from the dry tube back only thins it), rear marks under
+  the lid take the same path. surfaceBand / surfaceFill keep their shaded fill as a floor (a clear liquid's lid as
+  before); surfaceBand scales the absorption only below 0.1. No new param, no schema change.
+- Kept artistic: the back contour (the line the time is read at), the front rim, the blick (liquidHi's luma: black on a
+  look with liquidHi #000000, so surfaceBlick darkens mid-lid there), the fill's colours.
+- Sim on the board look: the lid 164 (back rim) .. 110 .. 75 .. 50 (front), was 132-147 flat
+  (docs/lid-fill/lid-before-after.png: before | after | no marks | liquidTransparency 0.02).
+- Astra: review 1 four medium (a refracted ray toward the front wall read as no liquid; a jump at the artistic layers'
+  1/255 cutoff; the law looked up at the stroke's u, hw inside the front line; the parity check's job-wide tolerance),
+  review 2 all settled + one medium (1/128 rad key steps showed as jumps near a grazing path: now 1/1024); review 3:
+  see docs/lid-fill/astra-review3.md.
+- Checks: check_lid_law (new: 305 laws and 61000 points bit for bit on the sim's tables, lidKey 16005 pairs);
+  test_compare_device lid look 7 px off, ink looks 100 / 87 px off, all 0 > 12/255 (the old firmware against the new sim:
+  1510 > 12/255); check_meniscus 560 native / sim frames (one lone two-step pixel from the float / double lid geometry,
+  reported); lid off: check_render_frames vs 23c54f0 byte-identical; check_fizz_steps 80 of 80, --sim 27 of 27;
+  check_board_render 75 of 77 as before. Build: IRAM -4 B, DRAM 0, flash +3.1 KB; PSRAM + ~0.8 KB a tube.
+- Board (the user's tuned ink look, docs/lid-fill/board-look-tuned.json, stand pose pinned, fizz on): 43.2 fps / render
+  22.50 ms; the per-pixel law ~0.4 ms of it; against the firmware before (20.5-21.8 ms over three runs) 0.7-2 ms slower,
+  the part beyond the law's 0.4 ms not separable from run-to-run / build-layout noise (docs/lid-fill/model.md "Board").
+  Left on the board: this build, the user's tuned look untouched, the clock set.
+- Open: the look check with the user; lidRow's per-pixel cost (KAIZEN); the lid itself costs ~2.5-4 ms on this look.
 
 ## Fizz light (2026-11-25 / 26), branch `fizz-light` on edge-ends 41121d2: fizzPhys; board-benched (lcd316@320w8-8), look check pending
 

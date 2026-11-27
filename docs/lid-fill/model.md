@@ -42,9 +42,18 @@ gradient, never a uniform veil; a clear liquid (t 0.8) stays a faint wedge (opac
   asked for absorption even at 0, not taken: 0 means the surface is not drawn). Review 1.
 - A refracted ray that runs toward the front wall (the eye far above a deep dish: delta 75 deg, theta 20) takes its path
   to that wall, along the tube 4 (opaque); the table never has less liquid nearer the front line. Review 1.
-- The pose key: the law is built for tau and delta in steps of 1 / 128 rad, re-keyed when the exact angle leaves its
-  step by more than 0.6 of one (lidKey). One build is 0.14-0.2 ms on the S3 (a throwaway build repeating it 20 times a
-  frame: +3.85 ms), and the IMU's noise changed the exact angles every frame; a step moves the opacity by < 1 %.
+- The pose key: the law is built for tau and delta in steps of 1 / 1024 rad (0.056 deg), re-keyed when the exact angle
+  leaves its step by more than 0.6 of one (lidKey). One build is 0.14-0.2 ms on the S3 (a throwaway build repeating it
+  20 times a frame: +3.85 ms), and the IMU's noise changed the exact angles every frame. 1 / 128 rad steps showed as
+  jumps where the refracted ray grazes the tube axis (review 2: tau -44.5 deg, e 20, theta 89: 33/255 on a re-key).
+
+## Board (lcd316@320w8-8, the tuned ink look board-look-tuned.json, stand pose pinned, fizz on; 2026-11-27)
+- Final build: 43.2 fps / render 22.50 ms. The per-pixel law costs ~0.4 ms of it (the same build with the law compiled
+  out, -DLID_LAW_OFF: 22.09 ms); a law rebuild 0.14-0.2 ms a tube, only when the pose leaves its key step.
+- Against the firmware before the lid change (f61144f): 20.5 / 21.5 / 21.8 ms in three runs (fizz is random), so the new
+  build reads 0.7-2 ms slower; ~0.4 ms of that is the law, the rest could not be told from run-to-run and build-layout
+  noise (with the lid off, viewElevation 0, the two builds read 17.7 vs 18.8 ms in one run and 20.0 in another; with
+  surfaceBand 0 they agree, 18.60 vs 18.62).
 
 ## Checks
 check_lid_law.py (tables bit for bit on the sim's trig, lidOpacity / lidWet, lidKey, the board pose's numbers);
