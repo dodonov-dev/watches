@@ -6,7 +6,7 @@
 A seeded job: laws over tau -0.5..0.6 rad, delta 0..1.3 rad, contactAngle 0..120 (20, 70, 89, 90 included) and
 liquidTransparency 0..1 (0, 0.08, 0.8, 1 included), each with points q 0..1, u -0.1..1.1 (the ends included) and, for
 the law's own coordinate (lo + hi) / 2w (negative by up to hw / w on a thin row), u -6..3; and lidKey on (angle, key)
-pairs: angles on and an ulp or two around the step boundaries (n + 0.5) / 128 and the hold edges key +- 0.6 / 128, keys
+pairs: angles on and an ulp or two around the step boundaries (n + 0.5) / 1024 and the hold edges key +- 0.6 / 1024, keys
 NaN / the angle's step / a neighbour step / random. Every input is a float32 (hex bits) both sides read. Compared (float32 bits from both, -ffp-contract=off):
   - the tables with the native sample loop fed the sim's tanT / tanD / sd / cd / A (and its k8 / inv1t): bit for bit;
   - lidOpacity / lidWet on the sim's tables: bit for bit;
@@ -155,20 +155,21 @@ NAN_HEX = '7fc00000'
 def key_job(rnd):
     out = []
     def K(angle, key): out.append('K ' + hx(angle) + ' ' + (key if isinstance(key, str) else hx(key)))
-    step = lambda a: math.floor(f32(f32(a * 128) + 0.5)) / 128
-    for _ in range(600):   # step boundaries (n + 0.5) / 128 and an ulp or two around them
-        b = (rnd.randint(-90, 200) + 0.5) / 128
+    STEPS = 1024   # lid_law.h / lidLaw.ts LID_KEY_STEPS
+    step = lambda a: math.floor(f32(f32(a * STEPS) + 0.5)) / STEPS
+    for _ in range(600):   # step boundaries (n + 0.5) / STEPS and an ulp or two around them
+        b = (rnd.randint(-720, 1600) + 0.5) / STEPS
         for d in (-2, -1, 0, 1, 2):
             a = nextf(b, d)
-            K(a, NAN_HEX); K(a, step(a)); K(a, step(a) + 1 / 128)
-    for _ in range(600):   # the hold edges: key +- 0.6 / 128 and an ulp or two around
-        key = rnd.randint(-90, 200) / 128
-        for e in (f32(0.6 / 128), -f32(0.6 / 128)):
+            K(a, NAN_HEX); K(a, step(a)); K(a, step(a) + 1 / STEPS)
+    for _ in range(600):   # the hold edges: key +- 0.6 / STEPS and an ulp or two around
+        key = rnd.randint(-720, 1600) / STEPS
+        for e in (f32(0.6 / STEPS), -f32(0.6 / STEPS)):
             for d in (-2, -1, 0, 1, 2): K(nextf(f32(key + e), d), key)
     for _ in range(1000):  # random angles and keys
         a = rnd.uniform(-0.6, 1.4)
-        K(a, rnd.choice([NAN_HEX, step(a), step(a) - 1 / 128, rnd.uniform(-0.6, 1.4), a]))
-    K(0.0, NAN_HEX); K(-0.0, NAN_HEX); K(0.0, -0.0); K(-0.5 / 128, NAN_HEX); K(0.5 / 128, NAN_HEX)
+        K(a, rnd.choice([NAN_HEX, step(a), step(a) - 1 / STEPS, rnd.uniform(-0.6, 1.4), a]))
+    K(0.0, NAN_HEX); K(-0.0, NAN_HEX); K(0.0, -0.0); K(-0.5 / STEPS, NAN_HEX); K(0.5 / STEPS, NAN_HEX)
     return out
 
 def parse(text):

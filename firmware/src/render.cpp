@@ -773,7 +773,7 @@ static inline uint16_t mix565Q(uint16_t a, uint16_t b, int num, int den) {
 // a x fill x (1 - u) of before, the blick, today's rim on the front line (rimK, 1 px centred on
 // it) and a thinner liquid-tinted contour on the back line (rimBK, LID_BACK_W px). One write per pixel: a single layer as
 // bandRow, several bg (1 - A) + P (premultiplied, no division). In flash: drawn only with params viewElevation on.
-static void __attribute__((noinline, optimize("fp-contract=off"))) lidRow(uint16_t *row, int xa, int xb, float xm, float hw, float w, float invWidth, float a,
+static void __attribute__((noinline)) lidRow(uint16_t *row, int xa, int xb, float xm, float hw, float w, float invWidth, float a,
                                              float fill, float blickK, float pull, float rimK, float rimBK, uint16_t inner,
                                              uint16_t outer, uint16_t liquid, uint16_t blickC, uint16_t rimC, uint16_t rimBC,
                                              const LidLaw &law, float lq, float lidPb) {

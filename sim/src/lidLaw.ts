@@ -9,9 +9,11 @@
 const F = Math.fround;
 export const LID_N = 32;                     // samples over u: LID_N + 1 entries
 /** The law is built for the pose in steps of 1 / LID_KEY_STEPS rad, re-keyed when the pose leaves its step by more than
- *  LID_KEY_HOLD of one (the IMU's noise at rest would rebuild it every frame: ~0.15 ms a tube on the S3; a step moves
- *  the opacity by < 1 %). lidKey: the step an angle takes from its last key (NaN: none yet). Firmware lidKey. */
-export const LID_KEY_STEPS = 128, LID_KEY_HOLD = 0.6;
+ *  LID_KEY_HOLD of one (the IMU's noise at rest would rebuild it every frame: ~0.15 ms a tube on the S3). Steps of
+ *  1 / 1024 rad (0.056 deg): near a grazing refracted ray the path is steep in the pose, and 1 / 128 rad steps showed as
+ *  jumps there (review 2: tau -44.5 deg, e 20, theta 89: 33/255). lidKey: the step an angle takes from its last key
+ *  (NaN: none yet). Firmware lidKey. */
+export const LID_KEY_STEPS = 1024, LID_KEY_HOLD = 0.6;
 export function lidKey(angle: number, key: number): number {
   const a = F(angle);
   if (Math.abs(F(a - key)) <= F(LID_KEY_HOLD / LID_KEY_STEPS)) return key;   // (a NaN key fails the test: keyed afresh)

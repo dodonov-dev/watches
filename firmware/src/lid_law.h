@@ -26,7 +26,7 @@
 // The law is built for the pose in steps of 1 / LID_KEY_STEPS rad, re-keyed when the pose leaves its step by more than
 // LID_KEY_HOLD of one (the IMU's noise at rest would rebuild it every frame). surfaceBand's share of the absorption:
 // min(1, stroke opacity / LID_BAND_FULL) (sim LID_BAND_FULL, a double literal: (float)0.16 as Math.fround'd).
-#define LID_KEY_STEPS 128
+#define LID_KEY_STEPS 1024
 #define LID_KEY_HOLD_F ((float)(0.6 / LID_KEY_STEPS))   // sim F(LID_KEY_HOLD / LID_KEY_STEPS)
 #define LID_BAND_FULL ((float)0.16)
 
@@ -100,7 +100,7 @@ static inline float lidFloor(float x) {
   return t > x ? t - 1 : t;
 }
 // The step an angle takes from its last key (sim lidKey; NaN: none yet, keyed afresh): the key while the angle stays
-// within LID_KEY_HOLD of a step of it, else the nearest step, floor(a 128 + 0.5) / 128 (x 128 and / 128 exact in float:
+// within LID_KEY_HOLD of a step of it, else the nearest step, floor(a S + 0.5) / S, S = LID_KEY_STEPS (x S and / S exact in float:
 // the sim's roundings, one at the + 0.5).
 static inline float lidKey(float angle, float key) {
   if (fabsf(angle - key) <= LID_KEY_HOLD_F) return key;
@@ -115,7 +115,12 @@ static inline float lidAt(const float *tab, float u) {
 }
 // The liquid's opacity over the tube back at lid position u; q = the row's chord share z_R / R.
 static inline float lidOpacity(const LidLaw &o, float q, float u) {
-  return lidAt(o.keep, u) * (1 - fizzAtt(o.k8 * q, lidAt(o.lam, u)));
+  // lidAt(o.keep, u) x (1 - fizzAtt(o.k8 q, lidAt(o.lam, u))) with the place in the tables taken once (the same values)
+  const float v = fizzMx(0, fizzMn(1, u)) * LID_N;
+  int i = (int)v; if (i > LID_N - 1) i = LID_N - 1;
+  const float f = v - (float)i;
+  const float keep = o.keep[i] + (o.keep[i + 1] - o.keep[i]) * f, lam = o.lam[i] + (o.lam[i + 1] - o.lam[i]) * f;
+  return keep * (1 - fizzAtt(o.k8 * q, lam));
 }
 // The share of "seen through the whole liquid" a rear mark takes under the lid at u: (1 - t^lam) / (1 - t), the path
 // itself for a clear liquid.
