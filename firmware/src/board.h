@@ -92,6 +92,7 @@ static_assert(BOARD_MM_OK_(LCD_MM_S), "LCD_MM_S: 3 to 10 mm, not 6 (narrow: leav
 #define PIN_I2C_SCL  7
 #define HAS_RTC      1       // PCF85063: keeps time while powered (SH1.0 header for a backup cell), rtc.cpp
 #define PIN_BAT_ADC  4       // LiPo through 200k / 200k
+#define PIN_LED      44      // logo LED on the UART header's RXD (J4 pin 4, straight to GPIO44 per schematic): GPIO -> R -> LED -> GND; `L` cmd
 #else
 #define BOARD_NAME   "amoled191"
 #define BOARD_TAG    BOARD_NAME BOARD_TUBES_

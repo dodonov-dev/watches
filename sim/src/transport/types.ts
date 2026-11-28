@@ -20,4 +20,6 @@ export interface WatchTransport {
   setDemoSpeed(speed: number): Promise<void>;
   /** Minutes sweep: seconds per empty→full→empty cycle, 0 = off. Persists on the device. */
   setSweep(period: number): Promise<void>;
+  /** Logo LED 0..255 (firmware `L`). Persists on the device; throws if the board has none. */
+  setLed(level: number): Promise<void>;
 }

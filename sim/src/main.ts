@@ -25,7 +25,7 @@ const matState = session.material;              // physical-material mode: param
 const overlay = session.view.overlay;
 const manual = session.view.manual;             // sliders / drag
 const setClock = session.view.setClock;
-let { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = session.view;  // demoSpeed = demo s per real s
+let { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod, logoLed } = session.view;  // demoSpeed = demo s per real s
 let sweepPhase = 0;   // 0..1 through the minutes sweep cycle
 const tubes = Array.from({ length: TUBE_COUNT }, () => newTube());   // hours, minutes(, seconds): spec/layout TUBE_COUNT
 const [hours, minutes] = tubes;
@@ -114,6 +114,7 @@ app.innerHTML = `
         <label><select id="link"><option value="serial">Web Serial</option><option value="ble">Bluetooth</option></select> <button id="serialbtn">connect</button> <span id="serialst">disconnected</span></label>
         <label><input type="checkbox" id="livepush" checked> push params live</label>
         <label><button id="pull">pull params</button> <button id="pushall">push all</button></label>
+        <label title="Logo LED on the board's UART RXD pin (LCD board), PWM 0–255; sent on release, kept on the device across resets">logo LED <input type="range" id="logoled" min="0" max="255" step="1" value="255"> <output id="logoledv">255</output></label>
         <label><button id="readfps" disabled>read device fps</button> <span id="devicefps">connect to read</span></label>
       </fieldset>
     </div>
@@ -137,7 +138,7 @@ applyOverlay(ovlDom, overlay, layoutNow());
 // ---------- persistence ----------
 // One delegated listener covers every control on the page (top bar, time, tilt, params panel);
 // programmatic changes (presets, import, drag-tilt, reset) call save() explicitly.
-const save = (): void => saveSession({ params, view: { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod, setClock, manual, overlay }, material: matState });
+const save = (): void => saveSession({ params, view: { scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod, logoLed, setClock, manual, overlay }, material: matState });
 app.addEventListener('input', save);
 app.addEventListener('change', save);
 
@@ -208,12 +209,19 @@ $('sweepperiod').onchange = (e) => {
   if (!(v >= 1 && v <= 3600)) { (e.target as HTMLInputElement).value = String(sweepPeriod); return; }
   sweepPeriod = v; sweepPhase = 0; if (sweep) pushSweep();
 };
+$('logoled').oninput = (e) => { logoLed = +(e.target as HTMLInputElement).value; $('logoledv').textContent = String(logoLed); };
+$('logoled').onchange = async () => {
+  save();
+  if (!transport.connected) return;
+  try { await transport.setLed(logoLed); $('serialst').textContent = `logo LED ${logoLed} sent`; }
+  catch (e) { $('serialst').textContent = String(e); }
+};
 $('seth').oninput = (e) => { setClock.h = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
 $('setm').oninput = (e) => { setClock.m = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
 $('sets').oninput = (e) => { setClock.s = +(e.target as HTMLInputElement).value; selectTimeMode('set'); };
 $('resetview').onclick = () => {
   Object.assign(overlay, DEFAULT_OVERLAY); Object.assign(manual, DEFAULT_VIEW.manual); Object.assign(setClock, DEFAULT_VIEW.setClock);
-  ({ scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod } = DEFAULT_VIEW);
+  ({ scale, showGrid, paused, timeMode, demoSpeed, sweep, sweepPeriod, logoLed } = DEFAULT_VIEW);
   clockSet = true; syncView(); save();
 };
 const alongS = $<HTMLInputElement>('along'), acrossS = $<HTMLInputElement>('across');
@@ -240,6 +248,7 @@ function syncView(): void {
   $<HTMLInputElement>('demospeed').value = String(demoSpeed);
   $<HTMLInputElement>('sweep').checked = sweep;
   $<HTMLInputElement>('sweepperiod').value = String(sweepPeriod);
+  $<HTMLInputElement>('logoled').value = String(logoLed); $('logoledv').textContent = String(logoLed);
   $<HTMLInputElement>('seth').value = String(setClock.h);
   $<HTMLInputElement>('setm').value = String(setClock.m);
   $<HTMLInputElement>('sets').value = String(setClock.s ?? 0);

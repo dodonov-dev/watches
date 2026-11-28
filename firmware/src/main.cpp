@@ -14,6 +14,7 @@
 //   p?  dump params as JSON           p!  reset params to the built-in preset (and erase NVS copy)
 //   params are in design px (spec/layout.h DESIGN_H); physics and render run on them scaled to this board's canvas
 //   params persist in NVS (autosave 2 s after last p write)
+//   L<n>  logo LED 0..255 (PWM on PIN_LED, board.h; persists in NVS; boards without one reply `led n/a`)
 //   b<n> brightness 0..255            H<0|1>  panel HBM experiment (RM67162 B0h; unusable, see KAIZEN)
 //   X  deterministic sequence on the current params (seq.h): `SEQ <frame> <hash hours> <hash minutes> [<hash seconds>]
 //      fizz ...` per frame, then `SEQ END`; compare two builds with tools/check_board_steps.py (the tubes restart from
@@ -180,6 +181,23 @@ static void sweepLoad() {
   if (sweepPeriod > 0) out.printf("sweep: %gs restored from nvs\n", sweepPeriod);
 }
 static void sweepSave() { if (prefs.getFloat("sweep", 0) != sweepPeriod) prefs.putFloat("sweep", sweepPeriod); }
+// Logo LED (L<N>): PWM on PIN_LED, NVS key "led". Takes the pin from the UART0 console's RX, so it needs no
+// boot handling of its own; the LEDC timer is shared with the LCD backlight (same 50 kHz / 8 bit).
+static uint8_t ledLevel = 255;
+static void ledApply() {
+#ifdef PIN_LED
+  ledcWrite(PIN_LED, ledLevel);
+#endif
+}
+static void ledLoad() {
+#ifdef PIN_LED
+  ledLevel = (uint8_t)prefs.getUChar("led", 255);
+  gpio_reset_pin((gpio_num_t)PIN_LED);   // drop the UART0 RX routing
+  ledcAttach(PIN_LED, 50000, 8);
+  ledApply();
+#endif
+}
+static void ledSave() { if (prefs.getUChar("led", 255) != ledLevel) prefs.putUChar("led", ledLevel); }
 static double clockSec = 0;          // local seconds since midnight, refreshed every physics step
 static const time_t CLOCK_EPOCH_MIN = 86400L * 365;  // below this = never set since power-on
 // Real time from the sim (`T`) persists in NVS key "clk": saved on `T` and then once a minute, so power-on
@@ -879,6 +897,15 @@ static void handleLine(char *line) {
       else have_imu = imu_ok;
       out.printf(tiltOverride ? "tilt override %.3f %.3f gyro %.1f %.1f\n" : "tilt from imu\n", v[0], v[1], v[2], v[3]);
       break; }
+    case 'L': {
+#ifdef PIN_LED
+      int v = atoi(arg);
+      if (!*arg || v < 0 || v > 255) { out.println("usage: L<0-255>"); break; }
+      ledLevel = (uint8_t)v; ledApply(); ledSave(); out.printf("led %d\n", v);
+#else
+      out.println("led n/a");
+#endif
+      break; }
     case 'b': { int v = atoi(arg); display_set_brightness(constrain(v, 0, 255)); out.printf("brightness %d\n", v); break; }
     case 'H': { bool on = atoi(arg) != 0; display_set_hbm(on); out.printf("hbm %s\n", on ? "on" : "off"); break; }   // experiment only: tints cyan, browns out the board
     case 't': { int hh = 0, mm = 0, ss = 0; if (sscanf(arg, "%d:%d:%d", &hh, &mm, &ss) >= 2) { setClockLocal(CLOCK_EPOCH_MIN + hh * 3600 + mm * 60 + ss, false); out.printf("time %02d:%02d:%02d\n", hh, mm, ss); } else out.println("usage: t HH:MM[:SS]"); break; }
@@ -1002,7 +1029,7 @@ static void handleLine(char *line) {
       else { const int left = ble_window_left_s(); if (left < 0) out.println("mode ble (connected)"); else out.printf("mode ble (window: fast mode in %d s)\n", left); }
       break;
     case 'r': diag_stage(DIAG_RESTART_REQ); ESP.restart(); break;
-    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> p<name>=<v> p~<name>=<v> p? p! x X v C B[0|1] r"); break;
+    case '?': out.println("cmds: l c h f i g [along across] s b<0-255> t HH:MM T <epoch> <tz> d<N> w<N> L<0-255> p<name>=<v> p~<name>=<v> p? p! x X v C B[0|1] r"); break;
     default: out.println("error unknown command"); break;
   }
   diag_feed();   // -DLOOP_WDT: a completed command
@@ -1061,6 +1088,7 @@ void setup() {
   paramsLoad();
   demoLoad();
   sweepLoad();
+  ledLoad();
   out.printf("imu: %s\n", have_imu ? "ok" : "NOT FOUND");
 #if HAS_RTC
   out.printf("rtc: %s\n", rtc_init() ? "ok" : "NOT FOUND");   // before clockRestore, which may skip the RTC

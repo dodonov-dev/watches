@@ -105,6 +105,12 @@ export abstract class LineTransport implements WatchTransport {
     if (reply !== (period ? `sweep ${period}s` : 'sweep off')) throw new Error(`sweep not accepted: ${reply || 'no reply'}`);
   }
 
+  async setLed(level: number): Promise<void> {
+    if (!Number.isInteger(level) || level < 0 || level > 255) throw new Error('invalid LED level (0–255)');
+    const reply = await this.request(`L${level}`, (l) => l.startsWith('led ') || l.startsWith('usage: L') || l.startsWith('error unknown command'));
+    if (reply !== `led ${level}`) throw new Error(`LED not accepted: ${reply || 'no reply'}`);
+  }
+
   protected setStatus(s: TransportStatus, detail?: string): void { this.status = s; this.onStatus(s, detail); }
 
   /** Incoming bytes; lines may span chunks. */
