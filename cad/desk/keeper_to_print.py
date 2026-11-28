@@ -42,7 +42,7 @@ def save(M, path):
     print(f"{path.relative_to(HERE)}  {len(F)} triangles, {M.volume() / 1000:.2f} cm3")
 
 
-USB_SLOT = (11.0, 5.0, 2.5)            # smooth.py's PEBBLE["USB_SLOT"]: width, height, lower edge above the rim
+USB_SLOT = (11.0, 5.5, 2.5)            # smooth.py's PEBBLE["USB_SLOT"]: width, height, lower edge above the rim
 NOTCH_W = 5.6                          # the rim notch of rounds A..D
 
 

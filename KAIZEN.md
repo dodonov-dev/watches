@@ -992,3 +992,4 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - `keeper_to_print.py` rebuilds the relief shells from round C's by mesh edits (notch foot filled, slot cut, ribs and stops added). Regenerating the relief on the new shell would be cleaner; `relief_natural.py` is tied to the C shell's cached base.
 - Relief shells for round E have no seam plate for W (only N1, plate `_18`).
 - `keeper_clay.py` / `keeper_e_clay.py` / `pocket_sketch.py` repeat the model's numbers by hand; they are sketches of their day, not kept in step.
+- `gcode_supports.py` (the sliced supports reader) lives only on `rolypoly-print`; run from that worktree for pebble plate `_18`. Belongs next to `seam_shell.py` once the branches meet.

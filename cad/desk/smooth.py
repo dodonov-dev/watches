@@ -2239,7 +2239,7 @@ PEBBLE = dict(P=2.7, N=2.8, BW=33.0, BZ=18.0,          # the user's pick D (2026
               MESH_DEFL=0.005, MESH_ANG=0.05,           # the OCC shell's mesh before the slots are cut (chord error <= 0.02)
               CUT_THROUGH=1.0,                          # slot cutter mesh: how far behind the inner face it cuts through
               STRIP_T=12.0,                             # test strip: the shell in front of t 12
-              USB_SLOT=(11.0, 5.0, 2.5))                # USB-C slot in the back wall: width, height, lower edge above the rim
+              USB_SLOT=(11.0, 5.5, 2.5))                # USB-C slot in the back wall: width, height, lower edge above the rim
 
 # The pebble's board keeper (round D, user 2026-11-26; round E, 2026-11-27). The rods fix the board along x and s; nothing
 # held it against the front wall (it hangs under the 15 deg lean). A printed fork slides up from the open bottom right
