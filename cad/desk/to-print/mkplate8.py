@@ -89,19 +89,31 @@ def add(k, stl, name, M, x, y, kv):
     cfg = cfg.replace("  <plate>", f'  <object id="{oid}">\n    <metadata key="name" value="{name}"/>\n{md}    <metadata key="extruder" value="1"/>\n    <part id="{cid}" subtype="normal_part">\n      <metadata key="name" value="{name}"/>\n      <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>\n      <metadata key="source_file" value="{src}"/>\n      <metadata key="source_object_id" value="0"/>\n      <metadata key="source_volume_id" value="0"/>\n    </part>\n  </object>\n  <plate>', 1)
     cfg = cfg.replace("  </plate>", f'    <model_instance>\n      <metadata key="object_id" value="{oid}"/>\n      <metadata key="instance_id" value="0"/>\n      <metadata key="identify_id" value="{500 + k}"/>\n    </model_instance>\n  </plate>', 1)
 
-# --- the plate
+# --- the plate.  ONLY=body: the body alone (e.g. black PLA Basic); ONLY=cup: cup-rock + cast plug (white Matte; no
+# stencils: they only matter in a white body). Unset: the whole round-8 plate.
+ONLY = os.environ.get("ONLY", "")
 dropped = [drop(8, 3), drop(12, 6), drop(14, 7), drop(16, 8), drop(18, 9), drop(22, 11)]   # cup-flat, pebble, rings, strip
+if ONLY == "body": dropped += [drop(4, 2), drop(20, 10)]
+if ONLY == "cup": dropped += [drop(2, 1), drop(20, 10)]
 BODY_ROT = 60.0                                                     # round 7's body turn on the plate, kept
-swap(2, 1, f"{SRC}/body.stl", "rolypoly-r8-body.stl", Rz(BODY_ROT), 170, 170)
+if ONLY != "cup":
+    swap(2, 1, f"{SRC}/body.stl", "rolypoly-r8-body.stl", Rz(BODY_ROT), 170 if not ONLY else 128, 170 if not ONLY else 128)
 ON_BACK = np.array([[1, 0, 0], [0, 0, 1], [0, -1, 0]])             # model y -> -z: front up, back on the plate
-swap(4, 2, f"{SRC}/cup-rock.stl", "rolypoly-r8-cup-rock.stl", Rx(CUP_TILT) @ ON_BACK, 70, 75)
-swap(20, 10, f"{SRC}/logo-stencil.stl", "rolypoly-r8-logo-stencil.stl", np.eye(3), 70, 190)
-# cast plug on its sloped face (handle up, leaning with the slope): turn the big bottom face's normal to -z
-pm = pv.read(f"{SRC}/cast-plug.stl").compute_normals(cell_normals=True, point_normals=False)
-n = pm.cell_data["Normals"][np.argmax(pm.compute_cell_sizes()["Area"])]
-plug_rot = Rx(np.degrees(np.arctan2(-n[1], -n[2])))
-assert np.allclose(plug_rot @ n, [0, 0, -1], atol=1e-3), plug_rot @ n
-add(1, f"{SRC}/cast-plug.stl", "rolypoly-r8-cast-plug", plug_rot, 110, 205, {})
+if ONLY != "body":
+    swap(4, 2, f"{SRC}/cup-rock.stl", "rolypoly-r8-cup-rock.stl", Rx(CUP_TILT) @ ON_BACK, 70 if not ONLY else 128, 75 if not ONLY else 110)
+if not ONLY:
+    swap(20, 10, f"{SRC}/logo-stencil.stl", "rolypoly-r8-logo-stencil.stl", np.eye(3), 70, 190)
+if ONLY != "body":
+    # cast plug on its sloped face (handle up, leaning with the slope): turn the big bottom face's normal to -z
+    pm = pv.read(f"{SRC}/cast-plug.stl").compute_normals(cell_normals=True, point_normals=False)
+    n = pm.cell_data["Normals"][np.argmax(pm.compute_cell_sizes()["Area"])]
+    plug_rot = Rx(np.degrees(np.arctan2(-n[1], -n[2])))
+    assert np.allclose(plug_rot @ n, [0, 0, -1], atol=1e-3), plug_rot @ n
+    add(1, f"{SRC}/cast-plug.stl", "rolypoly-r8-cast-plug", plug_rot, 110 if not ONLY else 128, 205 if not ONLY else 160, {})
+
+# LID=path.stl: an extra part as in its STL (e.g. the pebble-C lid, unflipped as on _10_plate_pebble_W_N1), same colour
+if os.environ.get("LID"):
+    add(2, os.environ["LID"], os.environ["LID"].rsplit("/", 1)[-1][:-4], np.eye(3), 128, 205, {})
 
 cfg = re.sub(r'\s*<metadata key="(?:thumbnail_file|thumbnail_no_light_file|top_file|pick_file)"[^>]*/>', "", cfg)
 skip = set(dropped) | {"Metadata/cut_information.xml"} | {n_ for n_ in z.namelist() if n_.endswith(".png")}

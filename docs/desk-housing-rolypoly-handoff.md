@@ -5,6 +5,80 @@ plumb. No stand and no mechanism: a rounded, weighted underside. The liquid on t
 Order of work: the decisions are settled and the clay views accepted; **the CAD for a cheap FDM print is built
 (round 2, see "CAD state"); then the user's print test, then the final white body by SLA.**
 
+## Grey print of plate `_20` (2026-11-28): spaghetti at z ~80; fit findings; plate `_22`
+Photos and the printed gcode: `cad/desk/to-print/_20_plate_res/`. Both shells stopped at z ~80 of 106; both forks finished.
+- **What failed:** the roly-poly body's tree supports (auto, from the plate only; kept since round 7, where they
+  improved the slots' top ends). The slicer grew ONE free-standing trunk from the plate, 18 mm at the foot, on to a
+  3 x 4.5 mm patch inside the crown (z 103.4); the supports for the two slot top ends (z 79.3..79.8) left it as twigs
+  3..5 mm across from z 50. The twigs gave way at z 72..80; their loops were dragged across the body. The slicer said
+  "Success", no warnings; I had not looked at the supports. The pebble's tree (two 6..8 mm branches) still stood.
+- **Now:** the body's supports are manual, as the pebble's: an enforcer over the middle 6 mm of each slot top end
+  (`keeper/slot-top-enforcer.stl`), tree(manual) from the plate, branch angle 5 deg (the face leans 8: at the default
+  45 one tree stood OUTSIDE and came in through the slots), 2 walls, branch diameter 5, xy distance 0.7. Sliced: two
+  trunks inside the body, 16 mm at the foot, no island under 6.4 across, contact at z 79.2..79.6 only. Nothing for the
+  crown's inside or the USB opening's 9.3 mm roof (both hidden). On this plate the pebble's tree also has 2 walls and
+  branch diameter 5 (thinnest 6.4 across above z 20, was 5.6); its own plate `_18` is unchanged (see KAIZEN).
+  `to-print/gcode_supports.py` reads a sliced plate and lists every object's support (height, contact layers, thinnest
+  island per 10 mm): run it on every plate before it goes out, and look where the trunks stand.
+- **Fork loose** (user): pads were 2.2 as printed, 0.2 over the plate's seat without the foam strips. Now 3.0 as printed
+  (2.0 to the plate as assembled + 1.0 proud, sand to fit). The fork's lower end has no ribs; the cell and the fins stop
+  it: fins now 0.3 behind the cell (were 0.6, for tape).
+- **USB-C:** both extensions go in, with effort (their rigid ends are about equally long). The opening is now 11.3 x 5.9
+  with r 1 corners for the socket end (11 x 5.5) to sit in the wall; still 2.5 above the seam.
+- **Plate:** `to-print/_22_plate_pebble_E_N1_roly_poly_r8_keeper2.3mf` (as `_20`: pebble `_18` + body + fork; sliced:
+  15.1 h, 144 g with the file's PLA Basic). The cup plate `_21` is unchanged.
+- **Open:** the cast under the port. The extension's straight plug head (~13.5 long) reaches about 9.5 below the seam plus
+  the ribbon's bend; the cast's top is 5.4 below the seam there (round 8's dimple is for the old right-angle head). Not
+  checked with a cup on; needs the head's length and a deeper pocket in `rolypoly.py`'s cast plug.
+
+## Board keeper on round 8 (2026-11-27): built, plate `_19` ready
+The pebble's round E keeper carried over (`cad/desk/roly_keeper.py`, a mesh post-step on round 8's `out-rolypoly/body.stl`,
+~1 min, no shell rebuild; outputs, numbers and picture in `out-rolypoly/keeper/`: `report.txt`, `keeper-views.png`).
+The branch is rebased on `desk-housing`'s round E (`4c235ab`).
+- **Why:** the rods are not glued to the glass and the board slides in along the front wall (user, 2026-11-27), so the
+  shell has to locate and hold the board; round 8 had only gasket tape and a foam pad.
+- **Fork:** the pebble's frame fork (top bar across both upper screws, the button side's prong, a lower block across
+  both lower screws, 4 pads printed +0.7: sand to fit, no foam strips). 56.7 x 82 x 4.7, printed flat, pads up.
+- **In the body:** two upper ribs behind the bar (button side to |u| 11, plug side a 45 deg wedge), glass stops on the
+  front wall (rails 0.15 from the glass, a top wedge, bottom corners from the seam ring), two fins from the back wall
+  behind the cell. +5.2 g, steepest added face 44.4 deg, no supports for them. Outside unchanged but for the USB slot.
+- **Cell:** measured 66.8 x 36 x 9.75 (user; the model had 68 x 35 x 10). It now sits on its long edge right behind
+  the fork, 4.0 behind the plate instead of 1.0 (0.56 spare a side as a square box). It fills the width there, so the
+  pebble's lower side ribs have no room: the fork's lower block is backed by the cell, the cell by the fins (0.6 gap:
+  foam or tape as needed). The earlier "the cell cannot move back" came from the model's insertion sweep, not from
+  the seated room.
+- **Order:** board (up along the front wall, over the bottom corners, forward into the stops), fork, I2C plug through
+  the fork's open side, USB head (the fork's lower block rests 0.3 above it), cell, cup. UART and J5 stay empty: their
+  plugs would stand in the cell's face.
+- **USB-C slot (user, 2026-11-27: the short bendable extension's socket end sits in it, as on the pebble; all in the
+  body, which will be black):** 11 x 5, round-ended, level through the body's back wall at x -5.5..5.5, world z
+  24.5..29.5 (2.5 above the seam), closed all round. The old round notch at x -5 (split by the seam) is filled in the
+  body and in the cup (`keeper/cup-rock.stl`: round 8's cup + 66 mm3, by a hull of the wall beside the notch: a
+  ~0.1 chord across its 5.6 on the outside). Fins moved to x -9.9 and 7.75 (0.75 beside the socket's way; the right
+  one steps down under the x 13 trim spot). **Open, needs the cable's measurements:** the cell's back is 14.0 behind
+  the wall there, so a socket end over 16.5 long stands proud outside or meets the cell; the plug end has 9.4 under
+  the port to the cast (the cast plug's dimple is still the old right-angle head's); the checks' USB head and cable
+  are still round 8's.
+- **Trim segments:** the one at x 27.5 (placed by `rolypoly.py` for the old cell) now touches the cell's back: stick it
+  higher or further along the wall. The fins stand clear of all three spots (0.98), of the USB head (2.1) and cable.
+- **Reviewed** by a Claude agent (the Astra agent is not available outside the proxy session): the port's offsets,
+  sides, transforms and checks found right; fixed after it: a fin stood in the x 13 trim spot, the other 0.15 from a
+  pin boss; fins are now checked against the head, cable, spots and seam holes; each stop is tested for its hold in
+  the wall on its own. The USB slot, the notch fills and the fins' move came after the review.
+- **Cup plate:** `to-print/_21_plate_roly_poly_r8_keeper_cup.3mf` (`ONLY=cup`, the cup with the closed notch + the cast plug; not sliced here).
+- **Plate:** `to-print/_19_plate_roly_poly_r8_keeper_body_fork.3mf` (`ONLY=body LID=.../keeper/fork-print-plate.stl
+  mkplate8.py`: the body with round 7's settings, the fork flat beside it). Not sliced here. The cup is unchanged.
+- **One plate with the pebble (user, 2026-11-27, for one overnight print):**
+  `to-print/_20_plate_pebble_E_N1_roly_poly_r8_keeper.3mf` = the pebble's plate `_18` as it is (shell with seam paint and
+  slot supports, fork; same places) + this body and fork (`to-print/mkplate_merge.py`; the two projects' settings are
+  identical, the parts keep their per-object settings). Sliced once (Bambu Studio CLI): 15 h 11 min, 140 g, no
+  warnings; the pebble's seam check was not re-run on it.
+- **Not updated:** `rolypoly.py` itself (its battery is still 68 x 35 x 10 at 1.0 behind the plate, its plugs side
+  plugs, its 0.5 gasket; so `report.txt`'s masses, `build-sheet.txt` and the dummies there are round 8's). The cell's
+  47 g sit 3 mm further back; ballast by feel as before.
+- Options sketched before (`cad/desk/concept/rolypoly_keeper*.py`, `images/rolypoly-keeper/`): of their day; the
+  section sheet still shows round D's one-prong fork.
+
 ## Start here: round 8 built, plate ready; wavy seam next (2026-11-25), worktree `../watches-rolypoly`, branch `rolypoly-print`
 Round 8 = face, tubes, board and battery tilted back 8 deg (`TILT`, pivot at the board's bottom back edge); the front is
 the body's own superellipse sections with a flat only as wide as the slots need (x -22.3..+12.3), fading into the head

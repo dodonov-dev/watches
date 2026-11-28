@@ -1035,3 +1035,29 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - A cached-report mode (pickle the report's inputs) would let mass or wording changes skip the 30-min build.
 - Polish (round 8): the flat's left edge still reads faintly where the left shoulder narrows (curve only ~10 mm wide there); a slightly wider left shoulder (A2L) would soften it.
 - Roly-poly colourway "Dead Poly" (Totes Stehaufmännchen / Мёртвая неваляшка): black body, ivory cup (split at the seam, so it costs nothing), dark liquid with sparkling fizz, vertical remaining-time mode. In black, the logo does not glow through the 1.0 skin. Options: (a) through-cut + light inlay (REJECTED by the user: the fit line around the logo is a visible scar that is not artistic); (d) one colour change by height in the body (ivory below, black above; a single AMS swap, a crisp level line; the logo sits in the ivory band and glows through the skin as now; the body-cup seam then lies inside the ivory, less visible; needs the logo below the line, e.g. under the slots); (b) AMS logo in natural/translucent PLA (crisp, flush, but ~1 swap per layer over ~11 mm: est. ~140 swaps, ~3 h, ~80 g purge; acceptable to the user: test a coupon once the translucent filament arrives, incl. a black outer skin over a white core lit by a bright LED); (c) seam as a wave rising in front so the logo sits in the ivory cup (a design change: magnets, board way in, seam fit).
+
+## 2026-11-25 roly-poly round 9 (wavy seam study)
+- Logo in the cup: its LEDs could ride on a small carrier on the board's lower right edge (wired to I2C), so nothing is glued into the cup; the rising cup rim needs them >= 7 mm behind the letters.
+- A 0.4 x 45 deg V-groove on both parts at the seam would keep the black/ivory line crisp and hide support marks and fit tolerance.
+- A front rim of 28 (cast down to 15) leaves no room for a 14 mm logo between the cast and the rim; a 12 mm logo would fit there.
+
+## 2026-11-27 roly-poly board keeper (pebble round E carried over)
+- `rolypoly.py` still has the cell as 68 x 35 x 10, 1.0 behind the plate (measured 66.8 x 36 x 9.75, now behind the fork), side plugs in `board_bodies_b()`, `hw.GASKET` 0.5 and `Rod` / tape as the board's location. Fold `roly_keeper.py` into its build at the next shell rebuild.
+- `battery_path()`'s way-in margin read as "the cell cannot move back"; the seated room said otherwise. Sweep margins are not fit limits.
+- Not pursued: a stick with a leg behind the cell (soft lower hold), the cell upright behind the fork (centre of mass up), a smaller cell (103450), stub ribs under the cell (they block its way in), tabs on the cup backing the fork's feet.
+- The fork has no STEP (built on the mesh); the fins and corners are cut at the seam plane, so a wavy seam (round 9) moves them.
+- The Astra agent needs the proxy session (`gpt-6.2-astra` not found here); the keeper was reviewed by a Claude agent instead.
+- `mkplate8.py`'s `LID=` slot places any extra part at (128, 205) unturned; the fork needed a pre-turned copy (`fork-print-plate.stl`).
+- `rolypoly.py`'s trim spot at x 27.5 touches the moved cell (0.00); re-place the spots when the keeper is folded into the build.
+- Roly-poly USB-C slot: the new bendable extension is not modelled (socket end's length, plug's depth under the port, cable); the cast plug's dimple and the head / cable dummies are the old right-angle one's. Model it in `rolypoly.py` with the measured cable, and cut the cup without the notch there instead of the hull fill.
+- `cup-rock.stl` (round 8) carries two zero-volume slivers at the bottom pole.
+
+## 2026-11-28 plate `_20` spaghetti (grey print)
+- `mkplate8.py`'s template gives the roly-poly body auto tree supports (one trunk to the crown, twigs to the slot tops: plate `_20`'s failure); manual + enforcer only on the merged plate (`mkplate_merge.py ENF: / SET:`). `_19` / `_9` body plates and `rolypoly.py`'s build sheet still say auto.
+- I first switched the body's supports off altogether (read the twigs as needless); the user: the slot tops need them, as on the pebble (dent). Check what a support is for before removing it.
+- Pebble plate `_18` (main checkout): its tree stands 88 mm with branches 5.6..8.4 across; on `_22` it got 2 walls and branch diameter 5. If it fails there too: a printed-in breakaway post in each slot instead of a tree.
+- The grey pebble's centre bar shows shifted layers in its upper half (photo `15-37-32.jpg`): it stands free until the slots' top ends.
+- `gcode_supports.py` counts islands by bounding box; a leaning branch reads wider than it is.
+- Roly-poly cast plug: no pocket for the straight USB-C plug head (see the handoff's "Open").
+- `roly_keeper.py`'s fork still checks against round 8's right-angle USB head dummy.
+- Bambu Studio's CLI prints the global support settings in the gcode header even when an object overrides them.
