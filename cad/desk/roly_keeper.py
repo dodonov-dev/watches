@@ -68,12 +68,13 @@ K = dict(BOARD_T=9.15,                                     # glass front .. the 
          FIN_CLR=0.3,                                      # fins to the trim spots and to the seam's holes, at least
          PLUG_IN=5.0, PLUG_UP=4.0,                         # upward sockets (UART, J5, I2C), as the pebble: ASSUMED
          JST_Z={"uart": 22.45, "j5": 39.42, "i2c": 56.39, "rtc": 67.5}, RTC_LEN=4.4,
-         USB_SLOT=(11.3, 5.9, 2.5, 0.0),                   # USB-C opening in the body's back wall, all in the body (which will
+         USB_SLOT=(11.0, 5.5, 2.5, 0.0),                   # USB-C opening in the body's back wall, all in the body (which will
                                                            # be black): width, height, lower edge above the seam, world x
-                                                           # centre; level, closed all round. User, 2026-11-28: the extension's
-                                                           # socket end, 11 x 5.5, sits IN it: 0.15 a side, 0.4 in height (its
-                                                           # roof is a bridge, printed without support)
-         USB_R=1.0,                                        # its corners
+                                                           # centre; round-ended, level, closed all round. The pebble's
+                                                           # (smooth.py PEBBLE["USB_SLOT"], 4e6806c; user, 2026-11-28: "use
+                                                           # that slot size"): the extension's socket end, 11 x 5.5, sits IN
+                                                           # it; tight on purpose, sanded to fit
+         USB_R=None,                                       # its corners (None: round ends, H / 2)
          NOTCH_X=(-8.3, -1.7),                             # the old cable notch (5.6 round at x -5, split by the seam): filled,
                                                            # in the body and in the cup, from the wall beside it
          GAP_MIN=0.1)                                      # seated parts to the added material, at least (the stops are 0.15 from the glass)
@@ -86,6 +87,7 @@ OVERHANG_MAX = 45.0
 
 PCB_Z0 = rp.PCB_Z0
 YB = rp.Y_GLASS0 + K["BOARD_T"]                            # the plate's back face (the model's seat: on the 0.5 strips)
+USB_R = K["USB_R"] if K["USB_R"] is not None else K["USB_SLOT"][1] / 2
 YP = YB - K["PAD_FWD"]                                     # the same as assembled, without the strips: the pads' tips
 T0, T1 = YB + K["PAD_H"], YB + K["PAD_H"] + K["FORK_T"]    # the fork
 R0, R1 = T1, T1 + K["RIB_T"]                               # the ribs
@@ -328,10 +330,11 @@ def fill_notch(M, z0, z1):
 def usb_slot():
     """The opening's cutter (world frame): W x H in (x, z) with USB_R corners, level along y through the back wall."""
     w, h, z0, xc = K["USB_SLOT"]
-    r, zc = K["USB_R"], rp.SEAM + z0 + h / 2
-    a = np.linspace(0.0, math.pi / 2, 9)
+    r, zc = USB_R, rp.SEAM + z0 + h / 2
+    a = np.linspace(0.0, math.pi / 2, 13)
     P = [(xc + sx * (w / 2 - r) + r * math.cos(v + q), zc + sz * (h / 2 - r) + r * math.sin(v + q))
          for q, sx, sz in ((0.0, 1, 1), (math.pi / 2, -1, 1), (math.pi, -1, -1), (1.5 * math.pi, 1, -1)) for v in a]
+    P = [q for i, q in enumerate(P) if math.dist(q, P[i - 1]) > 1e-9]               # round ends: the corners meet
     return (lambda y0, y1: prism_xz(P, y0, y1)), (xc - w / 2, xc + w / 2, zc - h / 2, zc + h / 2)
 
 
@@ -409,8 +412,16 @@ def build():
     body0 = load(SRC / "body.stl")
     check(len(body0.decompose()) == 1, "body.stl is not one piece")
     body, dv_notch = fill_notch(body0, rp.SEAM - 0.5, rp.SEAM + K["USB_SLOT"][2] - 0.1)
+    # the logo's stencil pocket closed (roly_logo_fill.py's filler): the body will be black, and the pocket showed outside
+    pocket, lfill = load(OUT / "logo-pocket.stl"), load(OUT / "logo-fill.stl")
+    void0 = (pocket - body).volume()
+    v0, h0 = body.volume(), body.hull().volume()
+    body = body + lfill
+    dv_logo, void1 = body.volume() - v0, (pocket - body).volume()
     body = body.as_original()
     check(len(body.decompose()) == 1 and body.genus() == body0.genus() and 1.0 < dv_notch < 20.0, f"body's notch fill: {dv_notch:.2f} mm3")
+    check(200.0 < dv_logo < 0.99 * lfill.volume() and void0 - void1 > 0.98 * dv_logo and abs(body.hull().volume() - h0) < 1e-6,
+          f"logo pocket fill: +{dv_logo:.1f} mm3 of {lfill.volume():.1f}, pocket void {void0:.1f} -> {void1:.1f}, hull {body.hull().volume() - h0:+.4f}")
     spots = load(SRC / "dummy-trim-spots.stl")
     spots_b = [q.transform(T_BW.tolist()).bounding_box() for q in spots.decompose()]
     Wl = Walls(body.transform(T_BW.tolist()))
@@ -429,7 +440,7 @@ def build():
     gone = new ^ cutter(15.0, 40.0)
     gb = gone.bounding_box()
     w_, h_ = K["USB_SLOT"][:2]
-    area = w_ * h_ - (4 - math.pi) * K["USB_R"] ** 2
+    area = w_ * h_ - (4 - math.pi) * USB_R ** 2
     check(len(gone.decompose()) == 1 and gb[1] > 20.0 and 0.8 * area * (gb[4] - gb[1]) < gone.volume() < area * (gb[4] - gb[1]) + 1e-6,
           f"USB slot cuts {gone.volume():.1f} mm3 in {len(gone.decompose())} pieces, y {gb[1]:.2f}..{gb[4]:.2f}")
     solid = new
@@ -452,6 +463,10 @@ def build():
     holes = union([m3.Manifold.cylinder(rp.SEAM_PIN_L, b_["r_boss"] - 1.0, circular_segments=48).translate((b_["x"], b_["y"], rp.SEAM - 1.0))
                    for b_ in rp.boss_spots()])
     check((add ^ holes).volume() < 1e-6 and gap(add, holes) >= K["FIN_CLR"], f"added material {gap(add, holes):.2f} from a seam hole")
+    real = union([m3.Manifold.cylinder(1.0 + (rp.SEAM_MAG_H + rp.MAG_CLR_H if b_["kind"] == "mag" else rp.PIN_DEPTH) + 0.2,
+                                       (rp.SEAM_R_HOLE if b_["kind"] == "mag" else rp.PIN_R_BODY) + 0.2, circular_segments=48)
+                  .translate((b_["x"], b_["y"], rp.SEAM - 1.0)) for b_ in rp.boss_spots()])      # the holes as cut, + 0.2
+    check((lfill ^ real).volume() < 1e-6, f"the logo fill reaches a seam hole ({(lfill ^ real).volume():.3f} mm3)")
 
     # 2. overhangs of the added faces
     deg, at, bad = overhang(new, {st.original_id(), rb.original_id()})
@@ -520,11 +535,10 @@ def build():
              f"for the old cell) to the new cell: " + ", ".join(f"{g_:.2f} at x {x_:.1f}" for g_, x_ in sp) +
              (f". TO DO BY HAND: the segment at x {sp[0][1]:.1f} touches the cell's back; stick it higher or further along the wall "
               f"({rp.TRIM_SPOT_BAT:g} clear)." if sp[0][0] < rp.TRIM_SPOT_BAT else "."))
-    # 4. the logo
-    logo = load(SRC / "dummy-logo-new.stl")
-    g_logo = min(gap(add, logo, 30.0), gap(add, led, 30.0))
-    check(g_logo >= 3.0, f"added material {g_logo:.2f} from the logo / the LEDs' room")
-    L.append(f"Logo: the nearest added material is {g_logo:.1f} from the letters and the LEDs' room; the skin is round 8's.")
+    # 4. the logo: no pocket any more
+    L.append(f"Logo pocket closed (black body, no light through it; it showed outside): +{dv_logo:.0f} mm3 ({dv_logo * 1.24e-3:.2f} g), the pocket's "
+             f"void {void0:.0f} -> {void1:.0f} mm3 (what is left lies in the cavity and in a 0.2 dip on the inside); the wall there is "
+             f"{rp.WALL - 0.2:g} (was {rp.LOGO_SKIN:g}); outer surface untouched. No stencil, no LEDs behind it.")
     # the socket's way in from the slot: free of the body, ribs and fins; how far to the cell
     probe = lambda d: cutter(gb[1] - d, gb[1] - 0.02)
     check((probe(14.0) ^ new).volume() < 1e-6 and gap(probe(14.0), fn) >= 0.5, f"behind the USB slot: fins {gap(probe(14.0), fn):.2f} from the socket's way")
@@ -536,9 +550,9 @@ def build():
     cup, dv_cup = fill_notch(cup0, rp.CUP_ROCK_CAST_TO - 1.5, rp.SEAM + 0.5)          # slivers at the bottom pole: left out
     check(len(cup.decompose()) == 1 and cup.genus() == cup0.genus() and 20.0 < dv_cup < 90.0 and cup.bounding_box()[5] < rp.SEAM + 1e-4,
           f"cup's notch fill: {dv_cup:.2f} mm3, {len(cup.decompose())} pieces, genus {cup0.genus()} -> {cup.genus()}, top {cup.bounding_box()[5]:.4f}")
-    L.append(f"USB-C opening for the extension's socket end (11 x 5.5): {w_:g} x {h_:g}, corners r {K['USB_R']:g}, level through the body's back wall at x {sb[0]:g}..{sb[1]:g}, world z {sb[2]:g}..{sb[3]:g} "
+    L.append(f"USB-C opening for the extension's socket end (11 x 5.5): {w_:g} x {h_:g} as the pebble's, tight (sand to fit), corners r {USB_R:g}, level through the body's back wall at x {sb[0]:g}..{sb[1]:g}, world z {sb[2]:g}..{sb[3]:g} "
              f"({K['USB_SLOT'][2]:g} above the seam), closed all round; wall there y {gb[1]:.2f}..{gb[4]:.2f} ({gb[4] - gb[1]:.2f} thick), {gone.volume():.0f} mm3 cut; "
-             f"its roof is a {w_ - 2 * K['USB_R']:g} mm bridge, printed without support (not in the overhang figure above). Behind it: fins {gap(probe(14.0), fn):.2f} from the socket's way, "
+             f"its roof is a {w_ - 2 * USB_R:g} mm bridge, printed without support (not in the overhang figure above). Behind it: fins {gap(probe(14.0), fn):.2f} from the socket's way, "
              f"the cell's back {lo:.1f} from the wall's inner face, so a socket end up to {lo + gb[4] - gb[1]:.1f} long sits flush outside. "
              f"The old notch at x -5 is filled: body +{dv_notch:.1f} mm3, cup +{dv_cup:.1f} mm3 (keeper/cup-rock.stl; cast and cast plug unchanged). "
              f"The USB head and cable in the checks above are still round 8's right-angle one.")

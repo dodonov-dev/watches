@@ -1061,3 +1061,7 @@ Facts / lessons moved to the firmware-e2e skill; dead ends to docs/lcd316-perf-p
 - Roly-poly cast plug: no pocket for the straight USB-C plug head (see the handoff's "Open").
 - `roly_keeper.py`'s fork still checks against round 8's right-angle USB head dummy.
 - Bambu Studio's CLI prints the global support settings in the gcode header even when an object overrides them.
+- build123d's `Shape.scale()` scales about the origin even after a `Pos` move: the first logo filler sat 1.4 off. `gp_Trsf.SetScale(point, f)` instead.
+- `rolypoly.py` still cuts the logo pocket and exports the stencil; the black body closes it in the mesh (`roly_logo_fill.py`). Drop pocket, stencil and their checks at the next shell rebuild if black stays.
+- Roly-poly USB opening is a copy of `PEBBLE["USB_SLOT"]` (11 x 5.5), not an import; it goes stale if the pebble's changes again.
+- No roly-poly-only body plate now (`_19` deleted); `mkplate_merge.py` needs a base plate.

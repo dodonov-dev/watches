@@ -23,10 +23,16 @@ Photos and the printed gcode: `cad/desk/to-print/_20_plate_res/`. Both shells st
 - **Fork loose** (user): pads were 2.2 as printed, 0.2 over the plate's seat without the foam strips. Now 3.0 as printed
   (2.0 to the plate as assembled + 1.0 proud, sand to fit). The fork's lower end has no ribs; the cell and the fins stop
   it: fins now 0.3 behind the cell (were 0.6, for tape).
-- **USB-C:** both extensions go in, with effort (their rigid ends are about equally long). The opening is now 11.3 x 5.9
-  with r 1 corners for the socket end (11 x 5.5) to sit in the wall; still 2.5 above the seam.
-- **Plate:** `to-print/_22_plate_pebble_E_N1_roly_poly_r8_keeper2.3mf` (as `_20`: pebble `_18` + body + fork; sliced:
-  15.1 h, 144 g with the file's PLA Basic). The cup plate `_21` is unchanged.
+- **USB-C:** both extensions go in, with effort (their rigid ends are about equally long). The opening is the pebble's
+  (`4e6806c`): 11 x 5.5, round-ended, tight on purpose (sand to fit), for the socket end (11 x 5.5) to sit in the wall;
+  still 2.5 above the seam.
+- **Logo pocket closed** (user: the body will be black, and the pocket showed from outside): `roly_logo_fill.py` (~2 min)
+  takes round 8's own pocket cutter from `rolypoly.py`, grows it 4 % and writes `keeper/logo-fill.stl`; `roly_keeper.py`
+  unions it in. The wall there is 2.2 (was the 1.0 skin), a 0.2 dip is left on the inside, the outer surface is
+  untouched. No stencil, no LEDs behind it. `rolypoly.py` itself still cuts the pocket.
+- **Plate:** `to-print/_22_plate_pebble_E_N1_roly_poly_r8_keeper2.3mf` (as `_20`: the pebble's rebuilt `_18` with the
+  11 x 5.5 slot + body + fork; sliced: 15.2 h, 144.5 g with the file's PLA Basic, supports as above). The cup plate `_21`
+  is unchanged. The body-only plate `_19` is deleted: it carried the auto supports that failed, the 2.2 pads and the pocket.
 - **Open:** the cast under the port. The extension's straight plug head (~13.5 long) reaches about 9.5 below the seam plus
   the ribbon's bend; the cast's top is 5.4 below the seam there (round 8's dimple is for the old right-angle head). Not
   checked with a cup on; needs the head's length and a deeper pocket in `rolypoly.py`'s cast plug.
